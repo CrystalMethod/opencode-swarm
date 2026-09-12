@@ -27,7 +27,12 @@ import {
 } from '../config/agent-model.js';
 import { ALL_AGENT_NAMES } from '../config/agent-names.js';
 import { DEFAULT_MODELS } from '../config/constants';
-import type { Phase, Plan, Task } from '../config/plan-schema';
+import {
+	type Phase,
+	type Plan,
+	resolveActivePhaseId,
+	type Task,
+} from '../config/plan-schema';
 import { isKnownCanonicalRole, stripKnownSwarmPrefix } from '../config/schema';
 import {
 	DEFAULT_QA_GATES,
@@ -38,6 +43,7 @@ import {
 import {
 	appendCoreEventSync,
 	CORE_EVENT_LOCKED,
+	type CoderRetryEscalationAction,
 	getCoderRetryEscalationActions,
 } from '../events/core-events.js';
 import {
@@ -2030,6 +2036,184 @@ export async function forceRecordPlanCriticApproval(
 	};
 }
 
+/**
+ * Issue #2703: architect-facing manual recovery for the coder retry circuit
+ * breaker's critic_sounding_board gate. `enforceCoderRetryEscalation` blocks
+ * every coder dispatch for a task until durable evidence
+ * `gates.critic_sounding_board` exists, but the only foreground writer is the
+ * toolAfter auto-recorder, whose conjunctive preconditions (verdict parse via
+ * the plan-critic rubric, dispatch-time task attribution, launch-generation
+ * binding, non-terminal output state) can each miss on a legitimate APPROVED
+ * verdict — leaving the gate blocked across sessions and resets with no
+ * recovery path (unlike the plan-critic gate's approve_plan_critic, issue
+ * #2012). This helper writes the exact evidence the mechanical recorder would
+ * have written. It records evidence ONLY: it never emits
+ * sounding_board_consultation / simplification / user_escalation, so it cannot
+ * fabricate or skip the escalation protocol — a durable consultation for the
+ * task's CURRENT retry epoch must already exist.
+ */
+export async function forceRecordRetrySoundingBoardApproval(
+	directory: string,
+	sessionID: string,
+	options: { taskId: string; reason?: string },
+): Promise<{
+	taskId: string;
+	generation: number;
+	retryEpoch: number;
+	recordedAt: string;
+	auditEventRecorded: boolean;
+}> {
+	// Defense-in-depth mirroring forceRecordPlanCriticApproval: the
+	// approve_retry_sounding_board tool is registered for the architect only,
+	// but require the ACTIVE session to be the architect so a non-architect
+	// context cannot self-unblock the retry gate.
+	const session = ensureAgentSession(sessionID);
+	if (
+		!session ||
+		!session.agentName ||
+		stripKnownSwarmPrefix(session.agentName) !== 'architect'
+	) {
+		throw new Error(
+			'APPROVE_RETRY_SOUNDING_BOARD_ARCHITECT_REQUIRED: approve_retry_sounding_board requires an active architect session. ' +
+				'The coder retry circuit-breaker escape hatch is architect-only; a coder/reviewer cannot self-unblock.',
+		);
+	}
+
+	const taskId =
+		typeof options.taskId === 'string' ? options.taskId.trim() : '';
+	if (!taskId) {
+		throw new Error(
+			'APPROVE_RETRY_UNKNOWN_TASK: approve_retry_sounding_board requires the exact plan task id (e.g. "2.1").',
+		);
+	}
+
+	const plan = await loadPlanJsonOnly(directory);
+	if (!plan) {
+		// Same missing/corrupt distinction as forceRecordPlanCriticApproval.
+		const planPath = path.join(directory, '.swarm', 'plan.json');
+		if (fs.existsSync(planPath)) {
+			throw new Error(
+				'PLAN_CORRUPT: .swarm/plan.json exists but could not be parsed ' +
+					'(corrupt or schema-invalid). Repair or re-save the plan before ' +
+					'recording a retry sounding-board approval.',
+			);
+		}
+		throw new Error(
+			'PLAN_NOT_FOUND: no .swarm/plan.json — cannot record a retry ' +
+				'sounding-board approval without a plan. Save a plan first.',
+		);
+	}
+	const knownTaskIds = new Set(
+		plan.phases.flatMap((phase) => phase.tasks.map((task) => task.id)),
+	);
+	if (!knownTaskIds.has(taskId)) {
+		throw new Error(
+			`APPROVE_RETRY_UNKNOWN_TASK: task ${taskId} is not in the current plan. Refusing to record evidence for a foreign task id.`,
+		);
+	}
+
+	const { getTaskWorkflowSnapshot, readTaskEvidence, recordGateEvidence } =
+		await import('../gate-evidence');
+	const evidence = await readTaskEvidence(directory, taskId);
+	const workflow = getTaskWorkflowSnapshot(evidence);
+	if (!evidence || !workflow.authoritative) {
+		throw new Error(
+			`APPROVE_RETRY_NO_WORKFLOW: no durable task workflow evidence exists for task ${taskId} — there is no retry state to recover.`,
+		);
+	}
+
+	let prior: Set<CoderRetryEscalationAction>;
+	try {
+		prior = readCoderRetryEscalations(directory, taskId, workflow.retryEpoch);
+	} catch (error) {
+		// A corrupt authority index must not wedge the recovery path (plan
+		// critic round 1): remap to a typed error with repair guidance,
+		// mirroring enforceCoderRetryEscalation's own mapping.
+		if (
+			error instanceof Error &&
+			error.message === 'CORE_EVENT_AUTHORITY_INDEX_UNREADABLE'
+		) {
+			throw new Error(
+				'APPROVE_RETRY_AUDIT_INDEX_UNREADABLE: the retry audit authority index is unreadable, ' +
+					'so the prior sounding_board_consultation cannot be verified. Repair the events store (see /swarm doctor) and retry.',
+			);
+		}
+		throw error;
+	}
+	if (!prior.has('sounding_board_consultation')) {
+		throw new Error(
+			`APPROVE_RETRY_CONSULTATION_REQUIRED: task ${taskId} has no durable sounding_board_consultation escalation for retry epoch ${workflow.retryEpoch}. ` +
+				'Dispatch critic_sounding_board first — this tool records an obtained APPROVED verdict, it cannot substitute for the consultation.',
+		);
+	}
+
+	const sanitizedReason =
+		typeof options.reason === 'string' && options.reason.trim().length > 0
+			? options.reason.trim().slice(0, 500)
+			: undefined;
+	const recordedAt = new Date().toISOString();
+	// Epoch-scoped transitionId (review PRR-R2): a repeated invocation for the
+	// same (session, epoch) is a duplicate transition, not a fresh rewrite.
+	const transitionId = `retry-sb-manual:${sessionID}:epoch${workflow.retryEpoch}`;
+
+	// The durable gate artifact the mechanical toolAfter recorder would have
+	// written: same gate_recorded transition, same retention semantics
+	// (clearWorkflowGateProof clears it on accepted_mutation/repair_idle), so
+	// the manual entry cannot outlive its generation any more than a
+	// mechanical one can. expectedGeneration (review PRR-C1) fails the write
+	// closed if a concurrent accepted_mutation/repair_idle rotated the
+	// generation between the read above and this write, instead of
+	// resurrecting the cleared gate on the new generation.
+	await recordGateEvidence(
+		directory,
+		taskId,
+		'critic_sounding_board',
+		sessionID,
+		false,
+		{
+			transitionId,
+			expectedGeneration: workflow.generation,
+		},
+	);
+
+	// Best-effort audit event (forceRecordPlanCriticApproval precedent): the
+	// evidence write above is authoritative for the gate; this event is the
+	// human-readable trail distinguishing a manual override from a mechanical
+	// recording. Deduped per (taskId, retryEpoch, action).
+	let auditEventRecorded = true;
+	try {
+		appendCoreEventSync(
+			directory,
+			{
+				type: 'coder_retry_circuit_breaker',
+				timestamp: recordedAt,
+				taskId,
+				generation: workflow.generation,
+				retryEpoch: workflow.retryEpoch,
+				rejectionCount: workflow.retryCount,
+				rejectionHistory: [...workflow.retryHistory],
+				phase: Number(taskId.split('.')[0]) || 0,
+				action: 'sounding_board_manual_approval',
+				...(sanitizedReason ? { reason: sanitizedReason } : {}),
+			},
+			{ dedupeOnAuthorityKey: true },
+		);
+	} catch (err) {
+		auditEventRecorded = false;
+		logger.warn(
+			`[delegation-gate] sounding_board_manual_approval audit event write failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	return {
+		taskId,
+		generation: workflow.generation,
+		retryEpoch: workflow.retryEpoch,
+		recordedAt,
+		auditEventRecorded,
+	};
+}
+
 const ACTIVE_PARALLEL_TASK_STATES = new Set([
 	'coder_delegated',
 	'pre_check_passed',
@@ -2340,11 +2524,6 @@ function completionGateViolationMessage(
 	);
 }
 
-type CoderRetryEscalationAction =
-	| 'sounding_board_consultation'
-	| 'simplification'
-	| 'user_escalation';
-
 /**
  * Issue #2039: escalation audit state moved off raw events.jsonl scans to
  * the authoritative core event index (index answer UNION the bounded
@@ -2523,13 +2702,22 @@ export function canRunWhileTaskAwaitsCompletion(input: {
 	if (
 		input.directory &&
 		input.requestedTaskId &&
-		input.requestedTaskId !== input.awaitingTaskId &&
-		isProvablyDisjoint(input.directory, [
-			input.awaitingTaskId,
-			input.requestedTaskId,
-		])
+		input.requestedTaskId !== input.awaitingTaskId
 	) {
-		return true;
+		// Fail-closed: a verdict failure must never escape the completion gate
+		// as an unexpected toolBefore error (mirrors scopeVerdictAllowsParallel).
+		try {
+			if (
+				isProvablyDisjoint(input.directory, [
+					input.awaitingTaskId,
+					input.requestedTaskId,
+				])
+			) {
+				return true;
+			}
+		} catch {
+			return false;
+		}
 	}
 
 	return false;
@@ -2603,10 +2791,12 @@ async function buildParallelExecutionGuidance(
 		return '[NEXT] Lean Turbo is active; use lean_turbo_run_phase and Lean Turbo lane guidance instead of standard execution-profile slot filling.';
 	}
 
-	const currentPhase =
-		plan.current_phase !== undefined
-			? plan.phases.find((phase) => phase.id === plan.current_phase)
-			: plan.phases.find((phase) => !isParallelGuidancePhaseComplete(phase));
+	// #2532: canonical active-phase resolution — stored cursor when it points
+	// at a non-terminal phase, else first non-terminal phase. Legacy plans whose
+	// persisted cursor is stuck on a completed phase now advertise the honest
+	// active phase instead of returning null (which silently killed guidance).
+	const currentPhaseId = resolveActivePhaseId(plan);
+	const currentPhase = plan.phases.find((phase) => phase.id === currentPhaseId);
 	if (!currentPhase) return null;
 
 	const tasks = currentPhase.tasks;
@@ -2617,8 +2807,43 @@ async function buildParallelExecutionGuidance(
 	// forces serial. Tell the architect exactly what happened and how to
 	// inspect the conflict matrix, so it is never left guessing why parallel
 	// dispatch was blocked.
-	if (!scopeVerdictAllowsParallel(directory, plan)) {
-		return `[PARALLEL EXECUTION PROFILE] parallelization_enabled=true max_concurrent_tasks=${effectiveMaxConcurrent}; the active phase's pending tasks are NOT provably file-disjoint (overlapping or unknown declared scopes) — SERIAL fallback active (v8 automatic safety). Run plan_conflict_check on the pending tasks to inspect the conflict matrix and a suggested serialization order, or proceed serially (one coder at a time).`;
+	// #2532 (AC7): the fallback now carries the EXACT reason — which tasks lack
+	// a live declaration, or which pair conflicts on which path — instead of
+	// the old ambiguous "overlapping or unknown" either/or. The verdict is
+	// computed ONCE here (bounded: ≤3 evidence lines in the message).
+	const pendingTaskIds = collectPendingTaskIdsForActivePhase(plan);
+	let fallbackReason: string | null = null;
+	if (pendingTaskIds.length < 2) {
+		fallbackReason =
+			'fewer than two pending tasks in the active phase — nothing to parallelize';
+	} else {
+		try {
+			const verdict = computeParallelVerdict(directory, pendingTaskIds, {
+				plan,
+			});
+			if (verdict.verdict === 'all_disjoint') {
+				// parallel continues below
+			} else if (verdict.verdict === 'unknown_scopes') {
+				const shown = verdict.unknownScopeTasks.slice(0, 6).join(', ');
+				const more =
+					verdict.unknownScopeTasks.length > 6
+						? ` (and ${verdict.unknownScopeTasks.length - 6} more)`
+						: '';
+				fallbackReason = `no live declared scope for task${verdict.unknownScopeTasks.length === 1 ? '' : 's'}: ${shown}${more} — call declare_scope for each pending task, then retry`;
+			} else {
+				const conflictPair = verdict.pairs.find(
+					(pair) => pair.verdict === 'conflict',
+				);
+				const evidence = (conflictPair?.evidence ?? []).slice(0, 3).join('; ');
+				fallbackReason = `declared scopes overlap: tasks ${conflictPair?.a ?? '?'} and ${conflictPair?.b ?? '?'} conflict (${evidence || 'shared paths'})`;
+			}
+		} catch {
+			fallbackReason =
+				'verdict computation failed (fail-safe serial per v8 contract)';
+		}
+	}
+	if (fallbackReason !== null) {
+		return `[PARALLEL EXECUTION PROFILE] parallelization_enabled=true max_concurrent_tasks=${effectiveMaxConcurrent}; SERIAL fallback active (v8 automatic safety) — exact reason: ${fallbackReason}. Run plan_conflict_check on the pending tasks to inspect the conflict matrix and a suggested serialization order, or proceed serially (one coder at a time).`;
 	}
 
 	const completed = new Set<string>();
@@ -2665,14 +2890,6 @@ async function buildParallelExecutionGuidance(
 	return `[PARALLEL EXECUTION PROFILE] parallelization_enabled=true max_concurrent_tasks=${effectiveMaxConcurrent}; ${occupied.size} slot(s) occupied. Eligible now: ${eligible.join(', ')}. [NEXT] dispatch up to ${availableSlots} eligible coder task(s) before waiting; preserve ONE task per coder call and call declare_scope for each task.${failureWarning}`;
 }
 
-function isParallelGuidancePhaseComplete(phase: Phase): boolean {
-	return (
-		phase.status === 'complete' ||
-		phase.status === 'completed' ||
-		phase.status === 'closed'
-	);
-}
-
 /**
  * #1674 v8: collect the pending-task ids of the active phase, mirroring
  * `buildParallelExecutionGuidance`'s `currentPhase` selection EXACTLY
@@ -2683,10 +2900,11 @@ function isParallelGuidancePhaseComplete(phase: Phase): boolean {
  * Returns `[]` when there is no active phase or no pending tasks in it.
  */
 function collectPendingTaskIdsForActivePhase(plan: Plan): string[] {
-	const currentPhase =
-		plan.current_phase !== undefined
-			? plan.phases.find((phase) => phase.id === plan.current_phase)
-			: plan.phases.find((phase) => !isParallelGuidancePhaseComplete(phase));
+	// #2532: mirrors buildParallelExecutionGuidance's selection via the shared
+	// canonical resolver so the enforcement set and the advisory can never
+	// disagree (including for legacy stuck-cursor plans).
+	const currentPhaseId = resolveActivePhaseId(plan);
+	const currentPhase = plan.phases.find((phase) => phase.id === currentPhaseId);
 	if (!currentPhase) return [];
 	return currentPhase.tasks
 		.filter((t) => t.status === 'pending')
@@ -2704,8 +2922,10 @@ function scopeVerdictAllowsParallel(directory: string, plan: Plan): boolean {
 	try {
 		const pendingTaskIds = collectPendingTaskIdsForActivePhase(plan);
 		if (pendingTaskIds.length < 2) return false; // nothing to parallelize
+		// #2532: pass the plan so the verdict resolves scopes from the v2
+		// binding authority against this exact plan identity (no self-load).
 		return (
-			computeParallelVerdict(directory, pendingTaskIds).verdict ===
+			computeParallelVerdict(directory, pendingTaskIds, { plan }).verdict ===
 			'all_disjoint'
 		);
 	} catch {

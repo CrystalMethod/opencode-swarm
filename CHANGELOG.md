@@ -1,5 +1,42 @@
 # Changelog
 
+## [7.178.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.178.0...v7.178.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **atomic-write:** re-point WRITER_CLASSIFICATION producer citations after [#2532](https://github.com/ZaxbyHub/opencode-swarm/issues/2532) line shifts ([d7d9a13](https://github.com/ZaxbyHub/opencode-swarm/commit/d7d9a13df9e8979a79c0d711c22100117a4f3328))
+* **memory:** harden cohort migration locking per review ([34d57bb](https://github.com/ZaxbyHub/opencode-swarm/commit/34d57bb3e6f680a00509c14e9bbaa8c24a86bc20))
+* **memory:** serialize cohort destination migration under its live lock ([90f7f2e](https://github.com/ZaxbyHub/opencode-swarm/commit/90f7f2e2fe704f83db89a1ecff070e7fd66faeba))
+* **memory:** serialize cohort destination migration under its live lock ([593596a](https://github.com/ZaxbyHub/opencode-swarm/commit/593596ab544c204653b8b2b2a70da5ec0f22592a))
+* **plan-schema:** tolerate task-less in-memory phases in the phase resolver; hermetic WIRE-045 ([4dd5b39](https://github.com/ZaxbyHub/opencode-swarm/commit/4dd5b397d9f28698c61e530bebd65ca8dd2fdd77))
+* **plan:** keep docs receipts verifiable across the live cursor advance ([#2532](https://github.com/ZaxbyHub/opencode-swarm/issues/2532) review) ([7f94dc5](https://github.com/ZaxbyHub/opencode-swarm/commit/7f94dc5ba403cea868f2392c16ab326a795cb5b4))
+* **plan:** lazy-import scope-persistence at the Rule-2 site ([cbf6449](https://github.com/ZaxbyHub/opencode-swarm/commit/cbf6449ca6c5158712c7113df900d9574d30ed94))
+* **plan:** parallel-first scheduling and phase progression use current bindings ([#2532](https://github.com/ZaxbyHub/opencode-swarm/issues/2532)) ([7a62535](https://github.com/ZaxbyHub/opencode-swarm/commit/7a62535d3d9a6d49c5a4460ed63114ff74889464))
+
+## [7.178.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.177.1...v7.178.0) (2026-09-12)
+
+
+### Features
+
+* **dashboard:** add opt-in local mission-control dashboard over durable swarm state (issue [#2509](https://github.com/ZaxbyHub/opencode-swarm/issues/2509)) ([43e4ee3](https://github.com/ZaxbyHub/opencode-swarm/commit/43e4ee3b06e571096e8afb0b115fe0ea9741b1fa))
+* **mcp:** add explicitly authorized knowledge writes ([1499a74](https://github.com/ZaxbyHub/opencode-swarm/commit/1499a74be1acbaafd48ef5982915600cd1d89dba))
+
+
+### Bug Fixes
+
+* **dashboard:** repoint delegation_cost producer citations after dispose-wiring insertion (PR [#2717](https://github.com/ZaxbyHub/opencode-swarm/issues/2717) CI round 5) ([e7ce82e](https://github.com/ZaxbyHub/opencode-swarm/commit/e7ce82e8abf565f6148a34f29cd0b174e3074b42))
+* **dashboard:** resolve round-2 review findings (byte-cap JSON validity, latest-N timeline, listener ownership) ([f6eaf64](https://github.com/ZaxbyHub/opencode-swarm/commit/f6eaf6490f76c8942c3c82b2508f2d01abf5dcec))
+* **summaries:** close PR-review findings PRR-001..003, 005, 010, 011 ([2e81446](https://github.com/ZaxbyHub/opencode-swarm/commit/2e81446adb00a1051cf4f1549328bba7b20e313c))
+* **summaries:** durable no-overwrite summary identity across restarts ([165f6cd](https://github.com/ZaxbyHub/opencode-swarm/commit/165f6cd65836a10866ab8be64db90252d2d2c632))
+
+## [7.177.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.177.0...v7.177.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **gates:** recover an unpersisted sounding-board APPROVED verdict (issue [#2703](https://github.com/ZaxbyHub/opencode-swarm/issues/2703)) ([e54b837](https://github.com/ZaxbyHub/opencode-swarm/commit/e54b8377f021073f60ca27a4de75113173eceeb5))
+
 ## [7.177.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.176.2...v7.177.0) (2026-09-11)
 
 
