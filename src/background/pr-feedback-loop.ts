@@ -48,6 +48,10 @@ import {
 	type PrFeedbackMonitorEvent,
 	readPrFeedbackMonitorQueue,
 } from './pr-feedback-event-queue';
+import {
+	canonicalRootKeyFresh,
+	SESSION_KEY_SEPARATOR,
+} from '../utils/canonical-root.js';
 import { listActive } from './pr-subscriptions';
 
 export const PR_FEEDBACK_LOOP_STATE_REL = path.join(
@@ -438,7 +442,7 @@ async function withSettlementLock<T>(
 	sessionID: string,
 	fn: () => Promise<T>,
 ): Promise<T> {
-	const key = `${path.resolve(directory)}::${sessionID}`;
+	const key = `${canonicalRootKeyFresh(directory)}${SESSION_KEY_SEPARATOR}${sessionID}`;
 	const prior = settlementsInProgress.get(key) ?? Promise.resolve();
 	const run = prior.catch(() => {}).then(fn);
 	settlementsInProgress.set(key, run);
