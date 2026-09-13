@@ -9529,7 +9529,7 @@ export async function recordPrFeedbackPushAttemptResult(
  * it), and the exact remote-head observation (including null when it could not
  * be resolved).
  */
-async function cancelPrFeedbackPublication(
+export async function cancelPrFeedbackPublication(
 	directory: string,
 	sessionID: string,
 	reason: string,

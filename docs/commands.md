@@ -631,6 +631,14 @@ Materialize the OpenSpec-compatible effective spec into .swarm/spec.md
 
 **Args:** `[--dry-run] [--overwrite] [--json] [--change <id>]`
 
+### `/swarm pr-feedback-loop`
+
+Stop the autonomous PR babysitting settling loop for this session [stop] [reason...]
+
+**Args:** `stop <reason...>`
+
+Human-only stop for the #2502 settling loop (triple opt-in: pr_monitor.enabled + pr_monitor.auto_pr_feedback + pr_feedback_loop.enabled). stop cancels any armed publication generation via the audited #2584 no-publish route (fail-open when nothing is armed), records a terminal cancelled state with the operator-visible reason, clears claimed-but-unsettled monitor events from the session queue via the sanctioned queue-clear primitive, and writes an atomic cleanup receipt under .swarm/pr-feedback-loop-cleanups/. Idempotent: re-running returns the same terminal without duplicating effects. Never issues new wakes; a wake already in flight may still surface in the session, but the workflow gate refuses pushes against a cancelled generation. The reason is mandatory.
+
 ### `/swarm link`
 
 Tie this worktree to a shared swarm knowledge store [name]

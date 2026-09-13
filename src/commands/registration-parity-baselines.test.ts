@@ -166,6 +166,8 @@ describe('Command registration parity — classification baselines', () => {
 				'memory-migrate',
 				'clear',
 				'abort-pr-workflow',
+				// #2502: stopping the autonomous PR babysitting loop is operator-only.
+				'pr-feedback-loop',
 				'approve-plan-critic',
 				// #1824: exact one-shot write approvals are operator-issued only.
 				'approve-write',

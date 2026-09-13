@@ -60,7 +60,6 @@ const PR_FEEDBACK_EVIDENCE_DIR = path.join('.swarm', 'pr-feedback-evidence');
 const MAX_TRACKED_SESSIONS = 200;
 const MAX_PROCESSED_DIGESTS = 64;
 const MAX_PERFORM_ATTEMPTS = 3; // 1 initial + 2 bounded retries (transient only)
-const TICK_SETTLEMENT_CAP = 3; // per poll cycle, IN TOTAL across all sessions
 const TICK_TIMEOUT_MS = 10_000;
 
 /** Supported monitor event types → feedback action classes (#2502 AC1). */
@@ -1013,18 +1012,11 @@ export async function cancelPrFeedbackLoop(
 
 	try {
 		// Lazy import keeps this background module off the gate's static graph;
-		// the #2584 route is not publicly re-exported (internal block), so reach
-		// it through the module namespace with a structural cast.
-		const gate = (await import('../hooks/pr-workflow-gate.js')) as unknown as {
-			cancelPrFeedbackPublication?: (
-				d: string,
-				s: string,
-				r: string,
-			) => Promise<unknown>;
-		};
-		if (typeof gate.cancelPrFeedbackPublication === 'function') {
-			await gate.cancelPrFeedbackPublication(directory, sessionID, reason);
-		}
+		// the #2584 route is now a typed public export on the gate.
+		const { cancelPrFeedbackPublication } = await import(
+			'../hooks/pr-workflow-gate.js'
+		);
+		await cancelPrFeedbackPublication(directory, sessionID, reason);
 	} catch (err) {
 		warn(
 			`[pr-feedback-loop] cancelPrFeedbackPublication failed (fail-open): ${
@@ -1098,23 +1090,16 @@ export async function cancelPrFeedbackLoop(
 }
 
 /**
- * Bounded post-cycle tick (#2502 M7): at most TICK_SETTLEMENT_CAP settlements
- * per poll cycle IN TOTAL across all sessions, wrapped in withTimeout — the
- * rest defer to the next cycle. Fire-and-forget at every call site.
+ * Bounded post-cycle tick (#2502 M7). Settlement today is driven entirely by
+ * the per-session notify hook (handlePrEvent → notifyPrFeedbackLoop, which is
+ * itself withTimeout-bounded per settlement); the queue store exposes no
+ * session enumeration yet, so a cross-session sweep has nothing to iterate.
+ * When enumeration lands, this becomes the bounded sweep (at most
+ * TICK_SETTLEMENT_CAP settlements per poll cycle IN TOTAL); until then it is
+ * an honest no-op that reports zero settlements.
  */
-export async function tickPrFeedbackLoop(directory: string): Promise<number> {
-	const settled = 0;
-	try {
-		const config = loadPluginConfig(directory);
-		if (!isLoopEnabled(config)) return 0;
-		// The queue store does not enumerate sessions today; the tick settles
-		// via the per-session notify path (handlePrEvent) and this entry point
-		// exists for the post-cycle hook once session enumeration is wired.
-		return settled;
-	} catch {
-		return settled;
-	}
-	void settled;
+export async function tickPrFeedbackLoop(_directory: string): Promise<number> {
+	return 0;
 }
 
 /** Notify hook for pr-event-subscribers: fire-and-forget, fail-open. */

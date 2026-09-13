@@ -161,6 +161,7 @@ These are invoked as `/swarm <subcommand>`, NOT as bare `/subcommand`. The list 
 - `/swarm pr-review` — launch deep PR review with multi-lane analysis
 - `/swarm pr-feedback` — ingest and close known PR feedback (review comments, CI failures, conflicts)
 - `/swarm abort-pr-workflow` — clear a stuck PR_REVIEW/PR_FEEDBACK mechanical gate and stop the auto-resume loop (human-only escape hatch)
+- `/swarm pr-feedback-loop` — stop the autonomous PR babysitting settling loop for this session (`stop <reason...>`; cancels any armed publication via the #2584 route, records a terminal cancelled state with the operator reason, clears unsettled monitor events, and writes a cleanup receipt; human-only)
 - `/swarm approve-plan-critic` — record a MANUAL plan-critic approval to unblock the ratchet-tighter critic_pre_plan execution gate when the critic already returned APPROVED but the snapshot was not recorded (human-only escape hatch)
 - `/swarm approve-write` — issue one exact, session-bound, one-shot write approval for a candidate action and content hash (human-only)
 - `/swarm ci-monitor` — drive an already-reviewed, approved PR to green and merged (monitor CI, fix, merge; max 5 fix cycles)
