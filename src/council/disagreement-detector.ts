@@ -173,8 +173,15 @@ const VALID_STANCES = new Set([
  * Defensive shape check for one structured claim. Malformed claims are
  * skipped individually — they must never break the detector or suppress the
  * fallback passes (issue #2102 contract G safety rule).
+ *
+ * Exported (issue #2578) so the general-council synthesis service applies the
+ * SAME well-formedness filter when deciding which members hold explicit
+ * contrary positions for consensus clustering — one definition, no duplicate
+ * shape-check.
  */
-function isWellFormedClaim(value: unknown): value is GeneralCouncilClaim {
+export function isWellFormedClaim(
+	value: unknown,
+): value is GeneralCouncilClaim {
 	if (!value || typeof value !== 'object') return false;
 	const claim = value as Partial<GeneralCouncilClaim>;
 	return (
@@ -218,8 +225,12 @@ function sameClaimSubject(a: string, b: string): boolean {
  * least one is an explicit contrary position (`oppose` or `alternative`).
  * `concern` flags risk without taking a side, so support-vs-concern is not
  * auto-detected here — the marker/heuristic passes still cover it.
+ *
+ * Exported (issue #2578): the synthesis service reuses this canonical
+ * definition to identify a member's explicit contrary stance
+ * (`areContraryStances(stance, 'support')`) instead of duplicating the list.
  */
-function areContraryStances(
+export function areContraryStances(
 	a: GeneralCouncilClaim['stance'],
 	b: GeneralCouncilClaim['stance'],
 ): boolean {

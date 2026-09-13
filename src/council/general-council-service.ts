@@ -9,12 +9,21 @@
  * member confidence rather than counted by headcount. A claim is a consensus
  * point only when its weighted agreement exceeds 0.6 across members.
  *
- * MAINTAIN/CONCEDE/NUANCE protocol (ConfMAD): a Round 2 response with the
- * CONCEDE keyword on a topic resolves the corresponding Round 1 disagreement;
- * MAINTAIN leaves it persisting; NUANCE marks it persisting-with-boundary.
+ * MAINTAIN/CONCEDE/NUANCE protocol (ConfMAD): a Round 2 response resolves a
+ * Round 1 disagreement only when a disputant declares a paragraph-leading
+ * CONCEDE on that topic (the documented stance grammar in
+ * ../agents/council-prompts.ts); MAINTAIN leaves it persisting; NUANCE marks
+ * it persisting-with-boundary. Issue #2578: prose that merely CONTAINS the
+ * word "concede" (e.g. "MAINTAIN — I do not concede…") is not a concession,
+ * and a member holding an explicit contrary typed stance (oppose/alternative)
+ * is disagreement evidence that must never be emitted as consensus.
  */
 
-import { detectDisagreements } from './disagreement-detector.js';
+import {
+	areContraryStances,
+	detectDisagreements,
+	isWellFormedClaim,
+} from './disagreement-detector.js';
 import type {
 	GeneralCouncilDeliberationResponse,
 	GeneralCouncilDisagreement,
@@ -25,6 +34,51 @@ import type {
 
 /** Confidence-weighted consensus threshold (NSED Quadratic Voting). */
 const CONSENSUS_WEIGHT_THRESHOLD = 0.6;
+
+/** Round 2 stance keywords, exactly as documented in council-prompts.ts. */
+const LEADING_STANCE_KEYWORDS = ['MAINTAIN', 'CONCEDE', 'NUANCE'] as const;
+
+export type GeneralCouncilLeadingStance =
+	(typeof LEADING_STANCE_KEYWORDS)[number];
+
+/** One paragraph-leading stance declaration parsed from a Round 2 response. */
+export interface LeadingStanceDeclaration {
+	stance: GeneralCouncilLeadingStance;
+	/** The full text of the paragraph whose first word is the stance keyword. */
+	paragraph: string;
+}
+
+/**
+ * Parse the documented paragraph-leading stance contract (issue #2578 sole
+ * owner: this module — callers must reuse this parser, not re-implement it).
+ *
+ * A declaration exists only when the FIRST word of a paragraph (blank-line
+ * separated) is exactly one of the uppercase keywords MAINTAIN / CONCEDE /
+ * NUANCE (case-sensitive, as the prompt documents them), standing alone
+ * before whitespace or punctuation. Prose such as "I do not concede" or
+ * "After review I concede…" never leads a paragraph with the keyword and so
+ * yields no declaration — the conservative direction (no concession).
+ */
+export function extractLeadingStanceDeclarations(
+	response: string,
+): LeadingStanceDeclaration[] {
+	if (typeof response !== 'string' || response.length === 0) return [];
+	const declarations: LeadingStanceDeclaration[] = [];
+	for (const raw of response.split(/\n\s*\n/)) {
+		const paragraph = raw.trim();
+		if (paragraph === '') continue;
+		const boundary = paragraph.search(/[\s:,.;!?—–]/);
+		const firstWord =
+			boundary === -1 ? paragraph : paragraph.slice(0, boundary);
+		if ((LEADING_STANCE_KEYWORDS as readonly string[]).includes(firstWord)) {
+			declarations.push({
+				stance: firstWord as GeneralCouncilLeadingStance,
+				paragraph,
+			});
+		}
+	}
+	return declarations;
+}
 
 /** Tokenize for claim-similarity grouping. */
 function tokenize(text: string): string[] {
@@ -66,6 +120,17 @@ interface ClaimCluster {
  * with the representative claim as the longest variant in the cluster.
  *
  * "Weighted agreement" = sum(confidence) / total members — bounded to [0, 1].
+ *
+ * Issue #2578: the documented stance contract is parsed BEFORE similarity
+ * clustering. A member holding at least one well-formed contrary typed claim
+ * (oppose/alternative — the canonical `areContraryStances(stance, 'support')`
+ * definition) is excluded from consensus clustering entirely: an explicit
+ * contrary position is disagreement evidence until a valid paragraph-leading
+ * concession resolves it, and lexical linking of a contrary sentence back to
+ * its subject is unreliable under negation. The exclusion is deliberately
+ * conservative (under-report consensus, never report a contrary position as
+ * consensus) and applies only to members who supplied typed claims — the
+ * claims-optional fallback passes are unchanged.
  */
 function buildConsensusClusters(
 	responses: GeneralCouncilMemberResponse[],
@@ -73,8 +138,21 @@ function buildConsensusClusters(
 	if (responses.length < 2) return [];
 	const totalMembers = responses.length;
 
+	const membersWithContraryClaims = new Set(
+		responses
+			.filter((member) =>
+				(Array.isArray(member.claims) ? member.claims : []).some(
+					(claim) =>
+						isWellFormedClaim(claim) &&
+						areContraryStances(claim.stance, 'support'),
+				),
+			)
+			.map((member) => member.memberId),
+	);
+
 	const clusters: ClaimCluster[] = [];
 	for (const member of responses) {
+		if (membersWithContraryClaims.has(member.memberId)) continue;
 		const confidence = clamp01(member.confidence ?? 0.5);
 		const claims = extractClaims(member.response ?? '');
 		for (const claim of claims) {
@@ -125,7 +203,15 @@ function clamp01(n: number): number {
 
 /**
  * Compute persisting disagreements: those whose Round 2 responses do NOT
- * contain a CONCEDE keyword on the relevant disagreement topic.
+ * contain a valid concession on the relevant disagreement topic.
+ *
+ * Issue #2578: a concession is a paragraph-leading CONCEDE declaration
+ * (extractLeadingStanceDeclarations) by a disputant whose response lists the
+ * topic — the documented grammar, not the word "concede" anywhere in the
+ * response. Everything else (MAINTAIN, NUANCE, prose mentions, negations like
+ * "I do not concede", missing declarations) leaves the disagreement
+ * persisting: explicit disagreement is preserved unless a valid concession is
+ * actually declared.
  */
 function computePersistingDisagreements(
 	disagreements: GeneralCouncilDisagreement[],
@@ -140,7 +226,9 @@ function computePersistingDisagreements(
 		const conceded = round2.some((r) => {
 			if (!disputants.has(r.memberId)) return false;
 			if (!r.disagreementTopics?.includes(d.topic)) return false;
-			return /\bconcede\b/i.test(r.response ?? '');
+			return extractLeadingStanceDeclarations(r.response ?? '').some(
+				(declaration) => declaration.stance === 'CONCEDE',
+			);
 		});
 		return !conceded;
 	});
