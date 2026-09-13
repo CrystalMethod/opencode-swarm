@@ -83,7 +83,7 @@ autonomous execution and never mutates the running checkout.
 
 ## Commands
 
-`/swarm harness-opt plan|run|status|stop|history` — see
+`/swarm harness-opt plan|run|compare|status|stop|history` — see
 [docs/commands.md](commands.md#swarm-harness-opt). `run` requires
 `--tasks <project-relative-json>` (an array of `{id, instruction}` task
 descriptors), executes one governed round, and reports the stop reason,

@@ -153,6 +153,42 @@ describe('harness-opt compare gating (separately executable comparative package)
 		expect(output).toMatch(/confirm/i);
 	});
 
+	test('honors run_ablation_arm=false from the project config through the registered path', async () => {
+		writeFileSync(
+			path.join(root, 'tasks.json'),
+			JSON.stringify([
+				{
+					id: 'toggle-cmd-task',
+					instruction: 'reply with {"v":1,"caught":true}',
+				},
+			]),
+		);
+		writeFileSync(
+			path.join(root, 'opencode.json'),
+			JSON.stringify({ harness_opt: { run_ablation_arm: false } }),
+		);
+		// A minimal evaluation dispatcher: every invocation completes with
+		// the scorer payload. The handler's reported arms object then proves
+		// which arms actually ran under the project-config toggle.
+		const dispatcher = (async () => ({
+			status: 'completed' as const,
+			text: '{"v":1,"caught":true}',
+			durationMs: 1,
+			cost: { source: 'reported' as const, usd: 0 },
+		})) as unknown as NonNullable<
+			Parameters<typeof handleHarnessOptCompare>[2]
+		>['dispatcher'];
+		const output = await handleHarnessOptCompare(
+			root,
+			['--confirm', '--tasks', 'tasks.json', '--json'],
+			{ dispatcher },
+		);
+		const parsed = JSON.parse(output) as {
+			arms: Record<string, unknown>;
+		};
+		expect(Object.keys(parsed.arms)).toEqual(['baseline', 'simple-agent']);
+	});
+
 	test('refuses an invalid comparative manifest before any execution', async () => {
 		writeFileSync(
 			path.join(root, 'tasks.json'),

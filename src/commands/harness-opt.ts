@@ -457,28 +457,34 @@ export async function handleHarnessOptCompare(
 		runtime.dispatcher,
 		runtime.parentSessionId,
 	);
-	const harnessOptBlock = (runtime.config ?? undefined) as
-		| { run_ablation_arm?: boolean; run_simple_agent_arm?: boolean }
-		| undefined;
+	// Arm toggles resolve the same way the run handler resolves budgets:
+	// runtime config first, then the project's opencode.json harness_opt
+	// block — so a user's run_ablation_arm/run_simple_agent_arm settings
+	// reach the protocol through the registered command path.
+	const config = runtime.config ?? readHarnessOptConfigFromProject(directory);
 	const comparative = await runComparativeProtocol({
 		projectRoot: directory,
 		tasks: loaded.tasks,
 		seed: parsed.seed,
 		executor,
-		runAblationArm: harnessOptBlock?.run_ablation_arm,
-		runSimpleAgentArm: harnessOptBlock?.run_simple_agent_arm,
+		runAblationArm: config.run_ablation_arm,
+		runSimpleAgentArm: config.run_simple_agent_arm,
 	});
 	const arms: ComparativeArmResult[] = Object.values(comparative.arms);
 	// Independent oracle over the observed arm summaries: the baseline arm
 	// versus the strongest non-baseline arm's verified completions.
 	const verifiedOf = (arm: ComparativeArmResult) => arm.completed;
 	const baseline = comparative.arms.baseline;
-	const bestCandidate = [
+	const candidateArms = [
 		comparative.arms.ablation,
 		comparative.arms['simple-agent'],
-	].reduce(
+	].filter((arm): arm is ComparativeArmResult => arm !== undefined);
+	// With both toggleable arms disabled the comparison pool is empty; the
+	// oracle then compares the baseline against itself (a trivially neutral
+	// verdict, still recorded with the observed arm data).
+	const bestCandidate = candidateArms.reduce(
 		(best, arm) => (verifiedOf(arm) > verifiedOf(best) ? arm : best),
-		comparative.arms.ablation,
+		candidateArms[0] ?? baseline,
 	);
 	const oracle = await evaluateIndependentOracle({
 		baseline: {
