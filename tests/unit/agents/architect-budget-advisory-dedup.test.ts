@@ -57,4 +57,60 @@ describe('architect budget advisory dedup (#2671 review)', () => {
 			'after the session-start reset the same config must warn again',
 		).toHaveLength(1);
 	});
+
+	// Review ROW-4: the dedup signature normalizes digit runs, so the volatile
+	// ±1 char/token counts in an otherwise identical bounded error cannot
+	// defeat dedup. RED under the pre-fix raw-text-keyed implementation.
+	test('same label with volatile length digits emits exactly one advisory', () => {
+		warnArchitectPromptBudgetExceededOnce(
+			'ARCHITECT_PROMPT_BUDGET_EXCEEDED: cell-a is 162000 chars',
+		);
+		warnArchitectPromptBudgetExceededOnce(
+			'ARCHITECT_PROMPT_BUDGET_EXCEEDED: cell-a is 162001 chars',
+		);
+		warnArchitectPromptBudgetExceededOnce(
+			'ARCHITECT_PROMPT_BUDGET_EXCEEDED: cell-a is 162003 chars',
+		);
+		const cellA = getDeferredWarnings().filter((w) => w.includes('cell-a'));
+		expect(
+			cellA,
+			'volatile count drift must not produce repeat advisories for the same label',
+		).toHaveLength(1);
+	});
+
+	// Review ROW-3: the signature set is FIFO-bounded — the oldest signature
+	// is evicted past MAX_ARCHITECT_BUDGET_SIGNATURES and may warn again,
+	// while recent signatures stay suppressed. RED under an unbounded set.
+	test('signature set evicts the oldest entry past its bound (re-warn emits)', () => {
+		clearDeferredWarnings();
+		const distinct: string[] = [];
+		for (let i = 0; i < 101; i++) {
+			let label = 'agent-';
+			let n = i;
+			do {
+				label += String.fromCharCode(97 + (n % 26));
+				n = Math.floor(n / 26);
+			} while (n > 0);
+			distinct.push(
+				`ARCHITECT_PROMPT_BUDGET_EXCEEDED: ${label} is 162000 chars`,
+			);
+		}
+		for (const error of distinct) {
+			warnArchitectPromptBudgetExceededOnce(error);
+		}
+		// The first signature was evicted FIFO; after draining the buffer it
+		// must emit again, while the most recent signature stays suppressed.
+		clearDeferredWarnings();
+		warnArchitectPromptBudgetExceededOnce(distinct[0]);
+		expect(
+			getDeferredWarnings(),
+			'the evicted oldest signature must be eligible to warn again',
+		).toHaveLength(1);
+		clearDeferredWarnings();
+		warnArchitectPromptBudgetExceededOnce(distinct[100]);
+		expect(
+			getDeferredWarnings(),
+			'the most recent signature must remain suppressed',
+		).toHaveLength(0);
+	});
 });
