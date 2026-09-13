@@ -31,6 +31,7 @@ import {
 	SNAPSHOT_RENAME_MAX_ATTEMPTS,
 	type SnapshotData,
 	writeSnapshot,
+	writeSnapshotProjection,
 } from '../../../src/session/snapshot-writer';
 import {
 	_internals as artifactCacheInternals,
@@ -197,6 +198,64 @@ describe('writeSnapshot — regression: transient rename failure must not drop t
 
 		expect(calls).toBe(1);
 		expect(existsSync(statePath())).toBe(false);
+		expect(
+			readdirSync(sessionDir()).filter((f) => f.includes('.tmp.')),
+		).toEqual([]);
+	});
+
+	it('re-checks authority inside a delayed async rename adapter before the atomic swap', async () => {
+		mkdirSync(sessionDir(), { recursive: true });
+		const oldSnapshot: SnapshotData = {
+			version: 3,
+			writtenAt: 1_700_000_000_000,
+			toolAggregates: {},
+			activeAgent: {},
+			delegationChains: {},
+			agentSessions: {},
+		};
+		const oldSnapshotText = JSON.stringify(oldSnapshot);
+		writeFileSync(statePath(), oldSnapshotText, 'utf8');
+
+		let allowCommit = true;
+		let renameCalls = 0;
+		let releaseRename!: () => void;
+		const renameEntered = new Promise<void>((resolve) => {
+			releaseRename = resolve;
+		});
+		let renameStarted!: () => void;
+		const renameStartedPromise = new Promise<void>((resolve) => {
+			renameStarted = resolve;
+		});
+		_internals.rename = mock(
+			async (
+				oldPath: string,
+				newPath: string,
+				shouldCommit?: () => boolean,
+			) => {
+				renameCalls++;
+				renameStarted();
+				await renameEntered;
+				if (shouldCommit && !shouldCommit()) return;
+				return originalRename(oldPath, newPath);
+			},
+		);
+
+		const nextSnapshot: SnapshotData = {
+			...oldSnapshot,
+			writtenAt: 1_700_000_001_000,
+		};
+		const writing = writeSnapshotProjection(
+			testDir,
+			nextSnapshot,
+			() => allowCommit,
+		);
+		await renameStartedPromise;
+		allowCommit = false;
+		releaseRename();
+		await writing;
+
+		expect(renameCalls).toBe(1);
+		expect(readFileSync(statePath(), 'utf8')).toBe(oldSnapshotText);
 		expect(
 			readdirSync(sessionDir()).filter((f) => f.includes('.tmp.')),
 		).toEqual([]);

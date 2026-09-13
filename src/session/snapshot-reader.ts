@@ -17,10 +17,12 @@ import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';
 import {
 	beginHydrationScope,
-	currentHydrationGeneration,
+	captureCurrentHydrationAuthority,
 	type HydrationScope,
 	hydratedAggregateKeysFor,
 	hydrationProjectKey,
+	isHydrationAuthorityCurrent,
+	isHydrationScopeCurrent,
 	recordHydratedAggregateKeys,
 } from './hydration-ownership.js';
 import type {
@@ -406,9 +408,10 @@ export async function readSnapshotFileStrict(
 /**
  * Rehydrate swarmState from a SnapshotData object.
  *
- * Issue #2667 — project-owned and generation-fenced:
+ * Issues #2667/#2668 — project-owned and authority-fenced:
  * - With a `directory`, this replaces ONLY the state owned by that project
- *   (sessions whose `owningProjectKey` matches and whose `hydrationStamp` is
+ *   (sessions whose `owningProjectKey` matches and whose authority epoch is
+ *   older than the applying epoch, or whose current-epoch `hydrationStamp` is
  *   at or below the applying generation). Other projects' live state — and
  *   this project's sessions created after the hydration began — survive.
  * - With an explicit `scope` captured at initiation, the apply is refused
@@ -445,14 +448,24 @@ export async function rehydrateState(
 	}
 
 	const projectKey = hydrationProjectKey(directory);
-	// Implicit scope: the CURRENT generation, no bump. A stale callback that
-	// carries no scope cannot evade the stamp predicate — sessions created
-	// after the latest hydration began are stamped above it and survive.
-	const generation =
-		scope?.generation ?? currentHydrationGeneration(projectKey);
-	if (scope && currentHydrationGeneration(projectKey) > scope.generation) {
+	// Implicit scope: capture the exact CURRENT authority, no bump. A stale
+	// callback that carries no scope cannot evade the stamp predicate — sessions
+	// created after the latest hydration began are stamped above it and survive.
+	// The authority epoch also detects a project record that was evicted/reset
+	// and reintroduced with the same numeric generation (ABA).
+	const authority = scope ?? captureCurrentHydrationAuthority(projectKey);
+	const generation = authority.generation;
+	// A live session is newer than this hydration only when it belongs to the
+	// current authority incarnation and carries a stamp above the generation.
+	// Comparing the epoch first closes the ABA window where FIFO eviction or a
+	// reset reintroduces the same project at generation 1 while old sessions
+	// still carry a larger numeric stamp from the prior incarnation.
+	const isCurrentAuthoritySession = (session: AgentSessionState): boolean =>
+		session.owningProjectKey === projectKey &&
+		session.hydrationAuthorityEpoch === authority.authorityEpoch;
+	if (scope && !isHydrationAuthorityCurrent(scope)) {
 		log(
-			`[snapshot-reader] Refusing superseded hydration generation ${scope.generation} for ${projectKey} (current ${currentHydrationGeneration(projectKey)})`,
+			`[snapshot-reader] Refusing superseded hydration generation ${scope.generation} for ${projectKey}`,
 		);
 		return { applied: false, reason: 'superseded' };
 	}
@@ -464,6 +477,12 @@ export async function rehydrateState(
 	if (swarmState.pendingRehydrations.size > 0) {
 		await Promise.allSettled([...swarmState.pendingRehydrations]);
 	}
+	if (!isHydrationAuthorityCurrent(authority)) {
+		log(
+			`[snapshot-reader] Refusing superseded hydration generation ${generation} for ${projectKey} after waiting for pending rehydrations`,
+		);
+		return { applied: false, reason: 'superseded' };
+	}
 
 	// Evict ONLY this project's own snapshot-derived sessions (stamp at or
 	// below this generation). Unowned sessions and foreign projects' sessions
@@ -471,7 +490,8 @@ export async function rehydrateState(
 	for (const [sessionId, session] of swarmState.agentSessions) {
 		if (
 			session.owningProjectKey === projectKey &&
-			(session.hydrationStamp ?? 0) <= generation
+			(!isCurrentAuthoritySession(session) ||
+				(session.hydrationStamp ?? 0) <= generation)
 		) {
 			swarmState.agentSessions.delete(sessionId);
 			swarmState.activeAgent.delete(sessionId);
@@ -489,7 +509,7 @@ export async function rehydrateState(
 		const live = swarmState.agentSessions.get(sessionId);
 		return (
 			live !== undefined &&
-			live.owningProjectKey === projectKey &&
+			isCurrentAuthoritySession(live) &&
 			(live.hydrationStamp ?? 0) > generation
 		);
 	};
@@ -497,7 +517,7 @@ export async function rehydrateState(
 	// toolAggregates: replace only the keys this project's previous hydration
 	// published. Keys owned by other projects' snapshots (or produced by
 	// runtime increments outside this project's hydration set) are untouched.
-	const ownAggregateKeys = hydratedAggregateKeysFor(projectKey);
+	const ownAggregateKeys = hydratedAggregateKeysFor(projectKey, authority);
 	const snapshotAggregateKeys = new Set(
 		Object.keys(snapshot.toolAggregates ?? {}),
 	);
@@ -509,7 +529,7 @@ export async function rehydrateState(
 	for (const [key, value] of Object.entries(snapshot.toolAggregates ?? {})) {
 		swarmState.toolAggregates.set(key, value);
 	}
-	recordHydratedAggregateKeys(projectKey, snapshotAggregateKeys);
+	recordHydratedAggregateKeys(projectKey, snapshotAggregateKeys, authority);
 
 	// Populate agentSessions with deserialized data
 	// v6.33.1: Skip malformed sessions missing required fields instead of injecting bad state
@@ -549,6 +569,7 @@ export async function rehydrateState(
 			// snapshot bytes — the fields are not serialized at all).
 			session.owningProjectKey = projectKey;
 			session.hydrationStamp = generation;
+			session.hydrationAuthorityEpoch = authority.authorityEpoch;
 
 			// ── Timestamps ────────────────────────────────────────────────
 			// Refresh timestamps so the stale eviction sweep in startAgentSession
@@ -739,8 +760,8 @@ async function rehydrateStateGlobal(snapshot: SnapshotData): Promise<void> {
  * Called on plugin init to restore state from previous session.
  * NEVER throws - swallows any errors silently.
  *
- * Issue #2667: a hydration scope is captured at entry so the eventual
- * rehydrateState apply is generation-fenced — a loadSnapshot whose 5 s init
+ * Issues #2667/#2668: a hydration scope is captured at entry so the eventual
+ * rehydrateState apply is authority-fenced — a loadSnapshot whose 5 s init
  * timeout (src/index.ts) abandoned the await is refused once any newer
  * hydration for the same project has begun.
  */
@@ -752,15 +773,21 @@ export async function loadSnapshot(directory: string): Promise<void> {
 		// startAgentSession() will apply this cache synchronously, ensuring
 		// guardrails see correct workflow state without a race. The cache is
 		// per-project (hydration-ownership), so building it here cannot clobber
-		// another project's cache.
-		await buildRehydrationCache(directory);
+		// another project's cache. The scope predicate is checked at the final
+		// cache publication point, after all plan/evidence/config reads complete.
+		const cacheResult = await buildRehydrationCache(directory, {
+			shouldCommit: () => isHydrationScopeCurrent(scope),
+		});
+		if (!cacheResult.committed || !isHydrationScopeCurrent(scope)) return;
 
 		const snapshot = await readSnapshot(directory);
 		if (snapshot !== null) {
-			await rehydrateState(snapshot, directory, scope);
+			const outcome = await rehydrateState(snapshot, directory, scope);
+			if (!outcome.applied || !isHydrationScopeCurrent(scope)) return;
 			// Apply cached plan+evidence to every restored session before the
 			// plugin begins accepting tool calls.
 			for (const session of swarmState.agentSessions.values()) {
+				if (!isHydrationScopeCurrent(scope)) return;
 				applyRehydrationCache(session);
 			}
 			// reconcileTaskStatesFromPlan() removed — superseded by applyRehydrationCache()
