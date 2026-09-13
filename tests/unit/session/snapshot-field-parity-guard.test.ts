@@ -128,6 +128,10 @@ function buildFullSessionState(): AgentSessionState {
 		// is present on the live state so its omission from the snapshot is
 		// asserted as real behavior below.
 		workspaceDirectory: path.join(tmpDir, 'lane-task-1'),
+		// Deliberately-transient trust-boundary fields (issue #2667): present
+		// on live state so their omission from the snapshot is asserted below.
+		owningProjectKey: 'canonical-project-key-fixture',
+		hydrationStamp: 1,
 		lastScopeViolation: null,
 		scopeViolationDetected: true,
 		modifiedFilesByTask: new Map([['task-1', ['src/a.ts', 'src/b.ts']]]),

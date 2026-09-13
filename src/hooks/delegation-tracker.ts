@@ -21,10 +21,16 @@ export type { DelegationReason } from '../state';
 
 /**
  * Creates the chat.message hook for delegation tracking.
+ *
+ * `directory` (issue #2667) is the plugin instance's project root captured at
+ * hook construction — chat.message inputs carry no directory. Sessions created
+ * here are ownership-stamped for that project so another project's hydration
+ * can never evict them.
  */
 export function createDelegationTrackerHook(
 	config: PluginConfig,
 	guardrailsEnabled = true,
+	directory?: string,
 ): (
 	input: { sessionID: string; agent?: string },
 	output: Record<string, unknown>,
@@ -39,7 +45,11 @@ export function createDelegationTrackerHook(
 		// This is also a verified invocation boundary: fatal non-transient stops
 		// belong to the prior turn and must not poison the corrected architect turn.
 		if (!input.agent || input.agent === '') {
-			const session = ensureAgentSession(input.sessionID, ORCHESTRATOR_NAME);
+			const session = ensureAgentSession(
+				input.sessionID,
+				ORCHESTRATOR_NAME,
+				directory,
+			);
 			session.delegationActive = false;
 			swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
 			updateAgentEventTime(input.sessionID);
@@ -65,7 +75,7 @@ export function createDelegationTrackerHook(
 		// Ensure guardrail session exists with correct agent name
 		// This prevents the race condition where tool.execute.before fires
 		// before chat.message, causing sessions to be created with 'unknown'
-		const session = ensureAgentSession(input.sessionID, agentName);
+		const session = ensureAgentSession(input.sessionID, agentName, directory);
 
 		// Set delegationActive: false for architect, true for subagents
 		// This ensures stale detection works correctly for both cases

@@ -74,6 +74,7 @@ export async function ensureCohortIdCached(
 		const s = ensureAgentSession(
 			sessionID,
 			swarmState.activeAgent.get(sessionID) ?? 'architect',
+			directory,
 		);
 		s.cachedCohortId = cohortId;
 	}

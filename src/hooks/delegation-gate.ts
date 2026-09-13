@@ -1944,7 +1944,7 @@ export async function forceRecordPlanCriticApproval(
 	reason?: string;
 	userConfirmed: boolean;
 }> {
-	const session = ensureAgentSession(sessionID);
+	const session = ensureAgentSession(sessionID, undefined, directory);
 	// Defense-in-depth: the approve_plan_critic tool is registered in
 	// AGENT_TOOL_MAP.architect only, so only the architect can call it. But the
 	// /swarm approve-plan-critic command passes the *current* sessionID, whose
@@ -2067,7 +2067,7 @@ export async function forceRecordRetrySoundingBoardApproval(
 	// approve_retry_sounding_board tool is registered for the architect only,
 	// but require the ACTIVE session to be the architect so a non-architect
 	// context cannot self-unblock the retry gate.
-	const session = ensureAgentSession(sessionID);
+	const session = ensureAgentSession(sessionID, undefined, directory);
 	if (
 		!session ||
 		!session.agentName ||
@@ -3894,7 +3894,11 @@ export function createDelegationGateHook(
 					requestedTaskId,
 				);
 				if (recoveredCoder) {
-					const recoveredSession = ensureAgentSession(input.sessionID);
+					const recoveredSession = ensureAgentSession(
+						input.sessionID,
+						undefined,
+						directory,
+					);
 					const workflow = getTaskWorkflowSnapshot(recoveredCoder.evidence);
 					recoveredSession.taskWorkflowStates.set(
 						requestedTaskId,
@@ -3909,7 +3913,11 @@ export function createDelegationGateHook(
 					input.sessionID,
 				);
 				if (recoveredTerminal) {
-					const recoveredSession = ensureAgentSession(input.sessionID);
+					const recoveredSession = ensureAgentSession(
+						input.sessionID,
+						undefined,
+						directory,
+					);
 					const workflow = getTaskWorkflowSnapshot(recoveredTerminal.evidence);
 					recoveredSession.taskWorkflowStates.set(
 						requestedTaskId,
@@ -3947,7 +3955,11 @@ export function createDelegationGateHook(
 					);
 				}
 				if (recoveredRepair) {
-					const recoveredSession = ensureAgentSession(input.sessionID);
+					const recoveredSession = ensureAgentSession(
+						input.sessionID,
+						undefined,
+						directory,
+					);
 					const workflow = getTaskWorkflowSnapshot(
 						await readTaskEvidence(directory, requestedTaskId),
 					);
@@ -4282,7 +4294,11 @@ export function createDelegationGateHook(
 			if (isPrReviewReentryAgent && swarmState.pendingRehydrations.size > 0) {
 				await Promise.allSettled([...swarmState.pendingRehydrations]);
 			}
-			const stageBSession = ensureAgentSession(input.sessionID);
+			const stageBSession = ensureAgentSession(
+				input.sessionID,
+				undefined,
+				directory,
+			);
 			const activePrReviewBinding = isPrReviewReentryAgent
 				? await readPrReviewReentryBindingContext(directory, input.sessionID)
 				: null;
@@ -4468,7 +4484,7 @@ export function createDelegationGateHook(
 		if (targetAgent !== 'coder') return;
 
 		// Only check for the architect session (the orchestrator)
-		const session = ensureAgentSession(input.sessionID);
+		const session = ensureAgentSession(input.sessionID, undefined, directory);
 		if (!session || !session.taskWorkflowStates) return;
 
 		const {
@@ -5123,7 +5139,11 @@ export function createDelegationGateHook(
 		// missing, which is the safe default. Pass session overrides so an
 		// operator-applied `/swarm qa-gates override council_mode=true` is
 		// honoured without requiring a full set_qa_gates call.
-		const { qaGateSessionOverrides } = ensureAgentSession(input.sessionID);
+		const { qaGateSessionOverrides } = ensureAgentSession(
+			input.sessionID,
+			undefined,
+			directory,
+		);
 		const councilActive = await isCouncilGateActive(
 			directory,
 			config.council,
@@ -5721,6 +5741,8 @@ export function createDelegationGateHook(
 						);
 						const dispatchSession = ensureAgentSession(
 							standardDispatch.parentSessionID,
+							undefined,
+							directory,
 						);
 						pushAdvisory(
 							dispatchSession,
@@ -5771,7 +5793,11 @@ export function createDelegationGateHook(
 							reason: removalError,
 						});
 						pushAdvisory(
-							ensureAgentSession(standardDispatch.parentSessionID),
+							ensureAgentSession(
+								standardDispatch.parentSessionID,
+								undefined,
+								directory,
+							),
 							`WORKTREE_LANE_STRANDED: lane ${standardDispatch.handle.worktreePath} could not be removed (${removalError}). ` +
 								'A child session or system process may hold .swarm/swarm.db (WAL); its DB handle was released via closeProjectDb before this attempt. ' +
 								'reclaim scheduled at next start.',
@@ -5792,6 +5818,8 @@ export function createDelegationGateHook(
 					);
 					const dispatchSession = ensureAgentSession(
 						standardDispatch.parentSessionID,
+						undefined,
+						directory,
 					);
 					pushAdvisory(
 						dispatchSession,
@@ -6550,7 +6578,11 @@ export function createDelegationGateHook(
 			// If more than 5 tasks are visible, trims to: currentTask ± window.
 			const taskDisclosureSessionID = lastUserMessage.info?.sessionID;
 			if (taskDisclosureSessionID) {
-				const taskSession = ensureAgentSession(taskDisclosureSessionID);
+				const taskSession = ensureAgentSession(
+					taskDisclosureSessionID,
+					undefined,
+					directory,
+				);
 				const currentTaskIdForWindow = taskSession.currentTaskId;
 				if (currentTaskIdForWindow) {
 					// Match task list lines: '- [ ] N.M: ...' or '- [x] N.M: ...' or '- N.M: ...'
@@ -6642,7 +6674,7 @@ export function createDelegationGateHook(
 			// tracked here anymore — see the structured writer in the coder
 			// dispatch path.
 			if (sessionID && isCoderDelegation && currentTaskId) {
-				const session = ensureAgentSession(sessionID);
+				const session = ensureAgentSession(sessionID, undefined, directory);
 
 				// v6.21 Task 5.3: Extract FILE: directive values → declaredCoderScope
 				const directives = extractTaskFileDirectives(
@@ -6661,7 +6693,7 @@ export function createDelegationGateHook(
 			// - Architect has written files
 			// - Task ID differs from last coder delegation
 			if (sessionID && !isCoderDelegation && currentTaskId) {
-				const session = ensureAgentSession(sessionID);
+				const session = ensureAgentSession(sessionID, undefined, directory);
 				if (
 					session.architectWriteCount > 0 &&
 					session.lastCoderDelegationTaskId !== currentTaskId
@@ -6692,6 +6724,8 @@ export function createDelegationGateHook(
 					} else {
 						const deliberationSession = ensureAgentSession(
 							deliberationSessionID,
+							undefined,
+							directory,
 						);
 						const lastGate = deliberationSession.lastGateOutcome;
 						const parallelGuidance = await buildParallelExecutionGuidance(
@@ -6838,7 +6872,7 @@ export function createDelegationGateHook(
 
 						// State machine secondary signal: if the prior task is still in
 						// 'coder_delegated' state, reviewer and tests never ran for it.
-						const session = ensureAgentSession(sessionID);
+						const session = ensureAgentSession(sessionID, undefined, directory);
 						const priorTaskStuckAtCoder =
 							priorCoderTaskId !== null &&
 							getTaskState(session, priorCoderTaskId) === 'coder_delegated';

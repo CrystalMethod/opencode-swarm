@@ -7,6 +7,10 @@ import { validateSwarmPath } from '../hooks/utils.js';
 import { advisoryWarn } from '../services/warning-buffer.js';
 import { applyRehydrationCache, swarmState } from '../state.js';
 import { withTimeout } from '../utils/timeout.js';
+import {
+	beginHydrationScope,
+	type HydrationScope,
+} from './hydration-ownership.js';
 import { readSnapshotFileStrict, rehydrateState } from './snapshot-reader.js';
 import { importSnapshotRowsOnce, readSnapshotRows } from './snapshot-store.js';
 import type { SnapshotData } from './snapshot-writer.js';
@@ -122,6 +126,7 @@ function evictSettledEntries(): boolean {
 
 async function initializeSnapshotCoordination(
 	directory: string,
+	scope?: HydrationScope,
 ): Promise<void> {
 	let legacyArchiveAttempted = false;
 	let snapshot = readSnapshotRows(directory);
@@ -169,7 +174,10 @@ async function initializeSnapshotCoordination(
 			snapshot,
 		);
 	}
-	await rehydrateState(snapshot, directory);
+	// Issue #2667: the apply is generation-fenced by the scope captured in
+	// startSnapshotCoordinationInitialization — a timed-out initializer that
+	// settles late cannot publish over the state of any newer hydration.
+	await rehydrateState(snapshot, directory, scope);
 	for (const session of swarmState.agentSessions.values())
 		applyRehydrationCache(session);
 	try {
@@ -207,6 +215,10 @@ export function startSnapshotCoordinationInitialization(
 	}
 	const attemptId = nextAttemptId++;
 	const generation = (existing?.generation ?? 0) + 1;
+	// Issue #2667: fence token captured at INITIATION (each fresh initializer
+	// bumps the shared per-project counter, which never decreases even when
+	// this entry is later deleted by retrySnapshotCoordinationInitialization).
+	const scope = beginHydrationScope(directory);
 	const entry: ReadinessEntry = {
 		attemptId,
 		generation,
@@ -215,7 +227,7 @@ export function startSnapshotCoordinationInitialization(
 		underlying: Promise.resolve(),
 	};
 	const underlying = _snapshotCoordinationInternals
-		.initialize(root)
+		.initialize(root, scope)
 		.then(() => {
 			if (entries.get(root) === entry && entry.state !== 'closing')
 				entry.state = 'succeeded';
@@ -379,7 +391,7 @@ export function markSnapshotCoordinationClosing(directory: string): void {
 
 export const _snapshotCoordinationInternals: {
 	entries: Map<string, ReadinessEntry>;
-	initialize: (directory: string) => Promise<void>;
+	initialize: (directory: string, scope?: HydrationScope) => Promise<void>;
 	renameLegacySnapshot: (from: string, to: string) => void;
 	writeProjection: (directory: string, snapshot: SnapshotData) => Promise<void>;
 	timeoutMs: number;
