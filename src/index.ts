@@ -2181,6 +2181,7 @@ async function initializeOpenCodeSwarm(
 	const delegationHandler = createDelegationTrackerHook(
 		config,
 		guardrailsConfig.enabled,
+		ctx.directory,
 	);
 	const authorityConfig = AuthorityConfigSchema.parse(config.authority ?? {});
 	const worktreeDirOverride =
@@ -4331,7 +4332,11 @@ async function initializeOpenCodeSwarm(
 						Date.now() - session.lastAgentEventTime > 10000;
 					if (staleDelegation) {
 						swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
-						ensureAgentSession(input.sessionID, ORCHESTRATOR_NAME);
+						ensureAgentSession(
+							input.sessionID,
+							ORCHESTRATOR_NAME,
+							ctx.directory,
+						);
 					}
 				}
 			}
@@ -4499,6 +4504,7 @@ async function initializeOpenCodeSwarm(
 					const skillSession = ensureAgentSession(
 						input.sessionID,
 						swarmState.activeAgent.get(input.sessionID) ?? ORCHESTRATOR_NAME,
+						ctx.directory,
 					);
 					pushAdvisory(skillSession, skillResult.reason);
 				}
@@ -4590,6 +4596,7 @@ async function initializeOpenCodeSwarm(
 					const pressureSession = ensureAgentSession(
 						input.sessionID,
 						swarmState.activeAgent.get(input.sessionID) ?? ORCHESTRATOR_NAME,
+						ctx.directory,
 					);
 					if (!pressureSession.contextPressureWarningSent) {
 						pressureSession.contextPressureWarningSent = true;
@@ -5347,7 +5354,7 @@ async function initializeOpenCodeSwarm(
 						.slice(0, 32);
 				}
 				swarmState.activeAgent.set(sessionId, ORCHESTRATOR_NAME);
-				ensureAgentSession(sessionId, ORCHESTRATOR_NAME);
+				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, ctx.directory);
 				const taskSession = swarmState.agentSessions.get(sessionId);
 				if (taskSession) {
 					taskSession.delegationActive = false;

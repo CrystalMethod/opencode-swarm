@@ -15,6 +15,14 @@ import {
 } from '../state';
 import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';
+import {
+	beginHydrationScope,
+	currentHydrationGeneration,
+	type HydrationScope,
+	hydratedAggregateKeysFor,
+	hydrationProjectKey,
+	recordHydratedAggregateKeys,
+} from './hydration-ownership.js';
 import type {
 	SerializedAgentSession,
 	SerializedInvocationWindow,
@@ -397,7 +405,19 @@ export async function readSnapshotFileStrict(
 
 /**
  * Rehydrate swarmState from a SnapshotData object.
- * Clears existing maps first, then populates from snapshot.
+ *
+ * Issue #2667 — project-owned and generation-fenced:
+ * - With a `directory`, this replaces ONLY the state owned by that project
+ *   (sessions whose `owningProjectKey` matches and whose `hydrationStamp` is
+ *   at or below the applying generation). Other projects' live state — and
+ *   this project's sessions created after the hydration began — survive.
+ * - With an explicit `scope` captured at initiation, the apply is refused
+ *   outright (zero mutation) once any NEWER hydration has begun for the
+ *   project, so a late/timed-out callback cannot publish over newer state.
+ * - WITHOUT a `directory`, the legacy process-global clear-all semantics are
+ *   preserved verbatim (direct-test path only; every production caller passes
+ *   a directory).
+ *
  * Does NOT touch activeToolCalls or pendingEvents (remain at defaults).
  *
  * activeAgent and delegationChains are restored only for session IDs that are
@@ -405,36 +425,76 @@ export async function readSnapshotFileStrict(
  * eviction existed can carry far more activeAgent entries than agentSessions
  * (sessions were evicted but their satellite entries never were); restoring
  * those wholesale would resurrect the ghosts into memory and re-serialize them
- * into every subsequent snapshot forever. Rehydration runs at plugin init,
- * before any turn is in flight; a session that resumes afterwards gets its
- * entry re-established by chat.message (delegation-tracker), and until then
- * tool-path readers fall back to ORCHESTRATOR_NAME — the same treatment a
- * fresh process gives an unknown session.
+ * into every subsequent snapshot forever.
  */
+export interface RehydrateOutcome {
+	applied: boolean;
+	reason?: 'superseded';
+}
+
 export async function rehydrateState(
 	snapshot: SnapshotData,
 	directory?: string,
-): Promise<void> {
-	// Await any in-flight rehydrations before clearing agentSessions.
-	// This prevents a race where startAgentSession fires rehydrateSessionFromDisk
-	// and rehydrateState clears the map before it completes.
-	// Errors are already swallowed inside each pending promise.
+	scope?: HydrationScope,
+): Promise<RehydrateOutcome> {
+	// Legacy direct-test path: no project context means the caller owns the
+	// whole process state (single-project assumption). Clear-all preserved.
+	if (!directory) {
+		await rehydrateStateGlobal(snapshot);
+		return { applied: true };
+	}
+
+	const projectKey = hydrationProjectKey(directory);
+	// Implicit scope: the CURRENT generation, no bump. A stale callback that
+	// carries no scope cannot evade the stamp predicate — sessions created
+	// after the latest hydration began are stamped above it and survive.
+	const generation =
+		scope?.generation ?? currentHydrationGeneration(projectKey);
+	if (scope && currentHydrationGeneration(projectKey) > scope.generation) {
+		log(
+			`[snapshot-reader] Refusing superseded hydration generation ${scope.generation} for ${projectKey} (current ${currentHydrationGeneration(projectKey)})`,
+		);
+		return { applied: false, reason: 'superseded' };
+	}
+
+	// Await any in-flight rehydrations before evicting. This set is
+	// process-global by design (the #231 race guard): awaiting a foreign
+	// project's bounded per-session rehydrate only delays this eviction, it
+	// never widens it.
 	if (swarmState.pendingRehydrations.size > 0) {
 		await Promise.allSettled([...swarmState.pendingRehydrations]);
 	}
 
-	// Clear existing maps first to prevent data leakage
-	swarmState.toolAggregates.clear();
-	swarmState.activeAgent.clear();
-	swarmState.delegationChains.clear();
-	swarmState.agentSessions.clear();
-
-	// Populate toolAggregates
-	if (snapshot.toolAggregates) {
-		for (const [key, value] of Object.entries(snapshot.toolAggregates)) {
-			swarmState.toolAggregates.set(key, value);
+	// Evict ONLY this project's own snapshot-derived sessions (stamp at or
+	// below this generation). Unowned sessions and foreign projects' sessions
+	// survive; the satellites go with the evicted session ids.
+	for (const [sessionId, session] of swarmState.agentSessions) {
+		if (
+			session.owningProjectKey === projectKey &&
+			(session.hydrationStamp ?? 0) <= generation
+		) {
+			swarmState.agentSessions.delete(sessionId);
+			swarmState.activeAgent.delete(sessionId);
+			swarmState.delegationChains.delete(sessionId);
 		}
 	}
+
+	// toolAggregates: replace only the keys this project's previous hydration
+	// published. Keys owned by other projects' snapshots (or produced by
+	// runtime increments outside this project's hydration set) are untouched.
+	const ownAggregateKeys = hydratedAggregateKeysFor(projectKey);
+	const snapshotAggregateKeys = new Set(
+		Object.keys(snapshot.toolAggregates ?? {}),
+	);
+	for (const key of ownAggregateKeys) {
+		if (!snapshotAggregateKeys.has(key)) {
+			swarmState.toolAggregates.delete(key);
+		}
+	}
+	for (const [key, value] of Object.entries(snapshot.toolAggregates ?? {})) {
+		swarmState.toolAggregates.set(key, value);
+	}
+	recordHydratedAggregateKeys(projectKey, snapshotAggregateKeys);
 
 	// Populate agentSessions with deserialized data
 	// v6.33.1: Skip malformed sessions missing required fields instead of injecting bad state
@@ -463,6 +523,11 @@ export async function rehydrateState(
 			session.taskWorkflowStates = new Map();
 			session.taskWorkflowCache = new Map();
 			session.stageBCompletion = new Map();
+
+			// Ownership attribution: the HYDRATING directory defines it (never
+			// snapshot bytes — the fields are not serialized at all).
+			session.owningProjectKey = projectKey;
+			session.hydrationStamp = generation;
 
 			// ── Timestamps ────────────────────────────────────────────────
 			// Refresh timestamps so the stale eviction sweep in startAgentSession
@@ -555,24 +620,123 @@ export async function rehydrateState(
 			}
 		}
 	}
+	return { applied: true };
+}
+
+/**
+ * Legacy process-global clear-all rehydration (issue #2667): preserved for
+ * direct callers that provide no project directory. Every production caller
+ * passes a directory and gets the scoped, fenced path above.
+ */
+async function rehydrateStateGlobal(snapshot: SnapshotData): Promise<void> {
+	// Await any in-flight rehydrations before clearing agentSessions.
+	// This prevents a race where startAgentSession fires rehydrateSessionFromDisk
+	// and rehydrateState clears the map before it completes.
+	// Errors are already swallowed inside each pending promise.
+	if (swarmState.pendingRehydrations.size > 0) {
+		await Promise.allSettled([...swarmState.pendingRehydrations]);
+	}
+
+	// Clear existing maps first to prevent data leakage
+	swarmState.toolAggregates.clear();
+	swarmState.activeAgent.clear();
+	swarmState.delegationChains.clear();
+	swarmState.agentSessions.clear();
+
+	for (const [key, value] of Object.entries(snapshot.toolAggregates ?? {})) {
+		swarmState.toolAggregates.set(key, value);
+	}
+
+	const now = Date.now();
+	if (snapshot.agentSessions) {
+		for (const [sessionId, serializedSession] of Object.entries(
+			snapshot.agentSessions,
+		)) {
+			if (
+				!serializedSession ||
+				typeof serializedSession !== 'object' ||
+				typeof serializedSession.agentName !== 'string' ||
+				typeof serializedSession.lastToolCallTime !== 'number' ||
+				typeof serializedSession.delegationActive !== 'boolean'
+			) {
+				log(
+					`[snapshot-reader] Skipping malformed session ${sessionId}: missing required fields (agentName, lastToolCallTime, delegationActive)`,
+				);
+				continue;
+			}
+			const session = deserializeAgentSession(serializedSession);
+			session.taskWorkflowStates = new Map();
+			session.taskWorkflowCache = new Map();
+			session.stageBCompletion = new Map();
+			session.lastToolCallTime = now;
+			session.lastAgentEventTime = now;
+			session.sessionRehydratedAt = now;
+			if (session.windows) {
+				for (const window of Object.values(session.windows)) {
+					window.startedAtMs = now;
+					window.lastSuccessTimeMs = now;
+					window.hardLimitHit = false;
+					window.toolCalls = 0;
+					window.consecutiveErrors = 0;
+					window.recentToolCalls = [];
+					window.warningIssued = false;
+					window.warningReason = '';
+				}
+			}
+			for (const field of TRANSIENT_SESSION_FIELDS) {
+				(session as unknown as Record<string, unknown>)[field.name] =
+					field.resetValue;
+			}
+			// Full-auto run-state reconciliation, same fail-closed rule as the
+			// scoped path: without a directory there is no durable run state to
+			// consult, so a snapshot's fullAutoMode cannot be trusted.
+			if (session.fullAutoMode) {
+				session.fullAutoMode = false;
+			}
+			swarmState.agentSessions.set(sessionId, session);
+		}
+	}
+
+	if (snapshot.activeAgent) {
+		for (const [key, value] of Object.entries(snapshot.activeAgent)) {
+			if (swarmState.agentSessions.has(key)) {
+				swarmState.activeAgent.set(key, value);
+			}
+		}
+	}
+	if (snapshot.delegationChains) {
+		for (const [key, value] of Object.entries(snapshot.delegationChains)) {
+			if (swarmState.agentSessions.has(key)) {
+				swarmState.delegationChains.set(key, value);
+			}
+		}
+	}
 }
 
 /**
  * Load snapshot from disk and rehydrate swarmState.
  * Called on plugin init to restore state from previous session.
  * NEVER throws - swallows any errors silently.
+ *
+ * Issue #2667: a hydration scope is captured at entry so the eventual
+ * rehydrateState apply is generation-fenced — a loadSnapshot whose 5 s init
+ * timeout (src/index.ts) abandoned the await is refused once any newer
+ * hydration for the same project has begun.
  */
 export async function loadSnapshot(directory: string): Promise<void> {
+	const scope = beginHydrationScope(directory);
 	try {
 		// Always build the rehydration cache from plan+evidence on disk.
 		// This is needed even when no snapshot exists: sessions created later by
 		// startAgentSession() will apply this cache synchronously, ensuring
-		// guardrails see correct workflow state without a race.
+		// guardrails see correct workflow state without a race. The cache is
+		// per-project (hydration-ownership), so building it here cannot clobber
+		// another project's cache.
 		await buildRehydrationCache(directory);
 
 		const snapshot = await readSnapshot(directory);
 		if (snapshot !== null) {
-			await rehydrateState(snapshot, directory);
+			await rehydrateState(snapshot, directory, scope);
 			// Apply cached plan+evidence to every restored session before the
 			// plugin begins accepting tool calls.
 			for (const session of swarmState.agentSessions.values()) {

@@ -227,7 +227,7 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 
 			// v6.33.1 fix: malformed sessions are skipped with a warning, not thrown.
 			// rehydrateState should resolve without error and the null session is omitted.
-			await expect(rehydrateState(snapshot)).resolves.toBeUndefined();
+			await expect(rehydrateState(snapshot)).resolves.toBeDefined();
 			// The null session should NOT appear in agentSessions
 			expect(swarmState.agentSessions.has('session1')).toBe(false);
 		});
@@ -254,7 +254,7 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 					},
 				};
 
-				await expect(rehydrateState(snapshot)).resolves.toBeUndefined();
+				await expect(rehydrateState(snapshot)).resolves.toBeDefined();
 				expect(swarmState.agentSessions.has('badSession')).toBe(false);
 				// The skip was logged (debug-gated), referencing the session id.
 				expect(
@@ -507,7 +507,7 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 				agentSessions: {},
 			};
 
-			await expect(rehydrateState(snapshot)).resolves.toBeUndefined();
+			await expect(rehydrateState(snapshot)).resolves.toBeDefined();
 			// All 100 chains are ghosts (no restored session) → filtered.
 			expect(swarmState.delegationChains.size).toBe(0);
 		});
