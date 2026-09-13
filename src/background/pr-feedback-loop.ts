@@ -221,7 +221,9 @@ export const _internals: {
 		input: PerformAuthorizedActionInput,
 	) => Promise<PerformAuthorizedActionOutcome>;
 	now: () => number;
-	readState: (directory: string) => Promise<LoopStateV1>;
+	readState: (
+		directory: string,
+	) => Promise<LoopStateV1 | { corrupt: true }>;
 	writeState: (directory: string, state: LoopStateV1) => Promise<void>;
 } = {
 	/** Default: fresh head via the authenticated gh poll snapshot. */
@@ -300,17 +302,33 @@ function emptyState(): LoopStateV1 {
 	};
 }
 
-async function readLoopState(directory: string): Promise<LoopStateV1> {
+function isCorruptState(
+	value: LoopStateV1 | { corrupt: true },
+): value is { corrupt: true } {
+	return (value as { corrupt?: boolean }).corrupt === true;
+}
+
+async function readLoopState(directory: string): Promise<
+	LoopStateV1 | { corrupt: true }
+> {
 	const file = path.join(directory, PR_FEEDBACK_LOOP_STATE_REL);
 	try {
 		const raw = fsSync.readFileSync(file, 'utf-8');
 		const parsed = LoopStateSchema.safeParse(JSON.parse(raw));
-		if (!parsed.success) return emptyState();
+		if (!parsed.success) {
+			return { corrupt: true };
+		}
 		const data = parsed.data as LoopStateV1;
 		data.sessionTerminals ??= {};
 		return data;
-	} catch {
-		return emptyState();
+	} catch (err) {
+		// ENOENT = no loop has ever run here → legitimately empty. Any other read
+		// error or unparseable content is CORRUPTION of the idempotency basis:
+		// proceeding stateless would silently discard processed digests and let a
+		// replayed event re-perform. Fail closed (corrupt flag) instead.
+		const code = (err as NodeJS.ErrnoException | null)?.code;
+		if (code === 'ENOENT') return emptyState();
+		return { corrupt: true };
 	}
 }
 
@@ -323,6 +341,17 @@ async function writeLoopState(
 	if (keys.length > MAX_TRACKED_SESSIONS) {
 		for (const key of keys.slice(0, keys.length - MAX_TRACKED_SESSIONS)) {
 			delete state.correlations[key];
+		}
+	}
+	// sessionTerminals is bounded the same way: keep the newest
+	// MAX_TRACKED_SESSIONS cancel records (one per operator-cancelled session).
+	const terminalKeys = Object.keys(state.sessionTerminals);
+	if (terminalKeys.length > MAX_TRACKED_SESSIONS) {
+		for (const key of terminalKeys.slice(
+			0,
+			terminalKeys.length - MAX_TRACKED_SESSIONS,
+		)) {
+			delete state.sessionTerminals[key];
 		}
 	}
 	state.updatedAt = new Date().toISOString();
@@ -403,6 +432,7 @@ function emptyResult(reason?: string): PrFeedbackLoopResult {
  * for the first, then observes the queue empty. Bounded (invariant 8).
  */
 const settlementsInProgress = new Map<string, Promise<unknown>>();
+const settledPromises = new WeakSet<Promise<unknown>>();
 const MAX_IN_FLIGHT_SESSIONS = 64;
 
 async function withSettlementLock<T>(
@@ -415,12 +445,19 @@ async function withSettlementLock<T>(
 	const run = prior.catch(() => {}).then(fn);
 	settlementsInProgress.set(key, run);
 	if (settlementsInProgress.size > MAX_IN_FLIGHT_SESSIONS) {
-		const oldest = settlementsInProgress.keys().next().value;
-		if (oldest !== undefined) settlementsInProgress.delete(oldest);
+		// Evict only SETTLED entries: removing an in-flight promise would orphan
+		// its lock and let a follow-up event settle concurrently for that
+		// session. Map iteration is insertion-ordered, so this scans oldest
+		// first and stops at the first still-running settle.
+		for (const [key, promise] of settlementsInProgress) {
+			if (settlementsInProgress.size <= MAX_IN_FLIGHT_SESSIONS) break;
+			if (settledPromises.has(promise)) settlementsInProgress.delete(key);
+		}
 	}
 	try {
 		return await run;
 	} finally {
+		settledPromises.add(run);
 		if (settlementsInProgress.get(key) === run) {
 			settlementsInProgress.delete(key);
 		}
@@ -524,7 +561,39 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	const event = claimed[0] ?? pending;
 	const dedupToken = event.dedupToken;
 
-	const state = await _internals.readState(directory);
+	const readResult = await _internals.readState(directory);
+	if ('corrupt' in readResult && readResult.corrupt) {
+		// Fail closed: the state file holds the idempotency digests and budgets.
+		// Settle as paused_for_human WITHOUT writing (a stateless write would
+		// wipe the digest ledger on the next successful read) and surface the
+		// operator-visible reason.
+		return {
+			ran: true,
+			dedupToken: event.dedupToken,
+			event: {
+				type: event.type,
+				repoFullName: event.repoFullName,
+				prNumber: event.prNumber,
+				prUrl: event.prUrl,
+			},
+			classification,
+			authorization: {
+				authorized: false,
+				reason:
+					'corrupt loop state: .swarm/pr-feedback-loop-state.json is unreadable or fails schema validation — settle paused so the idempotency ledger is not silently wiped; repair or delete the file to resume',
+				stale: false,
+				foreign: false,
+				replay: false,
+			},
+			action: { kind: classification.actionClass, performed: false },
+			terminal: {
+				state: 'paused_for_human',
+				reason:
+					'corrupt loop state — paused for a human; idempotency ledger preserved on disk',
+			},
+		};
+	}
+	const state = readResult as LoopStateV1;
 	const key = correlationKey(sessionID, event.repoFullName, event.prNumber);
 	const correlation: CorrelationState = state.correlations[key] ?? {
 		sessionID,
@@ -1011,7 +1080,10 @@ export async function cancelPrFeedbackLoop(
 	reason: string;
 	cleanupReceipt: { path: string; clearedEvents: string[] };
 }> {
-	const state = await _internals.readState(directory);
+	const readResult = await _internals.readState(directory);
+	const state: LoopStateV1 = isCorruptState(readResult)
+		? emptyState()
+		: readResult;
 	const receipt = {
 		path: '',
 		clearedEvents: [] as string[],
@@ -1114,8 +1186,20 @@ export function notifyPrFeedbackLoop(
 	directory: string,
 	sessionID: string,
 ): void {
+	// withTimeout is Promise.race: the timeout rejection is consumed by the
+	// .catch below, but the SETTLE promise itself can still reject later (e.g.
+	// a writeState I/O failure) and its rejection needs its own handler or it
+	// becomes an unhandled rejection after the race already settled.
+	const settle = claimAndProcessPrFeedbackEvent(directory, sessionID);
+	settle.catch((err) => {
+		warn(
+			`[pr-feedback-loop] settle rejected (notify path, non-fatal): ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+	});
 	void withTimeout(
-		claimAndProcessPrFeedbackEvent(directory, sessionID),
+		settle,
 		TICK_TIMEOUT_MS,
 		new Error('pr-feedback-loop tick timeout'),
 	).catch(() => {});
