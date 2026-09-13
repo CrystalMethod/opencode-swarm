@@ -199,6 +199,45 @@ export async function claimPrFeedbackMonitorEvents(
 	});
 }
 
+/**
+ * Remove queued events by dedup token (#2502 loop cancellation). Claimed but
+ * unsettled events otherwise stay in the queue forever — a claim alone never
+ * settles or removes them. Runs under the same queue mutation serialization as
+ * every other write; returns the tokens actually removed.
+ */
+export async function clearPrFeedbackMonitorEvents(
+	directory: string,
+	sessionID: string,
+	dedupTokens: readonly string[],
+): Promise<string[]> {
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	const selected = new Set(
+		dedupTokens.map((token) => token.trim()).filter(Boolean),
+	);
+	if (selected.size === 0) return [];
+	return withQueueMutation(directory, normalizedSessionID, async () => {
+		const current = await readPrFeedbackMonitorQueueFromDisk(
+			directory,
+			normalizedSessionID,
+		);
+		if (!current || current.events.length === 0) return [];
+		const remaining = current.events.filter(
+			(event) => !selected.has(event.dedupToken),
+		);
+		const removed = current.events
+			.filter((event) => selected.has(event.dedupToken))
+			.map((event) => event.dedupToken);
+		if (removed.length === 0) return [];
+		const nextRecord = QueueRecordSchema.parse({
+			...current,
+			revision: current.revision + 1,
+			events: remaining,
+		});
+		await writeQueueRecord(directory, nextRecord);
+		return removed;
+	});
+}
+
 export const _internals = {
 	queueRelativePath,
 	queueLockRelativePath,

@@ -3906,6 +3906,11 @@ async function initializeOpenCodeSwarm(
 					description:
 						'Use /swarm abort-pr-workflow to clear a stuck PR_REVIEW/PR_FEEDBACK mechanical gate and stop the auto-resume loop; cancel an armed PR_FEEDBACK without publication with PR_FEEDBACK --cancel-publication <reason...> (human-only escape hatch)',
 				},
+				'swarm-pr-feedback-loop': {
+					template: '/swarm pr-feedback-loop $ARGUMENTS',
+					description:
+						'Use /swarm pr-feedback-loop stop <reason...> to stop the autonomous PR babysitting settling loop for this session (human-only)',
+				},
 				'swarm-approve-plan-critic': {
 					template: '/swarm approve-plan-critic $ARGUMENTS',
 					description:

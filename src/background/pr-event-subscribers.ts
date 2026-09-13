@@ -41,6 +41,7 @@ import {
 	isPrEventDeliveryRegistered,
 } from './pr-event-delivery';
 import { enqueuePrFeedbackMonitorEvent } from './pr-feedback-event-queue.js';
+import { notifyPrFeedbackLoop } from './pr-feedback-loop.js';
 import { listActive, updateSnapshot } from './pr-subscriptions';
 
 export interface PrEventSubscriberOptions {
@@ -80,6 +81,7 @@ export const _internals: {
 	readPrWorkflowGateState: typeof readPrWorkflowGateState;
 	activatePrWorkflow: typeof activatePrWorkflow;
 	enqueuePrFeedbackMonitorEvent: typeof enqueuePrFeedbackMonitorEvent;
+	notifyPrFeedbackLoop: typeof notifyPrFeedbackLoop;
 	deliverPrActivity: typeof deliverPrActivity;
 	isPrEventDeliveryRegistered: typeof isPrEventDeliveryRegistered;
 	scheduleClearUnaddressed: typeof scheduleClearUnaddressed;
@@ -95,6 +97,7 @@ export const _internals: {
 	readPrWorkflowGateState,
 	activatePrWorkflow,
 	enqueuePrFeedbackMonitorEvent,
+	notifyPrFeedbackLoop,
 	deliverPrActivity,
 	isPrEventDeliveryRegistered,
 	scheduleClearUnaddressed,
@@ -282,6 +285,9 @@ async function handlePrEvent(
 					},
 				);
 			}
+			// #2502: notify the settling loop (fire-and-forget, fail-open — the
+			// loop no-ops unless the triple opt-in gates are all enabled).
+			_internals.notifyPrFeedbackLoop(directory, sub.sessionID);
 		}
 		if (!gateReadFailed && !activeGate && autoFeedbackEventAuthorized) {
 			try {

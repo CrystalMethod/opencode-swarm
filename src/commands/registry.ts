@@ -112,6 +112,7 @@ import {
 	handlePrFeedbackCommand,
 	parsePrFeedbackCommandInput,
 } from './pr-feedback.js';
+import { handlePrFeedbackLoopCommand } from './pr-feedback-loop.js';
 import { handlePrMonitorStatusCommand } from './pr-monitor-status.js';
 import { handlePrReviewCommand } from './pr-review.js';
 import { handlePrSubscribeCommand } from './pr-subscribe.js';
@@ -1445,6 +1446,17 @@ export const COMMAND_REGISTRY = {
 		args: '[PR_REVIEW|PR_FEEDBACK] [reason...] | PR_FEEDBACK --cancel-publication <reason...>',
 		details:
 			'Human-only escape hatch for an unrecoverable PR_REVIEW or PR_FEEDBACK mechanical gate. When the architect cannot reach complete_pr_workflow — for example a compound `git fetch && git checkout` was rejected as read-only shell syntax, the PR head cannot be fetched, or the working tree is on the wrong branch — running this clears the durable gate state for the current session and stops the auto-resume loop without depending on the trapped model. The agent itself cannot run this command; it must call the abort_pr_workflow tool (or ask you to run this command). Both paths funnel into the same fail-closed abortPrWorkflow hook, which refuses while the workflow is armed for publication or while PR workflow lanes are still in flight. To cancel an armed PR_FEEDBACK publication without publishing, use the exact human syntax `PR_FEEDBACK --cancel-publication <reason...>`; it requires a non-empty reason, records the terminal `cancelled_without_publication` status with the observed remote head, and never grants push authority. A plain recovery or force abort never clears an armed window. This human-only force path has exactly one exception to the lane refusal (issue #2251): when the ONLY lanes still blocking are ones past the 30-minute staleness horizon that the liveness probe reports as still running — a lane nothing will ever settle on a schedule — it clears the gate anyway, names exactly which lanes it overrode, and finalizes their delegation records so the session can start a new PR workflow. Those sessions are NOT stopped and their output is NOT collected. A lane with a fresh updatedAt still blocks even under force, and any delegation record that still keeps the session blocked is named in the warning. When checkout preparation preserved a stash, the result instructs the caller to run prepare_pr_workflow_checkout operation=restore after the clear. An audit event is appended to .swarm/events.jsonl.',
+		category: 'utility',
+		toolPolicy: 'restricted',
+	},
+	'pr-feedback-loop': {
+		handler: (ctx) =>
+			handlePrFeedbackLoopCommand(ctx.directory, ctx.args, ctx.sessionID),
+		description:
+			'Stop the autonomous PR babysitting settling loop for this session [stop] [reason...]',
+		args: 'stop <reason...>',
+		details:
+			'Human-only stop for the #2502 settling loop (triple opt-in: pr_monitor.enabled + pr_monitor.auto_pr_feedback + pr_feedback_loop.enabled). stop cancels any armed publication generation via the audited #2584 no-publish route (fail-open when nothing is armed), records a terminal cancelled state with the operator-visible reason, clears claimed-but-unsettled monitor events from the session queue via the sanctioned queue-clear primitive, and writes an atomic cleanup receipt under .swarm/pr-feedback-loop-cleanups/. Idempotent: re-running returns the same terminal without duplicating effects. Never issues new wakes; a wake already in flight may still surface in the session, but the workflow gate refuses pushes against a cancelled generation. The reason is mandatory.',
 		category: 'utility',
 		toolPolicy: 'restricted',
 	},
