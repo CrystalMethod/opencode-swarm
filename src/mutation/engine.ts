@@ -1,7 +1,14 @@
 import { spawnSync } from 'node:child_process';
-import { unlinkSync, writeFileSync } from 'node:fs';
+import * as fs from 'node:fs';
+import {
+	readFileSync,
+	realpathSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from 'node:fs';
 import * as path from 'node:path';
-
+import { MAX_SAFE_TEST_FILES } from '../test-impact/constants.js';
 import {
 	resolveExecutableFromPath,
 	runExternalTool,
@@ -174,6 +181,158 @@ function isMissingExecutableFailure(message: string | undefined): boolean {
 	);
 }
 
+function resolveContainedRegularFile(
+	workingDir: string,
+	filePath: string,
+): string | undefined {
+	try {
+		const realWorkingDir = realpathSync(path.resolve(workingDir));
+		const realFilePath = realpathSync(path.resolve(realWorkingDir, filePath));
+		const relativePath = path.relative(realWorkingDir, realFilePath);
+		if (
+			relativePath === '' ||
+			relativePath === '..' ||
+			relativePath.startsWith(`..${path.sep}`) ||
+			path.isAbsolute(relativePath)
+		) {
+			return undefined;
+		}
+		return statSync(realFilePath).isFile() ? realFilePath : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function lineEndingNormalized(bytes: Buffer): Buffer {
+	// Only normalize line endings for text that is valid UTF-8. Decoding and
+	// re-encoding arbitrary bytes can collapse distinct binary sequences (for
+	// example, invalid UTF-8 or a BOM), so binary snapshots must compare exactly.
+	if (bytes.includes(0)) return bytes;
+	try {
+		new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return bytes;
+	}
+	const normalized = Buffer.allocUnsafe(bytes.length);
+	let writeOffset = 0;
+	for (let readOffset = 0; readOffset < bytes.length; readOffset++) {
+		const byte = bytes[readOffset];
+		if (byte === 0x0d) {
+			if (bytes[readOffset + 1] === 0x0a) readOffset++;
+			normalized[writeOffset++] = 0x0a;
+		} else {
+			normalized[writeOffset++] = byte;
+		}
+	}
+	return normalized.subarray(0, writeOffset);
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readFileAtDescriptor(fd: number, stat: fs.Stats): Buffer {
+	const chunks: Buffer[] = [];
+	let position = 0;
+	const initialSize = Math.max(0, stat.size);
+	while (position < initialSize || position === 0) {
+		const chunk = Buffer.allocUnsafe(
+			Math.min(64 * 1024, Math.max(1, initialSize - position)),
+		);
+		const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, position);
+		if (bytesRead === 0) break;
+		chunks.push(chunk.subarray(0, bytesRead));
+		position += bytesRead;
+		if (bytesRead < chunk.length) break;
+	}
+	return Buffer.concat(chunks, position);
+}
+
+function restoreOriginalBytesIfUnchanged(
+	targetPath: string,
+	originalFileBytes: Buffer,
+): 'unchanged' | 'restored' | 'preserved' {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(targetPath, 'r+');
+		const initialStat = fs.fstatSync(fd);
+		const initialBytes = readFileAtDescriptor(fd, initialStat);
+		const normalizedOriginal = lineEndingNormalized(originalFileBytes);
+		if (initialBytes.equals(originalFileBytes)) return 'unchanged';
+		if (!lineEndingNormalized(initialBytes).equals(normalizedOriginal)) {
+			return 'preserved';
+		}
+
+		// Re-read the descriptor for compare-and-swap admission. The hook runs
+		// after the first admission check so tests can model an edit in the
+		// read-to-write window; the second snapshot is the one that authorizes
+		// the write.
+		const currentPathStat = fs.statSync(targetPath);
+		if (!sameFileIdentity(initialStat, currentPathStat)) return 'preserved';
+		const currentStat = fs.fstatSync(fd);
+		const currentBytes = readFileAtDescriptor(fd, currentStat);
+		if (
+			!sameFileIdentity(initialStat, currentStat) ||
+			!currentBytes.equals(initialBytes) ||
+			!lineEndingNormalized(currentBytes).equals(normalizedOriginal)
+		) {
+			return 'preserved';
+		}
+
+		_internals.beforeRestoreWrite();
+		const writePathStat = fs.statSync(targetPath);
+		if (!sameFileIdentity(initialStat, writePathStat)) return 'preserved';
+		const writeStat = fs.fstatSync(fd);
+		const writeBytes = readFileAtDescriptor(fd, writeStat);
+		if (
+			!sameFileIdentity(initialStat, writeStat) ||
+			!writeBytes.equals(initialBytes) ||
+			!lineEndingNormalized(writeBytes).equals(normalizedOriginal)
+		) {
+			return 'preserved';
+		}
+
+		fs.ftruncateSync(fd, 0);
+		let written = 0;
+		while (written < originalFileBytes.length) {
+			const bytesWritten = fs.writeSync(
+				fd,
+				originalFileBytes,
+				written,
+				originalFileBytes.length - written,
+				written,
+			);
+			if (bytesWritten <= 0) {
+				throw new Error('Unable to complete mutation byte restoration');
+			}
+			written += bytesWritten;
+		}
+		fs.fsyncSync(fd);
+
+		// A path replacement during the write means the caller's current file is
+		// no longer the descriptor we restored. Treat that as a conflict instead
+		// of claiming success or retrying over the replacement.
+		const restoredPathStat = fs.statSync(targetPath);
+		const restoredStat = fs.fstatSync(fd);
+		const restoredBytes = readFileAtDescriptor(fd, restoredStat);
+		if (
+			!sameFileIdentity(restoredStat, restoredPathStat) ||
+			!restoredBytes.equals(originalFileBytes)
+		) {
+			return 'preserved';
+		}
+		return 'restored';
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
+	}
+}
+
 export const runMutationCommand: MutationCommandRunner = async (args) => {
 	const resolvedExecutable = _internals.resolveExecutableFromPath([
 		args.executable,
@@ -266,6 +425,7 @@ export const _internals: {
 	 * `args.executable === 'git'`) keeps working for `git`-flavored callers.
 	 */
 	resolveGitExecutable: typeof resolveGitExecutable;
+	beforeRestoreWrite: () => void;
 } = {
 	executeMutation,
 	computeReport,
@@ -275,6 +435,7 @@ export const _internals: {
 	runExternalTool,
 	resolveExecutableFromPath,
 	resolveGitExecutable,
+	beforeRestoreWrite: () => undefined,
 } as const;
 
 export async function executeMutation(
@@ -285,18 +446,81 @@ export async function executeMutation(
 	options: MutationExecutionOptions = {},
 ): Promise<MutationResult> {
 	const startTime = Date.now();
+	if (Array.isArray(testFiles) && testFiles.length > MAX_SAFE_TEST_FILES) {
+		return {
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped',
+			durationMs: Date.now() - startTime,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		};
+	}
+	// Never let an empty selection widen into `testCommand` without file
+	// arguments. The tool performs the same check, but this defense belongs at
+	// the execution boundary because callers can invoke the engine directly.
+	const safeTestFiles = Array.isArray(testFiles)
+		? testFiles.filter(
+				(file) => typeof file === 'string' && !file.startsWith('-'),
+			)
+		: [];
+	if (safeTestFiles.length > MAX_SAFE_TEST_FILES) {
+		return {
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped',
+			durationMs: Date.now() - startTime,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		};
+	}
+	if (safeTestFiles.length === 0) {
+		return {
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped',
+			durationMs: Date.now() - startTime,
+			error:
+				'Mutation test selection is empty; refusing to run the full test suite',
+		};
+	}
 	let outcome: MutationOutcome = 'survived';
 	let testOutput: string | undefined;
 	let error: string | undefined;
 	let revertError: Error | undefined;
 	let patchFile: string | undefined;
+	let originalFileBytes: Buffer | undefined;
+	let appliedFileBytes: Buffer | undefined;
+	let preReverseFileBytes: Buffer | undefined;
+	let preReverseFilePath: string | undefined;
+	let reverseApplySucceeded = false;
+	const originalFilePath = resolveContainedRegularFile(
+		workingDir,
+		patch.filePath,
+	);
+	if (originalFilePath) {
+		try {
+			originalFileBytes = readFileSync(originalFilePath);
+		} catch {
+			// Git apply below remains the source of truth for missing/unreadable files.
+		}
+	}
 	const runner = selectRunner(options);
 
 	try {
 		const safeId = patch.id.replace(/[^a-zA-Z0-9_-]/g, '_');
 		patchFile = path.join(workingDir, `.mutation_patch_${safeId}.diff`);
 		try {
-			writeFileSync(patchFile, patch.patch);
+			// Git's unified-diff parser requires a terminating newline for a
+			// one-line hunk; generated patches are allowed to omit it.
+			writeFileSync(
+				patchFile,
+				patch.patch.endsWith('\n') ? patch.patch : `${patch.patch}\n`,
+			);
 		} catch (writeErr) {
 			error = `Failed to write patch file: ${writeErr}`;
 			outcome = 'error';
@@ -333,6 +557,13 @@ export async function executeMutation(
 					`git apply failed with status ${applyResult.exitCode}: ${applyResult.stderr}`,
 				);
 			}
+			if (originalFilePath) {
+				try {
+					appliedFileBytes = readFileSync(originalFilePath);
+				} catch {
+					// Git apply remains authoritative when the target cannot be read.
+				}
+			}
 		} catch (applyErr) {
 			if (outcome !== 'cancelled') outcome = 'error';
 			return {
@@ -351,11 +582,7 @@ export async function executeMutation(
 			// Append specific test files when provided for scoped test execution.
 			// Filter out any entries that look like flags (start with '-') to prevent
 			// test file paths from being misinterpreted as command-line options.
-			const safeTestFiles = testFiles.filter((f) => !f.startsWith('-'));
-			const testArgs =
-				safeTestFiles.length > 0
-					? [...testCommand.slice(1), ...safeTestFiles]
-					: testCommand.slice(1);
+			const testArgs = [...testCommand.slice(1), ...safeTestFiles];
 			const spawnResult = await runner({
 				executable: testCommand[0],
 				args: testArgs,
@@ -394,6 +621,19 @@ export async function executeMutation(
 		outcome = 'error';
 	} finally {
 		if (patchFile) {
+			if (originalFilePath) {
+				preReverseFilePath = resolveContainedRegularFile(
+					workingDir,
+					originalFilePath,
+				);
+				if (preReverseFilePath) {
+					try {
+						preReverseFileBytes = readFileSync(preReverseFilePath);
+					} catch {
+						preReverseFileBytes = undefined;
+					}
+				}
+			}
 			try {
 				const revertResult = await runner({
 					executable: _internals.resolveGitExecutable(),
@@ -409,6 +649,8 @@ export async function executeMutation(
 					revertError = new Error(
 						`Failed to revert mutation ${patch.id}: git apply -R failed with status ${revertResult.exitCode}: ${revertResult.stderr}. Working tree may be dirty.`,
 					);
+				} else {
+					reverseApplySucceeded = true;
 				}
 			} catch (revertErr) {
 				revertError = new Error(
@@ -419,6 +661,39 @@ export async function executeMutation(
 				unlinkSync(patchFile);
 			} catch (_unlinkErr) {
 				// best effort cleanup
+			}
+			if (
+				reverseApplySucceeded &&
+				originalFileBytes &&
+				appliedFileBytes &&
+				preReverseFileBytes &&
+				preReverseFilePath &&
+				preReverseFileBytes.equals(appliedFileBytes)
+			) {
+				try {
+					const targetPath = resolveContainedRegularFile(
+						workingDir,
+						preReverseFilePath,
+					);
+					if (targetPath === preReverseFilePath) {
+						const restoreResult = restoreOriginalBytesIfUnchanged(
+							targetPath,
+							originalFileBytes,
+						);
+						if (restoreResult === 'preserved') {
+							// Reverse apply should have restored the exact bytes captured before
+							// mutation. A different value means the file changed during cleanup;
+							// never overwrite that concurrent edit with our snapshot.
+							revertError ??= new Error(
+								'Mutation restoration conflict: target file changed concurrently; preserving current bytes',
+							);
+						}
+					}
+				} catch (restoreBytesErr) {
+					revertError ??= new Error(
+						`Failed to restore original mutation bytes: ${restoreBytesErr}`,
+					);
+				}
 			}
 		}
 	}
@@ -669,7 +944,12 @@ export function applyUnifiedDiff(
 			...lines.slice(startIdx + hunk.originalLines.length),
 		];
 	}
-	return lines.join('\n');
+	const mutated = lines.join('\n');
+	// A context-only or otherwise no-op diff is not evidence of a statically
+	// equivalent mutant. Treat it as unparseable for the equivalence stage so
+	// the normal mutation runner still exercises the patch (several providers
+	// use placeholder hunks while generating mutants).
+	return mutated === originalCode ? null : mutated;
 }
 
 export async function executeMutationSuite(
@@ -688,6 +968,22 @@ export async function executeMutationSuite(
 ): Promise<MutationReport> {
 	const startTime = Date.now();
 	const effectiveBudget = budgetMs ?? TOTAL_BUDGET_MS;
+	if (Array.isArray(testFiles) && testFiles.length > MAX_SAFE_TEST_FILES) {
+		const skippedResults = patches.map((patch) => ({
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped' as const,
+			durationMs: 0,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		}));
+		return computeReport(
+			skippedResults,
+			Date.now() - startTime,
+			effectiveBudget,
+		);
+	}
 
 	// Validate testCommand[0] against the known-runner allowlist before executing
 	// any mutations. This prevents arbitrary binaries from being invoked even when
@@ -696,6 +992,45 @@ export async function executeMutationSuite(
 	const cmdError = validateTestCommand(testCommand);
 	if (cmdError) {
 		return computeReport([], 0, effectiveBudget);
+	}
+
+	const safeTestFiles = Array.isArray(testFiles)
+		? testFiles.filter(
+				(file) => typeof file === 'string' && !file.startsWith('-'),
+			)
+		: [];
+	if (safeTestFiles.length > MAX_SAFE_TEST_FILES) {
+		const skippedResults = patches.map((patch) => ({
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped' as const,
+			durationMs: 0,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		}));
+		return computeReport(
+			skippedResults,
+			Date.now() - startTime,
+			effectiveBudget,
+		);
+	}
+	if (safeTestFiles.length === 0) {
+		const skippedResults = patches.map((patch) => ({
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped' as const,
+			durationMs: 0,
+			error:
+				'Mutation test selection is empty; refusing to run the full test suite',
+		}));
+		return computeReport(
+			skippedResults,
+			Date.now() - startTime,
+			effectiveBudget,
+		);
 	}
 
 	const results: MutationResult[] = [];
@@ -721,10 +1056,27 @@ export async function executeMutationSuite(
 				// patches. applyUnifiedDiff returns null for unparseable or
 				// non-applying patches; those fall back to hunk-only text
 				// (equivalence then simply does not fire, as before).
-				const mutatedCode =
-					applyUnifiedDiff(originalCode, patch.patch) ??
-					hunkOnlyText(patch.patch);
-				eqInput.push({ patch, originalCode, mutatedCode });
+				const appliedCode = applyUnifiedDiff(originalCode, patch.patch);
+				if (appliedCode !== null) {
+					eqInput.push({ patch, originalCode, mutatedCode: appliedCode });
+					continue;
+				}
+				// A context-only/no-op hunk must still execute as a generated
+				// placeholder, not be classified equivalent by AST normalization.
+				const hasMutationLine = patch.patch
+					.split('\n')
+					.some(
+						(line) =>
+							(line.startsWith('+') && !line.startsWith('+++')) ||
+							(line.startsWith('-') && !line.startsWith('---')),
+					);
+				if (hasMutationLine) {
+					eqInput.push({
+						patch,
+						originalCode,
+						mutatedCode: hunkOnlyText(patch.patch),
+					});
+				}
 			}
 		}
 		if (eqInput.length > 0) {
@@ -789,7 +1141,7 @@ export async function executeMutationSuite(
 		const result = await executeMutation(
 			patches[i],
 			testCommand,
-			testFiles,
+			safeTestFiles,
 			workingDir,
 			options,
 		);

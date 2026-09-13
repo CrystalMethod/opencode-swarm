@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { _internals, test_runner } from '../test-runner.js';
+import {
+	_internals,
+	MAX_SAFE_TEST_FILES,
+	test_runner,
+} from '../test-runner.js';
 
 // ============ Mocks ============
 
@@ -202,32 +206,24 @@ describe('recordAndAnalyzeResults sourceFiles parameter behavior', () => {
 	});
 
 	/**
-	 * Test 2: Impact scope permits bounded multi-source batches (issue #2492).
-	 *
-	 * The single-source pre-resolution cap was superseded by the bounded
-	 * multi-source contract: multi-source batches run whenever the resolved
-	 * test set stays under MAX_SAFE_TEST_FILES, deduplicated across sources;
-	 * the binding guard is the post-resolution count, never a fail-open
-	 * estimate. The mocked analyzer returns a shared impacted test for both
-	 * sources, so the union is deduplicated to one entry.
+	 * Test 2: Multiple source files are admitted and the resolved test set remains
+	 * bounded by MAX_SAFE_TEST_FILES.
 	 */
-	test('2. impact scope permits bounded multi-source batches with dedup', async () => {
-		// Configure the mock so BOTH sources map to the SAME impacted test.
-		// Like the real analyzer (which dedups via its Set), the mock returns
-		// the union already deduplicated: one entry for two source files.
-		const sharedTest = path.join(tempDir, 'src', '__tests__', 'shared.test.ts');
-		fs.mkdirSync(path.dirname(sharedTest), { recursive: true });
-		fs.writeFileSync(
-			sharedTest,
-			"test('shared', () => { expect(1).toBe(1); });\n",
-		);
+	test('2. impact scope analyzes multiple source files within the resolved cap', async () => {
 		mockAnalyzeImpact.mockResolvedValueOnce({
-			impactedTests: [sharedTest],
+			impactedTests: [
+				path.join(tempDir, 'src', '__tests__', 'foo.ts'),
+				path.join(tempDir, 'src', '__tests__', 'bar.ts'),
+			],
 			unrelatedTests: [],
 			untestedFiles: [],
 			impactMap: {
-				[path.join(tempDir, 'src', 'foo.ts')]: [sharedTest],
-				[path.join(tempDir, 'src', 'bar.ts')]: [sharedTest],
+				[path.join(tempDir, 'src', 'foo.ts')]: [
+					path.join(tempDir, 'src', '__tests__', 'foo.ts'),
+				],
+				[path.join(tempDir, 'src', 'bar.ts')]: [
+					path.join(tempDir, 'src', '__tests__', 'bar.ts'),
+				],
 			},
 		});
 
@@ -239,18 +235,26 @@ describe('recordAndAnalyzeResults sourceFiles parameter behavior', () => {
 		const result = await execute(args, tempDir);
 		const parsed = parseResult(result);
 
-		// The analyzer ran once for the whole multi-source batch.
-		expect(mockAnalyzeImpact).toHaveBeenCalledTimes(1);
-		const analyzeArgs = mockAnalyzeImpact.mock.calls[0];
-		expect(analyzeArgs[0]).toEqual(['src/foo.ts', 'src/bar.ts']);
 		expect(parsed.success).toBe(true);
-		// The shared test resolves exactly once for the two-source batch.
-		expect(parsed.resolved_test_files).toHaveLength(1);
-		expect(parsed.cap_decision).toEqual({
-			decision: 'within_cap',
-			resolved_test_count: 1,
-			limit: 50,
+		expect(parsed.outcome).toBe('pass');
+		expect(parsed.resolution).toMatchObject({
+			requestedScope: 'impact',
+			effectiveScope: 'impact',
+			cap: MAX_SAFE_TEST_FILES,
+			decision: 'execute',
+			evaluable: true,
 		});
+		expect(parsed.resolution.resolvedFiles).toHaveLength(2);
+
+		expect(mockAnalyzeImpact).toHaveBeenCalledTimes(1);
+		const [sourceFilesArg, , maxFilesArg] = mockAnalyzeImpact.mock.calls[0] as [
+			string[],
+			string,
+			number,
+		];
+		expect(sourceFilesArg).toEqual(['src/foo.ts', 'src/bar.ts']);
+		expect(maxFilesArg).toBe(MAX_SAFE_TEST_FILES + 1);
+		expect(mockBatchAppendTestRuns).toHaveBeenCalled();
 	});
 
 	/**

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolContext } from '@opencode-ai/plugin';
@@ -11,15 +12,344 @@ import {
 	evaluateMutationGate,
 	type MutationGateResult,
 } from '../mutation/gate.js';
-import { analyzeImpact } from '../test-impact/analyzer.js';
+import {
+	analyzeImpact,
+	_internals as impactInternals,
+	MAX_IMPACT_CACHE_BYTES,
+} from '../test-impact/analyzer.js';
+import { MAX_SAFE_TEST_FILES } from '../test-impact/constants.js';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
-import { MAX_SAFE_TEST_FILES } from './test-runner.js';
+
+type SelectionKind = 'explicit' | 'impact';
+type CacheDisposition = 'preserved' | 'refreshed' | 'unavailable';
+
+interface MutationSelection {
+	kind: SelectionKind;
+	sourceFiles: string[];
+	sourceFileCount?: number;
+	sourceFilesTruncated?: boolean;
+	testFiles: string[];
+	cap: number;
+	fallbackReason: string | null;
+	evaluable: boolean;
+	cacheDisposition?: CacheDisposition;
+}
+
+interface MutationToolArgs {
+	patches: Array<{
+		id: string;
+		filePath: string;
+		functionName: string;
+		mutationType: string;
+		patch: string;
+		lineNumber?: number;
+	}>;
+	files?: string[];
+	source_files?: string[];
+	test_command: string[];
+	pass_threshold?: number;
+	warn_threshold?: number;
+	working_directory?: string;
+}
+
+type CompatibilityTestSelection = {
+	source: 'impact_analysis' | 'explicit_override' | 'fallback';
+	resolved_test_files: string[];
+	fallback_reason?: string;
+};
+
+function toCompatibilityTestSelection(
+	selection: MutationSelection,
+): CompatibilityTestSelection {
+	const compatibility: CompatibilityTestSelection = {
+		source:
+			selection.fallbackReason !== null
+				? 'fallback'
+				: selection.kind === 'impact'
+					? 'impact_analysis'
+					: 'explicit_override',
+		resolved_test_files:
+			selection.fallbackReason === null ? selection.testFiles : [],
+	};
+	if (selection.fallbackReason !== null) {
+		compatibility.fallback_reason = selection.fallbackReason;
+	}
+	return compatibility;
+}
+
+function contentDigest(filePath: string): string | null {
+	return boundedContentDigest(filePath, MAX_IMPACT_CACHE_BYTES);
+}
+
+function boundedContentDigest(
+	filePath: string,
+	maxBytes?: number,
+): string | null {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(filePath, 'r');
+		const stat = fs.fstatSync(fd);
+		if (maxBytes !== undefined && stat.size > maxBytes) return null;
+		const hash = createHash('sha256');
+		const chunk = Buffer.allocUnsafe(64 * 1024);
+		let totalBytes = 0;
+		while (true) {
+			const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, totalBytes);
+			if (bytesRead === 0) break;
+			totalBytes += bytesRead;
+			if (maxBytes !== undefined && totalBytes > maxBytes) return null;
+			hash.update(chunk.subarray(0, bytesRead));
+		}
+		return hash.digest('hex');
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
+	}
+}
+
+type CacheGeneration = {
+	digest: string;
+	size: number;
+	mtimeMs: number;
+	ctimeMs: number;
+	dev: number;
+	ino: number;
+};
+
+function readCacheGeneration(filePath: string): CacheGeneration | null {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(filePath, 'r');
+		const stat = fs.fstatSync(fd);
+		if (stat.size > MAX_IMPACT_CACHE_BYTES) return null;
+		const hash = createHash('sha256');
+		const chunk = Buffer.allocUnsafe(64 * 1024);
+		let totalBytes = 0;
+		while (true) {
+			const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, totalBytes);
+			if (bytesRead === 0) break;
+			totalBytes += bytesRead;
+			if (totalBytes > MAX_IMPACT_CACHE_BYTES) return null;
+			hash.update(chunk.subarray(0, bytesRead));
+		}
+		const digest = hash.digest('hex');
+		const finalStat = fs.fstatSync(fd);
+		if (
+			finalStat.dev !== stat.dev ||
+			finalStat.ino !== stat.ino ||
+			finalStat.size !== totalBytes ||
+			finalStat.size > MAX_IMPACT_CACHE_BYTES ||
+			finalStat.mtimeMs !== stat.mtimeMs ||
+			finalStat.ctimeMs !== stat.ctimeMs
+		) {
+			return null;
+		}
+		return {
+			digest,
+			size: finalStat.size,
+			mtimeMs: finalStat.mtimeMs,
+			ctimeMs: finalStat.ctimeMs,
+			dev: finalStat.dev,
+			ino: finalStat.ino,
+		};
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
+	}
+}
+
+function sameCacheGeneration(
+	left: CacheGeneration | null,
+	right: CacheGeneration | null,
+): boolean {
+	return (
+		left !== null &&
+		right !== null &&
+		left.digest === right.digest &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.ctimeMs === right.ctimeMs &&
+		left.dev === right.dev &&
+		left.ino === right.ino
+	);
+}
+
+function normalizeWorkspaceFile(
+	value: unknown,
+	cwd: string,
+	requireExisting: boolean,
+): { value: string; absolute: string } | { error: string } {
+	if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) {
+		return { error: 'file paths must be non-empty strings without null bytes' };
+	}
+	const slashPath = value.replace(/\\/g, '/');
+	if (
+		path.posix.isAbsolute(slashPath) ||
+		path.win32.isAbsolute(value) ||
+		/^[A-Za-z]:/.test(value)
+	) {
+		return { error: `absolute file path is not allowed: ${value}` };
+	}
+	const normalized = path.posix.normalize(slashPath);
+	if (
+		normalized === '.' ||
+		normalized === '..' ||
+		normalized.startsWith('../')
+	) {
+		return { error: `file path escapes the project root: ${value}` };
+	}
+	const absolute = path.resolve(cwd, normalized);
+	const relative = _internals.pathRelative(cwd, absolute).replace(/\\/g, '/');
+	if (isWorkspaceRelativeOutsideRoot(relative)) {
+		return { error: `file path escapes the project root: ${value}` };
+	}
+	if (requireExisting) {
+		try {
+			if (!fs.statSync(absolute).isFile()) {
+				return { error: `file path is not a regular file: ${value}` };
+			}
+			const root = fs.realpathSync(cwd);
+			const real = fs.realpathSync(absolute);
+			const realRelative = _internals
+				.pathRelative(root, real)
+				.replace(/\\/g, '/');
+			if (isWorkspaceRelativeOutsideRoot(realRelative)) {
+				return {
+					error: `file path resolves outside the project root: ${value}`,
+				};
+			}
+		} catch {
+			return { error: `file path does not exist or is inaccessible: ${value}` };
+		}
+	}
+	return { value: relative, absolute };
+}
+
+function isWorkspaceRelativeOutsideRoot(relative: string): boolean {
+	return (
+		relative === '' ||
+		relative === '..' ||
+		relative.startsWith('../') ||
+		path.posix.isAbsolute(relative) ||
+		path.win32.isAbsolute(relative)
+	);
+}
+
+export const _internals: {
+	pathRelative: typeof path.relative;
+	normalizeWorkspaceFile: typeof normalizeWorkspaceFile;
+} = {
+	pathRelative: path.relative,
+	normalizeWorkspaceFile,
+};
+
+function workspaceFileIdentity(filePath: string): string {
+	let canonical = path.normalize(filePath);
+	try {
+		canonical = path.normalize(fs.realpathSync(filePath));
+	} catch {
+		// normalizeWorkspaceFile already checked existence for callers that need
+		// identity; retain the lexical path as a conservative fallback.
+	}
+	return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
+function normalizeExplicitFiles(
+	files: unknown,
+	cwd: string,
+): { files: string[]; error?: string; overflow?: boolean } {
+	if (!Array.isArray(files) || files.length === 0) {
+		return {
+			files: [],
+			error: 'files must be a non-empty array of file paths',
+		};
+	}
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const file of files) {
+		if (typeof file !== 'string' || file.startsWith('-')) {
+			return { files: normalized, error: 'files contains an unsafe path' };
+		}
+		const result = normalizeWorkspaceFile(file, cwd, true);
+		if ('error' in result) return { files: normalized, error: result.error };
+		const identity = workspaceFileIdentity(result.absolute);
+		if (!seen.has(identity)) {
+			seen.add(identity);
+			normalized.push(result.value);
+		}
+	}
+	return {
+		files: normalized,
+		overflow: normalized.length > MAX_SAFE_TEST_FILES,
+	};
+}
+
+function normalizeImpactFiles(files: unknown, cwd: string): string[] {
+	if (!Array.isArray(files)) return [];
+	const normalized: string[] = [];
+	const seen = new Set<string>();
+	for (const file of files) {
+		const candidate =
+			typeof file === 'string' && path.isAbsolute(file)
+				? path.relative(cwd, file)
+				: file;
+		const result = normalizeWorkspaceFile(candidate, cwd, true);
+		if ('error' in result) continue;
+		const identity = workspaceFileIdentity(result.absolute);
+		if (seen.has(identity)) continue;
+		seen.add(identity);
+		normalized.push(result.value);
+	}
+	return normalized;
+}
+
+function skipResult(
+	selection: MutationSelection,
+	outcome: 'unevaluable' | 'scope_exceeded' | 'failure',
+	error: string,
+): string {
+	return JSON.stringify(
+		{
+			success: false,
+			verdict: 'skip',
+			outcome,
+			evaluable: false,
+			selection,
+			test_selection: toCompatibilityTestSelection(selection),
+			evaluability: {
+				evaluable: false,
+				reason: error,
+			},
+			error,
+			message: error,
+			totalMutants: 0,
+			killed: 0,
+			survived: 0,
+		},
+		null,
+		2,
+	);
+}
 
 export const mutation_test: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Execute mutation testing with pre-generated patches — applies each mutant patch, runs tests, and evaluates kill rate against quality gate thresholds. Test selection: pass files (explicit override) or source_files (impacted tests derived via the impact analyzer, bounded by the safe test-file cap; analyzer failure or empty derivation returns a typed bounded fallback instead of running a broad suite). Returns verdict (pass/warn/fail) with per-function kill rates, survived mutant details, test_selection, and evaluability reporting.',
+			'Execute mutation testing with pre-generated patches — applies each mutant patch, runs a bounded explicit or impact-derived test selection, and evaluates kill rate against quality gate thresholds. Returns verdict (pass/warn/fail/skip) with selection evidence, per-function kill rates, and survived mutant details.',
 		args: {
 			patches: z
 				.array(
@@ -46,7 +376,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				.array(z.string())
 				.optional()
 				.describe(
-					'Array of test file paths to run against mutants. Explicit override: when provided, this set wins over analyzer derivation.',
+					'Optional explicit test file paths to run against mutants. When omitted, impacted tests are derived from the mutated source files.',
 				),
 			source_files: z
 				.array(z.string())
@@ -79,74 +409,36 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 			directory: string,
 			_ctx?: ToolContext,
 		): Promise<string> {
-			const typedArgs = args as {
-				patches: Array<{
-					id: string;
-					filePath: string;
-					functionName: string;
-					mutationType: string;
-					patch: string;
-					lineNumber?: number;
-				}>;
-				files?: string[];
-				source_files?: string[];
-				test_command: string[];
-				pass_threshold?: number;
-				warn_threshold?: number;
-				working_directory?: string;
-			};
+			const typedArgs = args as MutationToolArgs;
+			let activeSelection: MutationSelection | undefined;
 
 			try {
-				if (!typedArgs.files && !typedArgs.source_files) {
+				if (
+					typedArgs.files === undefined &&
+					typedArgs.source_files === undefined
+				) {
 					return JSON.stringify(
 						{
 							error:
 								'provide either files (explicit test file paths) or source_files (derive impacted tests via the impact analyzer)',
 							success: false,
+							verdict: 'skip',
+							outcome: 'unevaluable',
+							evaluable: false,
 						},
 						null,
 						2,
 					);
 				}
 				if (
-					typedArgs.files &&
-					(!Array.isArray(typedArgs.files) || typedArgs.files.length === 0)
-				) {
-					return JSON.stringify(
-						{
-							error: 'files must be a non-empty array of file paths',
-							success: false,
-						},
-						null,
-						2,
-					);
-				}
-				if (
-					typedArgs.source_files &&
+					typedArgs.source_files !== undefined &&
 					(!Array.isArray(typedArgs.source_files) ||
 						typedArgs.source_files.length === 0)
 				) {
 					return JSON.stringify(
 						{
+							success: false,
 							error: 'source_files must be a non-empty array of file paths',
-							success: false,
-						},
-						null,
-						2,
-					);
-				}
-				if (typedArgs.files && typedArgs.files.length > MAX_SAFE_TEST_FILES) {
-					// Same binding guard as analyzer-derived selection: the
-					// explicit override must not run an unbounded suite once
-					// per mutant patch.
-					return JSON.stringify(
-						{
-							success: false,
-							error: `explicit files override resolves ${typedArgs.files.length} test files, exceeding the safe cap of ${MAX_SAFE_TEST_FILES}; narrow the list`,
-							evaluability: {
-								evaluable: false,
-								reason: `explicit files override exceeds the safe cap of ${MAX_SAFE_TEST_FILES}`,
-							},
 						},
 						null,
 						2,
@@ -221,13 +513,265 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				const cwd = resolved.directory;
 				const passThreshold = typedArgs.pass_threshold ?? 0.8;
 				const warnThreshold = typedArgs.warn_threshold ?? 0.6;
+				// Keep path-bearing selection evidence bounded even when callers send a
+				// large patch list. The final entry is a bounded truncation sentinel;
+				// sourceFileCount reports the retained evidence count.
+				const patchSourcePaths: string[] = [];
+				const sourcePathKeys = new Set<string>();
+				let patchSourcePathsTruncated = false;
+				for (const patch of typedArgs.patches) {
+					if (typeof patch?.filePath !== 'string') continue;
+					if (sourcePathKeys.has(patch.filePath)) continue;
+					sourcePathKeys.add(patch.filePath);
+					patchSourcePaths.push(patch.filePath);
+					if (patchSourcePaths.length >= MAX_SAFE_TEST_FILES + 1) {
+						patchSourcePathsTruncated = true;
+						break;
+					}
+				}
+				const requestedSourcePaths = typedArgs.source_files ?? patchSourcePaths;
+				const sourcePaths = requestedSourcePaths.slice(
+					0,
+					MAX_SAFE_TEST_FILES + 1,
+				);
+				const sourcePathsTruncated =
+					typedArgs.source_files === undefined
+						? patchSourcePathsTruncated
+						: requestedSourcePaths.length > sourcePaths.length;
+				const sourceEvidence = {
+					sourceFileCount: sourcePaths.length,
+					sourceFilesTruncated: sourcePathsTruncated,
+				};
+				const normalizedSourcePaths: string[] = [];
+				for (const sourcePath of sourcePaths) {
+					const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
+					if ('error' in normalized) {
+						const error =
+							typedArgs.files === undefined &&
+							typedArgs.source_files === undefined
+								? `provide either files (explicit test file paths) or source_files (derive impacted tests via the impact analyzer): ${normalized.error}`
+								: normalized.error;
+						return skipResult(
+							{
+								kind: typedArgs.files === undefined ? 'impact' : 'explicit',
+								sourceFiles: sourcePaths,
+								...sourceEvidence,
+								testFiles: [],
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: normalized.error,
+								evaluable: false,
+							},
+							'unevaluable',
+							error,
+						);
+					}
+					normalizedSourcePaths.push(normalized.value);
+				}
+
+				if (typedArgs.files === undefined && sourcePathsTruncated) {
+					const reason = `Impact source selection exceeds the safe cap of ${MAX_SAFE_TEST_FILES} unique files (safe maximum)`;
+					return skipResult(
+						{
+							kind: 'impact',
+							sourceFiles: normalizedSourcePaths,
+							...sourceEvidence,
+							testFiles: [],
+							cap: MAX_SAFE_TEST_FILES,
+							fallbackReason: reason,
+							evaluable: false,
+						},
+						'scope_exceeded',
+						reason,
+					);
+				}
+
+				const impactSourcePaths: string[] = [];
+				if (typedArgs.files === undefined) {
+					const requestedImpactPaths =
+						typedArgs.source_files === undefined
+							? normalizedSourcePaths
+							: sourcePaths;
+					for (const sourcePath of requestedImpactPaths) {
+						const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
+						if ('error' in normalized) {
+							return skipResult(
+								{
+									kind: 'impact',
+									sourceFiles: requestedImpactPaths,
+									...sourceEvidence,
+									testFiles: [],
+									cap: MAX_SAFE_TEST_FILES,
+									fallbackReason: normalized.error,
+									evaluable: false,
+								},
+								'unevaluable',
+								normalized.error,
+							);
+						}
+						if (!impactSourcePaths.includes(normalized.value)) {
+							impactSourcePaths.push(normalized.value);
+						}
+					}
+				}
+
+				let selectedTestFiles: string[];
+				let selectionKind: SelectionKind;
+				let fallbackReason: string | null = null;
+				if (typedArgs.files !== undefined) {
+					selectionKind = 'explicit';
+					const explicit = normalizeExplicitFiles(typedArgs.files, cwd);
+					if (explicit.error) {
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
+								testFiles: explicit.files,
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: explicit.error,
+								evaluable: false,
+							},
+							'unevaluable',
+							explicit.error,
+						);
+					}
+					selectedTestFiles = explicit.files;
+					if (explicit.overflow) {
+						const reason = `Explicit test selection exceeds the safe maximum of ${MAX_SAFE_TEST_FILES} unique files`;
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
+								testFiles: selectedTestFiles.slice(0, MAX_SAFE_TEST_FILES + 1),
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: reason,
+								evaluable: false,
+							},
+							'scope_exceeded',
+							reason,
+						);
+					}
+				} else {
+					selectionKind = 'impact';
+					if (impactSourcePaths.length === 0) {
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: [],
+								...sourceEvidence,
+								testFiles: [],
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: 'No safe mutated source files were provided',
+								evaluable: false,
+							},
+							'unevaluable',
+							'No safe mutated source files were provided',
+						);
+					}
+					let impactResult: Awaited<ReturnType<typeof analyzeImpact>>;
+					try {
+						const analyzer = impactInternals.analyzeImpact ?? analyzeImpact;
+						impactResult = await analyzer(
+							impactSourcePaths,
+							cwd,
+							MAX_SAFE_TEST_FILES + 1,
+						);
+					} catch (error) {
+						const reason = `Impact analysis unavailable: ${error instanceof Error ? error.message : String(error)}`;
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
+								testFiles: [],
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: reason,
+								evaluable: false,
+							},
+							'failure',
+							reason,
+						);
+					}
+					selectedTestFiles = normalizeImpactFiles(
+						impactResult.impactedTests,
+						cwd,
+					);
+					if (
+						impactResult.budgetExceeded ||
+						selectedTestFiles.length > MAX_SAFE_TEST_FILES
+					) {
+						const reason = `Impact-derived test selection exceeds the safe cap of ${MAX_SAFE_TEST_FILES} unique files (safe maximum)`;
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
+								testFiles: selectedTestFiles.slice(0, MAX_SAFE_TEST_FILES + 1),
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason: reason,
+								evaluable: false,
+							},
+							'scope_exceeded',
+							reason,
+						);
+					}
+					if (selectedTestFiles.length === 0) {
+						fallbackReason =
+							'No impacted test files were found for the mutated source files';
+						return skipResult(
+							{
+								kind: selectionKind,
+								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
+								testFiles: [],
+								cap: MAX_SAFE_TEST_FILES,
+								fallbackReason,
+								evaluable: false,
+							},
+							'unevaluable',
+							fallbackReason,
+						);
+					}
+				}
+
+				const selection: MutationSelection = {
+					kind: selectionKind,
+					sourceFiles: normalizedSourcePaths,
+					...sourceEvidence,
+					testFiles: selectedTestFiles,
+					cap: MAX_SAFE_TEST_FILES,
+					fallbackReason,
+					evaluable: true,
+				};
+				activeSelection = selection;
+
+				const sourceDigests = new Map<string, string | null>();
+				for (const sourcePath of normalizedSourcePaths) {
+					const normalized = normalizeWorkspaceFile(sourcePath, cwd, false);
+					if ('value' in normalized) {
+						sourceDigests.set(
+							normalized.value,
+							contentDigest(normalized.absolute),
+						);
+					}
+				}
+				const testDigests = new Map<string, string | null>();
+				for (const testPath of selectedTestFiles) {
+					const normalized = normalizeWorkspaceFile(testPath, cwd, false);
+					if ('value' in normalized) {
+						testDigests.set(
+							normalized.value,
+							contentDigest(normalized.absolute),
+						);
+					}
+				}
+				const cachePath = path.join(cwd, '.swarm', 'cache', 'impact-map.json');
+				const cacheBefore = readCacheGeneration(cachePath);
 
 				// Build source files map for equivalence detection
 				const sourceFiles = new Map<string, string>();
-				const uniquePaths = [
-					...new Set(typedArgs.patches.map((p) => p.filePath)),
-				];
-				for (const filePath of uniquePaths) {
+				for (const filePath of patchSourcePaths) {
 					try {
 						const resolvedPath = path.resolve(cwd, filePath);
 						sourceFiles.set(filePath, fs.readFileSync(resolvedPath, 'utf-8'));
@@ -236,99 +780,52 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					}
 				}
 
-				// Test selection (issue #2492): explicit files override; otherwise derive
-				// impacted tests from the impact analyzer (bounded by the safe test-file
-				// cap); analyzer failure, empty derivation, or cap overflow takes a typed
-				// bounded fallback — never a silent broad run.
-				type TestSelection = {
-					source: 'impact_analysis' | 'explicit_override' | 'fallback';
-					resolved_test_files: string[];
-					fallback_reason?: string;
-				};
-				let selection: TestSelection;
-				if (typedArgs.files && typedArgs.files.length > 0) {
-					selection = {
-						source: 'explicit_override',
-						resolved_test_files: typedArgs.files,
-					};
-				} else {
-					const sourceFilesForImpact = typedArgs.source_files ?? [];
-					try {
-						const impactResult =
-							await _internals.mutationInternals.analyzeImpact(
-								sourceFilesForImpact,
-								cwd,
-								MAX_SAFE_TEST_FILES,
-							);
-						if (impactResult.impactedTests.length === 0) {
-							selection = {
-								source: 'fallback',
-								resolved_test_files: [],
-								fallback_reason:
-									'impact analysis found no impacted tests for the given source files; pass explicit files to override',
-							};
-						} else if (
-							// The analyzer truncates at the budget and reports
-							// budgetExceeded — the length alone can read exactly 50
-							// on a 55-test fan-out, so BOTH signals must refuse.
-							// A silent 50-of-55 partial run would under-report kills.
-							impactResult.budgetExceeded ||
-							impactResult.impactedTests.length > MAX_SAFE_TEST_FILES
-						) {
-							selection = {
-								source: 'fallback',
-								resolved_test_files: [],
-								fallback_reason: `derived test set meets or exceeds the safe cap of ${MAX_SAFE_TEST_FILES} (budget${impactResult.budgetExceeded ? ' exceeded' : ' at cap'}); narrow the source files or pass explicit files to override`,
-							};
-						} else {
-							selection = {
-								source: 'impact_analysis',
-								resolved_test_files: impactResult.impactedTests.map(
-									(absPath) => {
-										const relativePath = path.relative(cwd, absPath);
-										return path.isAbsolute(relativePath)
-											? absPath
-											: relativePath;
-									},
-								),
-							};
-						}
-					} catch (err) {
-						selection = {
-							source: 'fallback',
-							resolved_test_files: [],
-							fallback_reason: `impact analysis failed (${err instanceof Error ? err.message : String(err)}); pass explicit files to override`,
-						};
-					}
-				}
-
-				if (selection.source === 'fallback') {
-					// Bounded typed refusal: nothing runs, everything is reported.
-					return JSON.stringify(
-						{
-							success: false,
-							error:
-								'mutation_test could not resolve a bounded test set for the requested sources',
-							test_selection: selection,
-							evaluability: {
-								evaluable: false,
-								reason: selection.fallback_reason ?? 'no test selection',
-							},
-						},
-						null,
-						2,
-					);
-				}
-
 				const report: MutationReport = await executeMutationSuite(
 					typedArgs.patches,
 					typedArgs.test_command,
-					selection.resolved_test_files,
+					selectedTestFiles,
 					cwd,
 					undefined, // budgetMs
 					undefined, // onProgress
 					sourceFiles.size > 0 ? sourceFiles : undefined,
 				);
+				const cacheAfter = readCacheGeneration(cachePath);
+
+				let cacheChanged = false;
+				for (const [filePath, before] of sourceDigests) {
+					const after = contentDigest(path.resolve(cwd, filePath));
+					if (before === null || after === null || after !== before) {
+						cacheChanged = true;
+					}
+				}
+				for (const [filePath, before] of testDigests) {
+					const after = contentDigest(path.resolve(cwd, filePath));
+					if (before === null || after === null || after !== before) {
+						cacheChanged = true;
+					}
+				}
+				let cacheRefreshed = false;
+				if (cacheChanged) {
+					// Never unlink a cache path here. The analyzer owns cache
+					// replacement and will rebuild this stale generation on its next
+					// bounded read, while preserving any concurrent atomic refresh.
+					selection.cacheDisposition = 'preserved';
+				} else if (sameCacheGeneration(cacheBefore, cacheAfter)) {
+					// Keep an unchanged generation in place. The analyzer owns cache
+					// replacement, and deleting by pathname would race a concurrent
+					// atomic refresh.
+					selection.cacheDisposition = 'preserved';
+				} else if (cacheAfter !== null) {
+					selection.cacheDisposition = 'refreshed';
+					cacheRefreshed = true;
+				} else {
+					selection.cacheDisposition = 'unavailable';
+				}
+				const compatibilitySelection = toCompatibilityTestSelection(selection);
+				const evaluability = {
+					evaluable: true,
+					reason: `Mutation batch completed with ${selection.testFiles.length} selected test file${selection.testFiles.length === 1 ? '' : 's'}`,
+				};
 
 				const result: MutationGateResult = evaluateMutationGate(
 					report,
@@ -336,46 +833,14 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					warnThreshold,
 				);
 
-				// Evaluability (issue #2492): report whether the batch could be evaluated
-				// at all, plus the per-outcome counts behind the verdict.
-				// A completed batch against a resolved test set is evaluable: a
-				// verdict was computed. Killability proportions ride the reason and
-				// mutation_outcome_counts; the fallback refusal is the not-evaluable
-				// case (reported before any run).
-				const killableCount =
-					report.totalMutants - report.equivalent - report.skipped;
-				const evaluability = {
-					evaluable: true,
-					reason: `${killableCount} of ${report.totalMutants} mutants were killable (${report.equivalent} equivalent, ${report.skipped} skipped)`,
-				};
-
-				// Cache refresh (issue #2492): every completed gate verdict
-				// invalidates the cached impact-map selection so the next load
-				// rebuilds from current test imports. Invalidation is O(1) — no
-				// whole-tree rescan on the response path; a failure here never
-				// fails the batch.
-				let cache_refreshed = false;
-				try {
-					const cachePath = path.join(
-						cwd,
-						'.swarm',
-						'cache',
-						'impact-map.json',
-					);
-					await fs.promises.unlink(cachePath);
-					cache_refreshed = true;
-				} catch (err) {
-					// ENOENT: no cache existed — nothing stale to invalidate; the
-					// next load rebuilds from disk either way.
-					cache_refreshed =
-						err instanceof Error &&
-						(err as NodeJS.ErrnoException).code === 'ENOENT';
-				}
-
 				return JSON.stringify(
 					{
 						...result,
-						test_selection: selection,
+						success: true,
+						outcome: 'success',
+						evaluable: true,
+						selection,
+						test_selection: compatibilitySelection,
 						evaluability,
 						mutation_outcome_counts: {
 							killed: report.killed,
@@ -384,18 +849,38 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							skipped: report.skipped,
 							total: report.totalMutants,
 						},
-						cache_refreshed,
+						cache_refreshed: cacheRefreshed,
+						mutation: {
+							totalMutants: report.totalMutants,
+							killed: report.killed,
+							survived: report.survived,
+							equivalent: report.equivalent,
+							skipped: report.skipped,
+							errors: report.errors,
+						},
 					},
 					null,
 					2,
 				);
 			} catch (e) {
+				const reason =
+					e instanceof Error
+						? `mutation_test failed: ${e.message}`
+						: 'mutation_test failed: unknown error';
+				if (activeSelection) {
+					return skipResult(
+						{
+							...activeSelection,
+							evaluable: false,
+							fallbackReason: reason,
+						},
+						'failure',
+						reason,
+					);
+				}
 				return JSON.stringify(
 					{
-						error:
-							e instanceof Error
-								? `mutation_test failed: ${e.message}`
-								: 'mutation_test failed: unknown error',
+						error: reason,
 						success: false,
 					},
 					null,
@@ -404,11 +889,3 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 			}
 		},
 	});
-
-export const _internals: {
-	mutationInternals: {
-		analyzeImpact: typeof analyzeImpact;
-	};
-} = {
-	mutationInternals: { analyzeImpact },
-};

@@ -19,34 +19,43 @@ Use `repo_map` `test_pack` only to discover focused candidate tests; Bun/shell o
 
 ---
 
-## ⛔ The One Rule That Prevents Session Kills
+## ⛔ The Scope Rule That Prevents Session Kills
 
-**Multi-source batches are permitted, but the resolved test-file union is hard-capped
-at `MAX_SAFE_TEST_FILES = 50` — the binding guard is the post-resolution count.**
+`convention` discovery accepts one source file at a time (or explicit direct test
+files). `graph` and `impact` discovery accept a bounded normalized source array of
+up to `MAX_SAFE_TEST_FILES = 50`. Do not exceed that input cap or respond to
+`scope_exceeded` by widening to `scope: 'all'`.
 
-Multi-source `graph`/`impact` batches are deduplicated into one union and run when it
-stays under the cap. The moment the resolved union would exceed 50, the call returns
-the typed `scope_exceeded` outcome (with a `cap_decision` object) — never a silently
-truncated partial set, and never a hang. Treat `scope_exceeded` as SKIP; do not retry
-with `scope: 'all'` (env-gated) and do not split mechanically — first check whether a
-narrower file list or direct test paths keep you under the cap.
+The final unique resolved-test cap still binds for every discovery scope: when
+resolution produces more than 50 test files, `test_runner` returns
+`scope_exceeded` without executing them. Split a larger graph/impact selection
+into intentional bounded batches.
 
 ---
 
 ## Three-Layer Defense Against Session Blocking
 
-test_runner layers its guards so the fail-open estimator can never be the safety decision:
+test_runner bounds source selection and resolved test execution before a session can fan out without limit:
 
-### Layer 1 — Advisory fan-out estimate (fast, ~100ms, fail-open)
-`estimateFanOut(sourceFiles, workingDir)` reads the cached impact map and estimates the unique test-file count without spawning subprocesses. If the estimate exceeds `MAX_SAFE_TEST_FILES = 50`, the call returns `scope_exceeded` early. On a cold or corrupt cache it returns 0 and is silently skipped — it is an optimization, never the binding decision.
+### Layer 1 — Scope-specific normalized-input guard
+`convention` rejects more than one source file for convention discovery. `graph`
+and `impact` reject more than `MAX_SAFE_TEST_FILES = 50` normalized source files
+before fan-out. Explicit direct test files remain allowed for convention scope.
 
-### Layer 2 — Budget-limited traversal (deduplicated union)
-`analyzeImpact` accepts a `budget` parameter (`MAX_SAFE_TEST_FILES = 50`) that bounds the deduplicated union of impacted tests (not per-source occurrences). The traversal stops once the union reaches 50 and sets `budgetExceeded: true`; the call site checks this flag and returns `scope_exceeded` with a `cap_decision` object before running anything.
+### Layer 2 — Advisory resolution estimate
+For `graph` and `impact`, `estimateFanOut(sourceFiles, workingDir)` reads the
+cached impact map and reports a bounded, advisory count of unique candidate tests
+without spawning subprocesses. Resolution metadata preserves whether the estimate
+was advisory or unavailable and any cache status; it is not a substitute for the
+final cap.
 
-### Layer 3 — Post-resolution count check (the binding guard)
-After discovery, the final deduplicated `testFiles.length` is compared to `MAX_SAFE_TEST_FILES`. If exceeded, `scope_exceeded` is returned with the resolved set and `cap_decision: { decision: 'cap_exceeded', resolved_test_count, limit }`.
+### Layer 3 — Bounded traversal + final unique-test check
+Graph and impact traversal are bounded to the safe budget and report
+`scope_exceeded` when the budget is exceeded. After fallback, normalization, and
+deduplication, the final unique `testFiles.length` is compared with
+`MAX_SAFE_TEST_FILES`; an excess returns `scope_exceeded` before execution.
 
-**Result:** Bounded multi-source batches run; anything over the cap gets `outcome: 'scope_exceeded'` with the resolved count instead of a hang or a silent partial run.
+**Result:** When fan-out exceeds the safe threshold, the session gets `outcome: 'scope_exceeded'` instead of hanging.
 
 ---
 
@@ -58,19 +67,16 @@ Do you need to run tests?
 ├─ Single test file, targeted validation
 │   └─ Either works. Prefer shell: bun --smol test <file> --timeout 30000
 │
-├─ Multiple TEST FILES to execute directly (e.g. all agents tests)
-│   └─ Shell only — per-file loop (direct test-path execution stays a shell
-│      job; the bounded multi-source contract below is for SOURCE files).
+├─ Multiple test files in the same directory (e.g. all agents tests)
+│   └─ Shell only — per-file loop. These are explicit test files, not graph/impact sources.
 │
-├─ Find tests related to ONE changed source file
-│   └─ test_runner is fine: { scope: 'graph', files: ['src/agents/coder.ts'] }
-│      (single file → bounded fan-out)
+├─ Find tests related to ONE OR MORE changed source files (up to 50 normalized files)
+│   └─ test_runner is fine: { scope: 'graph', files: ['src/agents/coder.ts', 'src/tools/test-runner.ts'] }
+│      (graph/impact input is bounded; final unique resolved-test cap still applies)
 │
-├─ Find tests related to MULTIPLE changed source files
-│   └─ test_runner works: pass all the source files to one `graph`/`impact` call —
-│      they are deduplicated into one union and run while it stays under the cap
-│      (`scope_exceeded` with `cap_decision` otherwise). A shell per-file loop or a
-│      direct test-path `convention` call remain fine alternatives.
+├─ Find tests related to MORE THAN 50 changed source files
+│   └─ Split into intentional bounded graph/impact batches or use a shell loop.
+│      Do not use scope:'all' as a fallback.
 │
 └─ Validate the entire repo (pre-push)
     └─ Shell only — 5-tier suite from commit-pr skill. Never test_runner scope:'all'.
@@ -82,15 +88,14 @@ Do you need to run tests?
 
 | Scope | With `files: [one]` | With `files: [many]` | Notes |
 |-------|--------------------|--------------------|-------|
-| `'convention'` | ✅ Safe | ✅ Safe while the resolved union stays under 50 | Direct test file paths exempt from discovery |
-| `'graph'` | ✅ Safe | ✅ Bounded multi-source; `scope_exceeded` (with `cap_decision`) once the union exceeds 50 | Deduplicated union is the binding count; the fan-out estimate is advisory |
-| `'impact'` | ✅ Safe | ✅ Bounded multi-source; `scope_exceeded` (with `cap_decision`) once the union exceeds 50 | Same deduplicated-union guard |
+| `'convention'` | ✅ Safe | ❌ Rejected for multiple source files (`scope_exceeded`) | One source file for convention discovery; direct test file paths exempt |
+| `'graph'` | ✅ Safe | ✅ Up to 50 normalized source files; >50 rejected | Advisory estimate and bounded traversal; final unique resolved-test cap still applies |
+| `'impact'` | ✅ Safe | ✅ Up to 50 normalized source files; >50 rejected | Advisory estimate and bounded traversal; final unique resolved-test cap still applies |
 | `'all'` | ❌ Never | ❌ Never | Env-gated (`SWARM_ALLOW_FULL_SUITE=1`); CI mirror only |
 
-**Rule of thumb:** One `test_runner` call per logical batch of changed sources; the
-resolved union must stay under 50. Responses carry `resolved_test_files`,
-`cap_decision`, and (on fallback) `fallback_reason`; a discovery scope that
-legitimately finds nothing returns the typed `no_impacted_tests` outcome.
+**Rule of thumb:** Pass one source file to `convention`; pass a normalized array of
+at most 50 source files to `graph` or `impact`. Use a shell loop or intentional
+batches when the source selection or final resolved test set exceeds 50.
 
 For one named Go or CTest test, bypass file discovery with an exact native selector:
 
@@ -294,7 +299,7 @@ bun --smol test tests/unit/agents/some-file.test.ts --timeout 30000
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| `scope_exceeded` returned from test_runner | Fan-out exceeded 50 test files during graph/impact resolution | Switch to per-file shell loop; reduce changed-files scope |
+| `scope_exceeded` returned from test_runner | Convention received multiple source files, graph/impact received >50 normalized sources, or final resolution exceeded 50 unique tests | Split graph/impact inputs into bounded batches or reduce the source scope; never widen to `scope:'all'` |
 | Session killed during test_runner | Pre-fix: unbounded fan-out on multiple files | Now returns `scope_exceeded` instead — no more session kills |
 | `mock.module` breaks unrelated tests | Missing spread of real module exports | Add `...realModule` spread |
 | Windows tests fail with EBUSY | `mock.restore()` called while child process holds lock | Add `test.skipIf(process.platform === 'win32')` |
