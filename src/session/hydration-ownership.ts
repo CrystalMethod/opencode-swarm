@@ -28,6 +28,7 @@
  */
 
 import { canonicalProjectKey } from '../db/canonical-project.js';
+import { canonicalRootKeyLexical } from '../utils/canonical-root.js';
 
 /** Upper bound for tracked per-project registries (matches MAX_READY_ROOTS). */
 export const MAX_TRACKED_PROJECTS = 32;
@@ -62,6 +63,12 @@ function evictOldest(map: Map<string, unknown>, cap: number): void {
  * module-owned bounded memo: exactly ONE realpath-equivalent resolution per
  * distinct spelling per process; every later call is a pure Map hit.
  *
+ * The memo is keyed by `canonicalRootKeyLexical` (the shared filesystem-free
+ * lexical alias key, per the path-identity ratchet — raw resolved paths must
+ * not key project maps) so distinct spellings memoize independently while
+ * lexically-identical spellings share one entry — whose canonical resolution
+ * is identical anyway.
+ *
  * `canonicalProjectKey` itself is intentionally NOT memoized (it calls
  * `canonicalRootKeyFresh`, bypassing the shared `canonicalRootMemo`), which
  * is why this memo exists — `beginHydrationScope`/`startAgentSession` sit on
@@ -71,11 +78,14 @@ function evictOldest(map: Map<string, unknown>, cap: number): void {
  * `path.resolve` fallback on realpath failure) — that fallback is accepted.
  */
 export function hydrationProjectKey(directory: string): string {
-	const memoized = directoryKeyMemo.get(directory);
+	const memoKey = canonicalRootKeyLexical(directory);
+	const memoized = directoryKeyMemo.get(memoKey);
 	if (memoized !== undefined) return memoized;
 	const key = canonicalProjectKey(directory);
-	evictOldest(directoryKeyMemo, MAX_DIRECTORY_KEY_MEMO);
-	directoryKeyMemo.set(directory, key);
+	if (!directoryKeyMemo.has(memoKey)) {
+		evictOldest(directoryKeyMemo, MAX_DIRECTORY_KEY_MEMO);
+	}
+	directoryKeyMemo.set(memoKey, key);
 	return key;
 }
 
