@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { _internals, buildImpactMap } from '../../../src/test-impact/analyzer';
+import {
+	_internals,
+	buildImpactMap,
+	MAX_IMPACT_GO_MOD_BYTES,
+} from '../../../src/test-impact/analyzer';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 let tempDir: string;
@@ -67,5 +71,21 @@ func TestImports(t *testing.T) {}
 		expect(impactMap[sideEffectPath]).toEqual([testPath]);
 		expect(impactMap[lineCommentPath]).toBeUndefined();
 		expect(impactMap[blockCommentPath]).toBeUndefined();
+	});
+
+	test('rejects an oversized go.mod before parsing its module declaration', () => {
+		// Before the fix, findGoModule used readFileSync without a byte cap, so
+		// an oversized go.mod could force an unbounded parser allocation.
+		fs.mkdirSync(path.join(tempDir, '.git'));
+		fs.writeFileSync(
+			path.join(tempDir, 'go.mod'),
+			Buffer.concat([
+				Buffer.from('module example.com/oversized\n'),
+				Buffer.alloc(MAX_IMPACT_GO_MOD_BYTES, 0x78),
+			]),
+		);
+		_internals._clearGoModuleCache();
+
+		expect(_internals.findGoModule(tempDir)).toBeNull();
 	});
 });

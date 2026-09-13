@@ -16,6 +16,7 @@ import { IMPACT_CACHE_VERSION } from './constants';
  */
 export const MAX_IMPACT_TEST_FILES = 4096;
 export const MAX_IMPACT_TEST_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_IMPACT_GO_MOD_BYTES = 1 * 1024 * 1024;
 export const MAX_IMPACT_SCAN_BYTES = 128 * 1024 * 1024;
 export const MAX_IMPACT_WALK_ENTRIES = 100_000;
 export const MAX_IMPACT_SCAN_DEPTH = 32;
@@ -271,6 +272,57 @@ function readBoundedTestFile(
 	}
 }
 
+/**
+ * Read a regular file through a descriptor and a byte cap. Go module files
+ * are parser inputs too, so they must not bypass the same byte-safe bounds as
+ * test-file parsing just because they are discovered while walking parents.
+ */
+function readBoundedUtf8File(
+	filePath: string,
+	maxBytes: number,
+): string | null {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(filePath, 'r');
+		const initial = fs.fstatSync(fd);
+		if (!initial.isFile() || initial.size > maxBytes) return null;
+
+		const chunks: Buffer[] = [];
+		const chunk = Buffer.allocUnsafe(64 * 1024);
+		let totalBytes = 0;
+		while (totalBytes <= maxBytes) {
+			const bytesToRead = Math.min(chunk.length, maxBytes + 1 - totalBytes);
+			const bytesRead = fs.readSync(fd, chunk, 0, bytesToRead, totalBytes);
+			if (bytesRead === 0) break;
+			totalBytes += bytesRead;
+			if (totalBytes > maxBytes) return null;
+			chunks.push(Buffer.from(chunk.subarray(0, bytesRead)));
+		}
+
+		const final = fs.fstatSync(fd);
+		if (
+			!final.isFile() ||
+			final.size > maxBytes ||
+			final.size !== totalBytes ||
+			final.dev !== initial.dev ||
+			final.ino !== initial.ino
+		) {
+			return null;
+		}
+		return Buffer.concat(chunks, totalBytes).toString('utf8');
+	} catch {
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
+	}
+}
+
 function buildTestFileManifest(
 	cwd: string,
 	testFiles?: string[],
@@ -453,7 +505,8 @@ function findGoModule(
 		walked.push(cur);
 		try {
 			const goMod = path.join(cur, 'go.mod');
-			const content = fs.readFileSync(goMod, 'utf-8');
+			const content = readBoundedUtf8File(goMod, MAX_IMPACT_GO_MOD_BYTES);
+			if (content === null) throw new Error('go.mod unavailable or oversized');
 			// Strip optional surrounding quotes and trailing `// comment`.
 			// Both forms are valid: `module example.com/x` and
 			// `module "example.com/x" // some note`. Without the strip the
@@ -895,6 +948,7 @@ export const _internals: {
 	resolveRelativeImport: typeof resolveRelativeImport;
 	findTestFilesSync: typeof findTestFilesSync;
 	extractImports: typeof extractImports;
+	findGoModule: typeof findGoModule;
 	buildImpactMapInternal: typeof buildImpactMapInternal;
 	buildImpactMap: typeof buildImpactMap;
 	loadImpactMap: typeof loadImpactMap;
@@ -910,6 +964,7 @@ export const _internals: {
 	resolveRelativeImport,
 	findTestFilesSync,
 	extractImports,
+	findGoModule,
 	buildImpactMapInternal,
 	buildImpactMap,
 	loadImpactMap,

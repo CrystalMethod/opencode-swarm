@@ -9,7 +9,10 @@ import {
 import { MAX_IMPACT_CACHE_BYTES } from '../../../src/test-impact/analyzer';
 import { MAX_SAFE_TEST_FILES } from '../../../src/test-impact/constants';
 import { TOOL_MANIFEST } from '../../../src/tools/manifest';
-import { mutation_test } from '../../../src/tools/mutation-test';
+import {
+	mutation_test,
+	_internals as mutationToolInternals,
+} from '../../../src/tools/mutation-test';
 import { test_runner } from '../../../src/tools/test-runner';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
@@ -29,6 +32,7 @@ const symlinkSupport = (() => {
 		fs.rmSync(probe, { recursive: true, force: true });
 	}
 })();
+const originalPathRelative = mutationToolInternals.pathRelative;
 
 function completed(): Awaited<ReturnType<MutationCommandRunner>> {
 	return { status: 'completed', exitCode: 0, stdout: '', stderr: '' };
@@ -69,6 +73,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	mutationInternals.runCommand = originalRunCommand;
+	mutationToolInternals.pathRelative = originalPathRelative;
 	fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -127,6 +132,29 @@ describe('mutation_test feedback regressions', () => {
 		expect((parsed.selection as Record<string, unknown>).testFiles).toEqual([
 			'tests/selected.test.ts',
 		]);
+	});
+
+	test('rejects an absolute relative result from cross-drive containment checks', () => {
+		// Before the fix, a Windows cross-drive `path.relative` result such as
+		// `D:\\outside\\selected.test.ts` was not recognized as an escape because
+		// containment only checked for `..` prefixes.
+		let calls = 0;
+		mutationToolInternals.pathRelative = ((from, to) => {
+			calls++;
+			if (calls === 2) return 'D:\\outside\\selected.test.ts';
+			return originalPathRelative(from, to);
+		}) as typeof mutationToolInternals.pathRelative;
+
+		const result = mutationToolInternals.normalizeWorkspaceFile(
+			'tests/selected.test.ts',
+			tempDir,
+			true,
+		);
+
+		expect(result).toEqual({
+			error:
+				'file path resolves outside the project root: tests/selected.test.ts',
+		});
 	});
 
 	test('preserves a replacement cache generation during source/test invalidation', async () => {

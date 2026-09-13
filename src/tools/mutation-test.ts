@@ -188,8 +188,8 @@ function normalizeWorkspaceFile(
 		return { error: `file path escapes the project root: ${value}` };
 	}
 	const absolute = path.resolve(cwd, normalized);
-	const relative = path.relative(cwd, absolute).replace(/\\/g, '/');
-	if (relative === '' || relative === '..' || relative.startsWith('../')) {
+	const relative = _internals.pathRelative(cwd, absolute).replace(/\\/g, '/');
+	if (isWorkspaceRelativeOutsideRoot(relative)) {
 		return { error: `file path escapes the project root: ${value}` };
 	}
 	if (requireExisting) {
@@ -199,8 +199,10 @@ function normalizeWorkspaceFile(
 			}
 			const root = fs.realpathSync(cwd);
 			const real = fs.realpathSync(absolute);
-			const realRelative = path.relative(root, real).replace(/\\/g, '/');
-			if (realRelative === '..' || realRelative.startsWith('../')) {
+			const realRelative = _internals
+				.pathRelative(root, real)
+				.replace(/\\/g, '/');
+			if (isWorkspaceRelativeOutsideRoot(realRelative)) {
 				return {
 					error: `file path resolves outside the project root: ${value}`,
 				};
@@ -211,6 +213,24 @@ function normalizeWorkspaceFile(
 	}
 	return { value: relative, absolute };
 }
+
+function isWorkspaceRelativeOutsideRoot(relative: string): boolean {
+	return (
+		relative === '' ||
+		relative === '..' ||
+		relative.startsWith('../') ||
+		path.posix.isAbsolute(relative) ||
+		path.win32.isAbsolute(relative)
+	);
+}
+
+export const _internals: {
+	pathRelative: typeof path.relative;
+	normalizeWorkspaceFile: typeof normalizeWorkspaceFile;
+} = {
+	pathRelative: path.relative,
+	normalizeWorkspaceFile,
+};
 
 function workspaceFileIdentity(filePath: string): string {
 	let canonical = path.normalize(filePath);
