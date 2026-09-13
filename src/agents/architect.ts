@@ -158,18 +158,35 @@ export type ArchitectPromptBudgetEnforcement =
 	| { ok: false; error: string; chars: number; tokenEstimate: number };
 
 /**
- * Emit an ARCHITECT_PROMPT_BUDGET_EXCEEDED advisory once per process per
- * distinct error (issue #2671 review follow-up): getAgentConfigs runs twice
- * during plugin init and once per command re-resolution, so a deterministic
- * over-budget config would otherwise push 2-4 identical advisories into the
- * capped diagnose buffer per session. Keyed by the full bounded error text,
- * so a config change that changes the label or lengths warns again.
+ * Emit an ARCHITECT_PROMPT_BUDGET_EXCEEDED advisory once per session per
+ * distinct overflow signature (issue #2671 review follow-up): getAgentConfigs
+ * runs twice during plugin init and once per command re-resolution, so a
+ * deterministic over-budget config would otherwise push 2-4 identical
+ * advisories into the capped diagnose buffer per session.
+ *
+ * The signature NORMALIZES digit runs out of the bounded error text (review
+ * ROW-4): the exact char/token counts vary by ±1 across turns, so keying on
+ * the raw text defeated dedup and flooded the set. The label survives
+ * normalization, so a genuinely different overflowing agent still warns.
+ * The set is bounded (review ROW-3, AGENTS.md invariant 8: module-level
+ * state needs an explicit eviction strategy) — the oldest signature is
+ * evicted FIFO past MAX_ARCHITECT_BUDGET_SIGNATURES.
  */
 const emittedBudgetAdvisories = new Set<string>();
+const MAX_ARCHITECT_BUDGET_SIGNATURES = 100;
+
+function budgetAdvisorySignature(error: string): string {
+	return error.replace(/\d+/g, 'N');
+}
 
 export function warnArchitectPromptBudgetExceededOnce(error: string): void {
-	if (emittedBudgetAdvisories.has(error)) return;
-	emittedBudgetAdvisories.add(error);
+	const signature = budgetAdvisorySignature(error);
+	if (emittedBudgetAdvisories.has(signature)) return;
+	if (emittedBudgetAdvisories.size >= MAX_ARCHITECT_BUDGET_SIGNATURES) {
+		const oldest = emittedBudgetAdvisories.values().next().value;
+		if (oldest !== undefined) emittedBudgetAdvisories.delete(oldest);
+	}
+	emittedBudgetAdvisories.add(signature);
 	advisoryWarn(error);
 }
 
@@ -1690,23 +1707,41 @@ export function capToolDescriptionForPrompt(description: string): string {
 	if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
 		return description;
 	}
-	let capped = description.slice(
-		0,
-		ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
-	);
-	for (;;) {
-		const unmatchedOpens: number[] = [];
-		for (let i = 0; i < capped.length; i++) {
-			const ch = capped[i];
-			if (ch === '(') unmatchedOpens.push(i);
-			else if (ch === ')') unmatchedOpens.pop();
+	const depthOf = (s: string): number => {
+		let depth = 0;
+		for (let i = 0; i < s.length; i++) {
+			if (s[i] === '(') depth++;
+			else if (s[i] === ')') depth--;
 		}
-		if (unmatchedOpens.length === 0) break;
-		capped = capped
-			.slice(0, unmatchedOpens[unmatchedOpens.length - 1]!)
-			.trimEnd();
+		return depth;
+	};
+	let end = ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS;
+	let capped = description.slice(0, end);
+	let depth = depthOf(capped);
+	// A window that cuts between ')' and its '(' leaves stray closers at the
+	// tail; strip them before balancing opens.
+	while (depth < 0 && capped.endsWith(')')) {
+		capped = capped.slice(0, -1).trimEnd();
+		depth = depthOf(capped);
 	}
-	return capped;
+	// Review ROW-1: balance by RESERVING room for the closers of unmatched
+	// opens and appending them, instead of retreating to the last unmatched
+	// '(' and discarding the parenthetical (which lost up to ~78% of a
+	// description whose cap window fell mid-parenthetical).
+	while (
+		depth > 0 &&
+		end + depth > ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS
+	) {
+		end -= end + depth - ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS;
+		if (end <= 0) {
+			// Degenerate all-open-paren input: content cannot fit alongside
+			// its closers. Documented unreachable with real metadata.
+			return '';
+		}
+		capped = description.slice(0, end);
+		depth = depthOf(capped);
+	}
+	return capped.trimEnd() + ')'.repeat(Math.max(depth, 0));
 }
 
 /** Render one tool's in-prompt entry (bounded description + visible `…`). */

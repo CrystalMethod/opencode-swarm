@@ -166,8 +166,8 @@ character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,000 chars in
 `src/agents/architect.ts`). Every supported feature combination — the default
 render, the work-complete council on or off, the advisory General Council
 (`council.general.enabled`) composed together with every documented opt-in
-(ui_review, design_docs, architectural_supervision, adversarial testing,
-memory, external skills, skills, turbo), multi-swarm prefixed variants, and
+(ui_review, design_docs, architectural_supervision, adversarial_testing,
+memory, external_skills, skills, turbo), multi-swarm prefixed variants, and
 memory-only / review-only cells — must render under that ceiling. The feature
 matrix is pinned as a named regression fixture
 (`tests/unit/agents/architect-prompt-budget-matrix.test.ts`), so any
