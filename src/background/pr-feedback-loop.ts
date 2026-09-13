@@ -35,7 +35,6 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import { loadPluginConfig } from '../config/loader';
-import { getPRPollSnapshot } from '../git/pr';
 import {
 	activatePrWorkflow,
 	writePrWorkflowAtomicJson,
@@ -171,6 +170,7 @@ const LoopStateSchema = z.object({
 	updatedAt: z.string().min(1),
 	oversightSeq: z.number().int().nonnegative(),
 	correlations: z.record(z.string(), z.any()),
+	sessionTerminals: z.record(z.string(), z.any()).default({}),
 });
 
 // ── DI seam (tests/checks inject; restore in afterEach) ──────────────────
@@ -225,17 +225,13 @@ export const _internals: {
 	writeState: (directory: string, state: LoopStateV1) => Promise<void>;
 } = {
 	/** Default: fresh head via the authenticated gh poll snapshot. */
-	async evaluateCurrentHead(repoFullName, prNumber) {
-		try {
-			const snapshot = await getPRPollSnapshot(
-				prNumber,
-				repoFullName,
-				process.cwd(),
-			);
-			return snapshot?.status?.headRefOid ?? null;
-		} catch {
-			return null;
-		}
+	async evaluateCurrentHead(_repoFullName, _prNumber) {
+		// Deliberately unavailable without a host-injected directory: gh polling
+		// needs the project directory for .swarm containment (invariant 4), and
+		// process.cwd() is a direct-CLI/test fallback only. Fail-closed → the
+		// loop classifies the event ambiguous and stays PENDING. Hosts wire this
+		// seam at plugin init with the project directory.
+		return null;
 	},
 	/**
 	 * Default oversight dispatch (#2502 B2): the loop's OWN critic_oversight
@@ -664,13 +660,24 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	};
 	const circuitOpen = correlation.circuit.openUntil > now;
 
-	const refuseAuthorization = (
+	const refuseAuthorization = async (
 		reason: string,
 		extra: { stale?: boolean; replay?: boolean } = {},
 		terminal?: PrFeedbackLoopTerminal,
-	): PrFeedbackLoopResult => {
+	): Promise<PrFeedbackLoopResult> => {
 		if (terminal) correlation.terminal = terminal;
-		void _internals.writeState(directory, state).catch(() => {});
+		// Await so the terminal is durable before returning: a fire-and-forget
+		// write here races the settlement lock release and a rapid follow-up
+		// claimAndProcess could read stale state (or lose the terminal).
+		try {
+			await _internals.writeState(directory, state);
+		} catch (err) {
+			warn(
+				`[pr-feedback-loop] refusal terminal write failed (state kept in memory): ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
 		return {
 			...base,
 			authorization: {
@@ -687,7 +694,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	};
 
 	if (foreign) {
-		return refuseAuthorization(
+		return await refuseAuthorization(
 			'foreign: event does not match an active subscription correlation for this session',
 		);
 	}
@@ -709,7 +716,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	}
 	const stale = subscriptionHead !== null && subscriptionHead !== head;
 	if (stale) {
-		return refuseAuthorization(
+		return await refuseAuthorization(
 			'stale: event head does not match the freshly evaluated PR head',
 			{ stale: true },
 		);
@@ -757,7 +764,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	}
 
 	if (budget.exhausted) {
-		return refuseAuthorization(
+		return await refuseAuthorization(
 			'budget exhausted: per-session/per-PR action cap reached — pausing for a human',
 			{},
 			{
@@ -768,7 +775,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	}
 
 	if (circuitOpen) {
-		return refuseAuthorization(
+		return await refuseAuthorization(
 			'circuit open: repeated failures degraded the loop — probe again after the cooldown',
 			{},
 			{
