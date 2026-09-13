@@ -3471,6 +3471,18 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 					impactLoad.map,
 				);
 				if (impactResult.budgetExceeded) {
+					const resolution = makeResolution(
+						scope,
+						scope,
+						sourceFiles,
+						impactResult.impactedTests,
+						'scope_exceeded',
+						workingDir,
+						{
+							estimate: selectionEstimate,
+							cacheStatus: selectionCacheStatus,
+						},
+					);
 					const errorResult: TestErrorResult = {
 						success: false,
 						framework,
@@ -3478,18 +3490,8 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 						error: 'Budget exceeded during impact analysis',
 						message: `Impact analysis exceeded safe budget of ${MAX_SAFE_TEST_FILES} test files.`,
 						outcome: 'scope_exceeded',
-						resolution: makeResolution(
-							scope,
-							scope,
-							sourceFiles,
-							impactResult.impactedTests,
-							'scope_exceeded',
-							workingDir,
-							{
-								estimate: selectionEstimate,
-								cacheStatus: selectionCacheStatus,
-							},
-						),
+						resolution,
+						...resolutionFields(resolution),
 					};
 					return JSON.stringify(errorResult, null, 2);
 				}
