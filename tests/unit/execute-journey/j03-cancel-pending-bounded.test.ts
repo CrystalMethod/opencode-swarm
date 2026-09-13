@@ -6,16 +6,19 @@
  *      resolve, then collect_lane_results cancel_pending → lanes settle
  *      `cancelled` (typed terminal, session.abort recorded).
  *  (b) EXECUTE-scope bounded abandon — a coder Task dispatch admitted
- *      (settlement DISPATCHED) whose child never completes is settled
- *      bounded via the REGISTERED `event` hook session.deleted path.
+ *      (settlement DISPATCHED) whose child never completes: the registered
+ *      `event` hook session.deleted path clears session state BOUNDED and
+ *      intentionally leaves the settlement WAL DISPATCHED (durable recovery
+ *      input for /swarm recover) — this test pins that boundary and proves
+ *      the lost task is never finished.
  *
  * Labeled gap (documented in docs/testing/execute-journey.md): the repo has
  * no dedicated EXECUTE-scope coder-cancel tool; control (a) qualifies the
  * registered lane-cancel surface and control (b) the registered session-end
- * settle path.
+ * boundary.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { findByBatchId } from '../../../src/background/pending-delegations';
 import {
@@ -92,14 +95,14 @@ describe('bounded cancellation through the registered host (#2666)', () => {
 		);
 		expect(dispatch.success).toBe(true);
 
-		const cancelStartedAt = Date.now();
+		const cancelStartedAt = performance.now();
 		const cancel = parseToolResult(
 			await booted.host.tool.collect_lane_results.execute(
 				{ batch_id: batchId, cancel_pending: true },
 				{ directory: project.directory, sessionID: driver.sessionID },
 			),
 		);
-		const cancelElapsedMs = Date.now() - cancelStartedAt;
+		const cancelElapsedMs = performance.now() - cancelStartedAt;
 		// The envelope's `success` flag means COMPLETED work; a pure-cancel
 		// result legitimately reports success=false with cancelled>0. The
 		// functional contract is: every lane settled cancelled, nothing
@@ -121,7 +124,7 @@ describe('bounded cancellation through the registered host (#2666)', () => {
 		);
 	}, 120_000);
 
-	test('an abandoned coder dispatch settles bounded via the registered session.deleted event', async () => {
+	test('an abandoned coder dispatch stays unfinished through the registered session.deleted event', async () => {
 		project = createJourneyProject('swarm-j03b-');
 		const booted = await bootJourneyHost({ directory: project.directory });
 		const driver = new JourneyDriver(booted);
@@ -141,23 +144,43 @@ describe('bounded cancellation through the registered host (#2666)', () => {
 			{ tool: 'Task', sessionID: driver.sessionID, callID },
 			{ args },
 		);
-		const abandonedAt = Date.now();
-		// The host's session-end lifecycle event settles the lost dispatch
-		// through the registered `event` hook (src/index.ts:3286/3440).
+		// Verify the dispatch actually began: the coder-settlement WAL was
+		// written DISPATCHED by the delegation-gate toolBefore.
+		const walPath = path.join(
+			project.directory,
+			'.swarm',
+			'coder-settlements',
+			`${TASK_ID}.json`,
+		);
+		expect(JSON.parse(readFileSync(walPath, 'utf8'))).toMatchObject({
+			state: 'DISPATCHED',
+		});
+
+		const abandonedAt = performance.now();
+		// The host's session-end lifecycle event fires through the registered
+		// `event` hook (src/index.ts:3286/3440). It clears session state
+		// bounded — it does NOT settle the coder dispatch WAL (that is the
+		// /swarm recover path's job, src/workflow/coder-settlement.ts
+		// recoverStaleCoderSettlements); this test pins that boundary.
 		await booted.host.hooks['event']({
 			event: {
 				type: 'session.deleted',
 				properties: { sessionID: driver.sessionID },
 			},
 		});
-		const settleElapsedMs = Date.now() - abandonedAt;
-		// Bounded: session-end settlement returns promptly — no hang, and
-		// the lost task is never finished.
+		const settleElapsedMs = performance.now() - abandonedAt;
+		// Bounded: the session-end event returns promptly — no hang.
 		expect(settleElapsedMs).toBeLessThan(CANCEL_WALL_CLOCK_BOUND_MS);
+		// The abandoned task is never finished by the session-end event...
 		const snapshot = getTaskWorkflowSnapshot(
 			await readTaskEvidence(project.directory, TASK_ID),
 		);
 		expect(snapshot.state).not.toBe('complete');
 		expect(snapshot.lastOutcome).not.toBe('task_completed');
+		// ...and the dispatch WAL is INTENTIONALLY left DISPATCHED (the
+		// durable recovery input for /swarm recover), not silently rewritten.
+		expect(JSON.parse(readFileSync(walPath, 'utf8'))).toMatchObject({
+			state: 'DISPATCHED',
+		});
 	}, 120_000);
 });

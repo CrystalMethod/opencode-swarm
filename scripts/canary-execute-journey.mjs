@@ -26,7 +26,7 @@
  * path only). Subprocess hygiene per AGENTS.md invariant 3.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -103,9 +103,18 @@ const sdk = createOpencodeClient({ baseUrl: serverUrl });
 
 // LIVE host client: the same surface the scripted client implements, but
 // every call goes to the real OpenCode server (and the lane prompt is a
-// real model round-trip).
+// real model round-trip). The calls property mirrors ScriptedHostClient's
+// recording seam — JourneyDriver.report() reads client.calls, so the live
+// client must expose the same shape or the canary report can never be
+// written.
 const liveCalls = [];
 const client = {
+  // The calls getter is live-backed over liveCalls: JourneyDriver.report()
+  // reads client.calls, so the live client must expose the same recording
+  // seam as ScriptedHostClient or the canary report can never be written.
+  get calls() {
+    return liveCalls.map((surface) => ({ surface, detail: {}, at: '' }));
+  },
   session: {
     create: async (input) => {
       const res = await sdk.session.create({ body: input ?? {} });
@@ -165,8 +174,8 @@ console.log('LIVE_CALLS=' + liveCalls.join(','));
 project.cleanup();
 `;
 
-const tmpDir = path.join(tmpdir(), `swarm-canary-${Date.now()}`);
-mkdirSync(tmpDir, { recursive: true });
+// Collision-safe temp entry (mkdtemp), removed with the parent's finally.
+const tmpDir = mkdtempSync(path.join(tmpdir(), 'swarm-canary-'));
 const entryFile = path.join(tmpDir, 'canary-leg.mts');
 writeFileSync(entryFile, legSource);
 
@@ -186,6 +195,10 @@ child.stderr?.on('data', (chunk) => {
 	if (output.length < 60_000) output += String(chunk);
 });
 
+// Cleanup runs BEFORE exit: process.exit() skips finally blocks, so the
+// exit decision is captured and executed after the cleanup block.
+let exitCode = 0;
+let exitMessage = '';
 try {
 	const [code, signal] = await new Promise((resolve, reject) => {
 		child.on('error', reject);
@@ -194,19 +207,29 @@ try {
 	if (code === 0) {
 		const reportMatch = /CANARY_REPORT=(.*)/.exec(output);
 		const callsMatch = /LIVE_CALLS=(.*)/.exec(output);
-		process.stdout.write(
-			`[canary] OK live-model journey completed (live calls: ${callsMatch?.[1]?.trim() ?? 'n/a'}); report: ${reportMatch?.[1]?.trim() ?? 'written under the fixture .swarm/journey/'}\n`,
+		exitMessage = `[canary] OK live-model journey completed (live calls: ${callsMatch?.[1]?.trim() ?? 'n/a'}); report: ${reportMatch?.[1]?.trim() ?? 'written under the fixture .swarm/journey/'}\n`;
+	} else {
+		exitCode = EXIT_UNAVAILABLE;
+		process.stderr.write(
+			`[canary] TRANSPORT-UNAVAILABLE: live-model journey failed (exit=${String(code)} signal=${String(signal)})\n${output.slice(-2_000)}\n`,
 		);
-		process.exit(0);
 	}
+} catch (spawnError) {
+	exitCode = EXIT_UNAVAILABLE;
 	process.stderr.write(
-		`[canary] TRANSPORT-UNAVAILABLE: live-model journey failed (exit=${String(code)} signal=${String(signal)})\n${output.slice(-2_000)}\n`,
+		`[canary] TRANSPORT-UNAVAILABLE: live leg could not run: ${spawnError instanceof Error ? spawnError.message : String(spawnError)}\n`,
 	);
-	process.exit(EXIT_UNAVAILABLE);
 } finally {
 	try {
 		child.kill();
 	} catch {
 		/* best-effort kill */
 	}
+	try {
+		rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+	} catch {
+		/* disposable operator temp; best-effort cleanup */
+	}
 }
+if (exitMessage) process.stdout.write(exitMessage);
+process.exit(exitCode);

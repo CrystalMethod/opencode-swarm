@@ -158,4 +158,26 @@ describe('failure/rejection distinctness through the registered host (#2666)', (
 		const finish = await driver.finishTask({ taskId: TASK_ID });
 		expect(finish.success).toBe(false);
 	}, 120_000);
+
+	test('completion is refused before Stage B runs (zero gate completions)', async () => {
+		project = createJourneyProject('swarm-j02d-');
+		const booted = await bootJourneyHost({ directory: project.directory });
+		const driver = new JourneyDriver(booted);
+		await driveThroughExecute(driver, project.directory, () =>
+			writeFileSync(
+				path.join(project!.directory, FILE),
+				'export const feature = 2;\n',
+			),
+		);
+		// The task sits at coder_delegated with ZERO Stage B completions
+		// (pre_check_batch not yet run): the registered update_task_status
+		// must refuse completion (production checkReviewerGate path).
+		const finish = await driver.finishTask({ taskId: TASK_ID });
+		expect(finish.success).toBe(false);
+		const snapshot = getTaskWorkflowSnapshot(
+			await readTaskEvidence(project.directory, TASK_ID),
+		);
+		expect(snapshot.state).toBe('coder_delegated');
+		expect(snapshot.lastOutcome).not.toBe('task_completed');
+	}, 120_000);
 });

@@ -122,6 +122,27 @@ describe('journey validator — no stdout-only completion proof (#2666)', () => 
 		expect(verdict.reasons).toContain('missing-plan-binding');
 	});
 
+	test('a deterministic report claiming live-model transport is rejected', () => {
+		const report = reportWith(
+			[
+				{
+					name: 'execute',
+					startStatus: 'idle',
+					endStatus: 'coder_delegated',
+					evidence: {
+						durableArtifacts: ['.swarm/evidence/1.1.json'],
+						toolCallIds: ['c1'],
+						resultIds: ['r1'],
+					},
+				},
+			],
+			{ transport: 'live-model' },
+		);
+		const verdict = validateJourneyReport(report);
+		expect(verdict.valid).toBe(false);
+		expect(verdict.reasons).toContain('fixture-class-transport-mismatch');
+	});
+
 	test('an empty report is rejected', () => {
 		const verdict = validateJourneyReport(reportWith([]));
 		expect(verdict.valid).toBe(false);

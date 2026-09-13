@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { type BootedPluginHost, bootSwarmPluginHost } from './plugin-host';
+import { safeRmRecursive } from './safe-test-dir';
 import { canonicalMkdtemp } from './tmpdir';
 
 // ---------------------------------------------------------------------------
@@ -264,14 +265,12 @@ export function createJourneyProject(prefix: string): JourneyProject {
 	const cleanup = (): void => {
 		if (cleaned) return;
 		cleaned = true;
+		// Repo-standard guarded removal (safe-test-dir.ts): proves the target
+		// is under the temp root, retries EBUSY/EPERM (Windows sqlite WAL
+		// handles), and never shells out to cmd /c rmdir (whose argv quoting
+		// fails silently on Windows).
 		try {
-			spawnSync(
-				process.platform === 'win32' ? 'cmd' : 'rm',
-				process.platform === 'win32'
-					? ['/c', `rmdir /s /q "${directory}"`]
-					: ['-rf', directory],
-				{ stdio: 'ignore', timeout: 10_000, windowsHide: true },
-			);
+			safeRmRecursive(directory);
 		} catch {
 			/* disposable; locked dirs are left behind */
 		}

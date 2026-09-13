@@ -42,7 +42,9 @@ A plan whose identity (swarm/title) was mutated after approval is refused by
   (`OpenCodeSwarmPlugin.server()` via `bootSwarmPluginHost`) against a
   disposable git-initialized temp project, XDG-hermetic via
   `createIsolatedTestEnv()` (the #2033 prod-store tripwire requires full
-  platform-root redirection — `LOCALAPPDATA`/`XDG_DATA_HOME` etc. — not just
+  platform-root redirection — all seven of `XDG_CONFIG_HOME`,
+  `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `APPDATA`, `LOCALAPPDATA`, `HOME`,
+  `USERPROFILE`, per the helper's `ISOLATED_ENV_KEYS` — not just
   `XDG_CONFIG_HOME`; without it the Stage B route store unbinds settlements).
 - Deterministic transport: a constructor-injected `ScriptedHostClient`
   (real SDK response shapes) records every host call; native-task child
@@ -55,8 +57,11 @@ A plan whose identity (swarm/title) was mutated after approval is refused by
 
 ## Executed host/runtime cells
 
-Executed (CI-verified): **Bun × {Windows, macOS, Linux}** via the per-file
-unit shards.
+Executed and verified locally: **Bun × Windows** (per-file runs; counts in
+the release fragment). **Bun × {macOS, Linux}** runs in the same per-file
+unit CI matrix on every push and merge-group run; this document claims those
+cells only through that matrix (no local execution — they are labeled here
+rather than extrapolated).
 
 Executed on demand with retained evidence: **canary script refusal and
 bounded-failure paths under Node** (`node scripts/canary-execute-journey.mjs`
@@ -102,5 +107,9 @@ A run is complete only when its `JourneyReport` passes
 Labeled gap: the repo has **no dedicated EXECUTE-scope coder-cancel tool**;
 the registered bounded-cancellation surfaces are the lane-level
 `collect_lane_results` `cancel_pending` (typed `liveness` terminal) and the
-session-end settle path (j03 covers both). A dedicated coder-task cancel
-surface is future work outside this qualification row.
+registered `event`-hook session-end path, which clears session state bounded
+and intentionally leaves the abandoned dispatch's settlement WAL `DISPATCHED`
+— the durable recovery input for `/swarm recover`
+(`recoverStaleCoderSettlements`) — rather than settling it silently (j03 pins
+both boundaries). A dedicated coder-task cancel surface is future work
+outside this qualification row.

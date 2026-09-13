@@ -21,7 +21,7 @@ interface RunResult {
 }
 
 /** Invariant-3 subprocess contract: array-form spawn, explicit cwd, stdin
- * ignored, bounded output, timeout, kill in finally. */
+ * ignored, bounded output, timeout, kill on every exit path. */
 function runCanary(
 	env: Record<string, string | undefined>,
 ): Promise<RunResult> {
@@ -42,20 +42,32 @@ function runCanary(
 		};
 		child.stdout?.on('data', append);
 		child.stderr?.on('data', append);
-		const timer = setTimeout(() => {
+		let settled = false;
+		const finish = (fn: () => void): void => {
+			if (settled) return;
+			settled = true;
 			try {
 				child.kill();
 			} catch {
-				/* best-effort */
+				/* best-effort kill on every exit path */
 			}
-		}, 30_000);
+			fn();
+		};
+		const timer = setTimeout(
+			() =>
+				finish(() => {
+					resolve({
+						code: null,
+						output: `${output}\n[runCanary] timeout kill`,
+					});
+				}),
+			30_000,
+		);
 		child.on('error', (error) => {
-			clearTimeout(timer);
-			reject(error);
+			finish(() => reject(error));
 		});
 		child.on('close', (code) => {
-			clearTimeout(timer);
-			resolve({ code, output });
+			finish(() => resolve({ code, output }));
 		});
 	});
 }

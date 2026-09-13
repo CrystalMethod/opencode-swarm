@@ -43,9 +43,9 @@ qualification fixture family:
 
 ## Validation
 
-Bun × Windows verified locally: j01 (1/1), j02 (3/3), j03 (2/2), j04 (1/1),
-j05 (8/8), j06 (5/5), j07 (10/10 — report/docs/fragment contract); Bun ×
-macOS/Linux claimed via the per-file unit CI shards. Canary refusal
-verified under bun AND node (exit 3). No production code changed — the
-fixture consumes existing registered surfaces only, and the baseline
-registered-host suites stay green.
+Bun × Windows verified locally: j01 (1/1), j02 (4/4), j03 (2/2), j04 (1/1),
+j05 (9/9), j06 (5/5), j07 (10/10 — report/docs/fragment contract); Bun ×
+macOS/Linux runs in the same per-file unit CI matrix on every push and
+merge-group run. Canary refusal verified under bun AND node (exit 3). No
+production code changed — the fixture consumes existing registered surfaces
+only, and the baseline registered-host suites stay green.
