@@ -8,9 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fsSync from 'node:fs';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { safeRmRecursive } from '../../../tests/helpers/safe-test-dir.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +47,21 @@ function initGitRepo(dir: string): void {
 		timeout: 5000,
 		stdio: 'ignore',
 	});
+}
+
+/** Create the minimal project files required by mutation_test preflight. */
+function initMutationProject(dir: string): void {
+	initGitRepo(dir);
+	fsSync.writeFileSync(
+		path.join(dir, 'src.ts'),
+		'export function fn() { return 1; }\n',
+		'utf-8',
+	);
+	fsSync.writeFileSync(
+		path.join(dir, 'test.test.ts'),
+		"import { test, expect } from 'bun:test';\ntest('fixture', () => expect(true).toBe(true));\n",
+		'utf-8',
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +130,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 		mockSpawnSync.mockReset();
 		// Clean up temp directory
 		if (tempDir) {
-			rmSync(tempDir, { recursive: true, force: true });
+			safeRmRecursive(tempDir);
 		}
 		spawnCallLog.length = 0;
 	});
@@ -1200,7 +1216,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 	describe('9. mutation_test.execute — tool-level validation rejection', () => {
 		let executeMutationTest: (
 			args: unknown,
-			directory: string,
+			context: { directory: string },
 		) => Promise<string>;
 
 		beforeEach(async () => {
@@ -1208,7 +1224,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			const mod = await import('../mutation-test.js');
 			executeMutationTest = mod.mutation_test.execute as unknown as (
 				args: unknown,
-				directory: string,
+				context: { directory: string },
 			) => Promise<string>;
 		});
 
@@ -1230,7 +1246,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						files: ['test.test.ts'],
 						test_command: 'npx vitest' as unknown as string[],
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				expect(parsed.success).toBe(false);
@@ -1256,7 +1272,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						files: ['test.test.ts'],
 						test_command: ['npx', 123 as unknown as string, 'vitest'],
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				expect(parsed.success).toBe(false);
@@ -1282,7 +1298,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						files: ['test.test.ts', undefined as unknown as string],
 						test_command: ['npx', 'vitest'],
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				// Array passes the isArray check; undefined element may pass through
@@ -1295,13 +1311,14 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			'patches array with null element → caught and returned as error JSON',
 			{ timeout: 10000 },
 			async () => {
+				initMutationProject(tempDir);
 				const result = await executeMutationTest(
 					{
 						patches: [null as unknown as object],
 						files: ['test.test.ts'],
 						test_command: ['npx', 'vitest'],
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				// Error is caught by the outer try-catch in execute()
@@ -1314,12 +1331,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			'pass_threshold < warn_threshold → tool error JSON (gate throws)',
 			{ timeout: 10000 },
 			async () => {
-				initGitRepo(tempDir);
-				fsSync.writeFileSync(
-					path.join(tempDir, 'src.ts'),
-					'export function fn() { return 1; }\n',
-					'utf-8',
-				);
+				initMutationProject(tempDir);
 
 				const result = await executeMutationTest(
 					{
@@ -1337,7 +1349,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						pass_threshold: 0.3,
 						warn_threshold: 0.7,
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				expect(parsed.success).toBe(false);
@@ -1364,7 +1376,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						test_command: ['node', 'test'],
 						working_directory: '../../../tmp/non-existent-path',
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 				const parsed = JSON.parse(result);
 				// Either success:false (file not readable) or a valid result from the engine
@@ -1384,14 +1396,14 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 	describe('10. End-to-end mutation_test.execute — real suite + gate verdicts', () => {
 		let executeMutationTest: (
 			args: unknown,
-			directory: string,
+			context: { directory: string },
 		) => Promise<string>;
 
 		beforeEach(async () => {
 			const mod = await import('../mutation-test.js');
 			executeMutationTest = mod.mutation_test.execute as unknown as (
 				args: unknown,
-				directory: string,
+				context: { directory: string },
 			) => Promise<string>;
 		});
 
@@ -1399,12 +1411,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			'0% kill rate → fail verdict (all mutants survive)',
 			{ timeout: 15000 },
 			async () => {
-				initGitRepo(tempDir);
-				fsSync.writeFileSync(
-					path.join(tempDir, 'src.ts'),
-					'export function fn() { return 1; }\n',
-					'utf-8',
-				);
+				initMutationProject(tempDir);
 
 				// git apply succeeds, test always passes (survived)
 				mockSpawnSync.mockImplementation(
@@ -1451,7 +1458,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						pass_threshold: 0.8,
 						warn_threshold: 0.6,
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 
 				const parsed = JSON.parse(result);
@@ -1464,12 +1471,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			'100% kill rate → pass verdict (all mutants killed)',
 			{ timeout: 15000 },
 			async () => {
-				initGitRepo(tempDir);
-				fsSync.writeFileSync(
-					path.join(tempDir, 'src.ts'),
-					'export function fn() { return 1; }\n',
-					'utf-8',
-				);
+				initMutationProject(tempDir);
 
 				// git apply succeeds, test always fails (killed)
 				mockSpawnSync.mockImplementation(
@@ -1515,7 +1517,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						pass_threshold: 0.8,
 						warn_threshold: 0.6,
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 
 				const parsed = JSON.parse(result);
@@ -1528,12 +1530,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 			'50% kill rate → fail verdict (below warn threshold of 0.6)',
 			{ timeout: 20000 },
 			async () => {
-				initGitRepo(tempDir);
-				fsSync.writeFileSync(
-					path.join(tempDir, 'src.ts'),
-					'export function fn() { return 1; }\n',
-					'utf-8',
-				);
+				initMutationProject(tempDir);
 
 				let callCount = 0;
 				mockSpawnSync.mockImplementation(
@@ -1588,7 +1585,7 @@ describe('mutation_test adversarial — real executeMutationSuite / evaluateMuta
 						pass_threshold: 0.8,
 						warn_threshold: 0.6,
 					},
-					tempDir,
+					{ directory: tempDir },
 				);
 
 				const parsed = JSON.parse(result);

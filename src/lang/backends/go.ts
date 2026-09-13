@@ -27,52 +27,90 @@ const PROFILE_ID = 'go';
  *   `import . "foo"`                     → "foo"  (dot-import; rare)
  *   `import (\n "foo"\n alias "bar"\n)`  → "foo", "bar"
  *
- * The single-line and grouped forms are extracted separately. Comment text
- * is stripped from grouped blocks before quoted-path matching: a // or
- * block comment inside an import group can itself contain a quoted string
- * ("legacy/db/pkg"), which must NOT become a phantom import edge.
+ * The single-line and grouped forms are extracted separately. Comments are
+ * removed with a small lexical state machine first: a quoted path in a line
+ * or block comment must never become an import, and parentheses in comments
+ * must not terminate a grouped import block.
  */
 const IMPORT_REGEX_SINGLE =
 	/^\s*import\s+(?:[a-zA-Z_.][a-zA-Z0-9_]*\s+)?"([^"]+)"/gm;
 const IMPORT_REGEX_GROUP = /^\s*import\s*\(([\s\S]*?)\)/gm;
 const IMPORT_REGEX_GROUP_LINE = /(?:[a-zA-Z_.][a-zA-Z0-9_]*\s+)?"([^"]+)"/g;
+/** Avoid spending unbounded time parsing an attacker-controlled source file. */
+export const MAX_IMPORT_SOURCE_BYTES = 1 * 1024 * 1024;
 
-/**
- * Remove line (//) and block comments from a Go import-group body. A quoted
- * string inside a comment ("legacy/db/pkg") must not become a phantom edge.
- */
-function stripGoComments(block: string): string {
-	const withoutBlockComments = block.replace(/\/\*[\s\S]*?\*\//g, ' ');
-	return withoutBlockComments
-		.split('\n')
-		.map((line) => {
-			const idx = line.indexOf('//');
-			return idx === -1 ? line : line.slice(0, idx);
-		})
-		.join('\n');
+function stripGoComments(source: string): string {
+	let state: 'normal' | 'line' | 'block' | 'string' | 'raw' = 'normal';
+	let out = '';
+	let escaped = false;
+	for (let index = 0; index < source.length; index++) {
+		const current = source[index];
+		const next = source[index + 1];
+		if (state === 'line') {
+			if (current === '\n' || current === '\r') {
+				state = 'normal';
+				out += current;
+			} else {
+				out += ' ';
+			}
+			continue;
+		}
+		if (state === 'block') {
+			if (current === '*' && next === '/') {
+				out += '  ';
+				index++;
+				state = 'normal';
+			} else {
+				out += current === '\n' || current === '\r' ? current : ' ';
+			}
+			continue;
+		}
+		if (state === 'string') {
+			out += current;
+			if (escaped) escaped = false;
+			else if (current === '\\') escaped = true;
+			else if (current === '"') state = 'normal';
+			continue;
+		}
+		if (state === 'raw') {
+			out += current;
+			if (current === '`') state = 'normal';
+			continue;
+		}
+		if (current === '/' && next === '/') {
+			out += '  ';
+			index++;
+			state = 'line';
+		} else if (current === '/' && next === '*') {
+			out += '  ';
+			index++;
+			state = 'block';
+		} else {
+			out += current;
+			if (current === '"') state = 'string';
+			else if (current === '`') state = 'raw';
+		}
+	}
+	return out;
 }
 
 function extractImports(_sourceFile: string, source: string): string[] {
+	if (Buffer.byteLength(source, 'utf8') > MAX_IMPORT_SOURCE_BYTES) return [];
 	const out = new Set<string>();
-
-	// Comment-stripped source: a block-commented import line must not become
-	// a phantom single-line edge, and grouped blocks must not yield quoted
-	// comment text as edges. String literals in non-import code may be
-	// truncated by the // strip — harmless for import scanning only.
-	const cleaned = stripGoComments(source);
+	const uncommented = stripGoComments(source);
 
 	// Single-line imports.
 	IMPORT_REGEX_SINGLE.lastIndex = 0;
-	let m: RegExpExecArray | null = IMPORT_REGEX_SINGLE.exec(cleaned);
+	let m: RegExpExecArray | null = IMPORT_REGEX_SINGLE.exec(uncommented);
 	while (m !== null) {
 		out.add(m[1]);
-		m = IMPORT_REGEX_SINGLE.exec(cleaned);
+		m = IMPORT_REGEX_SINGLE.exec(uncommented);
 	}
 
-	// Grouped imports — iterate quoted entries inside each parenthesized
-	// block of the comment-stripped source.
+	// Grouped imports — match the parenthesized block, then iterate
+	// quoted entries inside.
 	IMPORT_REGEX_GROUP.lastIndex = 0;
-	m = IMPORT_REGEX_GROUP.exec(cleaned);
+	m = IMPORT_REGEX_GROUP.exec(uncommented);
 	while (m !== null) {
 		const block = m[1];
 		IMPORT_REGEX_GROUP_LINE.lastIndex = 0;
@@ -81,7 +119,7 @@ function extractImports(_sourceFile: string, source: string): string[] {
 			out.add(inner[1]);
 			inner = IMPORT_REGEX_GROUP_LINE.exec(block);
 		}
-		m = IMPORT_REGEX_GROUP.exec(cleaned);
+		m = IMPORT_REGEX_GROUP.exec(uncommented);
 	}
 
 	return [...out];

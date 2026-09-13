@@ -77,11 +77,50 @@ export function isStaticallyEquivalent(
 	languageHint?: string,
 ): boolean {
 	const family = commentFamilyForLanguage(languageHint);
+	const extension = languageHint
+		? languageHint.toLowerCase().slice(languageHint.lastIndexOf('.') + 1)
+		: '';
+	const isJavaScriptFamily =
+		languageHint === undefined ||
+		new Set([
+			'cjs',
+			'cts',
+			'js',
+			'jsx',
+			'mjs',
+			'mts',
+			'svelte',
+			'ts',
+			'tsx',
+			'vue',
+		]).has(extension);
 	const stripCode = (code: string): string => {
+		// Ruby's =begin/=end blocks are line-oriented comments and are distinct
+		// from the slash-star family used by the generic scanner below.
+		const sourceCode =
+			extension === 'rb' || extension === 'rake'
+				? (() => {
+						const lines: string[] = [];
+						let inRubyComment = false;
+						for (const line of code.split('\n')) {
+							const trimmed = line.trim();
+							if (!inRubyComment && /^=begin(?:\s|$)/.test(trimmed)) {
+								inRubyComment = true;
+								continue;
+							}
+							if (inRubyComment) {
+								if (/^=end(?:\s|$)/.test(trimmed)) inRubyComment = false;
+								continue;
+							}
+							lines.push(line);
+						}
+						return lines.join('\n');
+					})()
+				: code;
 		// Step 1: Remove multi-line block comments (families that support them)
 		let inMultiLineComment = false;
 		const afterMultiLine: string[] = [];
-		for (const line of family.blockComments ? code.split('\n') : []) {
+		for (const line of family.blockComments ? sourceCode.split('\n') : []) {
 			if (!inMultiLineComment) {
 				const openIndex = line.indexOf('/*');
 				if (openIndex !== -1) {
@@ -111,7 +150,7 @@ export function isStaticallyEquivalent(
 		const afterSingleLine: string[] = [];
 		const linesForSingle = family.blockComments
 			? afterMultiLine
-			: code.split('\n');
+			: sourceCode.split('\n');
 		for (const line of linesForSingle) {
 			let inString: "'" | '"' | '`' | null = null;
 			let commentStart = -1;
@@ -148,8 +187,12 @@ export function isStaticallyEquivalent(
 		// Step 3: Strip console.log/debugger lines
 		const afterConsole = afterSingleLine.filter((line) => {
 			const trimmedLower = line.toLowerCase().trim();
-			if (/^console\.(log|debug)\s*(\(|$)/.test(trimmedLower)) return false;
-			if (trimmedLower === 'debugger;') return false;
+			if (
+				isJavaScriptFamily &&
+				/^console\.(log|debug)\s*(\(|$)/.test(trimmedLower)
+			)
+				return false;
+			if (isJavaScriptFamily && trimmedLower === 'debugger;') return false;
 			return true;
 		});
 

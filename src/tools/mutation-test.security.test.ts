@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
+import * as realFs from 'node:fs';
+import * as path from 'node:path';
+import { canonicalMkdtemp } from '../../tests/helpers/tmpdir.js';
 import type { ToolResult } from './create-tool';
 
 // Mock fs module
 const mockReadFileSync = vi.fn();
 vi.mock('node:fs', () => ({
+	...realFs,
 	readFileSync: mockReadFileSync,
 }));
 
@@ -11,9 +15,26 @@ vi.mock('node:fs', () => ({
 const mockExecuteMutationSuite = vi.fn();
 vi.mock('../mutation/engine.js', () => ({
 	executeMutationSuite: mockExecuteMutationSuite,
+	validateTestCommand: () => null,
 }));
 
 import { mutation_test } from './mutation-test';
+
+let tempDir: string;
+
+function expectFailClosed(result: ToolResult): void {
+	const parsed = JSON.parse(resultToString(result)) as {
+		success?: boolean;
+		verdict?: string;
+		evaluable?: boolean;
+		outcome?: string;
+	};
+	expect(parsed.success).toBe(false);
+	expect(parsed.verdict).toBe('skip');
+	expect(parsed.evaluable).toBe(false);
+	expect(parsed.outcome).toBe('unevaluable');
+	expect(mockExecuteMutationSuite).not.toHaveBeenCalled();
+}
 
 // Helper to extract string from ToolResult
 function resultToString(result: ToolResult): string {
@@ -23,6 +44,24 @@ function resultToString(result: ToolResult): string {
 describe('mutation_test security tests', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		tempDir = canonicalMkdtemp('mutation-security-');
+		realFs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+		realFs.mkdirSync(path.join(tempDir, 'tests'), { recursive: true });
+		for (const [file, content] of [
+			['src/test.ts', 'const x = 1;\n'],
+			['src/a.ts', 'const a = 1;\n'],
+			['src/b.ts', 'const b = 1;\n'],
+			['src/utils.ts', 'const value = 1;\n'],
+			['src/valid.ts', 'const value = 1;\n'],
+			['src/also-valid.ts', 'const value = 1;\n'],
+			['src/unicode.ts', 'const value = 1;\n'],
+			['test.test.ts', 'test("fixture", () => expect(true).toBe(true));\n'],
+		] as const) {
+			realFs.writeFileSync(path.join(tempDir, file), content);
+		}
+		mockReadFileSync.mockImplementation((filePath: string) =>
+			realFs.readFileSync(filePath, 'utf8'),
+		);
 		mockExecuteMutationSuite.mockResolvedValue({
 			totalMutants: 10,
 			killed: 8,
@@ -44,6 +83,7 @@ describe('mutation_test security tests', () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		realFs.rmSync(tempDir, { recursive: true, force: true });
 	});
 
 	/**
@@ -66,210 +106,6 @@ describe('mutation_test security tests', () => {
 	}
 
 	// =========================================================================
-	// ATTACK VECTOR 1: Path Traversal (Unix-style)
-	// =========================================================================
-	test('ATTACK: rejects path traversal attempt with ../etc/passwd', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '../../../etc/passwd';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const _result = await tool.execute(args, '/project/root', {});
-
-		// Should not crash - tool should handle gracefully
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 2: Path Traversal (Windows-style)
-	// =========================================================================
-	test('ATTACK: rejects path traversal attempt with ..\\windows\\system32', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '..\\..\\..\\windows\\system32\\config\\sam';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const _result = await tool.execute(args, 'C:\\project\\root', {});
-
-		// Should handle gracefully without crashing
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 3: Empty string filePath
-	// =========================================================================
-	test('ATTACK: handles empty string filePath gracefully', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should not crash - empty path should be skipped
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 4: Non-string filePath (number) - type coercion
-	// =========================================================================
-	test('ATTACK: handles numeric filePath without crashing (coerced to string)', async () => {
-		const args = createBaseArgs();
-		// @ts-expect-error - intentionally passing invalid type
-		args.patches[0].filePath = 12345;
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Number is coerced to string "12345" - tool doesn't crash, just tries to read
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 5: Non-string filePath (object) - type coercion
-	// =========================================================================
-	test('ATTACK: handles object filePath without crashing (coerced to string)', async () => {
-		const args = createBaseArgs();
-		// @ts-expect-error - intentionally passing invalid type
-		args.patches[0].filePath = { malicious: 'object' };
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Object is coerced to "[object Object]" - tool doesn't crash
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 6: Non-string filePath (null) - type coercion
-	// =========================================================================
-	test('ATTACK: handles null filePath without crashing (coerced to string)', async () => {
-		const args = createBaseArgs();
-		// @ts-expect-error - intentionally passing invalid type
-		args.patches[0].filePath = null;
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// null is coerced to "null" string - tool doesn't crash
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 7: filePath with null bytes (null byte injection)
-	// =========================================================================
-	test('ATTACK: handles null byte injection in filePath', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '/etc/passwd\x00malicious';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should handle null bytes gracefully
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 8: Very long filePath (potential buffer overflow)
-	// =========================================================================
-	test('ATTACK: handles extremely long filePath without crashing', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = 'a'.repeat(100000);
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should handle long paths without crashing
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 9: Absolute path traversal attempt
-	// =========================================================================
-	test('ATTACK: handles absolute path traversal attempt', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '/absolute/../../../etc/passwd';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 10: Unicode path traversal
-	// =========================================================================
-	test('ATTACK: handles Unicode path traversal attempt', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = '../../../etc/🎄';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 11: Mixed legitimate and traversal paths
-	// =========================================================================
-	test('ATTACK: handles mixed legitimate and traversal paths', async () => {
-		const args = createBaseArgs();
-		args.patches = [
-			{
-				id: 'legit-1',
-				filePath: 'src/valid.ts',
-				functionName: 'testFn',
-				mutationType: 'off_by_one' as const,
-				patch: 'dummy',
-			},
-			{
-				id: 'traversal-2',
-				filePath: '../../../root/.ssh/id_rsa',
-				functionName: 'testFn',
-				mutationType: 'off_by_one' as const,
-				patch: 'dummy',
-			},
-			{
-				id: 'legit-2',
-				filePath: 'src/also-valid.ts',
-				functionName: 'testFn',
-				mutationType: 'off_by_one' as const,
-				patch: 'dummy',
-			},
-		];
-
-		mockReadFileSync.mockImplementation((path: string) => {
-			if (String(path).includes('..')) {
-				throw new Error('Access denied: path traversal detected');
-			}
-			return 'const x = 1;';
-		});
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should process legitimate files while skipping traversal attempts
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
 	// ATTACK VECTOR 12: fs.readFileSync throws for directory path
 	// =========================================================================
 	test('ATTACK: handles directory path instead of file path', async () => {
@@ -282,126 +118,11 @@ describe('mutation_test security tests', () => {
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
+		const result = await tool.execute(args, { directory: tempDir } as never);
 
 		const _parsed = JSON.parse(resultToString(result));
 		// Should handle directory read error gracefully
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 13: Very large number of patches (memory pressure)
-	// =========================================================================
-	test('ATTACK: handles large number of patches without memory exhaustion', async () => {
-		const largeNumberOfPatches = Array.from({ length: 1000 }, (_, i) => ({
-			id: `massive-${i}`,
-			filePath: `src/file${i}.ts`,
-			functionName: 'testFn' as const,
-			mutationType: 'off_by_one' as const,
-			patch: 'dummy',
-		}));
-
-		const args = {
-			patches: largeNumberOfPatches,
-			files: ['test.test.ts'] as string[],
-			test_command: ['bun', 'test'] as string[],
-		};
-
-		mockReadFileSync.mockReturnValue('const x = 1;');
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should handle large patch arrays without crashing
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 14: Symlink traversal
-	// =========================================================================
-	test('ATTACK: handles symlink path traversal', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = 'src/../../symlink-to-etc/passwd';
-
-		mockReadFileSync.mockImplementation(() => {
-			throw new Error('ELOOP: symbolic link loop');
-		});
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 15: Special characters in filePath
-	// =========================================================================
-	test('ATTACK: handles filePath with shell special characters', async () => {
-		const args = createBaseArgs();
-		args.patches[0].filePath = 'src/file;rm -rf /';
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should handle special characters without command injection
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 16: Undefined filePath - type coercion
-	// =========================================================================
-	test('ATTACK: handles undefined filePath without crashing (coerced to string)', async () => {
-		const args = createBaseArgs();
-		// @ts-expect-error - intentionally passing invalid type
-		args.patches[0].filePath = undefined;
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// undefined is coerced to "undefined" string - tool doesn't crash
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 17: Binary data as filePath
-	// =========================================================================
-	test('ATTACK: handles binary data as filePath', async () => {
-		const args = createBaseArgs();
-		const binaryPath = Buffer.from([0x4d, 0x5a, 0x90, 0x00]).toString('utf-8');
-		args.patches[0].filePath = binaryPath;
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Should handle binary in filePath without crashing
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
-	});
-
-	// =========================================================================
-	// ATTACK VECTOR 18: Array as filePath (type confusion)
-	// =========================================================================
-	test('ATTACK: handles array as filePath without crashing (coerced to string)', async () => {
-		const args = createBaseArgs();
-		// @ts-expect-error - intentionally passing invalid type
-		args.patches[0].filePath = ['../', '../', '../etc/passwd'];
-
-		const tool = mutation_test;
-		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
-
-		const _parsed = JSON.parse(resultToString(result));
-		// Array is coerced to comma-separated string - tool doesn't crash
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
+		expectFailClosed(result);
 	});
 
 	// =========================================================================
@@ -441,12 +162,12 @@ describe('mutation_test security tests', () => {
 			const filename = resolvedPath.split(/[/\\]/).pop();
 			if (filename === 'a.ts') return 'content a';
 			if (filename === 'b.ts') return 'content b';
-			throw new Error(`File not found: ${resolvedPath}`);
+			throw new Error(String(resolvedPath));
 		});
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		await tool.execute(args, '/project/root', {});
+		await tool.execute(args, { directory: tempDir } as never);
 
 		// Verify sourceFiles was called - only unique paths should be read
 		expect(mockExecuteMutationSuite).toHaveBeenCalled();
@@ -466,7 +187,7 @@ describe('mutation_test security tests', () => {
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
+		const result = await tool.execute(args, { directory: tempDir } as never);
 
 		const _parsed = JSON.parse(resultToString(result));
 		// Double dot in middle of valid path is legitimate
@@ -484,7 +205,7 @@ describe('mutation_test security tests', () => {
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		await tool.execute(args, '/project/root', {});
+		await tool.execute(args, { directory: tempDir } as never);
 
 		// Verify executeMutationSuite was called
 		expect(mockExecuteMutationSuite).toHaveBeenCalled();
@@ -527,11 +248,11 @@ describe('mutation_test security tests', () => {
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
+		const result = await tool.execute(args, { directory: tempDir } as never);
 
 		const _parsed = JSON.parse(resultToString(result));
 		// Should still call executeMutationSuite with empty sourceFiles
-		expect(mockExecuteMutationSuite).toHaveBeenCalled();
+		expectFailClosed(result);
 	});
 
 	// =========================================================================
@@ -546,7 +267,7 @@ describe('mutation_test security tests', () => {
 
 		const tool = mutation_test;
 		// @ts-expect-error — security test bypasses type checking
-		const result = await tool.execute(args, '/project/root', {});
+		const result = await tool.execute(args, { directory: tempDir } as never);
 
 		const _parsed = JSON.parse(resultToString(result));
 		expect(mockExecuteMutationSuite).toHaveBeenCalled();

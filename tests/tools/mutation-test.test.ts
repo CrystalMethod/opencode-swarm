@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { mutation_test } from '../../src/tools/mutation-test';
+import { canonicalMkdtemp } from '../helpers/tmpdir.js';
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -107,9 +110,16 @@ describe('mutation_test tool - test_command element type validation', () => {
 	});
 
 	test('Array with all valid strings → should pass validation and return mutation result (not error)', async () => {
+		const tempDir = canonicalMkdtemp('mutation-test-command-');
+		fs.mkdirSync(path.join(tempDir, '.git'));
+		fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+		fs.mkdirSync(path.join(tempDir, 'test'), { recursive: true });
+		fs.writeFileSync(path.join(tempDir, 'src/foo.ts'), 'exports.foo = 1;\n');
+		fs.writeFileSync(path.join(tempDir, 'test/file.test.ts'), '');
 		const args = {
 			files: ['test/file.test.ts'],
-			test_command: ['npx', 'vitest', '--run'],
+			test_command: ['bun', 'test'],
+			working_directory: tempDir,
 			patches: [
 				{
 					id: 'patch-1',
@@ -122,13 +132,17 @@ describe('mutation_test tool - test_command element type validation', () => {
 			],
 		};
 
-		const result = await mutation_test.execute(args, '/cwd');
-		const parsed = JSON.parse(result);
+		try {
+			const result = await mutation_test.execute(args, { directory: tempDir });
+			const parsed = JSON.parse(result);
 
-		// Should pass test_command validation and return mutation result (verdict format)
-		// NOT an error format (no success:false, no error field)
-		expect(parsed.verdict).toBeDefined();
-		expect(parsed.success).toBeUndefined();
-		expect(parsed.error).toBeUndefined();
+			// Should pass test_command validation and return mutation result (verdict format)
+			// NOT an error format (no success:false, no error field)
+			expect(parsed.verdict).toBeDefined();
+			expect(parsed.success).toBe(true);
+			expect(parsed.error).toBeUndefined();
+		} finally {
+			fs.rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 });

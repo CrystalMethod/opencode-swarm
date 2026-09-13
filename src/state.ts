@@ -66,6 +66,13 @@ import type { ReviewRouteEvidence } from './review/routing-enforcement.js';
 import { clearScopeBindings } from './scope/scope-binding.js';
 import { clearScopeBindingFromDisk } from './scope/scope-persistence.js';
 import { clearAllTurnLedgers } from './services/injection-budget';
+import {
+	clearHydrationOwnershipState,
+	getRehydrationCache,
+	hydrationProjectKey,
+	nextSessionHydrationStamp,
+	setRehydrationCache,
+} from './session/hydration-ownership.js';
 import { recordSessionStart } from './session/session-start-store.js';
 import {
 	claimSnapshotSessionOwnership,
@@ -83,9 +90,14 @@ import * as logger from './utils/logger';
 export { AgentRunContext } from './state/agent-run-context.js';
 
 /**
- * Cached plan + evidence data read once at plugin init by buildRehydrationCache().
+ * Cached plan + evidence data read at plugin init by buildRehydrationCache().
  * Applied synchronously to every new session via applyRehydrationCache() so that
  * guardrails always see correct workflow state — even when no snapshot exists.
+ *
+ * Issue #2667: the cache is PROJECT-OWNED. It lives keyed by canonical project
+ * key in `src/session/hydration-ownership.ts` (`setRehydrationCache`), never in
+ * a process singleton — whichever project built last must not win the slot for
+ * every other project's sessions.
  */
 interface RehydrationCache {
 	planTaskStates: Map<string, TaskWorkflowState>;
@@ -96,7 +108,6 @@ interface RehydrationCache {
 		councilConfig: import('./council/types').CouncilConfig | undefined;
 	};
 }
-let _rehydrationCache: RehydrationCache | null = null;
 
 /**
  * Tracks plan IDs that have already received the "council disagreement" warn.
@@ -664,6 +675,32 @@ export interface AgentSessionState {
 	/** Timestamp when session was rehydrated from snapshot (0 if never rehydrated) */
 	sessionRehydratedAt: number;
 
+	// Hydration ownership and generation fencing (issue #2667)
+	/**
+	 * Canonical project key that owns this session's live state. Written ONLY
+	 * by `startAgentSession` (from its `directory` argument) and by
+	 * `rehydrateState` (from the HYDRATING directory). A hydration for project
+	 * K evicts only sessions whose `owningProjectKey` is K.
+	 *
+	 * DELIBERATELY NOT SNAPSHOTTED: `serializeAgentSession` is field-explicit
+	 * so this never round-trips. Ownership is defined by which project's
+	 * plugin instance created/restored the session, never by snapshot bytes —
+	 * a snapshot is per-project on disk, so the hydrating directory is the
+	 * only trustworthy attribution source. `undefined` = unowned (created
+	 * without a directory): such sessions survive every hydration — fail-open
+	 * toward preservation.
+	 */
+	owningProjectKey?: string;
+	/**
+	 * Hydration generation this session was created/restored AT.
+	 * `startAgentSession` stamps `currentGeneration + 1` (newer than any
+	 * in-flight hydration); `rehydrateState` stamps its applying generation.
+	 * A hydration at generation `g` evicts only owned sessions with
+	 * `hydrationStamp <= g`, so live sessions created after `g` began always
+	 * survive. Also never snapshotted.
+	 */
+	hydrationStamp?: number;
+
 	// PRM (Process Remediation Manager) - Phase 1
 	/** Pattern type to detection count mapping */
 	prmPatternCounts: Map<string, number>;
@@ -1113,7 +1150,8 @@ export function resetSwarmState(): void {
 	swarmState.knowledgeAckDedup.clear();
 	swarmState.gateDenialCounts.clear();
 	swarmState.generatedAgentNames = [];
-	_rehydrationCache = null;
+	// Issue #2667: per-project hydration ownership/generation/cache registries.
+	clearHydrationOwnershipState();
 	// Full Auto Mode (Phase 4)
 	swarmState.fullAutoEnabledInConfig = false;
 	swarmState.environmentProfiles.clear();
@@ -2095,6 +2133,16 @@ export function startAgentSession(
 	const now = Date.now();
 	claimSnapshotSessionOwnership(sessionId, true);
 
+	// Issue #2667: ownership/stamp must be computed BEFORE the sessionState
+	// literal below, so they are assigned before agentSessions.set() and
+	// before applyRehydrationCache() resolves this session's project cache.
+	const owningProjectKey = directory
+		? hydrationProjectKey(directory)
+		: undefined;
+	const hydrationStamp = owningProjectKey
+		? nextSessionHydrationStamp(owningProjectKey)
+		: undefined;
+
 	// Evict stale sessions based on last activity, not start time.
 	// Default: 2 hours — should exceed typical agent durations (evicts inactive
 	// sessions). Reuses the shared eviction loop (also used by the opportunistic
@@ -2178,6 +2226,8 @@ export function startAgentSession(
 		loopDetectionWindow: [],
 		pendingAdvisoryMessages: [],
 		sessionRehydratedAt: 0,
+		owningProjectKey,
+		hydrationStamp,
 		// PRM (Process Remediation Manager) - Phase 1
 		prmPatternCounts: new Map(),
 		prmEscalationLevel: 0,
@@ -3654,11 +3704,11 @@ export async function buildRehydrationCache(directory: string): Promise<void> {
 	} catch {
 		councilConfig = undefined;
 	}
-	_rehydrationCache = {
+	setRehydrationCache(hydrationProjectKey(directory), {
 		planTaskStates,
 		evidenceMap,
 		taskIdentityContext: { plan, councilConfig },
-	};
+	} satisfies RehydrationCache);
 }
 
 /**
@@ -3666,10 +3716,26 @@ export async function buildRehydrationCache(directory: string): Promise<void> {
  * Merge rules:
  *   - evidence-derived state: only applied if it advances past existing state
  *   - plan-only derived state: only applied if it advances past existing state
- * No-op when the cache has not been built yet.
+ * No-op when no cache exists for the session's project.
+ *
+ * Issue #2667: the cache is project-owned. `projectKey` wins when given;
+ * otherwise it resolves from `session.owningProjectKey`. New callers must
+ * ensure ownership is stamped on the session (or pass the key explicitly)
+ * BEFORE calling — a session with no project context intentionally gets no
+ * cache application rather than another project's data.
  */
-export function applyRehydrationCache(session: AgentSessionState): void {
-	if (!_rehydrationCache) {
+export function applyRehydrationCache(
+	session: AgentSessionState,
+	projectKey?: string,
+): void {
+	const resolvedKey = projectKey ?? session.owningProjectKey;
+	if (!resolvedKey) {
+		return;
+	}
+	const cache = getRehydrationCache(resolvedKey) as
+		| RehydrationCache
+		| undefined;
+	if (!cache) {
 		return;
 	}
 
@@ -3683,8 +3749,7 @@ export function applyRehydrationCache(session: AgentSessionState): void {
 		session.taskCouncilApproved = new Map();
 	}
 
-	const { planTaskStates, evidenceMap, taskIdentityContext } =
-		_rehydrationCache;
+	const { planTaskStates, evidenceMap, taskIdentityContext } = cache;
 
 	for (const [taskId, planState] of planTaskStates) {
 		const existingState = session.taskWorkflowStates.get(taskId);
@@ -3822,7 +3887,7 @@ export async function rehydrateSessionFromDisk(
 	session: AgentSessionState,
 ): Promise<void> {
 	await _internals.buildRehydrationCache(directory);
-	_internals.applyRehydrationCache(session);
+	_internals.applyRehydrationCache(session, hydrationProjectKey(directory));
 }
 
 /**

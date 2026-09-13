@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { mutation_test } from '../../../src/tools/mutation-test.js';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir.js';
@@ -190,7 +189,7 @@ describe('mutation_test selection + evaluability + cache refresh (issue #2492)',
 		expect(parsed.error).toContain('provide either files');
 	}, 10_000);
 
-	test('a completed batch invalidates the cached impact-map selection', async () => {
+	test('a completed batch preserves the cached impact-map generation', async () => {
 		const fixture = makeFixture();
 		write(
 			'src/math.ts',
@@ -220,8 +219,12 @@ describe('mutation_test selection + evaluability + cache refresh (issue #2492)',
 				undefined,
 			),
 		);
-		expect(parsed.cache_refreshed).toBe(true);
-		// The cached selection was invalidated so the next load rebuilds fresh.
-		expect(fs.existsSync(cachePath)).toBe(false);
+		expect(parsed.cache_refreshed).toBe(false);
+		expect((parsed.selection as Record<string, unknown>).cacheDisposition).toBe(
+			'preserved',
+		);
+		// Cache invalidation is non-destructive: the analyzer owns replacement and
+		// must preserve a generation that was not changed by this batch.
+		expect(fs.existsSync(cachePath)).toBe(true);
 	}, 90_000);
 });

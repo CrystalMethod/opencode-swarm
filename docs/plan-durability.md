@@ -664,6 +664,71 @@ without exactly one live exact-plan binding fails closed to `unknown` —
 serial — along with a serial-fallback advisory that names the exact reason
 (undeclared task ids, or the conflicting pair and shared path).
 
+## Live-State Ownership and Hydration Fencing (issue #2667)
+
+The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`
+— keyed by sessionID — and `toolAggregates`, keyed by tool/aggregate name, all
+in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
+sessionID- (or aggregate-key-) keyed accessors regardless of project. What
+changed in #2667 is that hydration — restoring one project's snapshot — no
+longer mutates state it does not own.
+
+Three layers, with distinct authority:
+
+- **Process-local** — the four live maps themselves and `pendingRehydrations`
+  (bounded by their pre-existing lifecycle mechanisms: the 2-hour idle-TTL
+  sweep for sessions, `resetSwarmState` for the rest), plus the per-project
+  registries in `src/session/hydration-ownership.ts` (hydration generation
+  counters, per-project rehydration caches, per-project hydrated-aggregate
+  key sets — FIFO-capped at 32 entries each, with the directory→key memo
+  FIFO-capped at 64). All are cleared by `resetSwarmState`.
+- **Project-local** — ownership stamps on each session:
+  `owningProjectKey` (the canonical project root that created or restored the
+  session; never serialized — the hydrating directory defines it, snapshot
+  bytes never do) and `hydrationStamp` (the per-project hydration generation
+  the session was created/restored at). Sessions created without a directory
+  are unowned and survive every hydration (fail-open toward preservation).
+- **Authoritative** — the durable ledger and SQLite snapshot store. Hydration
+  only READS them and never writes them (invariant 5); a re-hydration replaces
+  the project's own snapshot-derived sessions from the durable read, nothing
+  else.
+
+Rules a hydration for project K follows (`rehydrateState`,
+`src/session/snapshot-reader.ts`):
+
+1. **Fence (generation):** each initiation (`loadSnapshot` entry,
+   `startSnapshotCoordinationInitialization`, retry) captures a scope
+   `{projectKey, generation}` from a monotonic per-project counter. An apply
+   whose generation is older than the project's current counter is refused
+   with zero mutation — a timed-out initializer settling late cannot publish
+   over the state of any newer hydration.
+2. **Stamp (recency):** an accepted apply at generation `g` evicts only
+   sessions with `owningProjectKey === K` AND `hydrationStamp <= g`. A live
+   session created after `g` began carries stamp `g+1` and survives its own
+   project's in-flight hydration.
+3. **Scope of mutation:** another project's sessions, unowned sessions, and
+   `toolAggregates` keys the project never published are untouched.
+   `toolAggregates` replacement is limited to the keys K's previous hydration
+   published (a shared runtime-incremented key may be replaced by K's own
+   newer snapshot — replace-with-newer for own keys, never eviction of
+   another project's state).
+4. **Single-project replace semantics preserved:** re-hydrating K still
+   replaces K's own snapshot-derived sessions and K's own aggregate keys.
+   Calling `rehydrateState` WITHOUT a directory keeps the legacy
+   process-global clear-all (direct-test path only; every production caller
+   passes a directory).
+
+The plan/evidence rehydration cache is per-project: `buildRehydrationCache`
+writes keyed by canonical project key and `applyRehydrationCache` resolves a
+session's project via its ownership stamp (or an explicit key). Whichever
+project built last no longer wins the cache slot for every other project's
+sessions.
+
+Cost contract (invariant 1): the canonical project key is resolved through a
+bounded raw-spelling memo in `hydration-ownership.ts` — one realpath per
+distinct directory spelling per process; every later resolution on the init or
+chat.message path is a pure Map hit.
+
 ## Quick Reference
 
 | Operation | Command / Trigger |

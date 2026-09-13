@@ -198,7 +198,7 @@ export function createInitOrphanRecoveryAdvisoryHook(directory: string): {
 
 		// Push warnings to pendingAdvisoryMessages
 		// ensureAgentSession is idempotent — gets existing or creates new
-		const targetSession = ensureAgentSession(sessionId);
+		const targetSession = ensureAgentSession(sessionId, undefined, directory);
 
 		// Format header
 		const timestamp = advisory.initTimestamp

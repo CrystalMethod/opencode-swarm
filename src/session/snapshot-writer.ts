@@ -250,6 +250,10 @@ export const SESSION_TRANSIENT_FIELDS: Readonly<
 		'Scope declarations are validated per Task call against a live v2 binding; a restored array would be an unverified grant.',
 	workspaceDirectory:
 		'Trust boundary (issue #2002): never serialized — a snapshot-restored root is untrusted (see state.ts field comment).',
+	owningProjectKey:
+		'Trust boundary (issue #2667): ownership is defined by the HYDRATING/creating directory, never by snapshot bytes — never serialized.',
+	hydrationStamp:
+		'Generation recency token (issue #2667); meaningful only within this process against the per-project generation counter.',
 	lastScopeViolation:
 		'One-shot diagnostic for the current turn; a fresh process has observed no violations.',
 	modifiedFilesThisCoderTask:
