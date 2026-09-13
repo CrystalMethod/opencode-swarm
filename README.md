@@ -661,12 +661,12 @@ See `docs/skill-optimizer.md` for the full architecture and the `skill_opt` conf
 
 ### Governed Harness Optimizer
 
-`/swarm harness-opt` (issue #2503 — the HarnessOpt capstone) is the **executing, governed** optimizer over the declarative `harness_evolution` surface: it drives ONE governed round at a time through the evaluation substrate in a disposable worktree, freezes the comparative task set before any round, and records durable lineage with task-cost accounting (missing host data stays `unknown`, never zero).
+`/swarm harness-opt` (issue #2503 — the HarnessOpt capstone) is the **executing, governed** optimizer over the declarative `harness_evolution` surface: it drives ONE governed round at a time through the evaluation substrate in a disposable worktree (the substrate fingerprints the active checkout before and after every execution), freezes the comparative task set before any round, and records durable lineage with task-cost accounting (missing host data stays `unknown`, never zero).
 
-Commands: `/swarm harness-opt plan|run|status|stop|history`.
+Commands: `/swarm harness-opt plan|run|compare|status|stop|history`.
 
 - **Disabled by default.** `run` requires `harness_opt.enabled: true` AND `--confirm`; `run`/`stop` are human-only.
-- **Isolation.** Rounds execute in disposable worktrees; the running checkout is fingerprint-verified unchanged. A `test` split consumes the held-out set exactly once (substrate-enforced).
+- **Isolation.** Rounds execute in disposable worktrees; the substrate fingerprints the active checkout around every execution, so the running checkout is never mutated. A `test` split consumes the held-out set exactly once (substrate-enforced).
 - **Comparative protocol.** Baseline, ablation, and simple-agent control arms run on the same frozen task population with per-arm denominators, retained negative results, and a stream-snapshot duplicate guard.
 - **Independent oracle.** Acceptance backstop that rejects a token-improving candidate whose artifact quality or verification evidence falls.
 - **No self-modification.** Activation/rollback stay on `/swarm approve-write` + the harness store, which additionally re-validates recorded approved paths against the CURRENT allowlist.

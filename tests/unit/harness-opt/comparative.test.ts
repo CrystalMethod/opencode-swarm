@@ -116,6 +116,25 @@ describe('runComparativeProtocol', () => {
 		).rejects.toBeInstanceOf(StreamSnapshotDuplicateError);
 	});
 
+	test('arm toggles skip the disabled arms (baseline always runs)', async () => {
+		const seenArms: string[] = [];
+		const result = await runComparativeProtocol({
+			projectRoot: root,
+			tasks: [tasks[0]!],
+			seed: 'toggle-seed',
+			runAblationArm: false,
+			runSimpleAgentArm: false,
+			executor: (inv) => {
+				seenArms.push(inv.arm);
+				return { status: 'completed', text: '{"v":1,"caught":true}' };
+			},
+		});
+		expect(seenArms).toEqual(['baseline']);
+		expect(result.arms.baseline).toBeDefined();
+		expect(result.arms.ablation).toBeUndefined();
+		expect(result.arms['simple-agent']).toBeUndefined();
+	});
+
 	test('a mutated task population changes the population hash', () => {
 		const mutated = [
 			{ id: 'task-a', instruction: 'MUTATED INSTRUCTION' },

@@ -83,20 +83,43 @@ export function materializeHarnessOptInput(args: {
 	return { inputRoot, taskSetHash };
 }
 
-/** Verify the materialized input still matches its content-addressed hash. */
+export class HarnessOptInputTamperedError extends Error {
+	readonly code = 'HARNESS_OPT_INPUT_TAMPERED';
+	constructor(taskSetHash: string) {
+		super(
+			`materialized harness-opt task-set input no longer matches its content-addressed hash ${taskSetHash}`,
+		);
+		this.name = 'HarnessOptInputTamperedError';
+	}
+}
+
+/**
+ * Verify the MATERIALIZED ON-DISK input still matches its content-addressed
+ * hash: re-reads every task instruction from the content-addressed input
+ * root and recomputes the task-population hash from the bytes on disk. A
+ * tampered materialization fails typed. (Issue #2503 integrity check.)
+ */
 export function verifyHarnessOptInput(args: {
-	projectRoot: string;
-	descriptor: HarnessOptTaskSetDescriptor;
+	inputRoot: string;
+	taskIds: readonly string[];
 	taskSetHash: string;
 }): boolean {
-	const recomputed = computeTaskPopulationHash(args.descriptor.tasks);
-	return recomputed === args.taskSetHash;
+	const onDiskTasks = args.taskIds.map((taskId) => {
+		const instructionPath = path.join(args.inputRoot, taskId, 'instruction.md');
+		const instruction = fs.existsSync(instructionPath)
+			? fs.readFileSync(instructionPath, 'utf8').replace(/\n$/, '')
+			: '';
+		return { id: taskId, instruction };
+	});
+	return computeTaskPopulationHash(onDiskTasks) === args.taskSetHash;
 }
 
 export interface SubstrateExecutionResult {
 	runStatus: string;
 	decisionStatus: string;
 	decisionId: string;
+	/** Host-reported USD spend accumulated across executor invocations. */
+	reportedSpendUsd: number;
 	outcomes: Array<{ candidateId: string; outcome: string }>;
 	tokens: TokenUsage;
 }
@@ -117,7 +140,10 @@ function toExecutorResult(
 		status: 'completed',
 		text: result.text,
 		durationMs: 1,
-		cost: { source: 'reported', usd: 0 },
+		cost:
+			typeof result.costUsd === 'number'
+				? { source: 'reported', usd: result.costUsd }
+				: { source: 'reported', usd: 0 },
 	};
 }
 
@@ -134,6 +160,7 @@ export async function runSubstrateEvaluation(args: {
 	seed: string;
 	decidedAt: string;
 	maxTransientRetries?: number;
+	maxSpendUsd?: number;
 	executor: ComparativeExecutor;
 	abortSignal?: AbortSignal;
 }): Promise<SubstrateExecutionResult> {
@@ -142,6 +169,7 @@ export async function runSubstrateEvaluation(args: {
 		tokens_cache: 'unknown',
 		tokens_output: 'unknown',
 	};
+	let reportedSpendUsd = 0;
 	const seedSalt = sha256(`${args.descriptor.seed}:${args.seed}`);
 	const taskDrafts = args.descriptor.tasks.map((task) => ({
 		v: 1 as const,
@@ -225,6 +253,7 @@ export async function runSubstrateEvaluation(args: {
 			if (typeof result.tokens.output === 'number')
 				tokenUsage.tokens_output = result.tokens.output;
 		}
+		if (typeof result.costUsd === 'number') reportedSpendUsd += result.costUsd;
 		return toExecutorResult(result);
 	};
 	const { run, decision } = await evaluateCandidateV1({
@@ -243,6 +272,7 @@ export async function runSubstrateEvaluation(args: {
 			maxTaskTimeMs: 60_000,
 			maxRetries: args.maxTransientRetries ?? 0,
 			maxOutputBytes: 262_144,
+			maxSpendUsd: args.maxSpendUsd,
 		},
 		decidedAt: args.decidedAt,
 		executor: substrateExecutor,
@@ -252,6 +282,7 @@ export async function runSubstrateEvaluation(args: {
 		runStatus: run.status,
 		decisionStatus: decision.status,
 		decisionId: decision.decisionId,
+		reportedSpendUsd,
 		outcomes: run.results.map((result) => ({
 			candidateId: result.candidateId,
 			outcome: result.outcome,

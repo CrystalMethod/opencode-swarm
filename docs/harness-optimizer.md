@@ -16,17 +16,25 @@ autonomous execution and never mutates the running checkout.
   so each round derives a fresh deterministic `runId` and the SUBSTRATE's
   `claimHeldOutTest` is what enforces single-use held-out consumption
   (`TestAlreadyConsumedError` surfaces typed — the controller never masks it).
-  Stop reasons are a closed enum (`transient_retry_budget_exhausted`,
-  `round_budget_exhausted`, `wall_clock_budget_exhausted`,
-  `spend_budget_exhausted`, `equivalent_patch_convergence`, `digest_repeat`,
-  `integrity_failure`, `heldout_consumed`, `inconclusive`, `completed`).
+  Stop reasons are the produced `HARNESS_OPT_STOP_REASONS` enum — every
+  member has a producing code path, pinned by producer-discipline tests:
+  `transient_retry_budget_exhausted`, `round_budget_exhausted`,
+  `wall_clock_budget_exhausted`, `spend_budget_exhausted`, `inconclusive`,
+  `completed`, `stopped_by_operator`. Integrity conditions surface as typed
+  errors instead of stop results (held-out consumption → the substrate's
+  `TestAlreadyConsumedError`, mutated frozen content →
+  `FROZEN_CONTENT_MISMATCH`, tampered materialized input →
+  `HARNESS_OPT_INPUT_TAMPERED`, duplicated stream snapshots →
+  `STREAM_SNAPSHOT_DUPLICATE`, replay divergence →
+  `REPLAY_DECISION_MISMATCH`).
   `evaluatePilotGraduation` applies the predeclared criteria (positive lower
   CI beyond the threshold, zero protected regressions) and retains negative
   evidence verbatim under `pilots/<recordId>/record.json`.
 - **`execution.ts`** — the substrate bridge. Materializes task descriptors
   into the content-addressed input root and executes through the production
-  `evaluateCandidateV1` path in the substrate's disposable worktree (baseline
-  and candidate fingerprints verified before and after).
+  `evaluateCandidateV1` path in the substrate's disposable worktree; the
+  substrate fingerprints the active checkout before and after every
+  execution, so the running checkout is never mutated.
 - **`comparative.ts`** — the comparative protocol: baseline, ablation, and
   simple-agent control arms on the SAME frozen task population (identical
   `taskPopulationHash`), per-arm denominators, retained negative results,
@@ -55,8 +63,9 @@ autonomous execution and never mutates the running checkout.
 - **Disabled by default.** `/swarm harness-opt run` requires
   `harness_opt.enabled: true` AND `--confirm`; `run`/`stop` are
   `toolPolicy: 'human-only'`.
-- **Isolation.** Rounds execute in disposable git worktrees; the running
-  checkout's fingerprint is verified unchanged around every execution.
+- **Isolation.** Rounds execute in disposable git worktrees; the substrate
+  fingerprints the active checkout before and after every execution, so the
+  running checkout is never mutated.
 - **No self-modification.** Activation and rollback are NOT part of this
   surface — they stay on the human-only `/swarm approve-write` + harness
   store path with exact one-shot approval facts; `activateHarnessCandidate`

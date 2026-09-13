@@ -2047,8 +2047,10 @@ by that snapshot, and leaves version-linked candidates available for rollback.
 the executing capstone over the declarative `harness_evolution` surface. It is
 disabled by default; `/swarm harness-opt run` requires `enabled: true` AND an
 explicit `--confirm`, executes ONE governed round through the production
-evaluation substrate inside a disposable worktree (the running checkout is
-never mutated), and records durable round lineage with task-cost accounting
+evaluation substrate inside a disposable worktree (the substrate
+fingerprints the active checkout before and after every execution, so the
+running checkout is never mutated), and records durable round lineage with
+task-cost accounting
 (missing host token data stays `unknown`, never zero). A `test` split consumes
 the held-out set exactly once, enforced by the substrate. Activation and
 rollback are NOT part of this surface — they stay on the human-only
@@ -2060,10 +2062,10 @@ handlers, never on the plugin init path.
 | `enabled` | boolean | `false` | Master opt-in for executing governed rounds. |
 | `max_rounds` | number | `5` | Max governed rounds before the controller stops (1–50). |
 | `max_transient_retries` | number | `2` | Max transient-retries per round, the retry-circuit bound (0–10). |
-| `max_wall_clock_ms` | number | `3600000` | Hard wall-clock budget for a single round. |
-| `max_spend_usd` | number | — | Optional soft spend budget for a single round. |
-| `run_ablation_arm` | boolean | `true` | Run the ablation arm in the comparative protocol. |
-| `run_simple_agent_arm` | boolean | `true` | Run the simple-agent control arm in the comparative protocol. |
+| `max_wall_clock_ms` | number | `3600000` | Hard wall-clock budget for a single round; exceeding it stops the round with `wall_clock_budget_exhausted`. |
+| `max_spend_usd` | number | — | Optional soft spend budget for a single round; host-reported spend above it stops the round with `spend_budget_exhausted`. |
+| `run_ablation_arm` | boolean | `true` | Run the ablation arm in `harness-opt compare` (the baseline arm always runs). |
+| `run_simple_agent_arm` | boolean | `true` | Run the simple-agent control arm in `harness-opt compare`. |
 
 ## External Skills Curation Pipeline
 

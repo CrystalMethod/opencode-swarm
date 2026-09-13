@@ -1,12 +1,15 @@
 /**
  * Governed serial round controller for the HarnessOpt capstone (issue
- * #2503). One allowlisted candidate per round; the round executes through
- * the production evaluation substrate inside its disposable worktree (the
- * running checkout is fingerprint-verified unchanged); held-out splits are
- * consumed exactly once by the SUBSTRATE (`claimHeldOutTest`), never by
- * this controller; every round is recorded as durable lineage with
- * task-cost accounting (unknown-not-zero); transient retries are bounded;
- * and pilot graduation keeps negative evidence verbatim.
+ * #2503). Rounds run over the allowlisted harness-evolution surface; the
+ * round executes through the production evaluation substrate inside its
+ * disposable worktree (the substrate fingerprints the active checkout
+ * before and after every execution, so the running checkout is never
+ * mutated); held-out splits are consumed exactly once by the SUBSTRATE
+ * (`claimHeldOutTest`), never by this controller; every round is recorded
+ * as durable lineage with task-cost accounting (unknown-not-zero);
+ * transient retries, wall-clock, and spend are bounded; the materialized
+ * input is integrity-verified against its content-addressed hash before
+ * execution; and pilot graduation keeps negative evidence verbatim.
  *
  * The controller never activates, rolls back, or mutates the live harness:
  * activation and rollback stay on the existing human-only
@@ -23,8 +26,10 @@ import type {
 } from './comparative.js';
 import { computeTaskPopulationHash } from './comparative.js';
 import {
+	HarnessOptInputTamperedError,
 	materializeHarnessOptInput,
 	runSubstrateEvaluation,
+	verifyHarnessOptInput,
 } from './execution.js';
 import {
 	computeCandidateConfigDigest,
@@ -35,18 +40,25 @@ import { evaluateIndependentOracle } from './oracle.js';
 
 export type HarnessOptSplit = 'train' | 'validation' | 'test';
 
-export type HarnessOptStopReason =
-	| 'completed'
-	| 'inconclusive'
-	| 'transient_retry_budget_exhausted'
-	| 'round_budget_exhausted'
-	| 'wall_clock_budget_exhausted'
-	| 'spend_budget_exhausted'
-	| 'equivalent_patch_convergence'
-	| 'digest_repeat'
-	| 'integrity_failure'
-	| 'heldout_consumed'
-	| 'stopped_by_operator';
+/**
+ * Stop reasons the round controller can actually produce. Every member has
+ * a producing code path (pinned by tests/unit/harness-opt/stop-reasons.test.ts
+ * and the controller suite); conditions that surface as typed ERRORS rather
+ * than stop results (held-out consumption, frozen-content mismatch, stream
+ * snapshot duplication, replay mismatch) are intentionally NOT members —
+ * they propagate as their substrate/module errors.
+ */
+export const HARNESS_OPT_STOP_REASONS = [
+	'completed',
+	'inconclusive',
+	'transient_retry_budget_exhausted',
+	'round_budget_exhausted',
+	'wall_clock_budget_exhausted',
+	'spend_budget_exhausted',
+	'stopped_by_operator',
+] as const;
+
+export type HarnessOptStopReason = (typeof HARNESS_OPT_STOP_REASONS)[number];
 
 export interface HarnessOptRoundResult {
 	stopReason: HarnessOptStopReason;
@@ -186,6 +198,10 @@ export async function runHarnessOptRound(args: {
 	split: HarnessOptSplit;
 	seed: string;
 	maxTransientRetries?: number;
+	/** Hard wall-clock budget for the round, in milliseconds. */
+	maxWallClockMs?: number;
+	/** Soft spend budget for the round, in USD. */
+	maxSpendUsd?: number;
 	executor: ComparativeExecutor;
 	abortSignal?: AbortSignal;
 }): Promise<HarnessOptRoundResult> {
@@ -233,6 +249,18 @@ export async function runHarnessOptRound(args: {
 			'tasksets',
 			contentHash,
 		);
+		// Integrity check (issue #2503): the materialized, content-addressed
+		// input on disk must still hash to the registered task-set hash.
+		if (
+			!verifyHarnessOptInput({
+				inputRoot,
+				taskIds: args.tasks.map((task) => task.id),
+				taskSetHash: contentHash,
+			})
+		) {
+			throw new HarnessOptInputTamperedError(contentHash);
+		}
+		const roundStartedAtMs = Date.now();
 		const decidedAt = new Date().toISOString();
 		const maxTransientRetries = args.maxTransientRetries ?? 0;
 		const result = await runSubstrateEvaluation({
@@ -246,9 +274,11 @@ export async function runHarnessOptRound(args: {
 			seed: saltedSeed,
 			decidedAt,
 			maxTransientRetries,
+			maxSpendUsd: args.maxSpendUsd,
 			executor: args.executor,
 			abortSignal: args.abortSignal,
 		});
+		const roundElapsedMs = Date.now() - roundStartedAtMs;
 		const candidateOutcomes = result.outcomes.filter(
 			(outcome) => !outcome.candidateId.startsWith('harnessopt-baseline-'),
 		);
@@ -331,9 +361,15 @@ export async function runHarnessOptRound(args: {
 		});
 		const stopReason: HarnessOptStopReason = allInfrastructure
 			? 'transient_retry_budget_exhausted'
-			: result.decisionStatus === 'inconclusive'
-				? 'inconclusive'
-				: 'completed';
+			: args.maxSpendUsd !== undefined &&
+					result.reportedSpendUsd > args.maxSpendUsd
+				? 'spend_budget_exhausted'
+				: args.maxWallClockMs !== undefined &&
+						roundElapsedMs > args.maxWallClockMs
+					? 'wall_clock_budget_exhausted'
+					: result.decisionStatus === 'inconclusive'
+						? 'inconclusive'
+						: 'completed';
 		return {
 			stopReason,
 			transientRetries: allInfrastructure ? maxTransientRetries : 0,

@@ -168,6 +168,80 @@ describe('runHarnessOptRound', () => {
 	});
 });
 
+describe('budget enforcement (final-critic revision)', () => {
+	test('a round exceeding its wall-clock budget stops wall_clock_budget_exhausted', async () => {
+		const result = await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'wall-clock-seed',
+			maxWallClockMs: 1,
+			executor: async () => {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				return { status: 'completed', text: '{"v":1,"caught":true}' };
+			},
+		});
+		expect(result.stopReason).toBe('wall_clock_budget_exhausted');
+	});
+
+	test('a round exceeding its spend budget stops spend_budget_exhausted', async () => {
+		const result = await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'spend-seed',
+			maxSpendUsd: 0.5,
+			executor: async () => ({
+				status: 'completed' as const,
+				text: '{"v":1,"caught":true}',
+				costUsd: 1,
+			}),
+		});
+		expect(result.stopReason).toBe('spend_budget_exhausted');
+	});
+
+	test('a tampered materialized input fails typed before execution', async () => {
+		const { HarnessOptInputTamperedError } = await import(
+			'../../../src/services/harness-optimizer/execution.js'
+		);
+		await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'tamper-seed',
+			executor: okExecutor,
+		});
+		const { readFileSync: rf, writeFileSync: wf } = await import('node:fs');
+		const instructionPath = path.join(
+			root,
+			'.swarm',
+			'evolution',
+			'harness-opt',
+			'tasksets',
+			// the single frozen task set for this project root so far
+			...(
+				(await import('node:fs')).readdirSync(
+					path.join(root, '.swarm', 'evolution', 'harness-opt', 'tasksets'),
+				) as string[]
+			).map((dir) => dir),
+			'round-task',
+			'instruction.md',
+		);
+		const original = rf(instructionPath, 'utf8');
+		wf(instructionPath, 'TAMPERED INSTRUCTION' + String.fromCharCode(10));
+		await expect(
+			runHarnessOptRound({
+				projectRoot: root,
+				tasks,
+				split: 'validation',
+				seed: 'tamper-seed',
+				executor: okExecutor,
+			}),
+		).rejects.toBeInstanceOf(HarnessOptInputTamperedError);
+		wf(instructionPath, original);
+	});
+});
+
 describe('stop and status', () => {
 	test('operator stop halts rounds until cleared (typed stop, no consumption)', async () => {
 		await runHarnessOptRound({

@@ -299,6 +299,8 @@ export async function handleHarnessOptRun(
 		split: parsed.split,
 		seed: parsed.seed,
 		maxTransientRetries: config.max_transient_retries,
+		maxWallClockMs: config.max_wall_clock_ms,
+		maxSpendUsd: config.max_spend_usd,
 		executor,
 	});
 	return emit({ status: 'ok', ...result }, parsed.json);
@@ -455,11 +457,16 @@ export async function handleHarnessOptCompare(
 		runtime.dispatcher,
 		runtime.parentSessionId,
 	);
+	const harnessOptBlock = (runtime.config ?? undefined) as
+		| { run_ablation_arm?: boolean; run_simple_agent_arm?: boolean }
+		| undefined;
 	const comparative = await runComparativeProtocol({
 		projectRoot: directory,
 		tasks: loaded.tasks,
 		seed: parsed.seed,
 		executor,
+		runAblationArm: harnessOptBlock?.run_ablation_arm,
+		runSimpleAgentArm: harnessOptBlock?.run_simple_agent_arm,
 	});
 	const arms: ComparativeArmResult[] = Object.values(comparative.arms);
 	// Independent oracle over the observed arm summaries: the baseline arm

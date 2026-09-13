@@ -37,6 +37,8 @@ export interface ComparativeExecutorResult {
 	status: ComparativeExecutorStatus;
 	text: string;
 	tokens?: { input?: number; cache?: number; output?: number };
+	/** Host-reported USD cost of this invocation, when supplied. */
+	costUsd?: number;
 }
 
 export type ComparativeExecutor = (invocation: {
@@ -117,6 +119,13 @@ export async function runComparativeProtocol(args: {
 	executor: ComparativeExecutor;
 	/** Previously-recorded digests for this task population; a repeat rejects. */
 	previousStreamDigests?: string[];
+	/**
+	 * Arm toggles (harness_opt.run_ablation_arm / run_simple_agent_arm).
+	 * The baseline arm always runs; unlisted arms are skipped and absent
+	 * from the result. Defaults to all three arms.
+	 */
+	runAblationArm?: boolean;
+	runSimpleAgentArm?: boolean;
 	abortSignal?: AbortSignal;
 }): Promise<ComparativeProtocolResult> {
 	const taskPopulationHash = computeTaskPopulationHash(args.tasks);
@@ -124,7 +133,13 @@ export async function runComparativeProtocol(args: {
 		(args.previousStreamDigests ?? []).map((digest) => digest),
 	);
 	const arms = {} as Record<ComparativeArmKey, ComparativeArmResult>;
-	for (const arm of COMPARATIVE_ARM_KEYS) {
+	const selectedArms = COMPARATIVE_ARM_KEYS.filter(
+		(arm) =>
+			arm === 'baseline' ||
+			(arm === 'ablation' && args.runAblationArm !== false) ||
+			(arm === 'simple-agent' && args.runSimpleAgentArm !== false),
+	);
+	for (const arm of selectedArms) {
 		const streamDigest = computeArmStreamDigest({
 			arm,
 			seed: args.seed,
