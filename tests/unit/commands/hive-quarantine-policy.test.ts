@@ -104,6 +104,7 @@ describe('knowledge hive-quarantine policy (issue #2033)', () => {
 				'recover',
 				'approve-write',
 				'harness-opt run',
+				'harness-opt compare',
 				'harness-opt stop',
 			].sort(),
 		);

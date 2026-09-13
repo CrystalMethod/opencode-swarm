@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import {
+	handleHarnessOptCompare,
 	handleHarnessOptPlan,
 	handleHarnessOptRun,
 	handleHarnessOptStatus,
@@ -143,6 +144,34 @@ describe('harness-opt run gating', () => {
 		writeFileSync(path.join(root, 'tasks.json'), JSON.stringify([{ id: 'x' }]));
 		const output = await handleHarnessOptPlan(root, ['--tasks', 'tasks.json']);
 		expect(output).toMatch(/\{id, instruction\}/);
+	});
+});
+
+describe('harness-opt compare gating (separately executable comparative package)', () => {
+	test('refuses without --confirm', async () => {
+		const output = await handleHarnessOptCompare(root, []);
+		expect(output).toMatch(/confirm/i);
+	});
+
+	test('refuses an invalid comparative manifest before any execution', async () => {
+		writeFileSync(
+			path.join(root, 'tasks.json'),
+			JSON.stringify([
+				{ id: 'cmp-task', instruction: 'reply with {"v":1,"caught":true}' },
+			]),
+		);
+		writeFileSync(
+			path.join(root, 'manifest.json'),
+			JSON.stringify({ releaseName: '' }),
+		);
+		const output = await handleHarnessOptCompare(root, [
+			'--confirm',
+			'--tasks',
+			'tasks.json',
+			'--manifest',
+			'manifest.json',
+		]);
+		expect(output).toMatch(/MANIFEST_FIELD_EMPTY/);
 	});
 });
 

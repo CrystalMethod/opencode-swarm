@@ -31,6 +31,7 @@ import {
 	computePromptSelectionDigest,
 	recordHarnessOptRound,
 } from './lineage.js';
+import { evaluateIndependentOracle } from './oracle.js';
 
 export type HarnessOptSplit = 'train' | 'validation' | 'test';
 
@@ -191,9 +192,17 @@ export async function runHarnessOptRound(args: {
 	return withHarnessOptLock(args.projectRoot, async () => {
 		const state = loadState(args.projectRoot);
 		if (state.stopReason) {
-			throw new Error(
-				`harness-opt loop is stopped (${state.stopReason}); clear the stop with harness-opt plan before running`,
-			);
+			// Operator stop is a typed stop, not an error: the round reports
+			// it as its stop reason with no execution and no consumption.
+			return {
+				stopReason: 'stopped_by_operator',
+				transientRetries: 0,
+				roundId: '',
+				roundCounter: state.roundCounter,
+				saltedSeed: '',
+				taskSetHash: '',
+				decision: { status: 'stopped', decisionId: '' },
+			};
 		}
 		const key = taskSetKey(args.split, args.seed);
 		const contentHash = computeTaskPopulationHash(args.tasks);
@@ -243,15 +252,48 @@ export async function runHarnessOptRound(args: {
 		const candidateOutcomes = result.outcomes.filter(
 			(outcome) => !outcome.candidateId.startsWith('harnessopt-baseline-'),
 		);
+		const baselineOutcomes = result.outcomes.filter((outcome) =>
+			outcome.candidateId.startsWith('harnessopt-baseline-'),
+		);
 		const allInfrastructure = candidateOutcomes.every(
 			(outcome) => outcome.outcome === 'infrastructure_failure',
 		);
+		// Independent oracle (issue #2503): acceptance backstop over the
+		// substrate's own results, computed separately from the optimizer.
+		// A scored-and-completed result is an accepted artifact with its
+		// scorer-verified evidence; anything else is not.
+		const countVerified = (outcomes: typeof result.outcomes) =>
+			outcomes.filter((outcome) => outcome.outcome === 'scored').length;
+		const oracle = await evaluateIndependentOracle({
+			baseline: {
+				n: baselineOutcomes.length || 1,
+				acceptedArtifacts: countVerified(baselineOutcomes),
+				verificationEvidence: countVerified(baselineOutcomes),
+				tokens: {
+					input: result.tokens.tokens_input,
+					cache: result.tokens.tokens_cache,
+					output: result.tokens.tokens_output,
+				},
+			},
+			candidate: {
+				n: candidateOutcomes.length || 1,
+				acceptedArtifacts: countVerified(candidateOutcomes),
+				verificationEvidence: countVerified(candidateOutcomes),
+				tokens: {
+					input: result.tokens.tokens_input,
+					cache: result.tokens.tokens_cache,
+					output: result.tokens.tokens_output,
+				},
+			},
+		});
 		const artifactOutcome =
-			result.decisionStatus === 'accept'
-				? 'accepted'
-				: result.decisionStatus === 'reject'
-					? 'rejected'
-					: 'inconclusive';
+			oracle.verdict === 'reject'
+				? 'oracle_rejected'
+				: result.decisionStatus === 'accept'
+					? 'accepted'
+					: result.decisionStatus === 'reject'
+						? 'rejected'
+						: 'inconclusive';
 		const roundId = `round-${sha256(saltedSeed).slice(0, 16)}`;
 		await recordHarnessOptRound({
 			projectRoot: args.projectRoot,
@@ -275,6 +317,7 @@ export async function runHarnessOptRound(args: {
 				tokens_cache: result.tokens.tokens_cache,
 				tokens_output: result.tokens.tokens_output,
 				artifactOutcome,
+				oracle: { verdict: oracle.verdict, reasons: oracle.reasons },
 				decision: {
 					status: result.decisionStatus,
 					decisionId: result.decisionId,

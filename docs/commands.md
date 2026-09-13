@@ -553,6 +553,12 @@ Human-only operator stop: halt governed rounds with a recorded reason
 
 **Args:** `[--reason <text>] [--json]`
 
+#### `/swarm harness-opt compare`
+
+Separately executable comparative evaluation (issue #2503): baseline, ablation, and simple-agent arms on one frozen task population with an independently validated manifest, the independent oracle verdict, and a retained pilot-graduation record.
+
+**Args:** `--tasks <json> --confirm [--manifest <json>] [--seed <s>] [--lower-ci <n>] [--json]`
+
 #### `/swarm harness-opt history`
 
 List durable round lineage records (bounded to the last 20)

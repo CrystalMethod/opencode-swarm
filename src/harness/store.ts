@@ -3514,14 +3514,16 @@ export async function activateHarnessCandidate(args: {
 				reason: 'candidate has no validated target harness blueprint',
 			};
 		}
-		// Issue #2503 allowlist re-validation. Runs ONLY when the caller
-		// supplies the live harness_evolution config: the default config has an
-		// EMPTY source_allowlist (which admission itself rejects), so
-		// defaulting absent config to it would refuse every activation a
-		// caller recorded under an explicit allowlist. Governed production
-		// surfaces (harness-opt commands, harnessMutationV1) always pass the
-		// live config; absent config keeps the pre-#2503 admission-time-only
-		// validation for legacy direct callers.
+		// Issue #2503 allowlist re-validation (defense in depth). Runs ONLY
+		// when the caller supplies the live harness_evolution config: the
+		// default config has an EMPTY source_allowlist (which admission
+		// itself rejects), so defaulting absent config to it would refuse
+		// every activation a caller recorded under an explicit allowlist.
+		// Today activation is driven by external package-API consumers
+		// (harnessMutationV1) after /swarm approve-write issues the one-shot
+		// fact; callers that pass the live config get the revocation check,
+		// and absent config keeps the pre-#2503 admission-time-only
+		// validation.
 		if (args.config) {
 			const revokedApprovedPath = firstNonAdmittedApprovedPath(
 				stored.candidate.approvedPaths,
@@ -3805,8 +3807,9 @@ export async function rollbackHarnessVersion(args: {
 				reason: `target version candidate ${targetVersion.candidateId} record is missing; rollback allowlist re-validation cannot pass`,
 			};
 		}
-		// Same issue #2503 guard shape as activation: re-validate only when
-		// the caller supplies the live harness_evolution config.
+		// Same issue #2503 guard shape as activation (defense in depth for
+		// the rollback path): re-validate only when the caller supplies the
+		// live harness_evolution config.
 		if (args.config) {
 			const rollbackRevokedApprovedPath = firstNonAdmittedApprovedPath(
 				rollbackCandidate.candidate.approvedPaths,

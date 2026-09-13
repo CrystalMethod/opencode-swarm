@@ -169,24 +169,30 @@ describe('runHarnessOptRound', () => {
 });
 
 describe('stop and status', () => {
-	test('operator stop halts rounds until cleared', async () => {
+	test('operator stop halts rounds until cleared (typed stop, no consumption)', async () => {
+		await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'pre-stop-seed',
+			executor: okExecutor,
+		});
 		await stopHarnessOptLoop({ projectRoot: root, reason: 'operator halt' });
 		const status = harnessOptStatus(root);
 		expect(status.stopped).toBe(true);
 		expect(status.stopReason).toBe('operator halt');
-		let refused: unknown;
-		try {
-			await runHarnessOptRound({
-				projectRoot: root,
-				tasks,
-				split: 'validation',
-				seed: 'stopped-seed',
-				executor: okExecutor,
-			});
-		} catch (error) {
-			refused = error;
-		}
-		expect(String(refused)).toMatch(/stopped \(operator halt\)/);
+		const stopped = await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'stopped-seed',
+			executor: okExecutor,
+		});
+		expect(stopped.stopReason).toBe('stopped_by_operator');
+		// No round was executed for the stopped seed: the counter is unchanged
+		// from the pre-stop round.
+		expect(stopped.roundCounter).toBe(1);
+		expect(stopped.decision.decisionId).toBe('');
 	});
 
 	test('status reports the round counter and frozen task sets', async () => {

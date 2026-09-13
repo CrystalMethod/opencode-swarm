@@ -71,6 +71,8 @@ describe('durable round lineage', () => {
 		expect(record.replayLineageId).toBe(record.roundId);
 		expect(typeof record.artifactOutcome).toBe('string');
 		expect(typeof record.decision.status).toBe('string');
+		expect(['accept', 'reject']).toContain(record.oracle.verdict);
+		expect(Array.isArray(record.oracle.reasons)).toBe(true);
 	});
 
 	test('token passthrough records host-supplied counts', async () => {

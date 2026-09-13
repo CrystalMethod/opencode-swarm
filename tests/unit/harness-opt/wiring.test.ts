@@ -17,6 +17,7 @@ describe('harness-opt production wiring ratchet', () => {
 			'harness-opt',
 			'harness-opt plan',
 			'harness-opt run',
+			'harness-opt compare',
 			'harness-opt status',
 			'harness-opt stop',
 			'harness-opt history',

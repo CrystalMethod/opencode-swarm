@@ -73,6 +73,7 @@ import {
 	handleHarnessCandidateValidateCommand,
 } from './harness.js';
 import {
+	handleHarnessOptCompare,
 	handleHarnessOptHistory,
 	handleHarnessOptPlan,
 	handleHarnessOptRun,
@@ -1068,6 +1069,19 @@ export const COMMAND_REGISTRY = {
 			'Human-only operator stop: halt governed rounds with a recorded reason',
 		subcommandOf: 'harness-opt',
 		args: '[--reason <text>] [--json]',
+		category: 'utility',
+		toolPolicy: 'human-only',
+	},
+	'harness-opt compare': {
+		handler: (ctx) =>
+			handleHarnessOptCompare(ctx.directory, ctx.args, {
+				dispatcher: ctx.evaluationModelDispatcher,
+				parentSessionId: ctx.sessionID,
+			}),
+		description:
+			'Separately executable comparative evaluation (issue #2503): baseline, ablation, and simple-agent arms on one frozen task population with an independently validated manifest, the independent oracle verdict, and a retained pilot-graduation record.',
+		subcommandOf: 'harness-opt',
+		args: '--tasks <json> --confirm [--manifest <json>] [--seed <s>] [--lower-ci <n>] [--json]',
 		category: 'utility',
 		toolPolicy: 'human-only',
 	},

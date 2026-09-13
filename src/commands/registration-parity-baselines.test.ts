@@ -186,8 +186,10 @@ describe('Command registration parity — classification baselines', () => {
 				// in-process dispatch ownership, an operator-only assertion.
 				'recover',
 				// #2503: governed HarnessOpt capstone — mutating commands
-				// (round execution, operator stop) are human-gated.
+				// (round execution, comparative execution, operator stop)
+				// are human-gated.
 				'harness-opt run',
+				'harness-opt compare',
 				'harness-opt stop',
 			]),
 			toolCommands: new Set([
@@ -220,12 +222,13 @@ describe('Command registration parity — classification baselines', () => {
 				// agent attempts are refused with a surface-to-user message.
 				'recover',
 				'approve-write',
-				// #2503: all 6 harness-opt commands carry a toolPolicy.
+				// #2503: all 7 harness-opt commands carry a toolPolicy.
 				'harness-opt',
 				'harness-opt plan',
 				'harness-opt status',
 				'harness-opt history',
 				'harness-opt run',
+				'harness-opt compare',
 				'harness-opt stop',
 			]),
 			noArgs: new Set(['pr status', 'lanes', 'context-map stats']),

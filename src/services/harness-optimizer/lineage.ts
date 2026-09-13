@@ -36,6 +36,7 @@ export interface HarnessOptLineageRecord {
 	tokens_cache: number | 'unknown';
 	tokens_output: number | 'unknown';
 	artifactOutcome: string;
+	oracle: { verdict: string; reasons: string[] };
 	decision: { status: string; decisionId: string };
 	execution: {
 		decidedAt: string;
