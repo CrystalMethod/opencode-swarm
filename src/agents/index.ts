@@ -32,6 +32,7 @@ import {
 	type AgentDefinition,
 	createArchitectAgent,
 	enforceArchitectPromptBudget,
+	warnArchitectPromptBudgetExceededOnce,
 } from './architect';
 import { CODER_MEMORY_OUTCOME_GUIDANCE, createCoderAgent } from './coder';
 import {
@@ -572,7 +573,7 @@ If you call @coder instead of @${swarmId}_coder, the call will FAIL or go to the
 			architect.config.prompt ?? '',
 		);
 		if (!prefixedBudget.ok) {
-			advisoryWarn(prefixedBudget.error);
+			warnArchitectPromptBudgetExceededOnce(prefixedBudget.error);
 		}
 
 		agents.push(applyOverrides(architect, swarmAgents, swarmPrefix, quiet));

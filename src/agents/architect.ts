@@ -158,6 +158,22 @@ export type ArchitectPromptBudgetEnforcement =
 	| { ok: false; error: string; chars: number; tokenEstimate: number };
 
 /**
+ * Emit an ARCHITECT_PROMPT_BUDGET_EXCEEDED advisory once per process per
+ * distinct error (issue #2671 review follow-up): getAgentConfigs runs twice
+ * during plugin init and once per command re-resolution, so a deterministic
+ * over-budget config would otherwise push 2-4 identical advisories into the
+ * capped diagnose buffer per session. Keyed by the full bounded error text,
+ * so a config change that changes the label or lengths warns again.
+ */
+const emittedBudgetAdvisories = new Set<string>();
+
+export function warnArchitectPromptBudgetExceededOnce(error: string): void {
+	if (emittedBudgetAdvisories.has(error)) return;
+	emittedBudgetAdvisories.add(error);
+	advisoryWarn(error);
+}
+
+/**
  * Deterministic overflow policy (issue #2671): over budget returns a BOUNDED
  * (<= 400 chars, label sliced) error prefixed ARCHITECT_PROMPT_BUDGET_EXCEEDED
  * instead of silently dropping guidance. Callers advisoryWarn it and keep the
@@ -1646,26 +1662,19 @@ Wait for the user to answer all four in a single reply. Then persist them agains
 }
 
 /**
- * Generate the Available Tools block from AGENT_TOOL_MAP.architect, enabled opt-in tool maps, and TOOL_DESCRIPTIONS.
- * Format: "tool1 (description), tool2 (description), ..." — tools without descriptions use name only.
- *
- * When `council?.enabled !== true`, the QA-council tools
- * (`submit_council_verdicts`, `declare_council_criteria`, `submit_phase_council_verdicts`)
- * are filtered out so the model is not shown phantom tools the runtime gate would reject.
- *
- * When `council?.general?.enabled !== true`, `convene_general_council` is
- * also filtered out — same reasoning: the runtime gate at
- * src/tools/convene-general-council.ts:execute will reject the call.
- */
-/**
  * Bound a tool description for the in-prompt AVAILABLE TOOLS render
  * (issue #2671): unchanged when it fits the cap; otherwise the capped prefix
  * with trailing unclosed parenthetical groups stripped so entries keep
  * BALANCED parentheses (the comma-separated line is parsed by
  * comma-at-depth-0 readers; an entry ending inside a parenthetical makes
- * later entry boundaries ambiguous). A prefix of a balanced description can
- * only leave '(' unmatched, never ')'. The `…` marker is appended by the
+ * later entry boundaries ambiguous). The `…` marker is appended by the
  * caller so under-cap renders stay byte-identical to the uncapped form.
+ *
+ * Precondition: the input description is paren-balanced (as TOOL_METADATA
+ * entries are reviewed to be). For balanced input, a prefix can only leave
+ * '(' unmatched — never ')' — so stripping trailing unmatched '(' groups
+ * suffices; an input that already contains unmatched ')' passes them through
+ * (output no worse than input).
  */
 export function capToolDescriptionForPrompt(description: string): string {
 	if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
@@ -1702,6 +1711,19 @@ function renderToolPromptDescription(
 	return `${tool} (${capToolDescriptionForPrompt(description)}…)`;
 }
 
+/**
+ * Generate the Available Tools block from AGENT_TOOL_MAP.architect, enabled opt-in tool maps, and TOOL_DESCRIPTIONS.
+ * Format: "tool1 (description), tool2 (description), ..." — descriptions are
+ * bounded by capToolDescriptionForPrompt (issue #2671).
+ *
+ * When `council?.enabled !== true`, the QA-council tools
+ * (`submit_council_verdicts`, `declare_council_criteria`, `submit_phase_council_verdicts`)
+ * are filtered out so the model is not shown phantom tools the runtime gate would reject.
+ *
+ * When `council?.general?.enabled !== true`, `convene_general_council` is
+ * also filtered out — same reasoning: the runtime gate at
+ * src/tools/convene-general-council.ts:execute will reject the call.
+ */
 function buildAvailableToolsList(
 	council?: CouncilWorkflowConfig,
 	memoryEnabled = false,
@@ -2144,7 +2166,7 @@ export function createArchitectAgent(
 		prompt ?? '',
 	);
 	if (!budgetEnforcement.ok) {
-		advisoryWarn(budgetEnforcement.error);
+		warnArchitectPromptBudgetExceededOnce(budgetEnforcement.error);
 	}
 
 	return {

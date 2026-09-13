@@ -16,6 +16,7 @@
 
 import { beforeAll, describe, expect, it } from 'bun:test';
 import {
+	ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
 	capToolDescriptionForPrompt,
 	createArchitectAgent,
 } from '../../../src/agents/architect.js';
@@ -176,6 +177,65 @@ describe('Available Tools generation from AGENT_TOOL_MAP', () => {
 	it('tool count matches AGENT_TOOL_MAP.architect.length', () => {
 		const tools = extractAvailableToolsNames(resolvedPrompt);
 		expect(tools.length).toBe(ARCHITECT_TOOL_COUNT);
+	});
+
+	it('caps every over-cap TOOL_DESCRIPTIONS entry to balanced output (property pin, issue #2671 review)', () => {
+		// Independent of the helper-as-oracle coupling: this pins a PROPERTY
+		// (balanced parens, under-cap prefix, visible ellipsis) over every real
+		// description reachable in the architect render, not exact text.
+		let overCap = 0;
+		for (const [tool, description] of Object.entries(TOOL_DESCRIPTIONS)) {
+			if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
+				continue;
+			}
+			overCap++;
+			const capped = capToolDescriptionForPrompt(description);
+			expect(
+				capped.length,
+				`${tool}: capped form must not exceed the cap`,
+			).toBeLessThanOrEqual(ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS);
+			expect(
+				capped.startsWith(description.slice(0, capped.length)),
+				`${tool}: capped form must be a prefix of the description`,
+			).toBe(true);
+			let depth = 0;
+			let minDepth = 0;
+			for (const ch of capped) {
+				if (ch === '(') depth++;
+				if (ch === ')') depth--;
+				minDepth = Math.min(minDepth, depth);
+			}
+			expect(
+				depth,
+				`${tool}: capped form must not end inside a parenthetical`,
+			).toBeLessThanOrEqual(0);
+			expect(
+				minDepth,
+				`${tool}: capped form must not contain text outside a closed leading parenthetical group`,
+			).toBeGreaterThanOrEqual(0);
+		}
+		expect(overCap).toBeGreaterThan(0);
+	});
+
+	it('capToolDescriptionForPrompt strips multi-iteration unclosed groups and passes through balanced input', () => {
+		// Dedicated unit coverage for the strip loop (review PRR-111): nested
+		// unclosed groups require multiple loop iterations.
+		const nested = `${'a'.repeat(200)} (outer (inner (deepest ${'b'.repeat(50)}`;
+		const capped = capToolDescriptionForPrompt(nested);
+		expect(capped.length).toBeLessThanOrEqual(
+			ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
+		);
+		let depth = 0;
+		for (const ch of capped) {
+			if (ch === '(') depth++;
+			if (ch === ')') depth--;
+		}
+		expect(depth).toBeLessThanOrEqual(0);
+		expect(capped.endsWith('(')).toBe(false);
+
+		// Balanced within-cap input is byte-identical.
+		const balanced = 'tool use (with parens (nested) too) for caps';
+		expect(capToolDescriptionForPrompt(balanced)).toBe(balanced);
 	});
 
 	it('tools are sorted alphabetically', () => {
