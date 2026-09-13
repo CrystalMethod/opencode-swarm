@@ -105,6 +105,13 @@ describe('ci.yml coverage sharding — CI-004 + issue #2341', () => {
 		expect(coverageShardJob).not.toContain('matrix.os');
 	});
 
+	test('coverage shards fetch full history for pinned contract evidence (issue #2677)', () => {
+		// Before issue #2677, this checkout used the default shallow history. The
+		// coverage shard then could not resolve the contract's immutable evidence
+		// capture SHA, so the same candidate passed unit CI but failed in coverage.
+		expect(coverageShardJob).toContain('fetch-depth: 0');
+	});
+
 	test('coverage-shard matrix does not cancel sibling shards on one failure', () => {
 		// fail-fast: false keeps a failed shard's siblings uploading their
 		// flake annotations and lcov reports (cancelled cells run no steps,
