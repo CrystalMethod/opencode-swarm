@@ -126,6 +126,25 @@ describe('applySystemRenderBoundary (#2673 in-place collapse)', () => {
 		expect(emptyResult.collapsed).toBe(false);
 	});
 
+	// Review findings B3/B11: an all-empty-string array on a strict model hits
+	// the nonEmpty.length === 0 branch — pin its SAFE behavior (no collapse,
+	// no fabrication, entries preserved) since adversarial producer pushes can
+	// reach it.
+	test('strict model with an all-empty-string array is left untouched (no fabrication)', () => {
+		const system = ['', ''];
+		const result = applySystemRenderBoundary(
+			modelFixture({ id: 'qwen3.6-32b' }),
+			system,
+		);
+		expect(system).toEqual(['', '']);
+		expect(result).toEqual({
+			capability: 'strict-single-system',
+			entriesBefore: 2,
+			entriesAfter: 2,
+			collapsed: false,
+		});
+	});
+
 	test('multi-system models: the array is left byte-identical (cache breakpoints preserved)', () => {
 		const system = [BASE, '[guidance] entry'];
 		const snapshot = [...system];

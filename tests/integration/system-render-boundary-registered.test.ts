@@ -50,11 +50,16 @@ function cacheCapableModel(): Record<string, unknown> {
 	};
 }
 
-/** VERBATIM host v1.18.3 materialization (LLMRequestPrep.prepare). */
+/**
+ * VERBATIM host v1.18.3 materialization (LLMRequestPrep.prepare). The header
+ * is captured by the host BEFORE the plugin hooks run, so callers pass it in
+ * pre-hook — capturing it inside this function would make the
+ * system[0] === header reshape precondition tautological.
+ */
 function hostMaterialize(
+	header: string | undefined,
 	system: string[],
 ): Array<{ role: string; content: string }> {
-	const header = system[0];
 	if (system.length > 2 && system[0] === header) {
 		const rest = system.slice(1);
 		system.length = 0;
@@ -66,7 +71,17 @@ function hostMaterialize(
 const directory = createPluginHostProject('system-render-2673');
 let booted: Awaited<ReturnType<typeof bootSwarmPluginHost>> | undefined;
 
-afterAll(() => {
+afterAll(async () => {
+	// Review finding M2: the booted plugin populates module-level swarmState
+	// singletons (activeAgent, liveContextWindows, ...); reset them so local
+	// multi-file bun runs cannot inherit this suite's session state. CI runs
+	// per-file, where this is defense in depth.
+	try {
+		const { resetSwarmState } = await import('../../src/state');
+		resetSwarmState();
+	} catch {
+		// The suite must not fail on cleanup of advisory process state.
+	}
 	try {
 		rmSync(directory, {
 			recursive: true,
@@ -91,11 +106,14 @@ async function driveTurn(args: {
 		{},
 	);
 	const system = [...args.seed];
+	// Host fidelity (review finding M1): the host captures header BEFORE the
+	// transform hooks run; capture here, pre-hook, not inside hostMaterialize.
+	const header = system[0];
 	await booted.hooks['experimental.chat.system.transform'](
 		{ sessionID: args.sessionID, model: args.model },
 		{ system },
 	);
-	return hostMaterialize(system);
+	return hostMaterialize(header, system);
 }
 
 describe('system render boundary through the registered host (#2673)', () => {
@@ -161,9 +179,8 @@ describe('system render boundary through the registered host (#2673)', () => {
 			model: cacheCapableModel(),
 			seed: [BASE_HEADER],
 		});
-		expect(messages.length).toBeLessThanOrEqual(2);
-		expect(messages[0].content).toBe(BASE_HEADER);
 		expect(messages.length).toBe(2);
+		expect(messages[0].content).toBe(BASE_HEADER);
 		expect(messages[1].content).toContain('PLANNING PROFILE');
 	});
 });
