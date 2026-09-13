@@ -19,13 +19,16 @@ import {
 	_internals as queueInternals,
 } from '../../../src/background/pr-feedback-event-queue.js';
 import {
-	_internals as loopInternals,
 	claimAndProcessPrFeedbackEvent,
+	_internals as loopInternals,
 	PR_FEEDBACK_LOOP_STATE_REL,
 } from '../../../src/background/pr-feedback-loop.js';
-import { subscribe, updateSnapshot } from '../../../src/background/pr-subscriptions.js';
-import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import {
+	subscribe,
+	updateSnapshot,
+} from '../../../src/background/pr-subscriptions.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
+import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 const SESSION = 'sess-loop';
@@ -98,11 +101,9 @@ async function primeSubscription(
 		repoFullName: REPO,
 		prUrl,
 	});
-	await updateSnapshot(
-		dir,
-		`${SESSION}::${REPO}::${prNumber}`,
-		{ headRefOid: HEAD },
-	);
+	await updateSnapshot(dir, `${SESSION}::${REPO}::${prNumber}`, {
+		headRefOid: HEAD,
+	});
 }
 
 async function enqueueEvent(
@@ -144,7 +145,7 @@ describe('session budget across multiple PRs (RF-2502-003)', () => {
 			pr_monitor: { enabled: true, auto_pr_feedback: true },
 			pr_feedback_loop: { enabled: true, max_session_actions: 1 },
 		});
-		primeSubscription(dir);
+		await primeSubscription(dir);
 		primeSubscription(dir, 43, 'https://github.com/example/repo/pull/43');
 		const performer = installLoopSeams();
 
@@ -173,7 +174,7 @@ describe('session budget across multiple PRs (RF-2502-003)', () => {
 describe('oversight denial and dispatch-failure branches (RF-2502-004)', () => {
 	test('a deny verdict refuses the action and pauses for a human', async () => {
 		const dir = makeProject();
-		primeSubscription(dir);
+		await primeSubscription(dir);
 		const performer = installLoopSeams();
 		loopInternals.dispatchOversight = mock(async () => ({
 			dispatched: true,
@@ -193,7 +194,7 @@ describe('oversight denial and dispatch-failure branches (RF-2502-004)', () => {
 
 	test('an oversight dispatch infrastructure failure fails closed (no action)', async () => {
 		const dir = makeProject();
-		primeSubscription(dir);
+		await primeSubscription(dir);
 		const performer = installLoopSeams();
 		loopInternals.dispatchOversight = mock(async () => {
 			throw new Error('opencode client unavailable');
@@ -213,7 +214,7 @@ describe('oversight denial and dispatch-failure branches (RF-2502-004)', () => {
 describe('corrupt state fail-closed (RF-2502-002/007 fix)', () => {
 	test('an unparseable state file pauses instead of silently wiping the ledger', async () => {
 		const dir = makeProject();
-		primeSubscription(dir);
+		await primeSubscription(dir);
 		const performer = installLoopSeams();
 		// Settle once to establish a real ledger.
 		await enqueueEvent(dir, { dedupToken: 'tok-1' });
