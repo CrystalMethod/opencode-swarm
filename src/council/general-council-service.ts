@@ -12,11 +12,14 @@
  * MAINTAIN/CONCEDE/NUANCE protocol (ConfMAD): a Round 2 response resolves a
  * Round 1 disagreement only when a disputant declares a paragraph-leading
  * CONCEDE on that topic (the documented stance grammar in
- * ../agents/council-prompts.ts); MAINTAIN leaves it persisting; NUANCE marks
- * it persisting-with-boundary. Issue #2578: prose that merely CONTAINS the
- * word "concede" (e.g. "MAINTAIN — I do not concede…") is not a concession,
- * and a member holding an explicit contrary typed stance (oppose/alternative)
- * is disagreement evidence that must never be emitted as consensus.
+ * ../agents/council-prompts.ts); MAINTAIN and NUANCE both leave it
+ * persisting (NUANCE carries no distinct synthesis behavior — it is parsed
+ * only so the stance grammar is recognized and recorded). Issue #2578: prose
+ * that merely CONTAINS the word "concede" (e.g. "MAINTAIN — I do not
+ * concede…") is not a concession, and a member detected as holding a
+ * contrary position (typed oppose/alternative claim, or appearing in any
+ * detected disagreement) is disagreement evidence that must never be emitted
+ * as consensus.
  */
 
 import {
@@ -55,9 +58,16 @@ export interface LeadingStanceDeclaration {
  * A declaration exists only when the FIRST word of a paragraph (blank-line
  * separated) is exactly one of the uppercase keywords MAINTAIN / CONCEDE /
  * NUANCE (case-sensitive, as the prompt documents them), standing alone
- * before whitespace or punctuation. Prose such as "I do not concede" or
- * "After review I concede…" never leads a paragraph with the keyword and so
- * yields no declaration — the conservative direction (no concession).
+ * before whitespace, punctuation, or a markdown decorator. Prose such as
+ * "I do not concede" or "After review I concede…" never leads a paragraph
+ * with the keyword and so yields no declaration — the conservative direction
+ * (no concession).
+ *
+ * Council prompts sanction markdown inside the response string ("Markdown OK
+ * inside the string"), so common paragraph decorators must not hide a
+ * declaration: leading blockquote/heading/list markers are stripped before
+ * the first-word check, emphasis wrapping (bold/italic/code) and hyphen
+ * joins are boundary characters, and zero-width characters are removed.
  */
 export function extractLeadingStanceDeclarations(
 	response: string,
@@ -65,9 +75,17 @@ export function extractLeadingStanceDeclarations(
 	if (typeof response !== 'string' || response.length === 0) return [];
 	const declarations: LeadingStanceDeclaration[] = [];
 	for (const raw of response.split(/\n\s*\n/)) {
-		const paragraph = raw.trim();
+		const paragraph = raw
+			.trim()
+			// Zero-width and BOM characters must not absorb the keyword.
+			.replace(/[\u200B-\u200D\uFEFF]/g, '')
+			// Leading blockquote, heading, and list markers (the prompt says
+			// markdown is OK), repeated for nested cases.
+			.replace(/^(?:>\s*|#{1,6}\s+|[-*+]\s+|\d{1,3}[.)]\s+)*/, '')
+			// Emphasis opening markers directly before the keyword.
+			.replace(/^[_*~]+/, '');
 		if (paragraph === '') continue;
-		const boundary = paragraph.search(/[\s:,.;!?—–]/);
+		const boundary = paragraph.search(/[\s:,.;!?—–*_`>#-]/);
 		const firstWord =
 			boundary === -1 ? paragraph : paragraph.slice(0, boundary);
 		if ((LEADING_STANCE_KEYWORDS as readonly string[]).includes(firstWord)) {
@@ -129,11 +147,22 @@ interface ClaimCluster {
  * concession resolves it, and lexical linking of a contrary sentence back to
  * its subject is unreliable under negation. The exclusion is deliberately
  * conservative (under-report consensus, never report a contrary position as
- * consensus) and applies only to members who supplied typed claims — the
- * claims-optional fallback passes are unchanged.
+ * consensus).
+ *
+ * Feedback round (review F-3, critic-confirmed): the claims field is OPTIONAL
+ * in the prompt contract, so exclusion cannot key on typed claims alone. A
+ * member with NO well-formed support typed claim who appears in any detected
+ * disagreement (marker-phrase pass, divergence pairing) is excluded as well:
+ * their contrary sentence must never be emitted as a consensus point.
+ * Members holding explicit support claims stay in clustering — excluding the
+ * support side of a detected divergence would over-suppress agreeing
+ * majorities. Residual (documented, safe direction): a dissenter missed by
+ * every detection pass (no claims, no marker phrase, high lexical overlap
+ * under negation) is indistinguishable from a supporter at this layer.
  */
 function buildConsensusClusters(
 	responses: GeneralCouncilMemberResponse[],
+	disagreements: GeneralCouncilDisagreement[],
 ): string[] {
 	if (responses.length < 2) return [];
 	const totalMembers = responses.length;
@@ -149,6 +178,22 @@ function buildConsensusClusters(
 			)
 			.map((member) => member.memberId),
 	);
+	const typedSupportMembers = new Set(
+		responses
+			.filter((member) =>
+				(Array.isArray(member.claims) ? member.claims : []).some(
+					(claim) => isWellFormedClaim(claim) && claim.stance === 'support',
+				),
+			)
+			.map((member) => member.memberId),
+	);
+	for (const disagreement of disagreements) {
+		for (const position of disagreement.positions) {
+			if (!typedSupportMembers.has(position.memberId)) {
+				membersWithContraryClaims.add(position.memberId);
+			}
+		}
+	}
 
 	const clusters: ClaimCluster[] = [];
 	for (const member of responses) {
@@ -325,7 +370,7 @@ export function synthesizeGeneralCouncil(
 	const safeRound2 = Array.isArray(round2Responses) ? round2Responses : [];
 
 	const disagreements = detectDisagreements(safeRound1);
-	const consensusPoints = buildConsensusClusters(safeRound1);
+	const consensusPoints = buildConsensusClusters(safeRound1, disagreements);
 	const persistingDisagreements = computePersistingDisagreements(
 		disagreements,
 		safeRound2,

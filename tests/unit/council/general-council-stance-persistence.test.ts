@@ -318,3 +318,98 @@ describe('general council stance persistence — issue #2578 acceptance', () => 
 		).toBe(0);
 	});
 });
+
+describe('general council stance persistence — feedback round (review F-3 / F-1)', () => {
+	test('F3- a claims-optional dissenter detected by the marker pass is excluded from consensus clustering', () => {
+		// The dissenter supplies NO typed claims (the prompt-permitted
+		// claims-optional shape) but flags their dissent with a marker phrase
+		// the disagreement detector's Pass 1 recognizes, so the detected
+		// disagreement must exclude them from clustering — their contrary
+		// sentence is lexically near-identical to the supporter's and would
+		// otherwise be emitted as the consensus point.
+		const round1: GeneralCouncilMemberResponse[] = [
+			memberResponse('m1', 'generalist', SUPPORTER_SENTENCE, 0.95, [
+				claim(SUBJECT, 'Blue-green deployment is right.', 'support', 0.95),
+			]),
+			memberResponse('m2', 'domain_expert', SUPPORTER_SENTENCE, 0.95, [
+				claim(SUBJECT, 'Blue-green deployment is right.', 'support', 0.95),
+			]),
+			memberResponse(
+				'm3',
+				'skeptic',
+				`I would push back on the majority view. ${OPPOSING_SENTENCE}`,
+				0.9,
+			),
+		];
+		const result = synthesizeGeneralCouncil(QUESTION, 'general', round1, []);
+
+		// The marker pass detects the dissenter as a disagreement participant.
+		expect(
+			result.disagreements.length,
+			'the marker-phrase dissent must be detected as a disagreement',
+		).toBeGreaterThanOrEqual(1);
+		// RED at the pre-feedback tree: the claims-optional dissenter stayed in
+		// clustering, so their lexically-near-identical contrary sentence won
+		// the cluster representative slot.
+		expect(
+			result.consensusPoints.some((p) => p.includes(CONTRARY_FRAGMENT)),
+			`the claims-optional dissenter's contrary sentence must not appear in consensus points, but got: ${JSON.stringify(result.consensusPoints)}`,
+		).toBe(false);
+		// The agreeing majority's consensus survives (no over-suppression).
+		expect(
+			result.consensusPoints.some((p) => p.includes(POSITIVE_FRAGMENT)),
+			`the positive consensus must survive, but got: ${JSON.stringify(result.consensusPoints)}`,
+		).toBe(true);
+	});
+
+	test('F1- markdown-decorated and hyphen-joined stance keywords parse (prompt-sanctioned shapes)', () => {
+		// council-prompts.ts tells members "Markdown OK inside the string", so
+		// every decorator shape here is a sanctioned input that must yield a
+		// declaration. Each case resolves the Round 1 disagreement when the
+		// disputant uses it on the matched topic.
+		const markdownCases: Array<[string, string]> = [
+			[
+				'bold-wrapped',
+				'**CONCEDE** — the opposing position is correct after re-review.',
+			],
+			['heading', '## CONCEDE\n\nThe cost argument was overstated.'],
+			['list', '- CONCEDE: the operational risk is acceptable.'],
+			['blockquote', '> CONCEDE — I withdraw my objection.'],
+			['ordered list', '1. CONCEDE on the matched topic after re-reading.'],
+			[
+				'hyphen-joined',
+				'CONCEDE-cost was double-counted; the opposing position stands.',
+			],
+		];
+		for (const [shape, response] of markdownCases) {
+			const round1 = opposingRound1();
+			const topics = detectDisagreementTopics(round1);
+			expect(topics.length).toBeGreaterThanOrEqual(1);
+			const result = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
+				round2Response('m2', 'skeptic', response, topics),
+			]);
+			expect(
+				result.persistingDisagreements,
+				`the ${shape} stance shape must count as a paragraph-leading CONCEDE, got persisting: ${JSON.stringify(result.persistingDisagreements)}`,
+			).not.toContain(topics[0]);
+		}
+	});
+
+	test('F1- zero-width characters before the keyword do not hide a declaration', () => {
+		const round1 = opposingRound1();
+		const topics = detectDisagreementTopics(round1);
+		expect(topics.length).toBeGreaterThanOrEqual(1);
+		const result = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
+			round2Response(
+				'm2',
+				'skeptic',
+				'\u200BCONCEDE — the opposing position is correct.',
+				topics,
+			),
+		]);
+		expect(
+			result.persistingDisagreements,
+			`a zero-width-prefixed CONCEDE must parse, got persisting: ${JSON.stringify(result.persistingDisagreements)}`,
+		).not.toContain(topics[0]);
+	});
+});
