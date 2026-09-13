@@ -204,6 +204,15 @@ function resolveContainedRegularFile(
 }
 
 function lineEndingNormalized(bytes: Buffer): Buffer {
+	// Only normalize line endings for text that is valid UTF-8. Decoding and
+	// re-encoding arbitrary bytes can collapse distinct binary sequences (for
+	// example, invalid UTF-8 or a BOM), so binary snapshots must compare exactly.
+	if (bytes.includes(0)) return bytes;
+	try {
+		new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+	} catch {
+		return bytes;
+	}
 	const normalized = Buffer.allocUnsafe(bytes.length);
 	let writeOffset = 0;
 	for (let readOffset = 0; readOffset < bytes.length; readOffset++) {
@@ -254,9 +263,10 @@ function restoreOriginalBytesIfUnchanged(
 			return 'preserved';
 		}
 
-		// Test-only seam: a user edit can arrive after the first verification.
-		// Re-read the descriptor after the hook for compare-and-swap admission.
-		_internals.beforeRestoreWrite();
+		// Re-read the descriptor for compare-and-swap admission. The hook runs
+		// after the first admission check so tests can model an edit in the
+		// read-to-write window; the second snapshot is the one that authorizes
+		// the write.
 		const currentPathStat = fs.statSync(targetPath);
 		if (!sameFileIdentity(initialStat, currentPathStat)) return 'preserved';
 		const currentStat = fs.fstatSync(fd);
@@ -269,9 +279,48 @@ function restoreOriginalBytesIfUnchanged(
 			return 'preserved';
 		}
 
+		_internals.beforeRestoreWrite();
+		const writePathStat = fs.statSync(targetPath);
+		if (!sameFileIdentity(initialStat, writePathStat)) return 'preserved';
+		const writeStat = fs.fstatSync(fd);
+		const writeBytes = readFileAtDescriptor(fd, writeStat);
+		if (
+			!sameFileIdentity(initialStat, writeStat) ||
+			!writeBytes.equals(initialBytes) ||
+			!lineEndingNormalized(writeBytes).equals(normalizedOriginal)
+		) {
+			return 'preserved';
+		}
+
 		fs.ftruncateSync(fd, 0);
-		fs.writeSync(fd, originalFileBytes, 0, originalFileBytes.length, 0);
+		let written = 0;
+		while (written < originalFileBytes.length) {
+			const bytesWritten = fs.writeSync(
+				fd,
+				originalFileBytes,
+				written,
+				originalFileBytes.length - written,
+				written,
+			);
+			if (bytesWritten <= 0) {
+				throw new Error('Unable to complete mutation byte restoration');
+			}
+			written += bytesWritten;
+		}
 		fs.fsyncSync(fd);
+
+		// A path replacement during the write means the caller's current file is
+		// no longer the descriptor we restored. Treat that as a conflict instead
+		// of claiming success or retrying over the replacement.
+		const restoredPathStat = fs.statSync(targetPath);
+		const restoredStat = fs.fstatSync(fd);
+		const restoredBytes = readFileAtDescriptor(fd, restoredStat);
+		if (
+			!sameFileIdentity(restoredStat, restoredPathStat) ||
+			!restoredBytes.equals(originalFileBytes)
+		) {
+			return 'preserved';
+		}
 		return 'restored';
 	} finally {
 		if (fd !== undefined) {

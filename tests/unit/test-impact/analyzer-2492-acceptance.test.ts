@@ -6,6 +6,7 @@ import {
 	analyzeImpact,
 	buildImpactMap,
 	loadImpactMap,
+	MAX_IMPACT_MAP_REFERENCES,
 } from '../../../src/test-impact/analyzer';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
@@ -56,6 +57,36 @@ describe('issue #2492: impact analysis acceptance', () => {
 			"import './side-effect';\nconst marker = true;\nimport { value } from './later';\n",
 		);
 		expect(imports).toEqual(['./side-effect', './later']);
+	});
+
+	test('keeps from imports when a clause comment contains a semicolon', () => {
+		const imports = _internals.extractImports(
+			"import { value /* semicolon ; in a comment */ } from './commented';\n",
+		);
+		expect(imports).toEqual(['./commented']);
+	});
+
+	test('does not reuse traversal budgets during unrelated-test classification', async () => {
+		const changedFile = path.join(tempDir, 'src', 'changed.ts');
+		const impactedCount = Math.floor(MAX_IMPACT_MAP_REFERENCES / 2);
+		const unrelatedCount = MAX_IMPACT_MAP_REFERENCES - impactedCount;
+		const impactMap = {
+			[normalized(changedFile)]: Array.from(
+				{ length: impactedCount },
+				(_, index) => `tests/changed-${index}.test.ts`,
+			),
+			[normalized(path.join(tempDir, 'src', 'unrelated.ts'))]: Array.from(
+				{ length: unrelatedCount },
+				(_, index) => `tests/unrelated-${index}.test.ts`,
+			),
+		};
+		_internals.loadImpactMap = async () => impactMap;
+
+		const result = await analyzeImpact([changedFile], tempDir);
+
+		expect(result.budgetExceeded).toBe(false);
+		expect(result.impactedTests).toHaveLength(impactedCount);
+		expect(result.unrelatedTests).toHaveLength(unrelatedCount);
 	});
 
 	test('changing a test import invalidates the impact cache before reuse', async () => {

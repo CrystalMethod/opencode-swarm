@@ -94,6 +94,71 @@ const IMPORT_REGEX_REQUIRE = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 const IMPORT_REGEX_REEXPORT =
 	/export\s+(?:\{[^}]*\}|\*)\s+from\s+['"]([^'"]+)['"]/g;
 
+/**
+ * Remove comments without changing quoted strings or line boundaries. The
+ * `from` import regex is intentionally statement-bounded; replacing comment
+ * bytes with spaces lets an import clause contain a semicolon in a comment
+ * without making the scanner cross into a later statement.
+ */
+function stripTsComments(source: string): string {
+	let state: 'normal' | 'line' | 'block' | 'string' | 'template' = 'normal';
+	let stringQuote: '"' | "'" | undefined;
+	let out = '';
+	let escaped = false;
+	for (let index = 0; index < source.length; index++) {
+		const current = source[index];
+		const next = source[index + 1];
+		if (state === 'line') {
+			if (current === '\n' || current === '\r') {
+				state = 'normal';
+				out += current;
+			} else {
+				out += ' ';
+			}
+			continue;
+		}
+		if (state === 'block') {
+			if (current === '*' && next === '/') {
+				out += '  ';
+				index++;
+				state = 'normal';
+			} else {
+				out += current === '\n' || current === '\r' ? current : ' ';
+			}
+			continue;
+		}
+		if (state === 'string' || state === 'template') {
+			out += current;
+			if (escaped) escaped = false;
+			else if (current === '\\') escaped = true;
+			else if (
+				(state === 'string' && current === stringQuote) ||
+				(state === 'template' && current === '`')
+			) {
+				state = 'normal';
+				stringQuote = undefined;
+			}
+			continue;
+		}
+		if (current === '/' && next === '/') {
+			out += '  ';
+			index++;
+			state = 'line';
+		} else if (current === '/' && next === '*') {
+			out += '  ';
+			index++;
+			state = 'block';
+		} else {
+			out += current;
+			if (current === '"' || current === "'") {
+				state = 'string';
+				stringQuote = current;
+			} else if (current === '`') state = 'template';
+		}
+	}
+	return out;
+}
+
 // Per-language extension sets. The impact analyzer walks tests of every
 // supported language, then routes each file through the right backend's
 // `extractImports` based on extension.
@@ -625,7 +690,7 @@ function extractImports(content: string): string[] {
 
 	return [
 		...execRegex(IMPORT_REGEX_ES_SIDE_EFFECT, content),
-		...execRegex(IMPORT_REGEX_ES_FROM, content),
+		...execRegex(IMPORT_REGEX_ES_FROM, stripTsComments(content)),
 		...execRegex(IMPORT_REGEX_REQUIRE, content),
 		...execRegex(IMPORT_REGEX_REEXPORT, content),
 	];
@@ -1221,6 +1286,14 @@ export async function analyzeImpact(
 
 	// Compute unrelated tests (all tests in impact map minus impacted tests)
 	const allTestFiles = new Map<string, string>();
+	// The two passes have independent bounded traversals. Reusing the counters
+	// would reject a valid map merely because the same references were visited
+	// once while collecting impacted tests and again while classifying unrelated
+	// tests.
+	if (!budgetExceeded) {
+		traversedReferences = 0;
+		traversedSources = 0;
+	}
 	for (const sourcePath in impactMap) {
 		if (budgetExceeded) break;
 		if (!Object.hasOwn(impactMap, sourcePath)) continue;

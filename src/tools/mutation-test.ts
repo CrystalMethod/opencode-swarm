@@ -79,7 +79,7 @@ function toCompatibilityTestSelection(
 }
 
 function contentDigest(filePath: string): string | null {
-	return boundedContentDigest(filePath);
+	return boundedContentDigest(filePath, MAX_IMPACT_CACHE_BYTES);
 }
 
 function boundedContentDigest(
@@ -571,7 +571,9 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				const impactSourcePaths: string[] = [];
 				if (typedArgs.files === undefined) {
 					const requestedImpactPaths =
-						typedArgs.source_files ?? normalizedSourcePaths;
+						typedArgs.source_files === undefined
+							? normalizedSourcePaths
+							: sourcePaths;
 					for (const sourcePath of requestedImpactPaths) {
 						const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
 						if ('error' in normalized) {
@@ -775,11 +777,15 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				let cacheChanged = false;
 				for (const [filePath, before] of sourceDigests) {
 					const after = contentDigest(path.resolve(cwd, filePath));
-					if (after !== before) cacheChanged = true;
+					if (before === null || after === null || after !== before) {
+						cacheChanged = true;
+					}
 				}
 				for (const [filePath, before] of testDigests) {
 					const after = contentDigest(path.resolve(cwd, filePath));
-					if (after !== before) cacheChanged = true;
+					if (before === null || after === null || after !== before) {
+						cacheChanged = true;
+					}
 				}
 				let cacheRefreshed = false;
 				if (cacheChanged) {

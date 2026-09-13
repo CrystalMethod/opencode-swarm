@@ -54,6 +54,32 @@ function execute(args: Record<string, unknown>): Promise<string> {
 	} as never) as Promise<string>;
 }
 
+async function expectOversizedTrackedFilePreservesCache(
+	filePath: string,
+): Promise<void> {
+	const cacheDir = path.join(tempDir, '.swarm', 'cache');
+	const cachePath = path.join(cacheDir, 'impact-map.json');
+	fs.mkdirSync(cacheDir, { recursive: true });
+	fs.writeFileSync(cachePath, 'old-cache');
+	fs.writeFileSync(
+		path.join(tempDir, filePath),
+		Buffer.alloc(MAX_IMPACT_CACHE_BYTES + 1, 0x78),
+	);
+
+	const parsed = JSON.parse(
+		await execute({
+			patches: [patch('src/value.ts')],
+			files: ['tests/selected.test.ts'],
+			test_command: ['bun', 'test'],
+		}),
+	) as Record<string, unknown>;
+
+	expect((parsed.selection as Record<string, unknown>).cacheDisposition).toBe(
+		'preserved',
+	);
+	expect(fs.readFileSync(cachePath, 'utf8')).toBe('old-cache');
+}
+
 beforeEach(() => {
 	tempDir = canonicalMkdtemp('mutation-feedback-fixes-');
 	fs.writeFileSync(
@@ -236,6 +262,14 @@ describe('mutation_test feedback regressions', () => {
 			'unavailable',
 		);
 		expect(fs.statSync(cachePath).size).toBe(MAX_IMPACT_CACHE_BYTES + 1);
+	});
+
+	test('fails closed when a source content digest exceeds the bound', async () => {
+		await expectOversizedTrackedFilePreservesCache('src/value.ts');
+	});
+
+	test('fails closed when a selected test content digest exceeds the bound', async () => {
+		await expectOversizedTrackedFilePreservesCache('tests/selected.test.ts');
 	});
 
 	test('bounds sourceFiles evidence to the safe cap plus one sentinel', async () => {

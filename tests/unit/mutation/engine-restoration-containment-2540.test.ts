@@ -263,4 +263,36 @@ describe('mutation byte restoration containment', () => {
 		expect(result.error).toContain('restoration conflict');
 		expect(readFileSync(sourceFile, 'utf8')).toBe('source-user-edit\n');
 	});
+
+	test('does not normalize invalid UTF-8 bytes as line-ending-only changes', async () => {
+		const workingDir = root('mutation-project');
+		const sourceFile = path.join(workingDir, 'source.bin');
+		const originalBytes = Buffer.from([0xff, 0x0d, 0x0a]);
+		writeFileSync(sourceFile, originalBytes);
+
+		let calls = 0;
+		const runner: MutationCommandRunner = async ({ args }) => {
+			calls++;
+			if (calls === 1) {
+				writeFileSync(sourceFile, Buffer.from([0xee, 0x0d, 0x0a]));
+			} else if (args[0] === 'apply' && args[1] === '-R') {
+				// This is a binary edit, not a text line-ending conversion. The
+				// invalid UTF-8 byte must prevent normalized equivalence.
+				writeFileSync(sourceFile, Buffer.from([0xff, 0x0a]));
+			}
+			return completed();
+		};
+
+		const result = await executeMutation(
+			patch('source.bin'),
+			['bun', 'test'],
+			['tests/selected.test.ts'],
+			workingDir,
+			{ runner },
+		);
+
+		expect(result.outcome).toBe('error');
+		expect(result.error).toContain('restoration conflict');
+		expect(readFileSync(sourceFile)).toEqual(Buffer.from([0xff, 0x0a]));
+	});
 });

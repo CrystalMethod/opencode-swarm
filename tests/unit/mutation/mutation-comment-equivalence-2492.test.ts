@@ -73,6 +73,48 @@ describe('issue #2492: hash-comment equivalence through mutation execution', () 
 			expect(runnerCalls).toHaveLength(0);
 		});
 	}
+
+	test('executes a context-only placeholder instead of classifying it equivalent', async () => {
+		const patch: MutationPatch = {
+			id: 'context-only-placeholder',
+			filePath: 'src/value.ts',
+			functionName: 'value',
+			mutationType: 'placeholder',
+			patch: [
+				'--- a/src/value.ts',
+				'+++ b/src/value.ts',
+				'@@ -1 +1 @@',
+				' export const value = 1;',
+			].join('\n'),
+		};
+		const runnerCalls: Array<{ executable: string; args: string[] }> = [];
+		const runner = async (args: {
+			executable: string;
+			args: string[];
+		}): Promise<MutationCommandResult> => {
+			runnerCalls.push({ executable: args.executable, args: args.args });
+			return {
+				status: 'completed',
+				exitCode: 0,
+				stdout: '',
+				stderr: '',
+			};
+		};
+
+		const report = await executeMutationSuite(
+			[patch],
+			['bun', 'test'],
+			['tests/target.test.ts'],
+			tempDir,
+			undefined,
+			undefined,
+			new Map([['src/value.ts', 'export const value = 1;\n']]),
+			{ runner },
+		);
+
+		expect(report.results[0].outcome).toBe('survived');
+		expect(runnerCalls).toHaveLength(3);
+	});
 });
 
 describe('issue #2492: debug-like lines are language-aware', () => {
