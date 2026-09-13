@@ -1888,6 +1888,11 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 			break;
 		}
 
+		case 'pr_feedback_loop': {
+			emitObjectTypeMismatch('pr_feedback_loop', value, findings);
+			break;
+		}
+
 		case 'pr_review_resilience': {
 			emitObjectTypeMismatch('pr_review_resilience', value, findings);
 			break;

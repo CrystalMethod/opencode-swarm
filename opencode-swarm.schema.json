@@ -5083,6 +5083,35 @@
         }
       }
     },
+    "pr_feedback_loop": {
+      "description": "Autonomous PR babysitting settling loop (issue #2502) — triple opt-in with pr_monitor.enabled + pr_monitor.auto_pr_feedback; off by default; publication profile is none-only.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_actions_per_pr": {
+          "default": 3,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "max_session_actions": {
+          "default": 10,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "publication": {
+          "default": "none",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        }
+      }
+    },
     "pr_monitor": {
       "description": "GitHub PR subscription and polling (FR-001) — disabled by default; opt-in for real-time PR status updates.",
       "type": "object",

@@ -2884,6 +2884,36 @@ export const PrMonitorConfigSchema = z
 
 export type PrMonitorConfig = z.infer<typeof PrMonitorConfigSchema>;
 
+/**
+ * Settling loop for autonomous PR babysitting (issue #2502; #1678 capstone) —
+ * TRIPLE opt-in: runs only when pr_monitor.enabled AND
+ * pr_monitor.auto_pr_feedback AND pr_feedback_loop.enabled are ALL true.
+ * Never a default flip. The only supported `publication` mode today is
+ * 'none' — the loop never arms publication and never pushes.
+ */
+export const PrFeedbackLoopConfigSchema = z.object({
+	/** Master switch for the settling loop. Defaults to false. */
+	enabled: z.boolean().default(false),
+	/**
+	 * Maximum authorized feedback actions per PR before the loop pauses for a
+	 * human. Clamped to 1-10.
+	 */
+	max_actions_per_pr: z.number().int().min(1).max(10).default(3),
+	/**
+	 * Maximum authorized feedback actions per session (across all PRs) before
+	 * the loop pauses for a human. Clamped to 1-50.
+	 */
+	max_session_actions: z.number().int().min(1).max(50).default(10),
+	/**
+	 * Publication profile. The single-value enum makes the no-publication
+	 * contract a declared, checkable surface; the opt-in GA publication modes
+	 * are deferred (plan §OUT OF SCOPE).
+	 */
+	publication: z.enum(['none']).default('none'),
+});
+
+export type PrFeedbackLoopConfig = z.infer<typeof PrFeedbackLoopConfigSchema>;
+
 // Parallelization configuration (PR 1 — dark foundation, disabled by default)
 // All fields default to single-run-equivalent values so no production path
 // activates parallel execution while this config exists.
@@ -4293,6 +4323,10 @@ export const PluginConfigSchema = z.object({
 
 	// PR Monitor — GitHub PR subscription and polling (FR-001)
 	// Disabled by default; opt-in for real-time PR status updates.
+	pr_feedback_loop: PrFeedbackLoopConfigSchema.optional().describe(
+		'Autonomous PR babysitting settling loop (issue #2502) — triple opt-in with pr_monitor.enabled + pr_monitor.auto_pr_feedback; off by default; publication profile is none-only.',
+	),
+
 	pr_monitor: PrMonitorConfigSchema.optional().describe(
 		'GitHub PR subscription and polling (FR-001) — disabled by default; opt-in for real-time PR status updates.',
 	),
