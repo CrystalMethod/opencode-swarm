@@ -28,7 +28,11 @@ import {
 import { TOOL_NAMES } from '../tools/tool-metadata';
 import { log } from '../utils/logger';
 import { invalidateCachedArtifact } from '../utils/swarm-artifact-cache';
-import { type AgentDefinition, createArchitectAgent } from './architect';
+import {
+	type AgentDefinition,
+	createArchitectAgent,
+	enforceArchitectPromptBudget,
+} from './architect';
 import { CODER_MEMORY_OUTCOME_GUIDANCE, createCoderAgent } from './coder';
 import {
 	DOMAIN_EXPERT_COUNCIL_PROMPT,
@@ -555,6 +559,20 @@ If you call @coder instead of @${swarmId}_coder, the call will FAIL or go to the
 
 `;
 			architect.config.prompt = swarmHeader + architect.config.prompt;
+		}
+
+		// Issue #2671: measure the FINAL composed architect prompt (post
+		// sentinel substitution + swarm header, pre applyOverrides which does
+		// not touch the prompt) against the published ceiling. The user-
+		// controlled swarm name/id is the unbounded variable here — an
+		// extreme name must not silently bypass the cap. advisoryWarn never
+		// throws and the full prompt is kept, so init stays fail-open.
+		const prefixedBudget = enforceArchitectPromptBudget(
+			prefixName('architect'),
+			architect.config.prompt ?? '',
+		);
+		if (!prefixedBudget.ok) {
+			advisoryWarn(prefixedBudget.error);
 		}
 
 		agents.push(applyOverrides(architect, swarmAgents, swarmPrefix, quiet));

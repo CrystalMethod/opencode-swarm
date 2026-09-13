@@ -159,6 +159,46 @@ Sections marked `(strict)` reject unknown nested keys at config load time - a ty
 
 <!-- opencode-swarm: end generated top-level-config-keys -->
 
+## Architect prompt budget (characters and model tokens)
+
+The architect's built-in prompt composition is bounded by a published
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,000 chars in
+`src/agents/architect.ts`). Every supported feature combination — the default
+render, the work-complete council on or off, the advisory General Council
+(`council.general.enabled`) composed together with every documented opt-in
+(ui_review, design_docs, architectural_supervision, adversarial testing,
+memory, external skills, skills, turbo), multi-swarm prefixed variants, and
+memory-only / review-only cells — must render under that ceiling. The feature
+matrix is pinned as a named regression fixture
+(`tests/unit/agents/architect-prompt-budget-matrix.test.ts`), so any
+combination that would push the composed prompt over the budget fails CI
+instead of shipping.
+
+Two separate quantities are measured and recorded for every composition:
+
+- **Characters** — the authoritative count. The ceiling is defined in
+  characters because the built-in prompt is a source string whose length is
+  exact and platform-independent.
+- **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
+  characters per token, rounded up). Real token usage varies by model and
+  content; the estimate is reported next to the character count, never instead
+  of it, so a ~40K-token estimate at the 161K-char ceiling is understood as an
+  approximation of the system prompt's share of a 128K-token context window.
+
+Overflow policy (deterministic, guidance-preserving):
+
+- Tool descriptions in the architect prompt's AVAILABLE TOOLS line render
+  capped at `ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS` (240) with a visible
+  ellipsis marker. The tool-registration surface is unaffected — the host still
+  delivers each tool's full description through the tools API; only the
+  redundant in-prompt summary index is bounded.
+- An over-budget composition at runtime (possible today only through
+  user-variable inputs, e.g. an extreme multi-swarm name) emits a bounded,
+  visible `ARCHITECT_PROMPT_BUDGET_EXCEEDED` advisory (visible in
+  `/swarm diagnose` and under `OPENCODE_SWARM_DEBUG=1`). The full prompt is
+  kept — mandatory guidance, including the phase-completion lifecycle gate
+  instructions, is never silently dropped.
+
 ## Pricing fallback estimates
 
 Provider-reported cost metadata wins when it is available. When a provider returns token usage but no cost, Swarm can estimate delegation cost from an optional top-level `pricing.models` table:

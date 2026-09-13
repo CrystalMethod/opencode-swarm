@@ -15,7 +15,10 @@
  */
 
 import { beforeAll, describe, expect, it } from 'bun:test';
-import { createArchitectAgent } from '../../../src/agents/architect.js';
+import {
+	capToolDescriptionForPrompt,
+	createArchitectAgent,
+} from '../../../src/agents/architect.js';
 import {
 	AGENT_TOOL_MAP,
 	COUNCIL_AGENT_TOOL_MAP,
@@ -156,7 +159,17 @@ describe('Available Tools generation from AGENT_TOOL_MAP', () => {
 			const description =
 				TOOL_DESCRIPTIONS[tool as keyof typeof TOOL_DESCRIPTIONS];
 			expect(description).toBeTruthy();
-			expect(resolvedPrompt).toContain(`${tool} (${description})`);
+			// Issue #2671: descriptions render in the prompt bounded by
+			// capToolDescriptionForPrompt (cap + trailing unclosed parenthetical
+			// stripped so entries keep balanced parentheses) followed by a
+			// visible ellipsis when truncation occurred. Asserting the capped
+			// PREFIX with no trailing character holds for both the full render
+			// (cap is the identity) and the bounded render.
+			const capped = capToolDescriptionForPrompt(description);
+			expect(resolvedPrompt).toContain(`${tool} (${capped}`);
+			if (capped !== description) {
+				expect(resolvedPrompt).toContain(`${tool} (${capped}…)`);
+			}
 		}
 	});
 
