@@ -3,15 +3,8 @@ import type { MutationPatch } from '../engine.js';
 import {
 	batchCheckEquivalence,
 	checkEquivalence,
-	isStaticallyEquivalent as isStaticallyEquivalentWithPath,
+	isStaticallyEquivalent,
 } from '../equivalence.js';
-
-function isStaticallyEquivalent(
-	originalCode: string,
-	mutatedCode: string,
-): boolean {
-	return isStaticallyEquivalentWithPath(originalCode, mutatedCode, 'test.ts');
-}
 
 const mockPatch: MutationPatch = {
 	id: 'test-patch-1',

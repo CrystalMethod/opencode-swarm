@@ -132,9 +132,17 @@ export interface TestRunnerArgs {
 export type RegressionOutcome =
 	| 'pass' // tests ran and all passed
 	| 'skip' // no test files resolved — nothing to run
+	| 'no_impacted_tests' // discovery resolved zero tests for the requested sources
 	| 'regression' // tests ran and one or more failed
 	| 'scope_exceeded' // resolved file count exceeded MAX_SAFE_TEST_FILES
 	| 'error'; // unrecoverable tool error
+
+/** Binding cap decision reported on every discovery-scope response. */
+export interface CapDecision {
+	decision: 'within_cap' | 'cap_exceeded';
+	resolved_test_count: number;
+	limit: number;
+}
 
 export interface TestTotals {
 	passed: number;
@@ -169,6 +177,9 @@ export interface TestSuccessResult {
 	message?: string;
 	outcome?: RegressionOutcome;
 	resolution?: TestResolution;
+	resolved_test_files?: string[];
+	cap_decision?: CapDecision;
+	fallback_reason?: string;
 }
 
 export interface TestErrorResult {
@@ -187,6 +198,9 @@ export interface TestErrorResult {
 	outcome?: RegressionOutcome;
 	attempted_scope?: 'graph';
 	resolution?: TestResolution;
+	resolved_test_files?: string[];
+	cap_decision?: CapDecision;
+	fallback_reason?: string;
 }
 
 export type TestResult = TestSuccessResult | TestErrorResult;
@@ -280,6 +294,28 @@ function makeResolution(
 		...(options?.cacheStatus && { cacheStatus: options.cacheStatus }),
 		fallbackReason,
 		evaluable: decision === 'execute',
+	};
+}
+
+function resolutionFields(
+	resolution: TestResolution,
+): Pick<
+	TestSuccessResult,
+	'resolved_test_files' | 'cap_decision' | 'fallback_reason'
+> {
+	return {
+		resolved_test_files: resolution.resolvedFiles,
+		cap_decision: {
+			decision:
+				resolution.decision === 'scope_exceeded'
+					? 'cap_exceeded'
+					: 'within_cap',
+			resolved_test_count: resolution.resolvedFiles.length,
+			limit: resolution.cap,
+		},
+		...(resolution.fallbackReason
+			? { fallback_reason: resolution.fallbackReason }
+			: {}),
 	};
 }
 
@@ -3524,6 +3560,19 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		) {
 			const baseMessage =
 				'No matching test files found for the provided source files. Check that test files exist with matching naming conventions (.spec.*, .test.*, .Tests.ps1, __tests__/, tests/, test/, spec/).';
+			const resolution = makeResolution(
+				scope,
+				effectiveScope,
+				selectionSourceFiles,
+				[],
+				'skip',
+				workingDir,
+				{
+					estimate: selectionEstimate,
+					cacheStatus: selectionCacheStatus,
+					fallbackReason: graphFallbackReason,
+				},
+			);
 			const errorResult: TestErrorResult = {
 				success: false,
 				framework,
@@ -3532,26 +3581,14 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				message: graphFallbackReason
 					? `${baseMessage} (${graphFallbackReason})`
 					: baseMessage,
-				outcome: 'skip',
+				outcome:
+					scope === 'impact' || scope === 'graph'
+						? 'no_impacted_tests'
+						: 'skip',
 				...(scope === 'graph' && { attempted_scope: 'graph' }),
 				...(scope === 'impact' && { attempted_scope: 'graph' }),
-				...(scope === 'graph' || scope === 'impact'
-					? {
-							resolution: makeResolution(
-								scope,
-								effectiveScope,
-								selectionSourceFiles,
-								[],
-								'skip',
-								workingDir,
-								{
-									estimate: selectionEstimate,
-									cacheStatus: selectionCacheStatus,
-									fallbackReason: graphFallbackReason,
-								},
-							),
-						}
-					: {}),
+				resolution,
+				...resolutionFields(resolution),
 			};
 			return JSON.stringify(errorResult, null, 2);
 		}
@@ -3565,6 +3602,19 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		) {
 			// List first few resolved filenames for debugging
 			const sampleFiles = testFiles.slice(0, 5);
+			const resolution = makeResolution(
+				scope,
+				effectiveScope,
+				selectionSourceFiles,
+				testFiles,
+				'scope_exceeded',
+				workingDir,
+				{
+					estimate: selectionEstimate,
+					cacheStatus: selectionCacheStatus,
+					fallbackReason: graphFallbackReason,
+				},
+			);
 			const errorResult: TestErrorResult = {
 				success: false,
 				framework,
@@ -3572,19 +3622,8 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				error: `Resolved test file count (${testFiles.length}) exceeds safe maximum (${MAX_SAFE_TEST_FILES})`,
 				message: `Too many test files resolved (${testFiles.length}). Maximum allowed is ${MAX_SAFE_TEST_FILES}. Treat this as SKIP without retry. Provide more specific source files to narrow down test scope. First few resolved: ${sampleFiles.join(', ')}`,
 				outcome: 'scope_exceeded',
-				resolution: makeResolution(
-					scope,
-					effectiveScope,
-					selectionSourceFiles,
-					testFiles,
-					'scope_exceeded',
-					workingDir,
-					{
-						estimate: selectionEstimate,
-						cacheStatus: selectionCacheStatus,
-						fallbackReason: graphFallbackReason,
-					},
-				),
+				resolution,
+				...resolutionFields(resolution),
 			};
 			return JSON.stringify(errorResult, null, 2);
 		}
@@ -3602,7 +3641,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			nativeTarget,
 		);
 		if (scope === 'convention' || scope === 'graph' || scope === 'impact') {
-			result.resolution = makeResolution(
+			const resolution = makeResolution(
 				scope,
 				effectiveScope,
 				selectionSourceFiles,
@@ -3615,6 +3654,8 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 					fallbackReason: graphFallbackReason,
 				},
 			);
+			result.resolution = resolution;
+			Object.assign(result, resolutionFields(resolution));
 		}
 
 		// Record results to history and analyze failures

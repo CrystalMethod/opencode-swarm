@@ -46,10 +46,36 @@ interface MutationToolArgs {
 		lineNumber?: number;
 	}>;
 	files?: string[];
+	source_files?: string[];
 	test_command: string[];
 	pass_threshold?: number;
 	warn_threshold?: number;
 	working_directory?: string;
+}
+
+type CompatibilityTestSelection = {
+	source: 'impact_analysis' | 'explicit_override' | 'fallback';
+	resolved_test_files: string[];
+	fallback_reason?: string;
+};
+
+function toCompatibilityTestSelection(
+	selection: MutationSelection,
+): CompatibilityTestSelection {
+	const compatibility: CompatibilityTestSelection = {
+		source:
+			selection.fallbackReason !== null
+				? 'fallback'
+				: selection.kind === 'impact'
+					? 'impact_analysis'
+					: 'explicit_override',
+		resolved_test_files:
+			selection.fallbackReason === null ? selection.testFiles : [],
+	};
+	if (selection.fallbackReason !== null) {
+		compatibility.fallback_reason = selection.fallbackReason;
+	}
+	return compatibility;
 }
 
 function contentDigest(filePath: string): string | null {
@@ -304,6 +330,11 @@ function skipResult(
 			outcome,
 			evaluable: false,
 			selection,
+			test_selection: toCompatibilityTestSelection(selection),
+			evaluability: {
+				evaluable: false,
+				reason: error,
+			},
 			error,
 			message: error,
 			totalMutants: 0,
@@ -347,6 +378,12 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				.describe(
 					'Optional explicit test file paths to run against mutants. When omitted, impacted tests are derived from the mutated source files.',
 				),
+			source_files: z
+				.array(z.string())
+				.optional()
+				.describe(
+					'Source files whose impacted tests are derived via the impact analyzer when files is omitted (bounded by the safe test-file cap).',
+				),
 			test_command: z
 				.array(z.string())
 				.describe(
@@ -376,6 +413,38 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 			let activeSelection: MutationSelection | undefined;
 
 			try {
+				if (
+					typedArgs.files === undefined &&
+					typedArgs.source_files === undefined
+				) {
+					return JSON.stringify(
+						{
+							error:
+								'provide either files (explicit test file paths) or source_files (derive impacted tests via the impact analyzer)',
+							success: false,
+							verdict: 'skip',
+							outcome: 'unevaluable',
+							evaluable: false,
+						},
+						null,
+						2,
+					);
+				}
+				if (
+					typedArgs.source_files !== undefined &&
+					(!Array.isArray(typedArgs.source_files) ||
+						typedArgs.source_files.length === 0)
+				) {
+					return JSON.stringify(
+						{
+							success: false,
+							error: 'source_files must be a non-empty array of file paths',
+						},
+						null,
+						2,
+					);
+				}
+
 				if (
 					!typedArgs.test_command ||
 					!Array.isArray(typedArgs.test_command) ||
@@ -447,19 +516,28 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				// Keep path-bearing selection evidence bounded even when callers send a
 				// large patch list. The final entry is a bounded truncation sentinel;
 				// sourceFileCount reports the retained evidence count.
-				const sourcePaths: string[] = [];
+				const patchSourcePaths: string[] = [];
 				const sourcePathKeys = new Set<string>();
-				let sourcePathsTruncated = false;
+				let patchSourcePathsTruncated = false;
 				for (const patch of typedArgs.patches) {
 					if (typeof patch?.filePath !== 'string') continue;
 					if (sourcePathKeys.has(patch.filePath)) continue;
 					sourcePathKeys.add(patch.filePath);
-					sourcePaths.push(patch.filePath);
-					if (sourcePaths.length >= MAX_SAFE_TEST_FILES + 1) {
-						sourcePathsTruncated = true;
+					patchSourcePaths.push(patch.filePath);
+					if (patchSourcePaths.length >= MAX_SAFE_TEST_FILES + 1) {
+						patchSourcePathsTruncated = true;
 						break;
 					}
 				}
+				const requestedSourcePaths = typedArgs.source_files ?? patchSourcePaths;
+				const sourcePaths = requestedSourcePaths.slice(
+					0,
+					MAX_SAFE_TEST_FILES + 1,
+				);
+				const sourcePathsTruncated =
+					typedArgs.source_files === undefined
+						? patchSourcePathsTruncated
+						: requestedSourcePaths.length > sourcePaths.length;
 				const sourceEvidence = {
 					sourceFileCount: sourcePaths.length,
 					sourceFilesTruncated: sourcePathsTruncated,
@@ -468,6 +546,11 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				for (const sourcePath of sourcePaths) {
 					const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
 					if ('error' in normalized) {
+						const error =
+							typedArgs.files === undefined &&
+							typedArgs.source_files === undefined
+								? `provide either files (explicit test file paths) or source_files (derive impacted tests via the impact analyzer): ${normalized.error}`
+								: normalized.error;
 						return skipResult(
 							{
 								kind: typedArgs.files === undefined ? 'impact' : 'explicit',
@@ -479,10 +562,37 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 								evaluable: false,
 							},
 							'unevaluable',
-							normalized.error,
+							error,
 						);
 					}
 					normalizedSourcePaths.push(normalized.value);
+				}
+
+				const impactSourcePaths: string[] = [];
+				if (typedArgs.files === undefined) {
+					const requestedImpactPaths =
+						typedArgs.source_files ?? normalizedSourcePaths;
+					for (const sourcePath of requestedImpactPaths) {
+						const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
+						if ('error' in normalized) {
+							return skipResult(
+								{
+									kind: 'impact',
+									sourceFiles: requestedImpactPaths,
+									...sourceEvidence,
+									testFiles: [],
+									cap: MAX_SAFE_TEST_FILES,
+									fallbackReason: normalized.error,
+									evaluable: false,
+								},
+								'unevaluable',
+								normalized.error,
+							);
+						}
+						if (!impactSourcePaths.includes(normalized.value)) {
+							impactSourcePaths.push(normalized.value);
+						}
+					}
 				}
 
 				let selectedTestFiles: string[];
@@ -525,7 +635,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					}
 				} else {
 					selectionKind = 'impact';
-					if (normalizedSourcePaths.length === 0) {
+					if (impactSourcePaths.length === 0) {
 						return skipResult(
 							{
 								kind: selectionKind,
@@ -544,7 +654,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					try {
 						const analyzer = impactInternals.analyzeImpact ?? analyzeImpact;
 						impactResult = await analyzer(
-							normalizedSourcePaths,
+							impactSourcePaths,
 							cwd,
 							MAX_SAFE_TEST_FILES + 1,
 						);
@@ -572,7 +682,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 						impactResult.budgetExceeded ||
 						selectedTestFiles.length > MAX_SAFE_TEST_FILES
 					) {
-						const reason = `Impact-derived test selection exceeds the safe maximum of ${MAX_SAFE_TEST_FILES} unique files`;
+						const reason = `Impact-derived test selection exceeds the safe cap of ${MAX_SAFE_TEST_FILES} unique files (safe maximum)`;
 						return skipResult(
 							{
 								kind: selectionKind,
@@ -642,7 +752,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 
 				// Build source files map for equivalence detection
 				const sourceFiles = new Map<string, string>();
-				for (const filePath of sourcePaths) {
+				for (const filePath of patchSourcePaths) {
 					try {
 						const resolvedPath = path.resolve(cwd, filePath);
 						sourceFiles.set(filePath, fs.readFileSync(resolvedPath, 'utf-8'));
@@ -671,18 +781,28 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					const after = contentDigest(path.resolve(cwd, filePath));
 					if (after !== before) cacheChanged = true;
 				}
+				let cacheRefreshed = false;
 				if (cacheChanged) {
 					// Never unlink a cache path here. The analyzer owns cache
 					// replacement and will rebuild this stale generation on its next
 					// bounded read, while preserving any concurrent atomic refresh.
 					selection.cacheDisposition = 'preserved';
 				} else if (sameCacheGeneration(cacheBefore, cacheAfter)) {
+					// Keep an unchanged generation in place. The analyzer owns cache
+					// replacement, and deleting by pathname would race a concurrent
+					// atomic refresh.
 					selection.cacheDisposition = 'preserved';
 				} else if (cacheAfter !== null) {
 					selection.cacheDisposition = 'refreshed';
+					cacheRefreshed = true;
 				} else {
 					selection.cacheDisposition = 'unavailable';
 				}
+				const compatibilitySelection = toCompatibilityTestSelection(selection);
+				const evaluability = {
+					evaluable: true,
+					reason: `Mutation batch completed with ${selection.testFiles.length} selected test file${selection.testFiles.length === 1 ? '' : 's'}`,
+				};
 
 				const result: MutationGateResult = evaluateMutationGate(
 					report,
@@ -697,6 +817,16 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 						outcome: 'success',
 						evaluable: true,
 						selection,
+						test_selection: compatibilitySelection,
+						evaluability,
+						mutation_outcome_counts: {
+							killed: report.killed,
+							survived: report.survived,
+							equivalent: report.equivalent,
+							skipped: report.skipped,
+							total: report.totalMutants,
+						},
+						cache_refreshed: cacheRefreshed,
 						mutation: {
 							totalMutants: report.totalMutants,
 							killed: report.killed,

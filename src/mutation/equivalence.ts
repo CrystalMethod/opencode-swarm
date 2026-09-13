@@ -1,4 +1,3 @@
-import * as path from 'node:path';
 import type { MutationPatch } from './engine.js';
 
 /** Result of equivalence check for a single mutant */
@@ -19,155 +18,181 @@ export type LLMJudgeCallback = (
 
 /**
  * Stage 1: Static equivalence filter.
- *
- * Comment syntax is selected from the source path. A missing path is unknown,
- * so direct callers do not get an unsafe language-specific comment heuristic.
- * An unknown extension is deliberately conservative and does not discard
- * comments at all.
+ * Strips comments (single-line // and multi-line /* *\/), console.log/debugger statements,
+ * trailing whitespace, and blank lines. Returns true if the stripped versions are identical.
  */
+/**
+ * Comment syntax family for a language hint (a file path or language id).
+ * The default family preserves the historical 2-argument behavior exactly:
+ * // line comments plus slash-star block comments (TS/JS/Go/PHP/Java/Kotlin/C/C++/Rust).
+ */
+interface CommentSyntaxFamily {
+	lineTokens: string[];
+	blockComments: boolean;
+}
+
+const DEFAULT_COMMENT_FAMILY: CommentSyntaxFamily = {
+	lineTokens: ['//'],
+	blockComments: true,
+};
+
+export function commentFamilyForLanguage(
+	languageHint?: string,
+): CommentSyntaxFamily {
+	if (!languageHint) return DEFAULT_COMMENT_FAMILY;
+	const hint = languageHint.toLowerCase();
+	const ext = hint.includes('.') ? hint.slice(hint.lastIndexOf('.') + 1) : hint;
+	switch (ext) {
+		case 'py':
+		case 'pyi':
+		case 'python':
+		case 'rb':
+		case 'ruby':
+		case 'sh':
+		case 'bash':
+		case 'zsh':
+		case 'yaml':
+		case 'yml':
+		case 'toml':
+		case 'r':
+		case 'makefile':
+			return { lineTokens: ['#'], blockComments: false };
+		case 'php':
+			// PHP accepts both // and # line comments plus block comments.
+			return { lineTokens: ['//', '#'], blockComments: true };
+		case 'sql':
+		case 'lua':
+			return { lineTokens: ['--'], blockComments: false };
+		case 'pl':
+		case 'perl':
+			return { lineTokens: ['#'], blockComments: true };
+		default:
+			return DEFAULT_COMMENT_FAMILY;
+	}
+}
+
 export function isStaticallyEquivalent(
 	originalCode: string,
 	mutatedCode: string,
-	filePath?: string,
+	languageHint?: string,
 ): boolean {
-	type CommentFamily = 'c-style' | 'hash' | 'php' | 'unknown';
-	const extension = filePath ? path.extname(filePath).toLowerCase() : '';
-	const cStyleExtensions = new Set([
-		'.c',
-		'.cc',
-		'.cpp',
-		'.cxx',
-		'.cts',
-		'.cs',
-		'.dart',
-		'.go',
-		'.h',
-		'.java',
-		'.cjs',
-		'.js',
-		'.jsx',
-		'.jsonc',
-		'.kt',
-		'.kts',
-		'.mjs',
-		'.mts',
-		'.php',
-		'.rs',
-		'.scala',
-		'.scss',
-		'.svelte',
-		'.swift',
-		'.ts',
-		'.tsx',
-		'.vue',
-	]);
-	const javaScriptExtensions = new Set([
-		'.cjs',
-		'.cts',
-		'.js',
-		'.jsx',
-		'.mjs',
-		'.mts',
-		'.svelte',
-		'.ts',
-		'.tsx',
-		'.vue',
-	]);
-	const hashExtensions = new Set(['.py', '.pyw', '.rb', '.rake']);
-	const phpExtensions = new Set(['.php']);
-	const isJavaScriptFamily = javaScriptExtensions.has(extension);
-	const isRubyFamily = extension === '.rb' || extension === '.rake';
-	const commentFamily: CommentFamily = !filePath
-		? 'unknown'
-		: phpExtensions.has(extension)
-			? 'php'
-			: cStyleExtensions.has(extension)
-				? 'c-style'
-				: hashExtensions.has(extension)
-					? 'hash'
-					: 'unknown';
-
+	const family = commentFamilyForLanguage(languageHint);
+	const extension = languageHint
+		? languageHint.toLowerCase().slice(languageHint.lastIndexOf('.') + 1)
+		: '';
+	const isJavaScriptFamily =
+		languageHint === undefined ||
+		new Set([
+			'cjs',
+			'cts',
+			'js',
+			'jsx',
+			'mjs',
+			'mts',
+			'svelte',
+			'ts',
+			'tsx',
+			'vue',
+		]).has(extension);
 	const stripCode = (code: string): string => {
-		const lines = code.split('\n');
-		const withoutComments: string[] = [];
-		let inBlockComment = false;
-		let inRubyBlockComment = false;
-		for (const line of lines) {
-			if (commentFamily === 'unknown') {
-				withoutComments.push(line.trimEnd());
-				continue;
-			}
-			if (isRubyFamily && !inRubyBlockComment && /^=begin(?:\s|$)/.test(line)) {
-				inRubyBlockComment = true;
-				continue;
-			}
-			if (isRubyFamily && inRubyBlockComment) {
-				if (/^=end(?:\s|$)/.test(line)) inRubyBlockComment = false;
-				continue;
-			}
-
-			let output = '';
-			let inString: "'" | '"' | '`' | null = null;
-			let escaped = false;
-			for (let i = 0; i < line.length; i++) {
-				const ch = line[i];
-				const next = line[i + 1];
-				if (inBlockComment) {
-					if (ch === '*' && next === '/') {
-						inBlockComment = false;
-						i++;
+		// Ruby's =begin/=end blocks are line-oriented comments and are distinct
+		// from the slash-star family used by the generic scanner below.
+		const sourceCode =
+			extension === 'rb' || extension === 'rake'
+				? (() => {
+						const lines: string[] = [];
+						let inRubyComment = false;
+						for (const line of code.split('\n')) {
+							const trimmed = line.trim();
+							if (!inRubyComment && /^=begin(?:\s|$)/.test(trimmed)) {
+								inRubyComment = true;
+								continue;
+							}
+							if (inRubyComment) {
+								if (/^=end(?:\s|$)/.test(trimmed)) inRubyComment = false;
+								continue;
+							}
+							lines.push(line);
+						}
+						return lines.join('\n');
+					})()
+				: code;
+		// Step 1: Remove multi-line block comments (families that support them)
+		let inMultiLineComment = false;
+		const afterMultiLine: string[] = [];
+		for (const line of family.blockComments ? sourceCode.split('\n') : []) {
+			if (!inMultiLineComment) {
+				const openIndex = line.indexOf('/*');
+				if (openIndex !== -1) {
+					const closeIndex = line.indexOf('*/', openIndex + 2);
+					if (closeIndex !== -1) {
+						afterMultiLine.push(
+							line.substring(0, openIndex) + line.substring(closeIndex + 2),
+						);
+					} else {
+						afterMultiLine.push(line.substring(0, openIndex));
+						inMultiLineComment = true;
 					}
-					continue;
+				} else {
+					afterMultiLine.push(line);
 				}
-				if (inString) {
-					output += ch;
-					if (escaped) escaped = false;
-					else if (ch === '\\') escaped = true;
-					else if (ch === inString) inString = null;
-					continue;
+			} else {
+				const closeIndex = line.indexOf('*/');
+				if (closeIndex !== -1) {
+					afterMultiLine.push(line.substring(closeIndex + 2));
+					inMultiLineComment = false;
 				}
-				if (
-					ch === "'" ||
-					ch === '"' ||
-					(ch === '`' &&
-						(commentFamily === 'c-style' ||
-							commentFamily === 'php' ||
-							isRubyFamily))
-				) {
-					inString = ch;
-					output += ch;
-					continue;
-				}
-				if (
-					(commentFamily === 'c-style' || commentFamily === 'php') &&
-					ch === '/' &&
-					next === '*'
-				) {
-					inBlockComment = true;
-					i++;
-					continue;
-				}
-				if (
-					((commentFamily === 'c-style' || commentFamily === 'php') &&
-						ch === '/' &&
-						next === '/') ||
-					(commentFamily === 'php' && ch === '#') ||
-					(commentFamily === 'hash' && ch === '#')
-				) {
-					break;
-				}
-				output += ch;
+				// else: entire line is inside multi-line comment, skip
 			}
-			withoutComments.push(output.trimEnd());
 		}
 
-		// Keep the existing JavaScript-family logging/debugger filter. Unknown
-		// and hash-comment languages are intentionally not interpreted as JS.
-		const afterConsole = withoutComments.filter((line) => {
-			if (!isJavaScriptFamily) return true;
+		// Step 2: Remove single-line comments (family line tokens, with string state tracking)
+		const afterSingleLine: string[] = [];
+		const linesForSingle = family.blockComments
+			? afterMultiLine
+			: sourceCode.split('\n');
+		for (const line of linesForSingle) {
+			let inString: "'" | '"' | '`' | null = null;
+			let commentStart = -1;
+			for (let i = 0; i < line.length; i++) {
+				const ch = line[i];
+				if (inString) {
+					if (ch === '\\') {
+						i++;
+						continue;
+					}
+					if (ch === inString) {
+						inString = null;
+					}
+				} else {
+					if (ch === "'" || ch === '"' || ch === '`') {
+						inString = ch;
+					} else {
+						for (const token of family.lineTokens) {
+							if (line.startsWith(token, i)) {
+								commentStart = i;
+								break;
+							}
+						}
+						if (commentStart >= 0) break;
+					}
+				}
+			}
+			let processed =
+				commentStart >= 0 ? line.substring(0, commentStart) : line;
+			processed = processed.trimEnd();
+			afterSingleLine.push(processed);
+		}
+
+		// Step 3: Strip console.log/debugger lines
+		const afterConsole = afterSingleLine.filter((line) => {
 			const trimmedLower = line.toLowerCase().trim();
-			if (/^console\.(log|debug)\s*(\(|$)/.test(trimmedLower)) return false;
-			if (trimmedLower === 'debugger;') return false;
+			if (
+				isJavaScriptFamily &&
+				/^console\.(log|debug)\s*(\(|$)/.test(trimmedLower)
+			)
+				return false;
+			if (isJavaScriptFamily && trimmedLower === 'debugger;') return false;
 			return true;
 		});
 
@@ -201,7 +226,7 @@ export async function checkEquivalence(
 	mutatedCode: string,
 	llmJudge?: LLMJudgeCallback,
 ): Promise<EquivalenceResult> {
-	// Stage 1: Static analysis
+	// Stage 1: Static analysis (language-aware via the patch's file path)
 	if (isStaticallyEquivalent(originalCode, mutatedCode, patch.filePath)) {
 		return {
 			patchId: patch.id,

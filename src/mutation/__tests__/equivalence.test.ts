@@ -3,22 +3,8 @@ import type { MutationPatch } from '../engine.js';
 import {
 	batchCheckEquivalence,
 	checkEquivalence,
-	isStaticallyEquivalent as isStaticallyEquivalentWithPath,
+	isStaticallyEquivalent,
 } from '../equivalence.js';
-
-function isStaticallyEquivalent(
-	originalCode: string,
-	mutatedCode: string,
-): boolean {
-	return isStaticallyEquivalentWithPath(originalCode, mutatedCode, 'test.ts');
-}
-
-test('missing file paths use conservative unknown comment handling', () => {
-	const original = 'const value = 1;\n';
-	const mutated = '// changed\nconst value = 1;\n';
-
-	expect(isStaticallyEquivalentWithPath(original, mutated)).toBe(false);
-});
 
 function makePatch(overrides?: Partial<MutationPatch>): MutationPatch {
 	return {
