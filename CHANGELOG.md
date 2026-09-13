@@ -1,5 +1,22 @@
 # Changelog
 
+## [7.180.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.179.1...v7.180.0) (2026-09-13)
+
+
+### Features
+
+* **background:** autonomous PR babysitting settling loop ([#2502](https://github.com/ZaxbyHub/opencode-swarm/issues/2502)) ([ae942a3](https://github.com/ZaxbyHub/opencode-swarm/commit/ae942a35b0814ec563aaa21163d238c8fccf2374))
+* **sdd:** Spec-Kit v2 multi-feature projection with feature-scoped ids + opt-in tasks.md check-off ([#2501](https://github.com/ZaxbyHub/opencode-swarm/issues/2501)) ([0635f7f](https://github.com/ZaxbyHub/opencode-swarm/commit/0635f7f98978b85fb9c0f9b44fb8a90d9a144e92))
+
+
+### Bug Fixes
+
+* **background:** biome format pr-feedback-loop; await final subscription prime ([#2502](https://github.com/ZaxbyHub/opencode-swarm/issues/2502)) ([6dcf2b5](https://github.com/ZaxbyHub/opencode-swarm/commit/6dcf2b5a625f2e8845a928dce4f3d68424127c42))
+* **background:** biome organize-imports for the canonical-root import ([#2502](https://github.com/ZaxbyHub/opencode-swarm/issues/2502)) ([856b7f5](https://github.com/ZaxbyHub/opencode-swarm/commit/856b7f56d7680133681a2b7a31abdb66f279a077))
+* **background:** canonical-root keying for the settlement lock ([#2502](https://github.com/ZaxbyHub/opencode-swarm/issues/2502)) ([104b229](https://github.com/ZaxbyHub/opencode-swarm/commit/104b22936fee6090a8783aa13f32ce50914ac901))
+* **sdd:** register speckit_checkoff doctor case; re-anchor citation; dehash help details ([#2501](https://github.com/ZaxbyHub/opencode-swarm/issues/2501)) ([11389bf](https://github.com/ZaxbyHub/opencode-swarm/commit/11389bff371bd7006a34238f826f6b134d5d681b))
+* **state:** make live state and hydration project-owned and generation-fenced ([df8cdc1](https://github.com/ZaxbyHub/opencode-swarm/commit/df8cdc1578cbc68df77026d29b7ae39ad5b9c236))
+
 ## [7.179.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.179.0...v7.179.1) (2026-09-13)
 
 
