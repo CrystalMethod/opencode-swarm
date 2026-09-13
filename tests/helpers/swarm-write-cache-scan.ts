@@ -3158,6 +3158,22 @@ export function checkExplicitInvalidation(
 
 export const EVIDENCE_WRITE_BLIND_SPOTS: readonly EvidenceWriteBlindSpot[] = [
 	{
+		file: 'src/background/pr-feedback-loop.ts',
+		rule: 'W',
+		target: 'path.join(directory, receipt.path)',
+		status: 'not-an-evidence-artifact',
+		reason:
+			'cancelPrFeedbackLoop() writes its one-shot cancel receipt to ' +
+			'.swarm/pr-feedback-loop-cleanups/cancel-<stamp>.json — a distinct ' +
+			'artifact class from .swarm/evidence/** (#2502). The target cannot ' +
+			'fold because the relative path is stored on receipt.path first so ' +
+			'the receipt can record its own location; the file is classed as ' +
+			'evidence-adjacent only because the SAME file hosts the oversight ' +
+			'evidence writer for .swarm/pr-feedback-evidence/. Not a cached ' +
+			'evidence artifact: one-shot operator receipt, never read back by ' +
+			'any cache.',
+	},
+	{
 		file: 'src/services/cost-accounting.ts',
 		rule: 'C',
 		target: 'snap',
