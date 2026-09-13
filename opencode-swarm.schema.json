@@ -1759,6 +1759,17 @@
         }
       }
     },
+    "speckit_checkoff": {
+      "description": "Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Check off mapped Spec-Kit tasks in the source tasks.md when Swarm completes a plan task (issue #2501). Off by default — write-back to user-owned files is opt-in.",
+          "type": "boolean"
+        }
+      }
+    },
     "git": {
       "description": "Git executable resolution override (issue #2236 hardening).",
       "type": "object",

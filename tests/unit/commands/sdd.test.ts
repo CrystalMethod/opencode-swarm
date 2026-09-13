@@ -465,16 +465,15 @@ describe('/swarm sdd command handlers — Spec-Kit', () => {
 		expect(out).toContain('--source');
 	});
 
-	// SC-009 / FR-008: multi-feature-no-feature → error naming features + --feature.
-	test('project with multi-feature Spec-Kit and no --feature errors naming features (FR-008)', async () => {
+	// SC-009 / #2501: no-flag multi-feature default projects ALL features (full
+	// coverage in tests/unit/sdd/issue-2501-*).
+	test('project with multi-feature Spec-Kit and no --feature projects all features (#2501)', async () => {
 		writeSpeckitFixture(skDir, { variant: 'multi-feature' });
-
 		const out = await handleSddProjectCommand(skDir, []);
-
-		expect(out).toContain('Error:');
-		expect(out).toContain('001-alpha');
-		expect(out).toContain('002-beta');
-		expect(out).toContain('--feature');
+		const spec = fs.readFileSync(`${skDir}/.swarm/spec.md`, 'utf-8');
+		expect(out).toContain('SDD projection written');
+		expect(spec).toContain('001-alpha/FR-001');
+		expect(spec).toContain('002-beta/FR-001');
 	});
 
 	// --source speckit selects speckit when openspec is also present (SC-005).

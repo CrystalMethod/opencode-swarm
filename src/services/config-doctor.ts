@@ -1893,6 +1893,13 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 			break;
 		}
 
+		// Issue #2501: Spec-Kit check-off round trip. Leaf shape errors are
+		// surfaced by schema parsing; the doctor only reports a non-object block.
+		case 'speckit_checkoff': {
+			emitObjectTypeMismatch('speckit_checkoff', value, findings);
+			break;
+		}
+
 		// Issue #2491: semantic-review route receipts.  Keep this explicit case
 		// beside the other top-level object checks so config-doctor's exhaustive
 		// schema ratchet observes the section and reports malformed leaf values
