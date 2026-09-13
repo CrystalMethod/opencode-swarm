@@ -590,13 +590,15 @@ function parseSpeckitRequirements(
 /**
  * Resolve a Spec-Kit feature projection with a discriminated result (FR-008, FR-012, FR-013).
  *
- * Returns one of five kinds so the command layer can produce the right error message without
+ * Returns one of six kinds so the command layer can produce the right error message without
  * re-running detection:
  * - `not_speckit`       — no `.specify/` marker (A-001).
  * - `empty`             — marker present but no feature dirs (FR-012).
  * - `unknown_feature`   — `options.feature` not among detected features.
  * - `zero_requirements` — feature found but yields zero parsable FRs, or spec.md unreadable
- *                         (FR-013; covers oversized files too).
+ *                         (FR-013; covers oversized *input* files too).
+ * - `too_large`         — requirements parsed, but the projected output exceeds the byte
+ *                         cap (FR-013; `bytes` is the projected size).
  * - `ok`                — valid EffectiveSpec built (FR-002, FR-003, FR-004, FR-005).
  *
  * This function is the single source of truth for feature selection logic.
