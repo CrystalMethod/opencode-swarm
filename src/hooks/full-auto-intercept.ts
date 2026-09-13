@@ -959,7 +959,11 @@ export function createFullAutoInterceptHook(
 			null;
 		if (sessionID) {
 			// Only import and use ensureAgentSession if we have a sessionID
-			session = stateInternals.ensureAgentSession(sessionID);
+			session = stateInternals.ensureAgentSession(
+				sessionID,
+				undefined,
+				directory,
+			);
 		}
 
 		// Check interaction limit — escalate if threshold reached

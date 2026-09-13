@@ -479,6 +479,21 @@ export async function rehydrateState(
 		}
 	}
 
+	// A live session created after this hydration began (stamp > generation)
+	// must survive population too, not just eviction: the snapshot can still
+	// carry its sessionId from a previous process (stable host session ids),
+	// and an unconditional set would replace the live object — discarding its
+	// unsnapshotted in-memory state and downgrading its stamp (PR #2742
+	// review PRR-001).
+	const isProtectedLiveSession = (sessionId: string): boolean => {
+		const live = swarmState.agentSessions.get(sessionId);
+		return (
+			live !== undefined &&
+			live.owningProjectKey === projectKey &&
+			(live.hydrationStamp ?? 0) > generation
+		);
+	};
+
 	// toolAggregates: replace only the keys this project's previous hydration
 	// published. Keys owned by other projects' snapshots (or produced by
 	// runtime increments outside this project's hydration set) are untouched.
@@ -504,6 +519,12 @@ export async function rehydrateState(
 		for (const [sessionId, serializedSession] of Object.entries(
 			snapshot.agentSessions,
 		)) {
+			// PRR-001: a live session created after this hydration began is
+			// spared by eviction and must be spared here too — its snapshot
+			// entry (from a previous process) must not replace the live object.
+			if (isProtectedLiveSession(sessionId)) {
+				continue;
+			}
 			// Validate required fields exist before deserializing
 			if (
 				!serializedSession ||
@@ -605,7 +626,7 @@ export async function rehydrateState(
 	// writer would re-serialize them on every tool call forever.
 	if (snapshot.activeAgent) {
 		for (const [key, value] of Object.entries(snapshot.activeAgent)) {
-			if (swarmState.agentSessions.has(key)) {
+			if (swarmState.agentSessions.has(key) && !isProtectedLiveSession(key)) {
 				swarmState.activeAgent.set(key, value);
 			}
 		}
@@ -615,7 +636,7 @@ export async function rehydrateState(
 	// activeAgent above.
 	if (snapshot.delegationChains) {
 		for (const [key, value] of Object.entries(snapshot.delegationChains)) {
-			if (swarmState.agentSessions.has(key)) {
+			if (swarmState.agentSessions.has(key) && !isProtectedLiveSession(key)) {
 				swarmState.delegationChains.set(key, value);
 			}
 		}

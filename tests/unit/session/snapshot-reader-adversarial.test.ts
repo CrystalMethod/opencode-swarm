@@ -56,19 +56,16 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 			const result = await readSnapshot(maliciousDir);
 			expect(result).toBeNull();
 		});
-
 		it('should handle directory with null bytes (no throw, returns null)', async () => {
 			// The filename 'session/state.json' gets validated by validateSwarmPath
 			// We'll test through loadSnapshot which calls readSnapshot
 			await expect(async () => await loadSnapshot(testDir)).not.toThrow();
 		});
-
 		it('should handle empty string directory (no throw)', async () => {
 			// Empty string resolves to current working directory
 			// The function should not throw (it may return data or null depending on whether .swarm exists)
 			await expect(async () => await readSnapshot('')).not.toThrow();
 		});
-
 		it('should handle directory pointing to system path (no throw, returns null)', async () => {
 			const systemDir = process.platform === 'win32' ? 'C:\\Windows' : '/etc';
 			const result = await readSnapshot(systemDir);
@@ -103,7 +100,6 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 			// Verify Object.prototype was NOT polluted
 			expect(({} as any).polluted).toBeUndefined();
 		});
-
 		it('should handle deeply nested JSON (100 levels) without hanging', async () => {
 			const statePath = path.join(sessionDir, 'state.json');
 
@@ -152,7 +148,6 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 			const result = await readSnapshot(testDir);
 			expect(result).not.toBeNull();
 		});
-
 		it('should handle massive JSON (1MB string fields) without hanging', async () => {
 			const statePath = path.join(sessionDir, 'state.json');
 
@@ -197,7 +192,6 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 			const result = await readSnapshot(testDir);
 			expect(result).not.toBeNull();
 		});
-
 		it('should handle toolAggregates: null (null guard on line 124)', async () => {
 			const snapshot: SnapshotData = {
 				version: 1,
@@ -227,7 +221,9 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 
 			// v6.33.1 fix: malformed sessions are skipped with a warning, not thrown.
 			// rehydrateState should resolve without error and the null session is omitted.
-			await expect(rehydrateState(snapshot)).resolves.toBeDefined();
+			await expect(rehydrateState(snapshot)).resolves.toMatchObject({
+				applied: true,
+			});
 			// The null session should NOT appear in agentSessions
 			expect(swarmState.agentSessions.has('session1')).toBe(false);
 		});
@@ -254,7 +250,9 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 					},
 				};
 
-				await expect(rehydrateState(snapshot)).resolves.toBeDefined();
+				await expect(rehydrateState(snapshot)).resolves.toMatchObject({
+					applied: true,
+				});
 				expect(swarmState.agentSessions.has('badSession')).toBe(false);
 				// The skip was logged (debug-gated), referencing the session id.
 				expect(
@@ -507,7 +505,9 @@ describe('snapshot-reader ADVERSARIAL tests', () => {
 				agentSessions: {},
 			};
 
-			await expect(rehydrateState(snapshot)).resolves.toBeDefined();
+			await expect(rehydrateState(snapshot)).resolves.toMatchObject({
+				applied: true,
+			});
 			// All 100 chains are ghosts (no restored session) → filtered.
 			expect(swarmState.delegationChains.size).toBe(0);
 		});

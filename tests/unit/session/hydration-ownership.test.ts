@@ -101,10 +101,15 @@ function writePlan(dir: string, taskId: string, status: string): void {
 }
 
 beforeEach(() => {
+	// PRR-003: entries registry in snapshot-coordination-init is module-global;
+	// clear it alongside swarmState so residue never reaches co-run siblings
+	// (same discipline as tests/unit/session/snapshot-coordination-init.test.ts).
+	_snapshotCoordinationInternals.entries.clear();
 	resetSwarmState();
 });
 
 afterAll(() => {
+	_snapshotCoordinationInternals.entries.clear();
 	for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -443,11 +448,11 @@ describe('coordination-init generation fence (issue #2667 fault 3, deterministic
 			releaseGate1 = resolve;
 		});
 		let firstCall = true;
-		_snapshotCoordinationInternals.initialize = (directory, scope) =>
-			firstCall
-				? ((firstCall = false),
-					gate1.then(() => realInitialize(directory, scope)))
-				: realInitialize(directory, scope);
+		_snapshotCoordinationInternals.initialize = (directory, scope) => {
+			if (!firstCall) return realInitialize(directory, scope);
+			firstCall = false;
+			return gate1.then(() => realInitialize(directory, scope));
+		};
 
 		try {
 			// Generation 1 (coordination) begins and stays unsettled.
@@ -481,6 +486,10 @@ describe('coordination-init generation fence (issue #2667 fault 3, deterministic
 			expect(swarmState.agentSessions.has('sess-late')).toBe(false);
 			expect(getSnapshotCoordinationStatus(dir).state).toBe('succeeded');
 		} finally {
+			// PRR-003: release the gate in the finally too, so a failed
+			// assertion cannot leave a permanently unsettled entry (its T+10s
+			// withTimeout advisory would fire mid-run of a co-run sibling).
+			releaseGate1?.();
 			_snapshotCoordinationInternals.initialize = realInitialize;
 		}
 	}, 20_000);

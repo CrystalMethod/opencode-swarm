@@ -666,19 +666,22 @@ serial — along with a serial-fallback advisory that names the exact reason
 
 ## Live-State Ownership and Hydration Fencing (issue #2667)
 
-The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`,
-`toolAggregates` in `src/state.ts`) are PROCESS-LOCAL and keyed by sessionID:
-every consumer reads them through sessionID-keyed accessors regardless of
-project. What changed in #2667 is that hydration — restoring one project's
-snapshot — no longer mutates state it does not own.
+The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`
+— keyed by sessionID — and `toolAggregates`, keyed by tool/aggregate name, all
+in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
+sessionID- (or aggregate-key-) keyed accessors regardless of project. What
+changed in #2667 is that hydration — restoring one project's snapshot — no
+longer mutates state it does not own.
 
 Three layers, with distinct authority:
 
-- **Process-local** — the four live maps themselves, `pendingRehydrations`, and
-  the per-project registries in `src/session/hydration-ownership.ts`
-  (hydration generation counters, per-project rehydration caches,
-  per-project hydrated-aggregate key sets). All bounded (FIFO at 32 entries)
-  and cleared by `resetSwarmState`.
+- **Process-local** — the four live maps themselves and `pendingRehydrations`
+  (bounded by their pre-existing lifecycle mechanisms: the 2-hour idle-TTL
+  sweep for sessions, `resetSwarmState` for the rest), plus the per-project
+  registries in `src/session/hydration-ownership.ts` (hydration generation
+  counters, per-project rehydration caches, per-project hydrated-aggregate
+  key sets — FIFO-capped at 32 entries each, with the directory→key memo
+  FIFO-capped at 64). All are cleared by `resetSwarmState`.
 - **Project-local** — ownership stamps on each session:
   `owningProjectKey` (the canonical project root that created or restored the
   session; never serialized — the hydrating directory defines it, snapshot

@@ -11,15 +11,15 @@
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { forceRecordPlanCriticApproval } from '../../../src/hooks/delegation-gate';
-import { hydrationProjectKey } from '../../../src/session/hydration-ownership';
 import {
-	SNAPSHOT_PROJECTION_FILE,
-	type SnapshotData,
-} from '../../../src/session/snapshot-writer';
+	hydrationProjectKey,
+	MAX_DIRECTORY_KEY_MEMO,
+} from '../../../src/session/hydration-ownership';
+import { getSnapshotCoordinationStatus } from '../../../src/session/snapshot-coordination-init';
+import type { SnapshotData } from '../../../src/session/snapshot-writer';
 import { resetSwarmState, swarmState } from '../../../src/state';
 import {
 	type BootedPluginHost,
@@ -74,6 +74,20 @@ async function drainPostResolution(ms: number): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Deterministic wait (PRR-004): poll until the boot's post-resolution SQLite
+ * coordination task has settled instead of relying on a fixed drain, so the
+ * coordination-path assertions cannot pass vacuously on a slow runner. Fixed
+ * 5ms interval, hard cap of 400 iterations; never throws.
+ */
+async function waitForCoordinationSettled(directory: string): Promise<void> {
+	for (let i = 0; i < 400; i += 1) {
+		const status = getSnapshotCoordinationStatus(directory);
+		if (status.state !== 'idle' && status.settled) return;
+		await drainPostResolution(5);
+	}
+}
+
 async function driveLiveSession(
 	host: BootedPluginHost,
 	sessionId: string,
@@ -103,7 +117,7 @@ describe('two real plugin instances (issue #2667 AC1)', () => {
 		// Instance B boots in the SAME process: its real init hydration must
 		// not evict instance A's live session (the pre-fix defect).
 		await bootSwarmPluginHost(dirB);
-		await drainPostResolution(150);
+		await waitForCoordinationSettled(dirB);
 
 		expect(swarmState.agentSessions.has('sess-a-live')).toBe(true);
 		expect(swarmState.activeAgent.get('sess-a-live')).toBe('architect');
@@ -129,7 +143,7 @@ describe('two real plugin instances (issue #2667 AC1)', () => {
 
 		const dirB2 = projectWithSnapshot('pi-b2-snap-', 'sess-b2-snap');
 		await bootSwarmPluginHost(dirB2);
-		await drainPostResolution(150);
+		await waitForCoordinationSettled(dirB2);
 		expect(swarmState.agentSessions.has('sess-a2-live')).toBe(true);
 		expect(swarmState.agentSessions.has('sess-b2-snap')).toBe(true);
 	});
@@ -150,5 +164,34 @@ describe('delegation-gate parent-site threading pin (issue #2667 §6)', () => {
 		).rejects.toThrow();
 		const session = swarmState.agentSessions.get('sess-gate-pin');
 		expect(session?.owningProjectKey).toBe(hydrationProjectKey(dir));
+	});
+});
+
+describe('directoryKeyMemo boundedness (issue #2667 PRR-TC7)', () => {
+	test('resolution stays stable and distinct across a flood past the memo cap', () => {
+		resetSwarmState();
+		const dirs: string[] = [];
+		try {
+			const first = canonicalMkdtemp('pi-memo-first-');
+			cleanupDirs.push(first);
+			const firstKey = hydrationProjectKey(first);
+			// Flood past MAX_DIRECTORY_KEY_MEMO: the first spelling's memo entry
+			// is evicted FIFO, but re-resolution is pure (same canonical key).
+			for (let i = 0; i <= MAX_DIRECTORY_KEY_MEMO + 2; i += 1) {
+				const dir = canonicalMkdtemp(`pi-memo-p${i}-`);
+				cleanupDirs.push(dir);
+				dirs.push(dir);
+				hydrationProjectKey(dir);
+			}
+			expect(hydrationProjectKey(first)).toBe(firstKey);
+			// Distinct spellings still resolve to distinct keys (bounded, not collapsed).
+			const keys = new Set([
+				firstKey,
+				...dirs.map((d) => hydrationProjectKey(d)),
+			]);
+			expect(keys.size).toBe(dirs.length + 1);
+		} finally {
+			resetSwarmState();
+		}
 	});
 });

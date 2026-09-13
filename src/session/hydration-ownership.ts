@@ -89,7 +89,12 @@ export function hydrationProjectKey(directory: string): string {
 export function beginHydrationScope(directory: string): HydrationScope {
 	const projectKey = hydrationProjectKey(directory);
 	const generation = (projectHydrationGenerations.get(projectKey) ?? 0) + 1;
-	evictOldest(projectHydrationGenerations, MAX_TRACKED_PROJECTS);
+	// Update-in-place must not evict a DIFFERENT project's entry at the cap:
+	// only make room when this project is not already tracked (otherwise a
+	// bump for a tracked project would reset an unrelated project's counter).
+	if (!projectHydrationGenerations.has(projectKey)) {
+		evictOldest(projectHydrationGenerations, MAX_TRACKED_PROJECTS);
+	}
 	projectHydrationGenerations.set(projectKey, generation);
 	return { projectKey, generation };
 }
@@ -118,7 +123,9 @@ export function setRehydrationCache(
 	projectKey: string,
 	cache: ProjectRehydrationCache,
 ): void {
-	evictOldest(rehydrationCaches, MAX_TRACKED_PROJECTS);
+	if (!rehydrationCaches.has(projectKey)) {
+		evictOldest(rehydrationCaches, MAX_TRACKED_PROJECTS);
+	}
 	rehydrationCaches.set(projectKey, cache);
 }
 
@@ -127,7 +134,9 @@ export function recordHydratedAggregateKeys(
 	projectKey: string,
 	keys: Set<string>,
 ): void {
-	evictOldest(hydratedAggregateKeys, MAX_TRACKED_PROJECTS);
+	if (!hydratedAggregateKeys.has(projectKey)) {
+		evictOldest(hydratedAggregateKeys, MAX_TRACKED_PROJECTS);
+	}
 	hydratedAggregateKeys.set(projectKey, new Set(keys));
 }
 
