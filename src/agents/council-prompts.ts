@@ -59,7 +59,7 @@ Reply with a single fenced JSON block. No prose outside the block.
   "memberId": "<your hardcoded memberId>",
   "role": "<your hardcoded role>",
   "round": 1,
-  "response": "Your full answer (Round 1) or stance + reasoning (Round 2). Markdown OK inside the string.",
+  "response": "Your full answer (Round 1) or stance + reasoning (Round 2). Markdown OK inside the string; the Round 2 stance keyword (MAINTAIN/CONCEDE/NUANCE) must remain the bare first word of its paragraph.",
   "searchQueries": [],
   "sources": [
     { "title": "...", "url": "...", "snippet": "...", "query": "..." }
