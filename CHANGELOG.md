@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.179.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.179.0...v7.179.1) (2026-09-13)
+
+
+### Bug Fixes
+
+* **test-impact:** close bounded mutation feedback gaps ([b45b322](https://github.com/ZaxbyHub/opencode-swarm/commit/b45b322e1599130d34fc720a838ff974d77a1a45))
+* **test-runner:** preserve cap decision on impact overflow ([918aaec](https://github.com/ZaxbyHub/opencode-swarm/commit/918aaec2063423b36b88882f680d2665431432a3))
+* **tools:** bound impact and repo-map workflows ([dc03800](https://github.com/ZaxbyHub/opencode-swarm/commit/dc03800c58ed5e189490008e1d3d3a9b60e9eee5))
+* **tools:** close PR feedback bounds and portability gaps ([8346e1e](https://github.com/ZaxbyHub/opencode-swarm/commit/8346e1e7ac7ab76515042ffcb891d4e54105254c))
+
 ## [7.179.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.178.1...v7.179.0) (2026-09-13)
 
 
