@@ -140,6 +140,11 @@ describe('Command registration parity — classification baselines', () => {
 				'memory audit-verify',
 				// #2509: opt-in dashboard status command (read-only diagnostic).
 				'dashboard',
+				// #2503: governed HarnessOpt capstone — read-only/proposal commands.
+				'harness-opt',
+				'harness-opt plan',
+				'harness-opt status',
+				'harness-opt history',
 			]),
 			// Aliases that inherit a human-only/restricted canonical target (so
 			// the Bash CLI guardrail blocks the alias/dash form too — see
@@ -180,6 +185,10 @@ describe('Command registration parity — classification baselines', () => {
 				// #2268: settlement recovery escape hatch — --force releases
 				// in-process dispatch ownership, an operator-only assertion.
 				'recover',
+				// #2503: governed HarnessOpt capstone — mutating commands
+				// (round execution, operator stop) are human-gated.
+				'harness-opt run',
+				'harness-opt stop',
 			]),
 			toolCommands: new Set([
 				'full-auto',
@@ -211,6 +220,13 @@ describe('Command registration parity — classification baselines', () => {
 				// agent attempts are refused with a surface-to-user message.
 				'recover',
 				'approve-write',
+				// #2503: all 6 harness-opt commands carry a toolPolicy.
+				'harness-opt',
+				'harness-opt plan',
+				'harness-opt status',
+				'harness-opt history',
+				'harness-opt run',
+				'harness-opt stop',
 			]),
 			noArgs: new Set(['pr status', 'lanes', 'context-map stats']),
 		};

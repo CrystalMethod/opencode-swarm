@@ -72,6 +72,13 @@ import {
 	handleHarnessCandidateShowCommand,
 	handleHarnessCandidateValidateCommand,
 } from './harness.js';
+import {
+	handleHarnessOptHistory,
+	handleHarnessOptPlan,
+	handleHarnessOptRun,
+	handleHarnessOptStatus,
+	handleHarnessOptStop,
+} from './harness-opt.js';
 import { handleHistoryCommand } from './history.js';
 import { handleKnowledgeHiveQuarantineCommand } from './hive-quarantine.js';
 import { handleIssueCommand } from './issue.js';
@@ -1006,6 +1013,69 @@ export const COMMAND_REGISTRY = {
 		description: 'Show the append-only lifecycle event log for a candidate',
 		subcommandOf: 'skill-opt',
 		args: '<slug> <candidateId> [--json]',
+		category: 'utility',
+		toolPolicy: 'agent',
+	},
+	'harness-opt': {
+		handler: (ctx) =>
+			handleHarnessOptPlan(ctx.directory, ctx.args, {
+				parentSessionId: ctx.sessionID,
+			}),
+		description:
+			'Governed HarnessOpt capstone (issue #2503). Freezes the comparative task set and drives isolated, approved, reversible optimization rounds through the evaluation substrate.',
+		args: 'plan|run|status|stop|history [--tasks <json>] [--split train|validation|test] [--seed <s>] [--confirm] [--json] [--reason <text>]',
+		details:
+			'Disabled by default. `run` requires harness_opt.enabled=true AND --confirm, executes one governed round in a disposable worktree (a test split consumes the held-out set exactly once, substrate-enforced), and records durable lineage with task-cost accounting (unknown-not-zero). Activation/rollback stay on /swarm approve-write + the harness store; the controller never mutates the live harness.',
+		category: 'utility',
+		toolPolicy: 'agent',
+	},
+	'harness-opt plan': {
+		handler: (ctx) =>
+			handleHarnessOptPlan(ctx.directory, ctx.args, {
+				parentSessionId: ctx.sessionID,
+			}),
+		description:
+			'Freeze the comparative task set and report loop status (dry-run)',
+		subcommandOf: 'harness-opt',
+		args: '--tasks <json> [--split train|validation|test] [--seed <s>] [--json]',
+		category: 'utility',
+		toolPolicy: 'agent',
+	},
+	'harness-opt run': {
+		handler: (ctx) =>
+			handleHarnessOptRun(ctx.directory, ctx.args, {
+				dispatcher: ctx.evaluationModelDispatcher,
+				parentSessionId: ctx.sessionID,
+			}),
+		description:
+			'Execute ONE governed optimization round in a disposable worktree. Requires harness_opt.enabled=true and --confirm; a test split consumes the held-out set exactly once.',
+		subcommandOf: 'harness-opt',
+		args: '--tasks <json> --confirm [--split train|validation|test] [--seed <s>] [--json]',
+		category: 'utility',
+		toolPolicy: 'human-only',
+	},
+	'harness-opt status': {
+		handler: (ctx) => handleHarnessOptStatus(ctx.directory, ctx.args),
+		description: 'Show loop status and the latest round lineage summary',
+		subcommandOf: 'harness-opt',
+		args: '[--json]',
+		category: 'utility',
+		toolPolicy: 'agent',
+	},
+	'harness-opt stop': {
+		handler: (ctx) => handleHarnessOptStop(ctx.directory, ctx.args),
+		description:
+			'Human-only operator stop: halt governed rounds with a recorded reason',
+		subcommandOf: 'harness-opt',
+		args: '[--reason <text>] [--json]',
+		category: 'utility',
+		toolPolicy: 'human-only',
+	},
+	'harness-opt history': {
+		handler: (ctx) => handleHarnessOptHistory(ctx.directory, ctx.args),
+		description: 'List durable round lineage records (bounded to the last 20)',
+		subcommandOf: 'harness-opt',
+		args: '[--json]',
 		category: 'utility',
 		toolPolicy: 'agent',
 	},

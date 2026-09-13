@@ -129,6 +129,12 @@ These are invoked as `/swarm <subcommand>`, NOT as bare `/subcommand`. The list 
 - `/swarm skill-opt reject` — record a rejection for a candidate (no active-skill mutation)
 - `/swarm skill-opt rollback` — restore the pre-activation snapshot (appends a rolled_back event)
 - `/swarm skill-opt history` — show the append-only lifecycle event log for a candidate
+- `/swarm harness-opt` — governed HarnessOpt capstone (plan|run|status|stop|history); disabled by default (`harness_opt.enabled`)
+- `/swarm harness-opt plan` — freeze the comparative task set and report loop status (dry-run)
+- `/swarm harness-opt run` — execute one governed optimization round in a disposable worktree (human-only; requires `harness_opt.enabled=true` and `--confirm`; a test split consumes the held-out set once)
+- `/swarm harness-opt status` — show loop status and the latest round lineage summary
+- `/swarm harness-opt stop` — human-only operator stop with a recorded reason
+- `/swarm harness-opt history` — list durable round lineage records (bounded)
 
 **Architect MODE workflows**
 

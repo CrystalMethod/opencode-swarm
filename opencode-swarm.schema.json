@@ -3769,6 +3769,48 @@
       },
       "additionalProperties": false
     },
+    "harness_opt": {
+      "description": "Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_rounds": {
+          "default": 5,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        },
+        "max_transient_retries": {
+          "default": 2,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10
+        },
+        "max_wall_clock_ms": {
+          "default": 3600000,
+          "type": "integer",
+          "minimum": 10000,
+          "maximum": 86400000
+        },
+        "max_spend_usd": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "run_ablation_arm": {
+          "default": true,
+          "type": "boolean"
+        },
+        "run_simple_agent_arm": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
     "spec_writer": {
       "description": "Spec writer agent (v2) — independent model for .swarm/spec.md authorship.",
       "type": "object",

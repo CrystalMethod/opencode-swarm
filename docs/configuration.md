@@ -133,6 +133,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `skillPropagation` | object | — | Skill propagation gate/injection settings. |
 | `skill_improver` | object | — | Low-frequency, expensive-model skill improvement loop (issue #629, v2). |
 | `harness_evolution` | object (strict) | — | Declarative, non-executing HarnessOpt mutation policy (issue #1825). |
+| `harness_opt` | object (strict) | — | Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm. |
 | `spec_writer` | object | — | Spec writer agent (v2) — independent model for .swarm/spec.md authorship. |
 | `tool_output` | object | — | Tool output truncation settings (enable/disable, max lines, per-tool overrides). |
 | `slop_detector` | object | — | Slop detector settings (v6.29). |
@@ -2039,6 +2040,30 @@ projection and read commands never repair it implicitly. Once the store has to
 compact, it rewrites the active ledger to a single authenticated snapshot under
 the ledger generation pointer, prunes inactive candidate directories not named
 by that snapshot, and leaves version-linked candidates available for rollback.
+
+## Governed HarnessOpt Capstone
+
+`harness_opt` governs the `/swarm harness-opt` command family (issue #2503):
+the executing capstone over the declarative `harness_evolution` surface. It is
+disabled by default; `/swarm harness-opt run` requires `enabled: true` AND an
+explicit `--confirm`, executes ONE governed round through the production
+evaluation substrate inside a disposable worktree (the running checkout is
+never mutated), and records durable round lineage with task-cost accounting
+(missing host token data stays `unknown`, never zero). A `test` split consumes
+the held-out set exactly once, enforced by the substrate. Activation and
+rollback are NOT part of this surface — they stay on the human-only
+`/swarm approve-write` + harness store path. Consulted only inside command
+handlers, never on the plugin init path.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Master opt-in for executing governed rounds. |
+| `max_rounds` | number | `5` | Max governed rounds before the controller stops (1–50). |
+| `max_transient_retries` | number | `2` | Max transient-retries per round, the retry-circuit bound (0–10). |
+| `max_wall_clock_ms` | number | `3600000` | Hard wall-clock budget for a single round. |
+| `max_spend_usd` | number | — | Optional soft spend budget for a single round. |
+| `run_ablation_arm` | boolean | `true` | Run the ablation arm in the comparative protocol. |
+| `run_simple_agent_arm` | boolean | `true` | Run the simple-agent control arm in the comparative protocol. |
 
 ## External Skills Curation Pipeline
 

@@ -2399,6 +2399,38 @@ export type HarnessEvolutionConfig = z.infer<
 export const DEFAULT_HARNESS_EVOLUTION_CONFIG: HarnessEvolutionConfig =
 	Object.freeze(HarnessEvolutionConfigSchema.parse({}));
 
+// Governed HarnessOpt optimization capstone (issue #2503). Execution
+// budgets for the serial round controller; consulted only inside
+// `/swarm harness-opt` command handlers, never on the plugin init path.
+export const HarnessOptConfigSchema = z
+	.object({
+		/** Master opt-in for executing governed rounds. Default: false. */
+		enabled: z.boolean().default(false),
+		/** Max governed rounds before the controller stops. */
+		max_rounds: z.number().int().min(1).max(50).default(5),
+		/** Max transient-retries per round (circuit bound). */
+		max_transient_retries: z.number().int().min(0).max(10).default(2),
+		/** Hard wall-clock budget for a single round, in milliseconds. */
+		max_wall_clock_ms: z
+			.number()
+			.int()
+			.min(10_000)
+			.max(86_400_000)
+			.default(3_600_000),
+		/** Optional soft spend budget for a single round, in USD. */
+		max_spend_usd: z.number().finite().nonnegative().max(1_000).optional(),
+		/** Comparative arm toggles (baseline arm always runs). */
+		run_ablation_arm: z.boolean().default(true),
+		run_simple_agent_arm: z.boolean().default(true),
+	})
+	.strict();
+
+export type HarnessOptConfig = z.infer<typeof HarnessOptConfigSchema>;
+
+export const DEFAULT_HARNESS_OPT_CONFIG: HarnessOptConfig = Object.freeze(
+	HarnessOptConfigSchema.parse({}),
+);
+
 // Skill-improver agent configuration (issue #629)
 export const SkillImproverConfigSchema = z.object({
 	/** Default: false. Must be explicitly enabled. */
@@ -4000,6 +4032,14 @@ export const PluginConfigSchema = z.object({
 	// Declarative, non-executing HarnessOpt mutation policy (issue #1825).
 	harness_evolution: HarnessEvolutionConfigSchema.optional().describe(
 		'Declarative, non-executing HarnessOpt mutation policy (issue #1825).',
+	),
+
+	// Governed HarnessOpt optimization capstone (issue #2503). Disabled by
+	// default; `/swarm harness-opt run` requires enabled: true AND --confirm.
+	// Consulted only inside command handlers, never on the init path.
+	// Activation/rollback stay on `/swarm approve-write` + the harness store.
+	harness_opt: HarnessOptConfigSchema.optional().describe(
+		'Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm.',
 	),
 
 	// v2: Spec writer agent — independent model for .swarm/spec.md authorship
