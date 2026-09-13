@@ -1481,15 +1481,18 @@ export async function executeDispatchLanesAsync(
 				: 'the complete immutable feedback inventory on the exact checked-out revision',
 			callerFocus: parsed.data.scope,
 		});
-	// Consolidated fanout lanes can exceed the explorer suffix budget before the
-	// structural floor check gets a chance to return its actionable diagnostic.
-	// Format those caller prompts first; initial/canary dispatches retain the
-	// established contract-then-format overflow behavior.
+	// Explicitly owned base/micro discovery lanes carry controller-owned row markers
+	// in the PR contract's owned-workflow line. Format those caller prompts before
+	// appending the PR contract so the explorer pass cannot mistake
+	// controller-authored markers for operator-authored text. Fanout remains
+	// format-first; ordinary workflow_lane-only lanes retain the established
+	// contract-then-format path.
 	const formatFirst =
 		parsed.data.pr_review_wave_stage === 'fanout' ||
-		(parsed.data.mode === 'swarm-pr-review:base' &&
+		((parsed.data.mode === 'swarm-pr-review:base' ||
+			parsed.data.mode === 'swarm-pr-review:micro') &&
 			parsed.data.lanes.some(
-				(lane) => (lane.owned_workflow_lanes?.length ?? 0) > 1,
+				(lane) => (lane.owned_workflow_lanes?.length ?? 0) > 0,
 			));
 	if (formatFirst) {
 		const formatted = formatExplorerLanes(lanes);
