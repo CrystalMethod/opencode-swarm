@@ -568,6 +568,23 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					normalizedSourcePaths.push(normalized.value);
 				}
 
+				if (typedArgs.files === undefined && sourcePathsTruncated) {
+					const reason = `Impact source selection exceeds the safe cap of ${MAX_SAFE_TEST_FILES} unique files (safe maximum)`;
+					return skipResult(
+						{
+							kind: 'impact',
+							sourceFiles: normalizedSourcePaths,
+							...sourceEvidence,
+							testFiles: [],
+							cap: MAX_SAFE_TEST_FILES,
+							fallbackReason: reason,
+							evaluable: false,
+						},
+						'scope_exceeded',
+						reason,
+					);
+				}
+
 				const impactSourcePaths: string[] = [];
 				if (typedArgs.files === undefined) {
 					const requestedImpactPaths =

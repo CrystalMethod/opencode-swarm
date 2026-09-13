@@ -688,11 +688,12 @@ function extractImports(content: string): string[] {
 		return results;
 	}
 
+	const sourceWithoutComments = stripTsComments(content);
 	return [
-		...execRegex(IMPORT_REGEX_ES_SIDE_EFFECT, content),
-		...execRegex(IMPORT_REGEX_ES_FROM, stripTsComments(content)),
-		...execRegex(IMPORT_REGEX_REQUIRE, content),
-		...execRegex(IMPORT_REGEX_REEXPORT, content),
+		...execRegex(IMPORT_REGEX_ES_SIDE_EFFECT, sourceWithoutComments),
+		...execRegex(IMPORT_REGEX_ES_FROM, sourceWithoutComments),
+		...execRegex(IMPORT_REGEX_REQUIRE, sourceWithoutComments),
+		...execRegex(IMPORT_REGEX_REEXPORT, sourceWithoutComments),
 	];
 }
 

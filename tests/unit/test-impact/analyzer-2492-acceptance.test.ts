@@ -66,6 +66,24 @@ describe('issue #2492: impact analysis acceptance', () => {
 		expect(imports).toEqual(['./commented']);
 	});
 
+	test('ignores comment-only side-effect, require, and re-export syntax', () => {
+		const imports = _internals.extractImports(
+			[
+				"// import './comment-side';",
+				"/* require('./comment-require') */",
+				"// export { fake } from './comment-reexport';",
+				"import './real-side';",
+				"const value = require('./real-require');",
+				"export { real } from './real-reexport';",
+			].join('\n'),
+		);
+		expect(imports).toEqual([
+			'./real-side',
+			'./real-require',
+			'./real-reexport',
+		]);
+	});
+
 	test('does not reuse traversal budgets during unrelated-test classification', async () => {
 		const changedFile = path.join(tempDir, 'src', 'changed.ts');
 		const impactedCount = Math.floor(MAX_IMPACT_MAP_REFERENCES / 2);

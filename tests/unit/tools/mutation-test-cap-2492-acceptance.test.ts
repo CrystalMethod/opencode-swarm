@@ -168,6 +168,7 @@ describe('issue #2492: mutation_test explicit-file cap', () => {
 			await mutation_test.execute(
 				{
 					patches: [mutationPatch()],
+					source_files: ['src/value.ts'],
 					test_command: ['bun', 'test'],
 					working_directory: tempDir,
 				},
@@ -182,5 +183,39 @@ describe('issue #2492: mutation_test explicit-file cap', () => {
 		expect(selection.evaluable).toBe(false);
 		expect(selectedFiles).toHaveLength(MAX_SAFE_TEST_FILES + 1);
 		expect(selectedFiles.at(-1)).toBe(files.at(-1));
+	});
+
+	test('impact source overflow returns a typed scope_exceeded skip before execution', async () => {
+		const sourceFiles = Array.from(
+			{ length: MAX_SAFE_TEST_FILES + 2 },
+			(_, index) => `src/overflow-${index}.ts`,
+		);
+		for (const file of sourceFiles) {
+			fs.writeFileSync(path.join(tempDir, file), 'export const value = 1;\n');
+		}
+
+		const parsed = JSON.parse(
+			(await mutation_test.execute(
+				{
+					patches: [mutationPatch()],
+					source_files: sourceFiles,
+					test_command: ['bun', 'test'],
+					working_directory: tempDir,
+				},
+				{ directory: tempDir } as never,
+			)) as string,
+		) as Record<string, unknown>;
+		const selection = parsed.selection as Record<string, unknown>;
+		expect(parsed.outcome).toBe('scope_exceeded');
+		expect(selection).toMatchObject({
+			kind: 'impact',
+			sourceFiles: sourceFiles.slice(0, MAX_SAFE_TEST_FILES + 1),
+			sourceFileCount: MAX_SAFE_TEST_FILES + 1,
+			sourceFilesTruncated: true,
+			testFiles: [],
+			cap: MAX_SAFE_TEST_FILES,
+			evaluable: false,
+		});
+		expect(fs.existsSync(executionMarker)).toBe(false);
 	});
 });

@@ -92,6 +92,7 @@ describe('issue #2492: mutation_test impact selection', () => {
 
 		const raw = await runTool({
 			patches: [patch()],
+			source_files: ['src/value.ts'],
 			test_command: ['bun', 'test'],
 		});
 		expect(raw).toMatch(
@@ -165,6 +166,7 @@ describe('issue #2492: mutation_test impact selection', () => {
 
 		const raw = await runTool({
 			patches: [patch()],
+			source_files: ['src/value.ts'],
 			test_command: ['bun', 'test'],
 		});
 		expect(raw).toMatch(
