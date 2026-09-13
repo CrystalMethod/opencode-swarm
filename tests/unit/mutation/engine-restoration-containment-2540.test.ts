@@ -1,13 +1,11 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
-	mkdtempSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
 } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -16,13 +14,12 @@ import {
 	type MutationPatch,
 	_internals as mutationInternals,
 } from '../../../src/mutation/engine.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 const roots: string[] = [];
 
 const symlinkSupport = (() => {
-	const directory = realpathSync(
-		mkdtempSync(path.join(os.tmpdir(), 'mutation-symlink-probe-')),
-	);
+	const directory = canonicalMkdtemp('mutation-symlink-probe-');
 	try {
 		symlinkSync(
 			directory,
@@ -38,7 +35,7 @@ const symlinkSupport = (() => {
 })();
 
 function root(prefix: string): string {
-	const value = realpathSync(mkdtempSync(path.join(os.tmpdir(), `${prefix}-`)));
+	const value = canonicalMkdtemp(`${prefix}-`);
 	roots.push(value);
 	return value;
 }
