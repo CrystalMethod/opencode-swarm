@@ -21,6 +21,10 @@
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+	handleSddProjectCommand,
+	handleSddValidateCommand,
+} from '../../../src/commands/sdd';
 import { resolveSpeckitProjection } from '../../../src/sdd/effective-spec';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { writeSpeckitFixture } from '../../helpers/speckit-fixture';
@@ -394,6 +398,52 @@ describe('issue #2501 — namespaced source ids round-trip verbatim', () => {
 			]);
 		} finally {
 			safeRmRecursive(dir);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// --feature all + validate-refusal (relocated from the FR-006-capped sdd.test.ts)
+// ---------------------------------------------------------------------------
+describe('issue-2501 --feature all and per-feature validate semantics', () => {
+	test('--feature all produces the multi-feature projection byte-identically', async () => {
+		const root = canonicalMkdtemp('issue-2501-fa-');
+		try {
+			writeSpeckitFixture(root, { variant: 'multi-feature' });
+			const allOut = await handleSddProjectCommand(root, ['--feature', 'all']);
+			const allSpec = fs.readFileSync(
+				path.join(root, '.swarm', 'spec.md'),
+				'utf-8',
+			);
+			fs.rmSync(path.join(root, '.swarm'), { recursive: true, force: true });
+			await handleSddProjectCommand(root, []);
+			const noFlagSpec = fs.readFileSync(
+				path.join(root, '.swarm', 'spec.md'),
+				'utf-8',
+			);
+			expect(allOut).toContain('SDD projection written');
+			expect(allSpec).toBe(noFlagSpec);
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	test("validate --feature all is rejected naming the real features ('all' is project-path-only)", async () => {
+		const root = canonicalMkdtemp('issue-2501-va-');
+		try {
+			writeSpeckitFixture(root, { variant: 'multi-feature' });
+			const out = await handleSddValidateCommand(root, [
+				'--source',
+				'speckit',
+				'--feature',
+				'all',
+			]);
+			expect(out).toContain('Error:');
+			expect(out).toContain("'all'");
+			expect(out).toContain('001-alpha');
+			expect(out).toContain('Available features');
+		} finally {
+			fs.rmSync(root, { recursive: true, force: true });
 		}
 	});
 });

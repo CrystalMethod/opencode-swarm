@@ -39,7 +39,7 @@ import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { writeSpeckitFixture } from '../../helpers/speckit-fixture';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
-// Static timestamp — no Date.now()/new Date() in fixtures.
+// Static timestamp strings only — no live clock reads in fixtures.
 const FIXED_TIMESTAMP = '2026-01-01T00:00:00.000Z';
 
 let tmpDir: string;

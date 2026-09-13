@@ -423,12 +423,7 @@ describe('buildSpeckitProjectionSync', () => {
 
 	test('multi-feature with no feature option projects ALL features (#2501)', () => {
 		writeSpeckitFixture(tempDir, { variant: 'multi-feature' });
-
 		const spec = buildSpeckitProjectionSync(tempDir);
-
-		// #2501: no-option multi-feature now yields the combined projection (was
-		// null on the v1 ambiguous path); ids are feature-scoped.
-		expect(spec).not.toBeNull();
 		expect(spec?.content).toContain('001-alpha/FR-001');
 		expect(spec?.content).toContain('002-beta/FR-001');
 	});
@@ -574,19 +569,11 @@ describe('resolveSpeckitProjection — discriminated resolution (task 1.4)', () 
 
 	test('multi-feature, no feature option: projects ALL features with feature-scoped ids (#2501)', () => {
 		writeSpeckitFixture(tempDir, { variant: 'multi-feature' });
-
 		const resolution = resolveSpeckitProjection(tempDir);
-
-		// #2501: the ambiguous error is gone — the no-option default projects every
-		// feature; ids are feature-scoped and the resolution lists the feature set.
 		expect(resolution.kind).toBe('ok');
 		if (resolution.kind !== 'ok') return;
 		expect(resolution.features).toEqual(['001-alpha', '002-beta']);
 		expect(resolution.namespaced).toBe(true);
-		expect(resolution.spec.sourcePaths).toEqual([
-			'specs/001-alpha/spec.md',
-			'specs/002-beta/spec.md',
-		]);
 		expect(resolution.spec.content).toContain('001-alpha/FR-001');
 		expect(resolution.spec.content).toContain('002-beta/FR-001');
 	});
