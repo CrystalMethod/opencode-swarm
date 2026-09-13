@@ -14,9 +14,28 @@ import {
 	executeMutation,
 	type MutationCommandRunner,
 	type MutationPatch,
+	_internals as mutationInternals,
 } from '../../../src/mutation/engine.js';
 
 const roots: string[] = [];
+
+const symlinkSupport = (() => {
+	const directory = realpathSync(
+		mkdtempSync(path.join(os.tmpdir(), 'mutation-symlink-probe-')),
+	);
+	try {
+		symlinkSync(
+			directory,
+			path.join(directory, 'link'),
+			process.platform === 'win32' ? 'junction' : 'dir',
+		);
+		return true;
+	} catch {
+		return false;
+	} finally {
+		rmSync(directory, { recursive: true, force: true });
+	}
+})();
 
 function root(prefix: string): string {
 	const value = realpathSync(mkdtempSync(path.join(os.tmpdir(), `${prefix}-`)));
@@ -44,6 +63,7 @@ function completed(): Awaited<ReturnType<MutationCommandRunner>> {
 }
 
 afterEach(() => {
+	mutationInternals.beforeRestoreWrite = () => undefined;
 	for (const directory of roots.splice(0)) {
 		rmSync(directory, { recursive: true, force: true });
 	}
@@ -56,17 +76,44 @@ describe('mutation byte restoration containment', () => {
 		const outsideFile = path.join(outsideDir, 'source.ts');
 		writeFileSync(outsideFile, 'outside-original');
 
-		let filePath = outsideFile;
-		try {
+		let calls = 0;
+		const runner: MutationCommandRunner = async () => {
+			calls++;
+			if (calls === 1) writeFileSync(outsideFile, 'outside-mutated');
+			return completed();
+		};
+
+		const result = await executeMutation(
+			patch(outsideFile),
+			['bun', 'test'],
+			['tests/selected.test.ts'],
+			workingDir,
+			{ runner },
+		);
+
+		expect(result.outcome).toBe('survived');
+		expect(calls).toBe(3);
+		expect(readFileSync(outsideFile, 'utf8')).toBe('outside-mutated');
+	});
+
+	test('rejects a symlink target outside the working directory, with a traversal fallback when unsupported', async () => {
+		const workingDir = root('mutation-project');
+		const outsideDir = root('mutation-outside');
+		const outsideFile = path.join(outsideDir, 'source.ts');
+		writeFileSync(outsideFile, 'outside-original');
+		const filePath = symlinkSupport
+			? 'external-link/source.ts'
+			: path.relative(workingDir, outsideFile);
+		if (symlinkSupport) {
 			symlinkSync(
 				outsideDir,
 				path.join(workingDir, 'external-link'),
-				'junction',
+				process.platform === 'win32' ? 'junction' : 'dir',
 			);
-			filePath = path.join('external-link', 'source.ts');
-		} catch {
-			// The absolute-path case still exercises the same realpath boundary when
-			// the host disallows creating links in its temporary directory.
+		} else {
+			// Symlink creation is commonly disabled on Windows CI. Keep the
+			// containment assertion active through an explicit parent traversal.
+			expect(filePath.startsWith('..')).toBe(true);
 		}
 
 		let calls = 0;
@@ -156,5 +203,67 @@ describe('mutation byte restoration containment', () => {
 		expect(readFileSync(sourceFile, 'utf8')).toBe(
 			'line-one-original\nline-two-user-edit\n',
 		);
+	});
+
+	test('preserves an edit made after reverse apply instead of restoring stale bytes', async () => {
+		const workingDir = root('mutation-project');
+		const sourceFile = path.join(workingDir, 'source.ts');
+		writeFileSync(sourceFile, 'source-original');
+
+		let calls = 0;
+		const runner: MutationCommandRunner = async ({ args }) => {
+			calls++;
+			if (calls === 1) writeFileSync(sourceFile, 'source-mutated');
+			if (args[0] === 'apply' && args[1] === '-R') {
+				// Simulate a user edit racing with the successful reverse apply.
+				writeFileSync(sourceFile, 'source-user-edit');
+			}
+			return completed();
+		};
+
+		const result = await executeMutation(
+			patch('source.ts'),
+			['bun', 'test'],
+			['tests/selected.test.ts'],
+			workingDir,
+			{ runner },
+		);
+
+		expect(result.outcome).toBe('error');
+		expect(result.error).toContain('restoration conflict');
+		expect(readFileSync(sourceFile, 'utf8')).toBe('source-user-edit');
+	});
+
+	test('rechecks bytes when an edit arrives between compare and restore', async () => {
+		const workingDir = root('mutation-project');
+		const sourceFile = path.join(workingDir, 'source.ts');
+		writeFileSync(sourceFile, 'source-original\n');
+
+		let calls = 0;
+		const runner: MutationCommandRunner = async ({ args }) => {
+			calls++;
+			if (calls === 1) writeFileSync(sourceFile, 'source-mutated\n');
+			if (args[0] === 'apply' && args[1] === '-R') {
+				// Git on Windows may reverse-apply with CRLF even when the source
+				// snapshot used LF. That makes the byte-canonicalization write path run.
+				writeFileSync(sourceFile, 'source-original\r\n');
+			}
+			return completed();
+		};
+		mutationInternals.beforeRestoreWrite = () => {
+			writeFileSync(sourceFile, 'source-user-edit\n');
+		};
+
+		const result = await executeMutation(
+			patch('source.ts'),
+			['bun', 'test'],
+			['tests/selected.test.ts'],
+			workingDir,
+			{ runner },
+		);
+
+		expect(result.outcome).toBe('error');
+		expect(result.error).toContain('restoration conflict');
+		expect(readFileSync(sourceFile, 'utf8')).toBe('source-user-edit\n');
 	});
 });

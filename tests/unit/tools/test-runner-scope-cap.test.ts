@@ -148,6 +148,59 @@ describe('test-runner safe resolution cap', () => {
 		});
 	});
 
+	test.each([
+		'graph',
+		'impact',
+	] as const)('%s deduplicates duplicate, dot-segment, and Windows case aliases before applying the cap', async (scope) => {
+		const sources = Array.from({ length: MAX_SAFE_TEST_FILES }, (_, index) => {
+			const file = `src/alias-${index}.ts`;
+			fs.writeFileSync(
+				path.join(tempDir, file),
+				`export const value${index} = ${index};\n`,
+			);
+			return file;
+		});
+		const aliases = sources.flatMap((source) => [
+			source,
+			source.replace('src/', 'src/./'),
+			process.platform === 'win32' ? source.toUpperCase() : source,
+		]);
+
+		if (scope === 'graph') {
+			fs.writeFileSync(
+				path.join(tempDir, 'src/alias-0.test.ts'),
+				"import './alias-0';\n",
+			);
+		} else {
+			const sharedTest = 'src/shared.test.ts';
+			fs.writeFileSync(
+				path.join(tempDir, sharedTest),
+				"test('shared', () => {});\n",
+			);
+			_internals.loadImpactMap = async () =>
+				Object.fromEntries(
+					sources.map((source) => [
+						path.join(tempDir, source).replace(/\\/g, '/'),
+						[sharedTest],
+					]),
+				);
+		}
+
+		const calls: string[][] = [];
+		installRunner(calls);
+		const result = await execute({ scope, files: aliases });
+
+		expect(result.success).toBe(true);
+		expect(result.outcome).toBe('pass');
+		expect(result.resolution).toMatchObject({
+			sourceFiles: sources,
+			cap: MAX_SAFE_TEST_FILES,
+			decision: 'execute',
+			evaluable: true,
+		});
+		expect(calls).toHaveLength(1);
+	});
+
 	test('more than MAX_SAFE_TEST_FILES inputs fail before discovery or spawn', async () => {
 		const sources = Array.from(
 			{ length: MAX_SAFE_TEST_FILES + 1 },

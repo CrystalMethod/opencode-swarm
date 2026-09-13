@@ -102,4 +102,54 @@ describe('issue #2492: debug-like lines are language-aware', () => {
 			),
 		).toBe(false);
 	});
+
+	test.each([
+		'src/command.rb',
+		'src/command.rake',
+	])('keeps hash characters inside %s backtick commands as code', (filePath) => {
+		expect(
+			isStaticallyEquivalent(
+				'output = `echo foo#bar`\n',
+				'output = `echo foo#baz`\n',
+				filePath,
+			),
+		).toBe(false);
+	});
+
+	test('ignores PHP hash comments while preserving hash characters in strings', () => {
+		expect(
+			isStaticallyEquivalent(
+				'<?php\n# old comment\n$value = "# unchanged";\n',
+				'<?php\n# new comment\n$value = "# unchanged";\n',
+				'src/value.php',
+			),
+		).toBe(true);
+		expect(
+			isStaticallyEquivalent(
+				'<?php\n$value = "# old";\n',
+				'<?php\n$value = "# new";\n',
+				'src/value.php',
+			),
+		).toBe(false);
+		expect(
+			isStaticallyEquivalent(
+				'<?php\n$command = `echo # old`;\n',
+				'<?php\n$command = `echo # new`;\n',
+				'src/value.php',
+			),
+		).toBe(false);
+	});
+
+	test.each([
+		'src/document.rb',
+		'src/document.rake',
+	])('ignores =begin/=end block comment changes in %s', (filePath) => {
+		expect(
+			isStaticallyEquivalent(
+				'=begin\nold documentation\n=end\nvalue = 1\n',
+				'=begin\nnew documentation\n=end\nvalue = 1\n',
+				filePath,
+			),
+		).toBe(true);
+	});
 });

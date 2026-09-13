@@ -30,7 +30,7 @@ export function isStaticallyEquivalent(
 	mutatedCode: string,
 	filePath?: string,
 ): boolean {
-	type CommentFamily = 'c-style' | 'hash' | 'unknown';
+	type CommentFamily = 'c-style' | 'hash' | 'php' | 'unknown';
 	const extension = filePath ? path.extname(filePath).toLowerCase() : '';
 	const cStyleExtensions = new Set([
 		'.c',
@@ -74,22 +74,35 @@ export function isStaticallyEquivalent(
 		'.vue',
 	]);
 	const hashExtensions = new Set(['.py', '.pyw', '.rb', '.rake']);
+	const phpExtensions = new Set(['.php']);
 	const isJavaScriptFamily = javaScriptExtensions.has(extension);
+	const isRubyFamily = extension === '.rb' || extension === '.rake';
 	const commentFamily: CommentFamily = !filePath
 		? 'unknown'
-		: cStyleExtensions.has(extension)
-			? 'c-style'
-			: hashExtensions.has(extension)
-				? 'hash'
-				: 'unknown';
+		: phpExtensions.has(extension)
+			? 'php'
+			: cStyleExtensions.has(extension)
+				? 'c-style'
+				: hashExtensions.has(extension)
+					? 'hash'
+					: 'unknown';
 
 	const stripCode = (code: string): string => {
 		const lines = code.split('\n');
 		const withoutComments: string[] = [];
 		let inBlockComment = false;
+		let inRubyBlockComment = false;
 		for (const line of lines) {
 			if (commentFamily === 'unknown') {
 				withoutComments.push(line.trimEnd());
+				continue;
+			}
+			if (isRubyFamily && !inRubyBlockComment && /^=begin(?:\s|$)/.test(line)) {
+				inRubyBlockComment = true;
+				continue;
+			}
+			if (isRubyFamily && inRubyBlockComment) {
+				if (/^=end(?:\s|$)/.test(line)) inRubyBlockComment = false;
 				continue;
 			}
 
@@ -116,19 +129,29 @@ export function isStaticallyEquivalent(
 				if (
 					ch === "'" ||
 					ch === '"' ||
-					(ch === '`' && commentFamily === 'c-style')
+					(ch === '`' &&
+						(commentFamily === 'c-style' ||
+							commentFamily === 'php' ||
+							isRubyFamily))
 				) {
 					inString = ch;
 					output += ch;
 					continue;
 				}
-				if (commentFamily === 'c-style' && ch === '/' && next === '*') {
+				if (
+					(commentFamily === 'c-style' || commentFamily === 'php') &&
+					ch === '/' &&
+					next === '*'
+				) {
 					inBlockComment = true;
 					i++;
 					continue;
 				}
 				if (
-					(commentFamily === 'c-style' && ch === '/' && next === '/') ||
+					((commentFamily === 'c-style' || commentFamily === 'php') &&
+						ch === '/' &&
+						next === '/') ||
+					(commentFamily === 'php' && ch === '#') ||
 					(commentFamily === 'hash' && ch === '#')
 				) {
 					break;

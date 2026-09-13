@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import * as fs from 'node:fs';
 import {
 	readFileSync,
 	realpathSync,
@@ -202,6 +203,87 @@ function resolveContainedRegularFile(
 	}
 }
 
+function lineEndingNormalized(bytes: Buffer): Buffer {
+	const normalized = Buffer.allocUnsafe(bytes.length);
+	let writeOffset = 0;
+	for (let readOffset = 0; readOffset < bytes.length; readOffset++) {
+		const byte = bytes[readOffset];
+		if (byte === 0x0d) {
+			if (bytes[readOffset + 1] === 0x0a) readOffset++;
+			normalized[writeOffset++] = 0x0a;
+		} else {
+			normalized[writeOffset++] = byte;
+		}
+	}
+	return normalized.subarray(0, writeOffset);
+}
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function readFileAtDescriptor(fd: number, stat: fs.Stats): Buffer {
+	const chunks: Buffer[] = [];
+	let position = 0;
+	const initialSize = Math.max(0, stat.size);
+	while (position < initialSize || position === 0) {
+		const chunk = Buffer.allocUnsafe(
+			Math.min(64 * 1024, Math.max(1, initialSize - position)),
+		);
+		const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, position);
+		if (bytesRead === 0) break;
+		chunks.push(chunk.subarray(0, bytesRead));
+		position += bytesRead;
+		if (bytesRead < chunk.length) break;
+	}
+	return Buffer.concat(chunks, position);
+}
+
+function restoreOriginalBytesIfUnchanged(
+	targetPath: string,
+	originalFileBytes: Buffer,
+): 'unchanged' | 'restored' | 'preserved' {
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(targetPath, 'r+');
+		const initialStat = fs.fstatSync(fd);
+		const initialBytes = readFileAtDescriptor(fd, initialStat);
+		const normalizedOriginal = lineEndingNormalized(originalFileBytes);
+		if (initialBytes.equals(originalFileBytes)) return 'unchanged';
+		if (!lineEndingNormalized(initialBytes).equals(normalizedOriginal)) {
+			return 'preserved';
+		}
+
+		// Test-only seam: a user edit can arrive after the first verification.
+		// Re-read the descriptor after the hook for compare-and-swap admission.
+		_internals.beforeRestoreWrite();
+		const currentPathStat = fs.statSync(targetPath);
+		if (!sameFileIdentity(initialStat, currentPathStat)) return 'preserved';
+		const currentStat = fs.fstatSync(fd);
+		const currentBytes = readFileAtDescriptor(fd, currentStat);
+		if (
+			!sameFileIdentity(initialStat, currentStat) ||
+			!currentBytes.equals(initialBytes) ||
+			!lineEndingNormalized(currentBytes).equals(normalizedOriginal)
+		) {
+			return 'preserved';
+		}
+
+		fs.ftruncateSync(fd, 0);
+		fs.writeSync(fd, originalFileBytes, 0, originalFileBytes.length, 0);
+		fs.fsyncSync(fd);
+		return 'restored';
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
+	}
+}
+
 export const runMutationCommand: MutationCommandRunner = async (args) => {
 	const resolvedExecutable = _internals.resolveExecutableFromPath([
 		args.executable,
@@ -294,6 +376,7 @@ export const _internals: {
 	 * `args.executable === 'git'`) keeps working for `git`-flavored callers.
 	 */
 	resolveGitExecutable: typeof resolveGitExecutable;
+	beforeRestoreWrite: () => void;
 } = {
 	executeMutation,
 	computeReport,
@@ -303,6 +386,7 @@ export const _internals: {
 	runExternalTool,
 	resolveExecutableFromPath,
 	resolveGitExecutable,
+	beforeRestoreWrite: () => undefined,
 } as const;
 
 export async function executeMutation(
@@ -313,6 +397,17 @@ export async function executeMutation(
 	options: MutationExecutionOptions = {},
 ): Promise<MutationResult> {
 	const startTime = Date.now();
+	if (Array.isArray(testFiles) && testFiles.length > MAX_SAFE_TEST_FILES) {
+		return {
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped',
+			durationMs: Date.now() - startTime,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		};
+	}
 	// Never let an empty selection widen into `testCommand` without file
 	// arguments. The tool performs the same check, but this defense belongs at
 	// the execution boundary because callers can invoke the engine directly.
@@ -321,6 +416,17 @@ export async function executeMutation(
 				(file) => typeof file === 'string' && !file.startsWith('-'),
 			)
 		: [];
+	if (safeTestFiles.length > MAX_SAFE_TEST_FILES) {
+		return {
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped',
+			durationMs: Date.now() - startTime,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		};
+	}
 	if (safeTestFiles.length === 0) {
 		return {
 			patchId: patch.id,
@@ -521,9 +627,17 @@ export async function executeMutation(
 						preReverseFilePath,
 					);
 					if (targetPath === preReverseFilePath) {
-						const restoredBytes = readFileSync(targetPath);
-						if (!restoredBytes.equals(originalFileBytes)) {
-							writeFileSync(targetPath, originalFileBytes);
+						const restoreResult = restoreOriginalBytesIfUnchanged(
+							targetPath,
+							originalFileBytes,
+						);
+						if (restoreResult === 'preserved') {
+							// Reverse apply should have restored the exact bytes captured before
+							// mutation. A different value means the file changed during cleanup;
+							// never overwrite that concurrent edit with our snapshot.
+							revertError ??= new Error(
+								'Mutation restoration conflict: target file changed concurrently; preserving current bytes',
+							);
 						}
 					}
 				} catch (restoreBytesErr) {
@@ -675,6 +789,22 @@ export async function executeMutationSuite(
 ): Promise<MutationReport> {
 	const startTime = Date.now();
 	const effectiveBudget = budgetMs ?? TOTAL_BUDGET_MS;
+	if (Array.isArray(testFiles) && testFiles.length > MAX_SAFE_TEST_FILES) {
+		const skippedResults = patches.map((patch) => ({
+			patchId: patch.id,
+			filePath: patch.filePath,
+			functionName: patch.functionName,
+			mutationType: patch.mutationType,
+			outcome: 'skipped' as const,
+			durationMs: 0,
+			error: `Mutation test selection exceeds safe maximum of ${MAX_SAFE_TEST_FILES} files`,
+		}));
+		return computeReport(
+			skippedResults,
+			Date.now() - startTime,
+			effectiveBudget,
+		);
+	}
 
 	// Validate testCommand[0] against the known-runner allowlist before executing
 	// any mutations. This prevents arbitrary binaries from being invoked even when

@@ -24,7 +24,10 @@ const ROOT = process.cwd();
 const ENTRY_SKILL_BASELINES: Record<string, number> = {
 	'.opencode/skills/swarm-pr-review/SKILL.md': 2024,
 	'.opencode/skills/swarm-pr-feedback/SKILL.md': 949,
-	'.opencode/skills/writing-tests/SKILL.md': 847,
+	// The graph/impact safety matrix added in issue #2492 requires seven
+	// additional lines; keep the one-way ratchet at the reviewed 854-line
+	// baseline until that detail moves into references/ under issue #2131.
+	'.opencode/skills/writing-tests/SKILL.md': 854,
 	'.opencode/skills/issue-tracer/SKILL.md': 196,
 };
 

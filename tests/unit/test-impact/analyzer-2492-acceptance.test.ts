@@ -51,6 +51,13 @@ describe('issue #2492: impact analysis acceptance', () => {
 		expect(result.budgetExceeded).toBe(false);
 	});
 
+	test('keeps side-effect imports when a later declaration uses from', () => {
+		const imports = _internals.extractImports(
+			"import './side-effect';\nconst marker = true;\nimport { value } from './later';\n",
+		);
+		expect(imports).toEqual(['./side-effect', './later']);
+	});
+
 	test('changing a test import invalidates the impact cache before reuse', async () => {
 		const sourceDir = path.join(tempDir, 'src');
 		fs.mkdirSync(sourceDir, { recursive: true });
@@ -68,6 +75,38 @@ describe('issue #2492: impact analysis acceptance', () => {
 		const future = new Date(oldTestMtime + 2_000);
 		fs.utimesSync(testFile, future, future);
 
+		const refreshed = await loadImpactMap(tempDir);
+		const fooTests = refreshed[normalized(foo)];
+		const barTests = refreshed[normalized(bar)];
+		expect(fooTests ?? []).not.toContain(normalized(testFile));
+		expect(barTests ?? []).toContain(normalized(testFile));
+	});
+
+	test('same-size test edits invalidate the cache when mtime is restored', async () => {
+		const sourceDir = path.join(tempDir, 'src');
+		fs.mkdirSync(sourceDir, { recursive: true });
+		const foo = path.join(sourceDir, 'foo.ts');
+		const bar = path.join(sourceDir, 'bar.ts');
+		const testFile = path.join(sourceDir, 'foo.test.ts');
+		fs.writeFileSync(foo, 'export const value = 1;\n');
+		fs.writeFileSync(bar, 'export const value = 2;\n');
+		const originalContent = "import { value } from './foo';\n";
+		const changedContent = "import { value } from './bar';\n";
+		expect(Buffer.byteLength(changedContent)).toBe(
+			Buffer.byteLength(originalContent),
+		);
+		fs.writeFileSync(testFile, originalContent);
+		const stableMtimeMs = Math.floor(Date.now() / 1_000) * 1_000;
+		fs.utimesSync(testFile, stableMtimeMs / 1_000, stableMtimeMs / 1_000);
+
+		await buildImpactMap(tempDir);
+		const cachedStat = fs.statSync(testFile);
+		fs.writeFileSync(testFile, changedContent);
+		fs.utimesSync(testFile, stableMtimeMs / 1_000, stableMtimeMs / 1_000);
+
+		const restoredStat = fs.statSync(testFile);
+		expect(restoredStat.size).toBe(cachedStat.size);
+		expect(restoredStat.mtimeMs).toBe(cachedStat.mtimeMs);
 		const refreshed = await loadImpactMap(tempDir);
 		const fooTests = refreshed[normalized(foo)];
 		const barTests = refreshed[normalized(bar)];

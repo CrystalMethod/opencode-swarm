@@ -93,6 +93,19 @@ describe('executeMutation — testFiles scoping (bug fix)', () => {
 		expect(mockSpawnSync).not.toHaveBeenCalled();
 	});
 
+	test('raw over-cap testFiles are rejected before filtering', async () => {
+		const result = await executeMutation(
+			makePatch(),
+			['bun', 'test'],
+			Array.from({ length: MAX_SAFE_TEST_FILES + 1 }, () => '-flag'),
+			tempDir,
+		);
+
+		expect(result.outcome).toBe('skipped');
+		expect(result.error).toContain('safe maximum');
+		expect(mockSpawnSync).not.toHaveBeenCalled();
+	});
+
 	test('single testFile → appended after testCommand.slice(1)', async () => {
 		await executeMutation(
 			makePatch(),

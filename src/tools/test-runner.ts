@@ -11,6 +11,7 @@ import {
 	getImpactCacheStatus,
 	type ImpactCacheStatus,
 	loadImpactMap,
+	loadImpactMapWithStatus,
 } from '../test-impact/analyzer.js';
 import { MAX_SAFE_TEST_FILES as SHARED_MAX_SAFE_TEST_FILES } from '../test-impact/constants';
 import { classifyAndCluster } from '../test-impact/failure-classifier.js';
@@ -39,6 +40,11 @@ export const MAX_TIMEOUT_MS = 300_000; // 5 minutes max
 export const MAX_SAFE_TEST_FILES = SHARED_MAX_SAFE_TEST_FILES; // Maximum resolved test files allowed in interactive session
 // Legacy export retained for consumers; graph/impact now bind the resolved test set.
 export const MAX_SAFE_SOURCE_FILES = 1;
+export const MAX_RAW_FILE_ENTRIES = 512;
+export const MAX_FILE_PATH_LENGTH = 4096;
+export const MAX_GRAPH_FILE_BYTES = 4 * 1024 * 1024;
+
+const DEFAULT_LOAD_IMPACT_MAP = loadImpactMap;
 
 /**
  * Estimate the fan-out (number of unique test files) for given source files
@@ -281,13 +287,38 @@ function cacheStatusAfterRebuild(
 	before: ImpactCacheStatus,
 	after: ImpactCacheStatus,
 ): ImpactCacheStatus {
-	if (after === 'fresh') {
-		if (before === 'missing') return 'rebuilt_missing';
-		if (before === 'corrupt') return 'rebuilt_corrupt';
-		if (before === 'legacy') return 'rebuilt_legacy';
-		if (before === 'stale') return 'rebuilt_stale';
+	const normalize = (status: ImpactCacheStatus): ImpactCacheStatus =>
+		status.endsWith('_unverified')
+			? (status.slice(0, -'_unverified'.length) as ImpactCacheStatus)
+			: status;
+	const beforeState = normalize(before);
+	const afterState = normalize(after);
+	if (afterState === 'fresh') {
+		if (
+			beforeState === 'missing' ||
+			beforeState === 'corrupt' ||
+			beforeState === 'legacy' ||
+			beforeState === 'stale'
+		)
+			return `rebuilt_${beforeState}` as ImpactCacheStatus;
 	}
-	return after;
+	// A mocked/legacy loader can return a map without materializing the cache.
+	// Preserve that observable status while avoiding another full verification scan.
+	return afterState === beforeState ? afterState : after;
+}
+
+async function loadImpactMapForImpactScope(
+	workingDir: string,
+): Promise<{ map: Record<string, string[]>; status: ImpactCacheStatus }> {
+	// Existing tests and extensions may replace the legacy seam. Keep that seam
+	// working, but production uses the status-aware single-inspection path below.
+	if (_internals.loadImpactMap !== DEFAULT_LOAD_IMPACT_MAP) {
+		const before = getImpactCacheStatus(workingDir, { verify: false }).status;
+		const map = await _internals.loadImpactMap(workingDir);
+		const after = getImpactCacheStatus(workingDir, { verify: false }).status;
+		return { map, status: cacheStatusAfterRebuild(before, after) };
+	}
+	return _internals.loadImpactMapWithStatus(workingDir);
 }
 
 /**
@@ -299,7 +330,6 @@ function cacheStatusForAdvisory(status: ImpactCacheStatus): ImpactCacheStatus {
 	if (status === 'missing') return 'missing_unverified';
 	if (status === 'corrupt') return 'corrupt_unverified';
 	if (status === 'legacy') return 'legacy_unverified';
-	if (status === 'stale') return 'stale_unverified';
 	return status;
 }
 
@@ -387,8 +417,10 @@ function validateArgs(args: unknown): args is TestRunnerArgs {
 	// Validate files
 	if (obj.files !== undefined) {
 		if (!Array.isArray(obj.files)) return false;
+		if (obj.files.length > MAX_RAW_FILE_ENTRIES) return false;
 		for (const f of obj.files) {
 			if (typeof f !== 'string') return false;
+			if (f.length === 0 || f.length > MAX_FILE_PATH_LENGTH) return false;
 			// Reject absolute paths
 			if (isAbsolutePath(f)) return false;
 			// Check for path traversal attempts (including encoded)
@@ -1298,7 +1330,9 @@ async function getTestFilesFromGraph(
 	for (const testFile of candidateTestFiles) {
 		try {
 			const absoluteTestFile = resolveWorkspacePath(testFile, workingDir);
+			if (fs.statSync(absoluteTestFile).size > MAX_GRAPH_FILE_BYTES) continue;
 			const content = fs.readFileSync(absoluteTestFile, 'utf-8');
+			if (Buffer.byteLength(content, 'utf8') > MAX_GRAPH_FILE_BYTES) continue;
 			const testDir = path.dirname(absoluteTestFile);
 
 			// Look for import statements that reference source files
@@ -1337,6 +1371,11 @@ async function getTestFilesFromGraph(
 					}
 				} else {
 					// External module, skip
+					const nextIndex = match.index + Math.max(match[0].length, 1);
+					if (importRegex.lastIndex <= match.index) {
+						importRegex.lastIndex = nextIndex;
+					}
+					match = importRegex.exec(content);
 					continue;
 				}
 
@@ -2909,7 +2948,8 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				'For scope "target": exact framework-native test name plus a workspace-relative package/build directory. Absolute paths, traversal, coverage, bail, and broad fallback are rejected.',
 			),
 		files: z
-			.array(z.string())
+			.array(z.string().min(1).max(MAX_FILE_PATH_LENGTH))
+			.max(MAX_RAW_FILE_ENTRIES)
 			.optional()
 			.describe(
 				'Specific files to test. For "convention", pass source files or direct test files. For "graph" and "impact", pass source files only.',
@@ -3385,19 +3425,14 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			}
 
 			selectionEstimate = await estimateFanOut(sourceFiles, workingDir);
-			const cacheBefore = getImpactCacheStatus(workingDir).status;
-
 			try {
-				const impactMap = await _internals.loadImpactMap(workingDir);
-				selectionCacheStatus = cacheStatusAfterRebuild(
-					cacheBefore,
-					getImpactCacheStatus(workingDir).status,
-				);
+				const impactLoad = await loadImpactMapForImpactScope(workingDir);
+				selectionCacheStatus = impactLoad.status;
 				const impactResult = await _internals.analyzeImpact(
 					sourceFiles,
 					workingDir,
 					MAX_SAFE_TEST_FILES + 1,
-					impactMap,
+					impactLoad.map,
 				);
 				if (impactResult.budgetExceeded) {
 					const errorResult: TestErrorResult = {
@@ -3629,6 +3664,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 export const _internals: {
 	analyzeImpact: typeof analyzeImpact;
 	loadImpactMap: typeof loadImpactMap;
+	loadImpactMapWithStatus: typeof loadImpactMapWithStatus;
 	getImpactCacheStatus: typeof getImpactCacheStatus;
 	isCommandAvailable: typeof isCommandAvailable;
 	existsSync: typeof fs.existsSync;
@@ -3643,6 +3679,7 @@ export const _internals: {
 } = {
 	analyzeImpact,
 	loadImpactMap,
+	loadImpactMapWithStatus,
 	getImpactCacheStatus,
 	isCommandAvailable,
 	existsSync: fs.existsSync,

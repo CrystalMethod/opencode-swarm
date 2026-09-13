@@ -15,21 +15,20 @@ import {
 import {
 	analyzeImpact,
 	_internals as impactInternals,
+	MAX_IMPACT_CACHE_BYTES,
 } from '../test-impact/analyzer.js';
 import { MAX_SAFE_TEST_FILES } from '../test-impact/constants.js';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
 
 type SelectionKind = 'explicit' | 'impact';
-type CacheDisposition =
-	| 'preserved'
-	| 'refreshed'
-	| 'invalidated'
-	| 'unavailable';
+type CacheDisposition = 'preserved' | 'refreshed' | 'unavailable';
 
 interface MutationSelection {
 	kind: SelectionKind;
 	sourceFiles: string[];
+	sourceFileCount?: number;
+	sourceFilesTruncated?: boolean;
 	testFiles: string[];
 	cap: number;
 	fallbackReason: string | null;
@@ -54,21 +53,114 @@ interface MutationToolArgs {
 }
 
 function contentDigest(filePath: string): string | null {
+	return boundedContentDigest(filePath);
+}
+
+function boundedContentDigest(
+	filePath: string,
+	maxBytes?: number,
+): string | null {
+	let fd: number | undefined;
 	try {
-		return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+		fd = fs.openSync(filePath, 'r');
+		const stat = fs.fstatSync(fd);
+		if (maxBytes !== undefined && stat.size > maxBytes) return null;
+		const hash = createHash('sha256');
+		const chunk = Buffer.allocUnsafe(64 * 1024);
+		let totalBytes = 0;
+		while (true) {
+			const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, totalBytes);
+			if (bytesRead === 0) break;
+			totalBytes += bytesRead;
+			if (maxBytes !== undefined && totalBytes > maxBytes) return null;
+			hash.update(chunk.subarray(0, bytesRead));
+		}
+		return hash.digest('hex');
 	} catch {
 		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
 	}
 }
 
-function invalidateImpactCache(cwd: string): boolean {
-	const cachePath = path.join(cwd, '.swarm', 'cache', 'impact-map.json');
+type CacheGeneration = {
+	digest: string;
+	size: number;
+	mtimeMs: number;
+	ctimeMs: number;
+	dev: number;
+	ino: number;
+};
+
+function readCacheGeneration(filePath: string): CacheGeneration | null {
+	let fd: number | undefined;
 	try {
-		if (fs.existsSync(cachePath)) fs.unlinkSync(cachePath);
-		return true;
+		fd = fs.openSync(filePath, 'r');
+		const stat = fs.fstatSync(fd);
+		if (stat.size > MAX_IMPACT_CACHE_BYTES) return null;
+		const hash = createHash('sha256');
+		const chunk = Buffer.allocUnsafe(64 * 1024);
+		let totalBytes = 0;
+		while (true) {
+			const bytesRead = fs.readSync(fd, chunk, 0, chunk.length, totalBytes);
+			if (bytesRead === 0) break;
+			totalBytes += bytesRead;
+			if (totalBytes > MAX_IMPACT_CACHE_BYTES) return null;
+			hash.update(chunk.subarray(0, bytesRead));
+		}
+		const digest = hash.digest('hex');
+		const finalStat = fs.fstatSync(fd);
+		if (
+			finalStat.dev !== stat.dev ||
+			finalStat.ino !== stat.ino ||
+			finalStat.size !== totalBytes ||
+			finalStat.size > MAX_IMPACT_CACHE_BYTES ||
+			finalStat.mtimeMs !== stat.mtimeMs ||
+			finalStat.ctimeMs !== stat.ctimeMs
+		) {
+			return null;
+		}
+		return {
+			digest,
+			size: finalStat.size,
+			mtimeMs: finalStat.mtimeMs,
+			ctimeMs: finalStat.ctimeMs,
+			dev: finalStat.dev,
+			ino: finalStat.ino,
+		};
 	} catch {
-		return false;
+		return null;
+	} finally {
+		if (fd !== undefined) {
+			try {
+				fs.closeSync(fd);
+			} catch {
+				// best effort cleanup
+			}
+		}
 	}
+}
+
+function sameCacheGeneration(
+	left: CacheGeneration | null,
+	right: CacheGeneration | null,
+): boolean {
+	return (
+		left !== null &&
+		right !== null &&
+		left.digest === right.digest &&
+		left.size === right.size &&
+		left.mtimeMs === right.mtimeMs &&
+		left.ctimeMs === right.ctimeMs &&
+		left.dev === right.dev &&
+		left.ino === right.ino
+	);
 }
 
 function normalizeWorkspaceFile(
@@ -120,6 +212,17 @@ function normalizeWorkspaceFile(
 	return { value: relative, absolute };
 }
 
+function workspaceFileIdentity(filePath: string): string {
+	let canonical = path.normalize(filePath);
+	try {
+		canonical = path.normalize(fs.realpathSync(filePath));
+	} catch {
+		// normalizeWorkspaceFile already checked existence for callers that need
+		// identity; retain the lexical path as a conservative fallback.
+	}
+	return process.platform === 'win32' ? canonical.toLowerCase() : canonical;
+}
+
 function normalizeExplicitFiles(
 	files: unknown,
 	cwd: string,
@@ -138,8 +241,9 @@ function normalizeExplicitFiles(
 		}
 		const result = normalizeWorkspaceFile(file, cwd, true);
 		if ('error' in result) return { files: normalized, error: result.error };
-		if (!seen.has(result.value)) {
-			seen.add(result.value);
+		const identity = workspaceFileIdentity(result.absolute);
+		if (!seen.has(identity)) {
+			seen.add(identity);
 			normalized.push(result.value);
 		}
 	}
@@ -159,8 +263,10 @@ function normalizeImpactFiles(files: unknown, cwd: string): string[] {
 				? path.relative(cwd, file)
 				: file;
 		const result = normalizeWorkspaceFile(candidate, cwd, true);
-		if ('error' in result || seen.has(result.value)) continue;
-		seen.add(result.value);
+		if ('error' in result) continue;
+		const identity = workspaceFileIdentity(result.absolute);
+		if (seen.has(identity)) continue;
+		seen.add(identity);
 		normalized.push(result.value);
 	}
 	return normalized;
@@ -318,13 +424,26 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				const cwd = resolved.directory;
 				const passThreshold = typedArgs.pass_threshold ?? 0.8;
 				const warnThreshold = typedArgs.warn_threshold ?? 0.6;
-				const sourcePaths = [
-					...new Set(
-						typedArgs.patches
-							.filter((patch) => typeof patch?.filePath === 'string')
-							.map((patch) => patch.filePath),
-					),
-				];
+				// Keep path-bearing selection evidence bounded even when callers send a
+				// large patch list. The final entry is a bounded truncation sentinel;
+				// sourceFileCount reports the retained evidence count.
+				const sourcePaths: string[] = [];
+				const sourcePathKeys = new Set<string>();
+				let sourcePathsTruncated = false;
+				for (const patch of typedArgs.patches) {
+					if (typeof patch?.filePath !== 'string') continue;
+					if (sourcePathKeys.has(patch.filePath)) continue;
+					sourcePathKeys.add(patch.filePath);
+					sourcePaths.push(patch.filePath);
+					if (sourcePaths.length >= MAX_SAFE_TEST_FILES + 1) {
+						sourcePathsTruncated = true;
+						break;
+					}
+				}
+				const sourceEvidence = {
+					sourceFileCount: sourcePaths.length,
+					sourceFilesTruncated: sourcePathsTruncated,
+				};
 				const normalizedSourcePaths: string[] = [];
 				for (const sourcePath of sourcePaths) {
 					const normalized = normalizeWorkspaceFile(sourcePath, cwd, true);
@@ -333,6 +452,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: typedArgs.files === undefined ? 'impact' : 'explicit',
 								sourceFiles: sourcePaths,
+								...sourceEvidence,
 								testFiles: [],
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: normalized.error,
@@ -356,6 +476,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
 								testFiles: explicit.files,
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: explicit.error,
@@ -372,6 +493,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
 								testFiles: selectedTestFiles.slice(0, MAX_SAFE_TEST_FILES + 1),
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: reason,
@@ -388,6 +510,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: [],
+								...sourceEvidence,
 								testFiles: [],
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: 'No safe mutated source files were provided',
@@ -411,6 +534,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
 								testFiles: [],
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: reason,
@@ -433,6 +557,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
 								testFiles: selectedTestFiles.slice(0, MAX_SAFE_TEST_FILES + 1),
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason: reason,
@@ -449,6 +574,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 							{
 								kind: selectionKind,
 								sourceFiles: normalizedSourcePaths,
+								...sourceEvidence,
 								testFiles: [],
 								cap: MAX_SAFE_TEST_FILES,
 								fallbackReason,
@@ -463,6 +589,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 				const selection: MutationSelection = {
 					kind: selectionKind,
 					sourceFiles: normalizedSourcePaths,
+					...sourceEvidence,
 					testFiles: selectedTestFiles,
 					cap: MAX_SAFE_TEST_FILES,
 					fallbackReason,
@@ -491,7 +618,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					}
 				}
 				const cachePath = path.join(cwd, '.swarm', 'cache', 'impact-map.json');
-				const cacheBefore = contentDigest(cachePath);
+				const cacheBefore = readCacheGeneration(cachePath);
 
 				// Build source files map for equivalence detection
 				const sourceFiles = new Map<string, string>();
@@ -513,6 +640,7 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					undefined, // onProgress
 					sourceFiles.size > 0 ? sourceFiles : undefined,
 				);
+				const cacheAfter = readCacheGeneration(cachePath);
 
 				let cacheChanged = false;
 				for (const [filePath, before] of sourceDigests) {
@@ -523,15 +651,12 @@ export const mutation_test: ReturnType<typeof createSwarmTool> =
 					const after = contentDigest(path.resolve(cwd, filePath));
 					if (after !== before) cacheChanged = true;
 				}
-				const cacheAfter = contentDigest(cachePath);
-				if (
-					cacheChanged ||
-					(cacheBefore !== null && cacheAfter !== cacheBefore)
-				) {
-					selection.cacheDisposition = invalidateImpactCache(cwd)
-						? 'invalidated'
-						: 'unavailable';
-				} else if (cacheBefore !== null && cacheAfter === cacheBefore) {
+				if (cacheChanged) {
+					// Never unlink a cache path here. The analyzer owns cache
+					// replacement and will rebuild this stale generation on its next
+					// bounded read, while preserving any concurrent atomic refresh.
+					selection.cacheDisposition = 'preserved';
+				} else if (sameCacheGeneration(cacheBefore, cacheAfter)) {
 					selection.cacheDisposition = 'preserved';
 				} else if (cacheAfter !== null) {
 					selection.cacheDisposition = 'refreshed';

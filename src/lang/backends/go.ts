@@ -36,6 +36,8 @@ const IMPORT_REGEX_SINGLE =
 	/^\s*import\s+(?:[a-zA-Z_.][a-zA-Z0-9_]*\s+)?"([^"]+)"/gm;
 const IMPORT_REGEX_GROUP = /^\s*import\s*\(([\s\S]*?)\)/gm;
 const IMPORT_REGEX_GROUP_LINE = /(?:[a-zA-Z_.][a-zA-Z0-9_]*\s+)?"([^"]+)"/g;
+/** Avoid spending unbounded time parsing an attacker-controlled source file. */
+export const MAX_IMPORT_SOURCE_BYTES = 1 * 1024 * 1024;
 
 function stripGoComments(source: string): string {
 	let state: 'normal' | 'line' | 'block' | 'string' | 'raw' = 'normal';
@@ -93,6 +95,7 @@ function stripGoComments(source: string): string {
 }
 
 function extractImports(_sourceFile: string, source: string): string[] {
+	if (Buffer.byteLength(source, 'utf8') > MAX_IMPORT_SOURCE_BYTES) return [];
 	const out = new Set<string>();
 	const uncommented = stripGoComments(source);
 

@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_MANIFEST } from '../../../src/tools/manifest.js';
@@ -287,6 +293,110 @@ describe('repo_map workflow producer coverage (issue #2540)', () => {
 				action: 'symbol_search',
 			});
 			expect(result.error).toContain('No repo graph found');
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('every retained action is reachable through the registered manifest entrypoint', async () => {
+		const directory = canonicalMkdtemp('repo-map-2540-actions-');
+		const registered = TOOL_MANIFEST.repo_map() as unknown as {
+			execute: (
+				args: Record<string, unknown>,
+				ctx: { directory: string; sessionID: string },
+			) => Promise<string>;
+		};
+		const inputs: Record<RequiredAction, Record<string, unknown>> = {
+			symbol_search: { symbol: 'repo_map', top_n: 1 },
+			symbol_context: {
+				file: 'src/tools/repo-map.ts',
+				symbol: 'repo_map',
+				include_source: true,
+				top_n: 1,
+			},
+			graph_explain: {
+				file: 'src/tools/repo-map.ts',
+				line: 1,
+				top_n: 1,
+			},
+			preflight_packet: { files: ['src/tools/repo-map.ts'], top_n: 1 },
+			dead_exports: { top_n: 1 },
+			ontology: { file: 'src/tools/repo-map.ts' },
+		};
+
+		try {
+			for (const action of REQUIRED_ACTIONS) {
+				const result = JSON.parse(
+					await registered.execute(
+						{ action, ...inputs[action] },
+						{ directory, sessionID: `repo-map-2540-${action}` },
+					),
+				) as { success: boolean; action: string; error?: string };
+
+				expect(result).toMatchObject({ success: false, action });
+				expect(result.error).toContain('No repo graph found');
+			}
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test('dispatches every retained action against a minimal seeded graph', async () => {
+		const directory = canonicalMkdtemp('repo-map-2540-seeded-');
+		const registered = TOOL_MANIFEST.repo_map() as unknown as {
+			execute: (
+				args: Record<string, unknown>,
+				ctx: { directory: string; sessionID: string },
+			) => Promise<string>;
+		};
+		mkdirSync(path.join(directory, 'src'), { recursive: true });
+		writeFileSync(
+			path.join(directory, 'src', 'main.ts'),
+			'export function sample(value: number): number { return value + 1; }\n',
+		);
+
+		try {
+			const built = JSON.parse(
+				await registered.execute(
+					{ action: 'build' },
+					{ directory, sessionID: 'repo-map-2540-seeded-build' },
+				),
+			) as { success: boolean; action: string; error?: string };
+			expect(built).toMatchObject({ success: true, action: 'build' });
+
+			const inputs: Record<RequiredAction, Record<string, unknown>> = {
+				symbol_search: { symbol: 'sample', top_n: 1 },
+				symbol_context: {
+					file: 'src/main.ts',
+					symbol: 'sample',
+					include_source: true,
+					top_n: 1,
+				},
+				graph_explain: {
+					file: 'src/main.ts',
+					line: 1,
+					top_n: 1,
+				},
+				preflight_packet: { files: ['src/main.ts'], top_n: 1 },
+				dead_exports: { top_n: 1 },
+				ontology: { file: 'src/main.ts' },
+			};
+
+			for (const action of REQUIRED_ACTIONS) {
+				const result = JSON.parse(
+					await registered.execute(
+						{ action, ...inputs[action] },
+						{ directory, sessionID: `repo-map-2540-seeded-${action}` },
+					),
+				) as { success: boolean; action: string; error?: string };
+				expect(
+					result,
+					`${action}: ${result.error ?? 'unexpected response'}`,
+				).toMatchObject({
+					success: true,
+					action,
+				});
+			}
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
