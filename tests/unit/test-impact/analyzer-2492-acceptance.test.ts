@@ -96,7 +96,7 @@ describe('issue #2492: impact analysis acceptance', () => {
 			Buffer.byteLength(originalContent),
 		);
 		fs.writeFileSync(testFile, originalContent);
-		const stableMtimeMs = Math.floor(Date.now() / 1_000) * 1_000;
+		const stableMtimeMs = 1_700_000_000_000;
 		fs.utimesSync(testFile, stableMtimeMs / 1_000, stableMtimeMs / 1_000);
 
 		await buildImpactMap(tempDir);
