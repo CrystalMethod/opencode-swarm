@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
 import { beginHydrationScope } from '../../../src/session/hydration-ownership';

@@ -1,5 +1,20 @@
 # Changelog
 
+## [7.179.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.178.1...v7.179.0) (2026-09-13)
+
+
+### Features
+
+* **ci:** enforce required check contract ([4bb9f8a](https://github.com/ZaxbyHub/opencode-swarm/commit/4bb9f8ac3451fd4f7aee189203fbb7ec8bd0d1cd))
+
+
+### Bug Fixes
+
+* **ci:** fetch full history for merge-group coverage ([ae8d1e3](https://github.com/ZaxbyHub/opencode-swarm/commit/ae8d1e30e6a2c9a8f3b926d9162aa43fdafd53f4))
+* **pr-workflow:** terminalize orphaned lifecycle state ([8742965](https://github.com/ZaxbyHub/opencode-swarm/commit/8742965fe9554b661e1d26a44899d948b485acad))
+* **repo-map:** connect the six remaining audit actions + VALID_ACTIONS consumer ratchet ([#2540](https://github.com/ZaxbyHub/opencode-swarm/issues/2540)) ([a424a7d](https://github.com/ZaxbyHub/opencode-swarm/commit/a424a7dfc0097ec8baecd8a1cfde27a5874da18d))
+* **test-runner,mutation:** bounded multi-source scope + analyzer-derived mutation selection ([#2492](https://github.com/ZaxbyHub/opencode-swarm/issues/2492)) ([961ad53](https://github.com/ZaxbyHub/opencode-swarm/commit/961ad53c61a7e6c6540507f8ef984d2991ed58c9))
+
 ## [7.178.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.178.0...v7.178.1) (2026-09-12)
 
 
