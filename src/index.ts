@@ -10,6 +10,7 @@ import {
 	extractSwarmIdFromAgentName,
 	getAgentConfigs,
 	getSwarmAgents,
+	resetArchitectPromptBudgetAdvisories,
 } from './agents';
 import {
 	applyAlwaysSurfacePolicy,
@@ -1100,6 +1101,7 @@ async function initializeOpenCodeSwarm(
 	// review PRR-007). O(1) — bounded, no init-path I/O.
 	clearDeferredWarnings();
 	resetConfigAdvisoryDedup();
+	resetArchitectPromptBudgetAdvisories();
 
 	// PARALLEL INIT I/O (issue #1782 / repro-704 T1 Windows failures).
 	//
