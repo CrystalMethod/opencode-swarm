@@ -11,8 +11,13 @@
   claim with an explicit contrary stance (`oppose` or `alternative`) is treated
   as disagreement evidence and excluded from consensus points, so a contrary
   position can no longer be emitted as a consensus point just because its
-  wording lexically resembles the position it opposes. Members with agreeing
-  or unrelated positions are unaffected.
+  wording lexically resembles the position it opposes. This exclusion is
+  deliberately conservative: it applies to the member's whole contribution (a
+  member holding agreeing positions alongside one contrary claim is also
+  excluded), and excluded members still count toward the consensus threshold
+  denominator — consensus may be under-reported, never falsely reported.
+  Members who supply no typed claims, or only non-contrary ones, are
+  unaffected.
 - The paragraph-leading stance parser lives solely in
   `src/council/general-council-service.ts` (`extractLeadingStanceDeclarations`)
   and is exported for the registered `convene_general_council` entrypoint; no
