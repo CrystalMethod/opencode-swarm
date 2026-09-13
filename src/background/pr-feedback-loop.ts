@@ -40,6 +40,10 @@ import {
 	writePrWorkflowAtomicJson,
 } from '../hooks/pr-workflow-gate';
 import { validateSwarmPath } from '../hooks/utils';
+import {
+	canonicalRootKeyFresh,
+	SESSION_KEY_SEPARATOR,
+} from '../utils/canonical-root.js';
 import { log, warn } from '../utils/logger';
 import { withTimeout } from '../utils/timeout';
 import {
@@ -48,10 +52,6 @@ import {
 	type PrFeedbackMonitorEvent,
 	readPrFeedbackMonitorQueue,
 } from './pr-feedback-event-queue';
-import {
-	canonicalRootKeyFresh,
-	SESSION_KEY_SEPARATOR,
-} from '../utils/canonical-root.js';
 import { listActive } from './pr-subscriptions';
 
 export const PR_FEEDBACK_LOOP_STATE_REL = path.join(
