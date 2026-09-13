@@ -1568,7 +1568,10 @@ export function getAgentConfigs(
 }
 
 // Re-export agent types
-export { createArchitectAgent } from './architect';
+export {
+	createArchitectAgent,
+	resetArchitectPromptBudgetAdvisories,
+} from './architect';
 export { createCoderAgent } from './coder';
 export {
 	DOMAIN_EXPERT_COUNCIL_PROMPT,

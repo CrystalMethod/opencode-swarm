@@ -406,7 +406,7 @@ const CATALOG_SOURCE: readonly (readonly [string, CatalogEntryInput])[] = [
 			category: 'delegation',
 			severity: 'info',
 			privacyClass: 'pseudonymous',
-			producer: 'src/index.ts:877',
+			producer: 'src/index.ts:878',
 			consumers: CONSUMER_COST_CORRECTION,
 			retentionOwnerIssue: ISSUE_COST_RETENTION,
 			requiredWorkflowIds: REQUIRE_SESSION_AND_TASK,
@@ -419,7 +419,11 @@ const CATALOG_SOURCE: readonly (readonly [string, CatalogEntryInput])[] = [
 			category: 'delegation',
 			severity: 'info',
 			privacyClass: 'pseudonymous',
-			producer: 'src/index.ts:1894',
+<<<<<<< HEAD
+			producer: 'src/index.ts:1896',
+=======
+			producer: 'src/index.ts:1896',
+>>>>>>> ddd8b63db (fix(agents): budget advisory session-start reset; split parser pins (#2671 review r2))
 			consumers: NO_CONSUMERS,
 			futureOwnerIssue: ISSUE_SINK,
 			retentionOwnerIssue: ISSUE_COST_RETENTION,
@@ -433,7 +437,11 @@ const CATALOG_SOURCE: readonly (readonly [string, CatalogEntryInput])[] = [
 			category: 'delegation',
 			severity: 'notice',
 			privacyClass: 'pseudonymous',
-			producer: 'src/index.ts:1914',
+<<<<<<< HEAD
+			producer: 'src/index.ts:1916',
+=======
+			producer: 'src/index.ts:1916',
+>>>>>>> ddd8b63db (fix(agents): budget advisory session-start reset; split parser pins (#2671 review r2))
 			consumers: CONSUMER_COST_JOIN,
 			retentionOwnerIssue: ISSUE_COST_RETENTION,
 			requiredWorkflowIds: REQUIRE_SESSION,

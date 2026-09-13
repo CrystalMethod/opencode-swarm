@@ -174,6 +174,16 @@ export function warnArchitectPromptBudgetExceededOnce(error: string): void {
 }
 
 /**
+ * Session-start reset (called next to clearDeferredWarnings in src/index.ts):
+ * a fixed config must warn again in a new session instead of staying
+ * suppressed by a signature emitted before the reload. Mirrors
+ * resetConfigAdvisoryDedup (issue #2524 review PRR-007).
+ */
+export function resetArchitectPromptBudgetAdvisories(): void {
+	emittedBudgetAdvisories.clear();
+}
+
+/**
  * Deterministic overflow policy (issue #2671): over budget returns a BOUNDED
  * (<= 400 chars, label sliced) error prefixed ARCHITECT_PROMPT_BUDGET_EXCEEDED
  * instead of silently dropping guidance. Callers advisoryWarn it and keep the

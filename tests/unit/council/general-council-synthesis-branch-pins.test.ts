@@ -177,24 +177,27 @@ describe('general council synthesis supplemental branch pins (#2578 review)', ()
 		expect(result.consensusPoints.length).toBe(1);
 	});
 
-	test('parser handles bare keyword, empty string, and non-string responses', () => {
+	test('bare CONCEDE as the entire response parses (boundary == -1 branch)', () => {
 		const round1 = contraryRound1();
 		const topics = detectedTopics(round1);
-		expect(topics.length).toBeGreaterThanOrEqual(1);
-
-		// Bare CONCEDE as the entire response (boundary == -1 branch).
 		const bare = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
 			round2('m2', 'CONCEDE', topics),
 		]);
 		expect(bare.persistingDisagreements).not.toContain(topics[0]);
+	});
 
-		// Empty response body: nothing resolves.
+	test('empty round-2 response never resolves (PRR-014/015)', () => {
+		const round1 = contraryRound1();
+		const topics = detectedTopics(round1);
 		const empty = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
 			round2('m2', '', topics),
 		]);
 		expect(empty.persistingDisagreements).toContain(topics[0]);
+	});
 
-		// Paragraph-leading NUANCE persists the disagreement (not a concession).
+	test('paragraph-leading NUANCE persists the disagreement (PRR-015)', () => {
+		const round1 = contraryRound1();
+		const topics = detectedTopics(round1);
 		const nuance = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
 			round2(
 				'm2',
@@ -203,14 +206,20 @@ describe('general council synthesis supplemental branch pins (#2578 review)', ()
 			),
 		]);
 		expect(nuance.persistingDisagreements).toContain(topics[0]);
+	});
 
-		// A non-disputant CONCEDE must not resolve the disagreement.
+	test('non-disputant CONCEDE must not resolve (PRR-015 guard)', () => {
+		const round1 = contraryRound1();
+		const topics = detectedTopics(round1);
 		const outsider = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
 			round2('m9', 'CONCEDE\n\nI was wrong about everything.', topics),
 		]);
 		expect(outsider.persistingDisagreements).toContain(topics[0]);
+	});
 
-		// A disputant CONCEDE on an unmatched topic must not resolve either.
+	test('disputant CONCEDE on an unmatched topic must not resolve (PRR-015 guard)', () => {
+		const round1 = contraryRound1();
+		const topics = detectedTopics(round1);
 		const unmatched = synthesizeGeneralCouncil(QUESTION, 'general', round1, [
 			round2(
 				'm2',
