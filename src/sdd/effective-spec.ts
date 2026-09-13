@@ -590,11 +590,10 @@ function parseSpeckitRequirements(
 /**
  * Resolve a Spec-Kit feature projection with a discriminated result (FR-008, FR-012, FR-013).
  *
- * Returns one of six kinds so the command layer can produce the right error message without
+ * Returns one of five kinds so the command layer can produce the right error message without
  * re-running detection:
  * - `not_speckit`       — no `.specify/` marker (A-001).
  * - `empty`             — marker present but no feature dirs (FR-012).
- * - `ambiguous`         — multiple features, no `options.feature` (FR-008).
  * - `unknown_feature`   — `options.feature` not among detected features.
  * - `zero_requirements` — feature found but yields zero parsable FRs, or spec.md unreadable
  *                         (FR-013; covers oversized files too).
@@ -1397,10 +1396,9 @@ export function writeProjectedSpecSync(
  * - Missing required spec.md sections (`SPECKIT_REQUIRED_SECTIONS`).
  * - `tasks.md` task lines that carry no `[US#]` user-story reference (FR-007).
  *
- * For other resolution kinds (`not_speckit`, `empty`, `ambiguous`,
- * `unknown_feature`, `too_large`) the command layer uses
- * {@link formatSpeckitError} on the returned resolution — same messaging path
- * as task 2.2 (plan.md task 2.3 requirement: no second messaging scheme).
+ * For other resolution kinds (`not_speckit`, `empty`, `unknown_feature`,
+ * `too_large`) the command layer uses {@link formatSpeckitError} on the
+ * returned resolution — same messaging path as the project command.
  */
 export function validateSpeckit(
 	directory: string,

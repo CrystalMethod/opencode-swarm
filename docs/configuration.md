@@ -113,6 +113,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `integration_analysis` | object | — | Integration analysis settings. |
 | `docs` | object | — | Documentation synthesizer (docs agent) settings. |
 | `design_docs` | object | — | Structured design-doc generation (issue #1080, docs_design agent) — opt-in. |
+| `speckit_checkoff` | object | — | Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default. |
 | `git` | object | — | Git executable resolution override (issue #2236 hardening). |
 | `ui_review` | object | — | UI/UX review (designer agent) settings. |
 | `compaction_advisory` | object | — | Compaction advisory settings. |
