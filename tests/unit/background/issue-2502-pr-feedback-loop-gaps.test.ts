@@ -146,7 +146,7 @@ describe('session budget across multiple PRs (RF-2502-003)', () => {
 			pr_feedback_loop: { enabled: true, max_session_actions: 1 },
 		});
 		await primeSubscription(dir);
-		primeSubscription(dir, 43, 'https://github.com/example/repo/pull/43');
+		await primeSubscription(dir, 43, 'https://github.com/example/repo/pull/43');
 		const performer = installLoopSeams();
 
 		// First settle on PR 42 consumes the session budget (cap 1).

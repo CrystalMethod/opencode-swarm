@@ -221,9 +221,7 @@ export const _internals: {
 		input: PerformAuthorizedActionInput,
 	) => Promise<PerformAuthorizedActionOutcome>;
 	now: () => number;
-	readState: (
-		directory: string,
-	) => Promise<LoopStateV1 | { corrupt: true }>;
+	readState: (directory: string) => Promise<LoopStateV1 | { corrupt: true }>;
 	writeState: (directory: string, state: LoopStateV1) => Promise<void>;
 } = {
 	/** Default: fresh head via the authenticated gh poll snapshot. */
@@ -308,9 +306,9 @@ function isCorruptState(
 	return (value as { corrupt?: boolean }).corrupt === true;
 }
 
-async function readLoopState(directory: string): Promise<
-	LoopStateV1 | { corrupt: true }
-> {
+async function readLoopState(
+	directory: string,
+): Promise<LoopStateV1 | { corrupt: true }> {
 	const file = path.join(directory, PR_FEEDBACK_LOOP_STATE_REL);
 	try {
 		const raw = fsSync.readFileSync(file, 'utf-8');
