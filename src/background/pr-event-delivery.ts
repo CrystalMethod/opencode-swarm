@@ -7,9 +7,9 @@
  * prompt, instead of (or before) the passive advisory channel that only
  * surfaces on the session's next model turn.
  *
- * Registration: `src/index.ts` registers a module-level singleton with the
- * plugin SDK client when pr_monitor is enabled with prompt delivery, and
- * forwards `session.idle` events to `noteSessionIdle()`.
+ * Registration: `src/index.ts` registers one owner per canonical project root
+ * with the plugin SDK client when pr_monitor is enabled with prompt delivery,
+ * and forwards `session.idle` events to `noteSessionIdle()` with that root.
  *
  * Invariant 8 (session state — keyed and bounded): all per-session state is
  * keyed by sessionID in a bounded map (FIFO eviction beyond
@@ -21,6 +21,7 @@
  * event hook. The wake prompt is wrapped in `withTimeout`.
  */
 
+import { randomUUID } from 'node:crypto';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { PrMonitorConfig } from '../config/schema';
 import {
@@ -32,6 +33,11 @@ import {
 	readPrWorkflowGateState,
 } from '../hooks/pr-workflow-gate';
 import { log } from '../utils';
+import {
+	canonicalRootKeyFresh,
+	canonicalRootKeyFreshAsync,
+	canonicalRootKeyLexical,
+} from '../utils/canonical-root.js';
 import { withTimeout } from '../utils/timeout';
 import {
 	claimPrFeedbackMonitorEvents,
@@ -52,6 +58,8 @@ export interface FormattedPrEvent {
 	message: string;
 	/** `[pr-monitor:<type>:<repo>#<n>]` — used for queue dedup. */
 	dedupToken: string;
+	/** Trusted mode marker produced by the subscriber for prompt delivery. */
+	modeSignal?: string;
 	/** Lifecycle intake is durable but cannot enter the current workflow yet. */
 	disposition?: 'queued-for-later';
 }
@@ -61,6 +69,17 @@ export interface PrEventDeliveryOptions {
 	directory: string;
 	config: PrMonitorConfig;
 }
+
+interface RegisteredDelivery extends PrEventDeliveryOptions {
+	ownerToken: string;
+	lexicalKey: string;
+	canonicalKey?: string;
+	sequence: number;
+}
+
+export type PrEventDeliveryRegistration = (() => void) & {
+	promote: () => Promise<void>;
+};
 
 interface SessionDeliveryState {
 	/** True after we prompted the session, until the next session.idle. */
@@ -82,39 +101,203 @@ export const WAKE_PROMPT_TIMEOUT_MS = 15_000;
 
 // ── Module state ─────────────────────────────────────────────────────
 
-let registration: PrEventDeliveryOptions | null = null;
+const registrationsByLexical = new Map<string, RegisteredDelivery>();
+const registrationsByCanonical = new Map<string, RegisteredDelivery>();
 const sessionStates = new Map<string, SessionDeliveryState>();
+const MAX_REGISTRATIONS = 64;
+let nextRegistrationSequence = 0;
+
+function removeRegistration(entry: RegisteredDelivery): void {
+	if (registrationsByLexical.get(entry.lexicalKey) === entry) {
+		registrationsByLexical.delete(entry.lexicalKey);
+	}
+	if (
+		entry.canonicalKey &&
+		registrationsByCanonical.get(entry.canonicalKey) === entry
+	) {
+		registrationsByCanonical.delete(entry.canonicalKey);
+	}
+}
+
+function rootKey(entry: RegisteredDelivery): string {
+	return entry.canonicalKey ?? entry.lexicalKey;
+}
+
+function sessionKey(entry: RegisteredDelivery, sessionID: string): string {
+	return `${rootKey(entry)}\u0000${sessionID}`;
+}
+
+/** Resolve an owner without silently routing a multi-root call to another root. */
+function resolveRegistration(directory?: string): RegisteredDelivery | null {
+	if (directory) {
+		const lexical = canonicalRootKeyLexical(directory);
+		const direct = registrationsByLexical.get(lexical);
+		if (direct) return direct;
+		try {
+			return (
+				registrationsByCanonical.get(
+					_internals.canonicalRootKeyFresh(directory),
+				) ?? null
+			);
+		} catch {
+			return null;
+		}
+	}
+	if (registrationsByLexical.size !== 1) return null;
+	return registrationsByLexical.values().next().value ?? null;
+}
+
+function clearSessionStatesForKey(key: string): void {
+	const statePrefix = `${key}\u0000`;
+	for (const stateKey of sessionStates.keys()) {
+		if (stateKey.startsWith(statePrefix)) sessionStates.delete(stateKey);
+	}
+}
+
+function clearSessionStatesForEntry(entry: RegisteredDelivery): void {
+	clearSessionStatesForKey(entry.lexicalKey);
+	if (entry.canonicalKey) clearSessionStatesForKey(entry.canonicalKey);
+}
+
+function migrateSessionStates(fromKey: string, toKey: string): void {
+	if (fromKey === toKey) return;
+	const fromPrefix = `${fromKey}\u0000`;
+	for (const [stateKey, state] of sessionStates) {
+		if (!stateKey.startsWith(fromPrefix)) continue;
+		const sessionID = stateKey.slice(fromPrefix.length);
+		const targetKey = `${toKey}\u0000${sessionID}`;
+		if (!sessionStates.has(targetKey)) sessionStates.set(targetKey, state);
+		sessionStates.delete(stateKey);
+	}
+}
+
+async function promoteRegistration(
+	entry: RegisteredDelivery,
+	directory: string,
+): Promise<void> {
+	if (registrationsByLexical.get(entry.lexicalKey) !== entry) return;
+	let canonicalKey: string;
+	try {
+		canonicalKey = await _internals.canonicalRootKeyFreshAsync(directory);
+	} catch (error) {
+		_internals.log('[pr-monitor] Wake delivery root promotion failed', {
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return;
+	}
+	// Never allow an async promotion from a disposed/replaced owner to mutate
+	// the current root's registration or session state.
+	if (registrationsByLexical.get(entry.lexicalKey) !== entry) return;
+	const existing = registrationsByCanonical.get(canonicalKey);
+	if (existing && existing !== entry) {
+		if (existing.sequence > entry.sequence) {
+			removeRegistration(entry);
+			clearSessionStatesForEntry(entry);
+			return;
+		}
+		removeRegistration(existing);
+		clearSessionStatesForEntry(existing);
+	}
+	const oldKey = rootKey(entry);
+	if (
+		entry.canonicalKey &&
+		entry.canonicalKey !== canonicalKey &&
+		registrationsByCanonical.get(entry.canonicalKey) === entry
+	) {
+		registrationsByCanonical.delete(entry.canonicalKey);
+	}
+	entry.canonicalKey = canonicalKey;
+	registrationsByCanonical.set(canonicalKey, entry);
+	migrateSessionStates(oldKey, canonicalKey);
+}
 
 /**
- * Register the delivery singleton. Called from plugin init when
- * pr_monitor.enabled && event_delivery === 'prompt'. Idempotent — the last
- * registration wins.
+ * Register a delivery owner. Called from plugin init when
+ * pr_monitor.enabled && event_delivery === 'prompt'. A same-root re-init
+ * replaces only that root; different roots coexist. The returned cleanup is
+ * owner-guarded so stale disposal cannot remove a replacement.
  */
-export function registerPrEventDelivery(options: PrEventDeliveryOptions): void {
-	registration = options;
+export function registerPrEventDelivery(
+	options: PrEventDeliveryOptions,
+): PrEventDeliveryRegistration {
+	const lexicalKey = canonicalRootKeyLexical(options.directory);
+	const prior = registrationsByLexical.get(lexicalKey);
+	if (prior) {
+		removeRegistration(prior);
+		clearSessionStatesForEntry(prior);
+	}
+	while (
+		registrationsByLexical.size >= MAX_REGISTRATIONS &&
+		!registrationsByLexical.has(lexicalKey)
+	) {
+		const oldest = registrationsByLexical.values().next().value;
+		if (oldest === undefined) break;
+		removeRegistration(oldest);
+		clearSessionStatesForEntry(oldest);
+	}
+	const ownerToken = randomUUID();
+	const entry: RegisteredDelivery = {
+		...options,
+		ownerToken,
+		lexicalKey,
+		sequence: ++nextRegistrationSequence,
+	};
+	registrationsByLexical.set(lexicalKey, entry);
 	_internals.log('[pr-monitor] Wake delivery registered', {
 		directory: options.directory,
 	});
+	const unregister = (() => {
+		const current = registrationsByLexical.get(lexicalKey);
+		if (current?.ownerToken !== ownerToken) return;
+		removeRegistration(entry);
+		clearSessionStatesForEntry(entry);
+	}) as PrEventDeliveryRegistration;
+	unregister.promote = () => promoteRegistration(entry, options.directory);
+	return unregister;
 }
 
-/** Unregister and drop all per-session state (also used by tests). */
-export function unregisterPrEventDelivery(): void {
-	registration = null;
-	sessionStates.clear();
+/**
+ * Unregister one owner. The no-argument form is retained for tests and
+ * process teardown; an owner token prevents a stale cleanup from removing a
+ * newer registration for the same canonical root.
+ */
+export function unregisterPrEventDelivery(
+	directory?: string,
+	expectedOwnerToken?: string,
+): void {
+	if (!directory) {
+		registrationsByLexical.clear();
+		registrationsByCanonical.clear();
+		sessionStates.clear();
+		return;
+	}
+	const current = resolveRegistration(directory);
+	if (
+		!current ||
+		(expectedOwnerToken !== undefined &&
+			current.ownerToken !== expectedOwnerToken)
+	)
+		return;
+	removeRegistration(current);
+	clearSessionStatesForEntry(current);
 }
 
 /** Whether a wake deliverer is currently registered. */
-export function isPrEventDeliveryRegistered(): boolean {
-	return registration !== null;
+export function isPrEventDeliveryRegistered(directory?: string): boolean {
+	return resolveRegistration(directory) !== null;
 }
 
 // ── Session state helpers ────────────────────────────────────────────
 
-function getSessionState(sessionID: string): SessionDeliveryState {
-	let state = sessionStates.get(sessionID);
+function getSessionState(
+	entry: RegisteredDelivery,
+	sessionID: string,
+): SessionDeliveryState {
+	const key = sessionKey(entry, sessionID);
+	let state = sessionStates.get(key);
 	if (!state) {
 		state = { busy: false, queue: [], droppedCount: 0 };
-		sessionStates.set(sessionID, state);
+		sessionStates.set(key, state);
 		// FIFO eviction: Map preserves insertion order, so the first key is
 		// the oldest-tracked session.
 		while (sessionStates.size > MAX_TRACKED_SESSIONS) {
@@ -156,11 +339,13 @@ function enqueueBounded(
 export async function deliverPrActivity(
 	sessionID: string,
 	events: FormattedPrEvent[],
+	directory?: string,
 ): Promise<boolean> {
 	try {
-		if (!registration || !sessionID || events.length === 0) return false;
+		const active = resolveRegistration(directory);
+		if (!active || !sessionID || events.length === 0) return false;
 
-		const state = getSessionState(sessionID);
+		const state = getSessionState(active, sessionID);
 
 		// Dedup by dedup token against events already queued for this session.
 		const fresh = events.filter(
@@ -174,7 +359,7 @@ export async function deliverPrActivity(
 
 		if (
 			state.busy ||
-			isPrWorkflowAutoWakeSuppressed(registration.directory, sessionID)
+			isPrWorkflowAutoWakeSuppressed(active.directory, sessionID)
 		) {
 			enqueueBounded(state, fresh);
 			_internals.log('[pr-monitor] Session busy — queued PR events', {
@@ -190,11 +375,11 @@ export async function deliverPrActivity(
 		const previouslyQueued = state.queue.splice(0, state.queue.length);
 		const toSend = [...previouslyQueued, ...fresh];
 		state.busy = true;
-		const ok = await sendWakePromptWithMarker(sessionID, toSend);
+		const ok = await sendWakePromptWithMarker(active, sessionID, toSend);
 		if (!ok) {
 			// Restore the previously queued events (the caller only owns the
 			// advisory fallback for the `events` it passed in this call).
-			const current = sessionStates.get(sessionID);
+			const current = sessionStates.get(sessionKey(active, sessionID));
 			if (current) {
 				current.busy = false;
 				if (previouslyQueued.length > 0) {
@@ -217,26 +402,28 @@ export async function deliverPrActivity(
  * idle and flushes any queued events, coalescing them into ONE wake message.
  * No-op unless delivery is registered. Never throws.
  */
-export function noteSessionIdle(sessionID: string): void {
-	if (!registration || !sessionID) return;
-	void handleSessionIdle(sessionID).catch((err) => {
+export function noteSessionIdle(sessionID: string, directory?: string): void {
+	void handleSessionIdle(sessionID, directory).catch((err) => {
 		_internals.log('[pr-monitor] noteSessionIdle failed', {
 			error: err instanceof Error ? err.message : String(err),
 		});
 	});
 }
 
-async function handleSessionIdle(sessionID: string): Promise<void> {
-	const active = registration;
+async function handleSessionIdle(
+	sessionID: string,
+	directory?: string,
+): Promise<void> {
+	const active = resolveRegistration(directory);
 	if (!active) return;
-	const state = getSessionState(sessionID);
+	const state = getSessionState(active, sessionID);
 	state.busy = false;
 	if (isPrWorkflowAutoWakeSuppressed(active.directory, sessionID)) return;
 	if (!active.config.auto_pr_feedback) {
 		if (state.queue.length === 0) return;
 		const queued = state.queue.splice(0, state.queue.length);
 		state.busy = true;
-		if (!(await sendWakePromptWithMarker(sessionID, queued))) {
+		if (!(await sendWakePromptWithMarker(active, sessionID, queued))) {
 			state.busy = false;
 			enqueueBounded(state, queued);
 		}
@@ -291,14 +478,20 @@ async function handleSessionIdle(sessionID: string): Promise<void> {
 			durablePrUrl = target;
 			durableToSend = unclaimed
 				.filter((event) => sameGitHubPr(event.prUrl, target))
-				.map((event) => ({
-					type: event.type,
-					repoFullName: event.repoFullName,
-					prNumber: event.prNumber,
-					prUrl: event.prUrl,
-					message: event.message,
-					dedupToken: event.dedupToken,
-				}));
+				.map((event) => {
+					const modeSignal = event.authorized
+						? trustedModeSignal(event.type, event.prUrl)
+						: undefined;
+					return {
+						type: event.type,
+						repoFullName: event.repoFullName,
+						prNumber: event.prNumber,
+						prUrl: event.prUrl,
+						message: event.message,
+						dedupToken: event.dedupToken,
+						...(modeSignal ? { modeSignal } : {}),
+					};
+				});
 		}
 	}
 
@@ -306,7 +499,7 @@ async function handleSessionIdle(sessionID: string): Promise<void> {
 	const toSend = dedupeFormattedEvents([...inMemory, ...durableToSend]);
 	if (toSend.length === 0) return;
 	state.busy = true;
-	const ok = await sendWakePromptWithMarker(sessionID, toSend);
+	const ok = await sendWakePromptWithMarker(active, sessionID, toSend);
 	if (!ok) {
 		state.busy = false;
 		enqueueBounded(state, inMemory);
@@ -378,17 +571,21 @@ function sameGitHubPr(left: string, right: string): boolean {
 }
 
 async function sendWakePromptWithMarker(
+	active: RegisteredDelivery,
 	sessionID: string,
 	events: FormattedPrEvent[],
 ): Promise<boolean> {
-	const active = registration;
-	if (!active) return false;
 	const messageID = markPrWorkflowPluginWake(active.directory, sessionID);
 	// A false transport result is not definitive rejection: withTimeout races
 	// the host call without aborting it, so promptAsync may still accept later
 	// and emit this exact message ID. Keep the bounded/TTL marker so that late
 	// synthetic event cannot be mistaken for a real post-interruption user turn.
-	return _internals.sendWakePrompt(sessionID, events, messageID);
+	return _internals.sendWakePrompt(
+		sessionID,
+		events,
+		messageID,
+		active.directory,
+	);
 }
 
 // ── Wake message ─────────────────────────────────────────────────────
@@ -414,8 +611,22 @@ const QUEUED_WAKE_INSTRUCTION = [
 	'workflow first; the controller will re-deliver authorized queued events through normal feedback intake.',
 ].join('\n');
 
+const AUTO_PR_FEEDBACK_EVENTS = new Set(['pr.ci.failed', 'pr.merge.conflict']);
+
+function trustedModeSignal(type: string, prUrl: string): string | undefined {
+	if (!AUTO_PR_FEEDBACK_EVENTS.has(type)) return undefined;
+	const safePrUrl = String(prUrl).replace(/["<>\r\n[\]]/g, '');
+	return `[MODE: PR_FEEDBACK pr="${safePrUrl}"]`;
+}
+
 function sanitizeAttribute(value: string): string {
 	return value.replace(/["<>\r\n]/g, '');
+}
+
+function sanitizeModeSignal(value: string | undefined): string | null {
+	if (!value) return null;
+	const match = value.match(/^\[MODE: PR_FEEDBACK pr="([^"<>\r\n[\]]*)"\]$/);
+	return match ? `[MODE: PR_FEEDBACK pr="${match[1]}"]` : null;
 }
 
 function sanitizeWakeBody(value: string): string {
@@ -450,13 +661,26 @@ export function buildWakeMessage(events: FormattedPrEvent[]): string {
 		)
 			? 'queued-for-later'
 			: 'active';
+		const trustedModeSignals = [
+			...new Set(
+				groupEvents
+					.map((event) => sanitizeModeSignal(event.modeSignal))
+					.filter((signal): signal is string => signal !== null),
+			),
+		];
 		const lines = groupEvents
-			.map((e) => sanitizeWakeBody(e.message))
+			.map((event) => {
+				const withoutTrustedSignal = event.modeSignal
+					? event.message.split(event.modeSignal).join('')
+					: event.message;
+				return sanitizeWakeBody(withoutTrustedSignal).trim();
+			})
 			.join('\n');
 		blocks.push(
 			[
 				`<pr-activity pr="${sanitizeAttribute(prKey)}" url="${url}" events="${sanitizeAttribute(types)}" disposition="${disposition}">`,
 				lines,
+				...trustedModeSignals,
 				'</pr-activity>',
 			].join('\n'),
 		);
@@ -483,8 +707,9 @@ async function sendWakePrompt(
 	sessionID: string,
 	events: FormattedPrEvent[],
 	messageID: string,
+	directory?: string,
 ): Promise<boolean> {
-	const active = registration;
+	const active = resolveRegistration(directory);
 	if (!active) return false;
 
 	try {
@@ -545,6 +770,8 @@ export const _internals: {
 	activatePrWorkflow: typeof activatePrWorkflow;
 	readPrFeedbackMonitorQueue: typeof readPrFeedbackMonitorQueue;
 	claimPrFeedbackMonitorEvents: typeof claimPrFeedbackMonitorEvents;
+	canonicalRootKeyFresh: typeof canonicalRootKeyFresh;
+	canonicalRootKeyFreshAsync: typeof canonicalRootKeyFreshAsync;
 	wakePromptTimeoutMs: number;
 	log: typeof log;
 } = {
@@ -554,6 +781,8 @@ export const _internals: {
 	activatePrWorkflow,
 	readPrFeedbackMonitorQueue,
 	claimPrFeedbackMonitorEvents,
+	canonicalRootKeyFresh,
+	canonicalRootKeyFreshAsync,
 	wakePromptTimeoutMs: WAKE_PROMPT_TIMEOUT_MS,
 	log,
 };
@@ -566,8 +795,20 @@ export function _getTrackedSessionCount(): number {
 /** Test-only visibility into a session's queue length / drop counter. */
 export function _getSessionQueueStats(
 	sessionID: string,
+	directory?: string,
 ): { queued: number; dropped: number; busy: boolean } | null {
-	const state = sessionStates.get(sessionID);
+	let state: SessionDeliveryState | undefined;
+	if (directory) {
+		const active = resolveRegistration(directory);
+		if (active) state = sessionStates.get(sessionKey(active, sessionID));
+	} else {
+		for (const [key, candidate] of sessionStates) {
+			if (key.endsWith(`\u0000${sessionID}`)) {
+				state = candidate;
+				break;
+			}
+		}
+	}
 	if (!state) return null;
 	return {
 		queued: state.queue.length,

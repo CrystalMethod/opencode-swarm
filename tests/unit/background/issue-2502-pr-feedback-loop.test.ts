@@ -41,8 +41,10 @@ import * as path from 'node:path';
 import {
 	enqueuePrFeedbackMonitorEvent,
 	_internals as queueInternals,
+	readPrFeedbackMonitorQueue,
 } from '../../../src/background/pr-feedback-event-queue.js';
 import {
+	cancelPrFeedbackLoop,
 	claimAndProcessPrFeedbackEvent,
 	_internals as loopInternals,
 	PR_FEEDBACK_LOOP_STATE_REL,
@@ -253,7 +255,9 @@ describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 		expect(performer).toHaveBeenCalledTimes(1);
 		expect(result.terminal?.state).toBe('completed');
 		// M4 scope pin: the terminal reason always states the completion scope.
-		expect(result.terminal?.reason).toMatch(/performed.*recorded.*wake/i);
+		expect(result.terminal?.reason).toMatch(
+			/performed.*recorded.*accepted.*prompt\/advisory/i,
+		);
 		const state = readLoopStateFile(dir);
 		expect(state.correlations?.[CORRELATION]?.terminal?.state).toBe(
 			'completed',
@@ -287,10 +291,17 @@ describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 		const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
 
 		expect(result.authorization?.authorized).toBe(false);
-		expect(result.authorization?.stale).toBe(true);
-		expect(result.authorization?.reason).toMatch(/stale/);
+		expect(result.authorization?.stale).toBe(false);
+		expect(result.authorization?.reason).toMatch(
+			/snapshot synchronization|retryable/,
+		);
 		expect(result.action?.performed).toBe(false);
+		expect(result.terminal).toBeNull();
 		expect(performer).not.toHaveBeenCalled();
+		expect(
+			(await readPrFeedbackMonitorQueue(dir, SESSION))?.events[0]
+				?.claimedWorkflowInstanceId,
+		).toBeUndefined();
 	});
 
 	test('foreign event: no matching subscription correlation is refused', async () => {
@@ -342,8 +353,27 @@ describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 		expect(result.action?.performed).toBe(false);
 		expect(result.terminal).toBeNull();
 		expect(performer).not.toHaveBeenCalled();
-		const state = readLoopStateFile(dir);
-		expect(state.correlations?.[CORRELATION]?.terminal ?? null).toBeNull();
+		expect(
+			(await readPrFeedbackMonitorQueue(dir, SESSION))?.events[0]
+				?.claimedWorkflowInstanceId,
+		).toBeUndefined();
+	});
+
+	test('cancellation refuses corrupt state without overwriting the queue', async () => {
+		const dir = makeProject();
+		await primeSubscription(dir);
+		await enqueueEvent(dir);
+		loopInternals.readState = mock(async () => ({
+			corrupt: true,
+		})) as unknown as typeof loopInternals.readState;
+
+		const result = await cancelPrFeedbackLoop(dir, SESSION, 'operator stop');
+
+		expect(result.terminalState).toBe('paused_for_human');
+		expect(result.reason).toMatch(/could not be durably recorded/);
+		expect(
+			(await readPrFeedbackMonitorQueue(dir, SESSION))?.events[0]?.dedupToken,
+		).toBe('tok-1');
 	});
 
 	test('budget: max_actions_per_pr 1 pauses the second event for a human', async () => {

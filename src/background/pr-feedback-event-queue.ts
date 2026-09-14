@@ -29,6 +29,8 @@ export interface PrFeedbackMonitorEvent {
 	authorized: boolean;
 	queuedAt: string;
 	claimedWorkflowInstanceId?: string;
+	/** Exact process owner paired with the workflow instance id. */
+	claimedOwnerPid?: number;
 	claimedAt?: string;
 }
 
@@ -56,6 +58,7 @@ const PrFeedbackMonitorEventSchema = z
 		authorized: z.boolean(),
 		queuedAt: z.string().min(1),
 		claimedWorkflowInstanceId: z.string().min(1).max(128).optional(),
+		claimedOwnerPid: z.number().int().positive().optional(),
 		claimedAt: z.string().min(1).optional(),
 	})
 	.strict();
@@ -82,7 +85,7 @@ export async function enqueuePrFeedbackMonitorEvent(
 	sessionID: string,
 	event: Omit<
 		PrFeedbackMonitorEvent,
-		'claimedWorkflowInstanceId' | 'claimedAt'
+		'claimedWorkflowInstanceId' | 'claimedAt' | 'claimedOwnerPid'
 	>,
 ): Promise<PrFeedbackMonitorQueueRecord> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
@@ -128,12 +131,18 @@ export async function claimPrFeedbackMonitorEvents(
 	workflowInstanceId: string,
 	prUrl: string,
 	dedupTokens?: readonly string[],
+	ownerPid = process.pid,
 ): Promise<PrFeedbackMonitorEvent[]> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
 	const normalizedWorkflowInstanceId = workflowInstanceId.trim();
 	if (!normalizedWorkflowInstanceId) {
 		throw new Error(
 			'BLOCKED: PR feedback monitor queue claim requires a workflow instance id',
+		);
+	}
+	if (!Number.isInteger(ownerPid) || ownerPid <= 0) {
+		throw new Error(
+			'BLOCKED: PR feedback monitor queue claim requires a positive owner PID',
 		);
 	}
 	const canonicalPrUrl = canonicalGitHubPrUrl(prUrl);
@@ -163,16 +172,24 @@ export async function claimPrFeedbackMonitorEvents(
 			) {
 				return event;
 			}
-			if (event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId) {
+			if (
+				event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId &&
+				event.claimedOwnerPid === ownerPid
+			) {
 				return event;
 			}
-			if (event.claimedWorkflowInstanceId) {
+			const hasClaimMetadata =
+				event.claimedWorkflowInstanceId !== undefined ||
+				event.claimedOwnerPid !== undefined ||
+				event.claimedAt !== undefined;
+			if (hasClaimMetadata && !canReclaimDeadClaim(event)) {
 				return event;
 			}
 			changed = true;
 			return {
 				...event,
 				claimedWorkflowInstanceId: normalizedWorkflowInstanceId,
+				claimedOwnerPid: ownerPid,
 				claimedAt,
 			};
 		});
@@ -180,6 +197,7 @@ export async function claimPrFeedbackMonitorEvents(
 			return claimedEvents.filter(
 				(event) =>
 					event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId &&
+					event.claimedOwnerPid === ownerPid &&
 					canonicalGitHubPrUrl(event.prUrl) === canonicalPrUrl &&
 					(!selectedTokens || selectedTokens.has(event.dedupToken)),
 			);
@@ -193,10 +211,27 @@ export async function claimPrFeedbackMonitorEvents(
 		return nextRecord.events.filter(
 			(event) =>
 				event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId &&
+				event.claimedOwnerPid === ownerPid &&
 				canonicalGitHubPrUrl(event.prUrl) === canonicalPrUrl &&
 				(!selectedTokens || selectedTokens.has(event.dedupToken)),
 		);
 	});
+}
+
+function canReclaimDeadClaim(event: PrFeedbackMonitorEvent): boolean {
+	const workflowInstanceId = event.claimedWorkflowInstanceId?.trim();
+	const ownerPid = event.claimedOwnerPid;
+	// A legacy or malformed claim has no trustworthy owner boundary. Keep it
+	// claimed forever rather than using age or an incomplete identity to risk a
+	// duplicate feedback action.
+	if (
+		!workflowInstanceId ||
+		typeof ownerPid !== 'number' ||
+		!Number.isInteger(ownerPid) ||
+		ownerPid <= 0
+	)
+		return false;
+	return !_internals.isProcessAlive(ownerPid);
 }
 
 /**
@@ -235,6 +270,66 @@ export async function clearPrFeedbackMonitorEvents(
 		});
 		await writeQueueRecord(directory, nextRecord);
 		return removed;
+	});
+}
+
+/**
+ * Release one exact workflow-instance claim so a retryable pre-settlement
+ * admission failure does not strand the event. The token, workflow id, and
+ * owner PID are all required: a later worker must never be able to release
+ * another worker's claim (or an unrelated event with the same PR URL).
+ */
+export async function releasePrFeedbackMonitorEventClaim(
+	directory: string,
+	sessionID: string,
+	dedupToken: string,
+	workflowInstanceId: string,
+	ownerPid = process.pid,
+): Promise<boolean> {
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	const normalizedToken = dedupToken.trim();
+	const normalizedWorkflowInstanceId = workflowInstanceId.trim();
+	if (
+		!normalizedToken ||
+		!normalizedWorkflowInstanceId ||
+		!Number.isInteger(ownerPid) ||
+		ownerPid <= 0
+	)
+		return false;
+	return withQueueMutation(directory, normalizedSessionID, async () => {
+		const current = await readPrFeedbackMonitorQueueFromDisk(
+			directory,
+			normalizedSessionID,
+		);
+		if (!current || current.events.length === 0) return false;
+		let released = false;
+		const events = current.events.map((event) => {
+			if (
+				event.dedupToken !== normalizedToken ||
+				event.claimedWorkflowInstanceId !== normalizedWorkflowInstanceId ||
+				event.claimedOwnerPid !== ownerPid
+			) {
+				return event;
+			}
+			released = true;
+			const {
+				claimedWorkflowInstanceId: _,
+				claimedOwnerPid: ___,
+				claimedAt: __,
+				...unclaimed
+			} = event;
+			return unclaimed;
+		});
+		if (!released) return false;
+		await writeQueueRecord(
+			directory,
+			QueueRecordSchema.parse({
+				...current,
+				revision: current.revision + 1,
+				events,
+			}),
+		);
+		return true;
 	});
 }
 

@@ -47,6 +47,17 @@ export {
 	type PrEventSubscriberOptions,
 	registerPrEventSubscribers,
 } from './pr-event-subscribers';
+export {
+	dispatchPrFeedbackOversight,
+	evaluatePrFeedbackCurrentHead,
+	getPrFeedbackLoopRuntime,
+	type PrFeedbackLoopOversightInput,
+	type PrFeedbackLoopOversightOutcome,
+	type PrFeedbackLoopRuntime,
+	type PrFeedbackLoopRuntimeOptions,
+	type PrFeedbackLoopRuntimeRegistration,
+	registerPrFeedbackLoopRuntime,
+} from './pr-feedback-loop-runtime';
 // PR Monitor Worker for background PR status polling (lazy-started)
 export {
 	PrMonitorWorker,

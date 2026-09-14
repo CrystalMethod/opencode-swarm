@@ -75,7 +75,7 @@ afterEach(() => {
 });
 
 describe('PR event auto-feedback lifecycle ownership', () => {
-	test('queues and mechanically activates feedback without a raw mode signal', async () => {
+	test('queues and mechanically activates feedback with visible mode evidence', async () => {
 		await _internals.handlePrEvent(event(), directory, config());
 
 		expect(enqueue).toHaveBeenCalledTimes(1);
@@ -88,7 +88,7 @@ describe('PR event auto-feedback lifecycle ownership', () => {
 			session.pendingAdvisoryMessages.some((message) =>
 				message.includes('[MODE: PR_FEEDBACK'),
 			),
-		).toBe(false);
+		).toBe(true);
 	});
 
 	test('does not arm feedback when auto feedback is disabled', async () => {

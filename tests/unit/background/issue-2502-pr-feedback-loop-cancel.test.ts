@@ -6,7 +6,7 @@
  * correlations marked cancelled, idempotent re-cancel), the
  * clearPrFeedbackMonitorEvents unit surface, the notifyPrFeedbackLoop
  * fire-and-forget wiring (settles when enabled, performs nothing when
- * disabled), and tickPrFeedbackLoop's disabled no-op.
+ * disabled).
  *
  * Isolation notes (mirrors issue-2502-pr-feedback-loop.test.ts):
  * - NO mock.module: the loop's `_internals` seam injects head evaluation,
@@ -48,7 +48,6 @@ import {
 	_internals as loopInternals,
 	notifyPrFeedbackLoop,
 	PR_FEEDBACK_LOOP_STATE_REL,
-	tickPrFeedbackLoop,
 } from '../../../src/background/pr-feedback-loop.js';
 import {
 	buildCorrelationId,
@@ -345,7 +344,7 @@ describe('issue #2502 clearPrFeedbackMonitorEvents', () => {
 	});
 });
 
-describe('issue #2502 notify + tick wiring', () => {
+describe('issue #2502 notify wiring', () => {
 	test('notifyPrFeedbackLoop settles a queued event when the loop is enabled', async () => {
 		const dir = makeProject();
 		await primeSubscription(dir);
@@ -385,20 +384,5 @@ describe('issue #2502 notify + tick wiring', () => {
 		const queue = await readPrFeedbackMonitorQueue(dir, SESSION);
 		expect(queue?.events[0]?.dedupToken).toBe('tok-1');
 		expect(queue?.events[0]?.claimedWorkflowInstanceId).toBeUndefined();
-	});
-
-	test('tickPrFeedbackLoop returns 0 and performs nothing when disabled', async () => {
-		const dir = makeProject(null);
-		await primeSubscription(dir);
-		const performer = installLoopSeams();
-		await enqueueEvent(dir);
-
-		const settled = await tickPrFeedbackLoop(dir);
-
-		expect(settled).toBe(0);
-		expect(performer).not.toHaveBeenCalled();
-		expect(fs.existsSync(path.join(dir, PR_FEEDBACK_LOOP_STATE_REL))).toBe(
-			false,
-		);
 	});
 });

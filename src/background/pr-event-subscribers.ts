@@ -222,14 +222,15 @@ async function handlePrEvent(
 		AUTO_PR_FEEDBACK_EVENTS.has(event.type) &&
 		payload.prUrl
 			? (() => {
-					const safePrUrl = String(payload.prUrl).replace(/["\]]/g, '');
+					const safePrUrl = String(payload.prUrl).replace(/["<>\r\n\]]/g, '');
 					return `[MODE: PR_FEEDBACK pr="${safePrUrl}"]`;
 				})()
 			: null;
+	const deliveredMessage = modeSignal ? `${message}\n${modeSignal}` : message;
 
 	const usePromptDelivery =
 		config.event_delivery === 'prompt' &&
-		_internals.isPrEventDeliveryRegistered();
+		_internals.isPrEventDeliveryRegistered(directory);
 
 	// Deliver to each subscribed session
 	for (const sub of matching) {
@@ -260,6 +261,7 @@ async function handlePrEvent(
 					!feedbackTarget ||
 					!sameGitHubPr(feedbackTarget, prUrl)));
 		let queuedForLater = false;
+		let queueAccepted = false;
 		if (queueForLater || autoFeedbackEventAuthorized) {
 			try {
 				await _internals.enqueuePrFeedbackMonitorEvent(
@@ -270,13 +272,14 @@ async function handlePrEvent(
 						repoFullName: payload.repoFullName,
 						prNumber: payload.prNumber,
 						prUrl,
-						message,
+						message: deliveredMessage,
 						dedupToken,
 						authorized: autoFeedbackEventAuthorized,
 						queuedAt: new Date().toISOString(),
 					},
 				);
 				queuedForLater = true;
+				queueAccepted = true;
 			} catch (error) {
 				_internals.log(
 					`[pr-monitor] Failed to queue PR_FEEDBACK monitor event for session ${sub.sessionID}`,
@@ -285,9 +288,6 @@ async function handlePrEvent(
 					},
 				);
 			}
-			// #2502: notify the settling loop (fire-and-forget, fail-open — the
-			// loop no-ops unless the triple opt-in gates are all enabled).
-			_internals.notifyPrFeedbackLoop(directory, sub.sessionID);
 		}
 		if (!gateReadFailed && !activeGate && autoFeedbackEventAuthorized) {
 			try {
@@ -317,12 +317,13 @@ async function handlePrEvent(
 						repoFullName: payload.repoFullName,
 						prNumber: payload.prNumber,
 						prUrl,
-						message,
+						message: deliveredMessage,
 						dedupToken,
 						authorized: autoFeedbackEventAuthorized,
 						queuedAt: new Date().toISOString(),
 					},
 				);
+				queueAccepted = true;
 			} catch (error) {
 				_internals.log(
 					`[pr-monitor] Failed to queue PR_FEEDBACK monitor event for session ${sub.sessionID}`,
@@ -336,13 +337,18 @@ async function handlePrEvent(
 				repoFullName: payload.repoFullName,
 				prNumber: payload.prNumber,
 				prUrl,
-				message,
+				message: deliveredMessage,
 				dedupToken,
+				...(modeSignal ? { modeSignal } : {}),
 				...(queueForLater ? { disposition: 'queued-for-later' as const } : {}),
 			};
 			let wakeOk = false;
 			try {
-				wakeOk = await _internals.deliverPrActivity(sub.sessionID, [formatted]);
+				wakeOk = await _internals.deliverPrActivity(
+					sub.sessionID,
+					[formatted],
+					directory,
+				);
 			} catch {
 				wakeOk = false;
 			}
@@ -353,6 +359,11 @@ async function handlePrEvent(
 				// delays the day-scale TTL sweep; the worker refreshes the flag
 				// on every poll that emits events.
 				_internals.scheduleClearUnaddressed(directory, sub.correlationId);
+				if (queueAccepted) {
+					// Notify only after the configured delivery channel accepted the
+					// event. This prevents a failed/missing session from settling it.
+					_internals.notifyPrFeedbackLoop(directory, sub.sessionID);
+				}
 				_internals.log(
 					`[pr-monitor] Delivered ${event.type} wake event to session ${sub.sessionID}`,
 				);
@@ -376,11 +387,23 @@ async function handlePrEvent(
 		// key-presence identity. Content events (comments/reviews) already carry
 		// per-event identity (@author:content-hash); state events keep the
 		// per-PR token (issue #1976 B8).
-		const delivered = pushAdvisory(session, message, { dedupeKey: dedupToken });
-		if (!delivered) {
+		session.pendingAdvisoryMessages ??= [];
+		const alreadyQueued = session.pendingAdvisoryMessages.some((pending) =>
+			pending.includes(dedupToken),
+		);
+		const delivered = pushAdvisory(session, deliveredMessage, {
+			dedupeKey: dedupToken,
+		});
+		const advisoryAccepted = delivered || alreadyQueued;
+		if (!advisoryAccepted) {
 			continue;
 		}
 		_internals.scheduleClearUnaddressed(directory, sub.correlationId);
+		if (queueAccepted) {
+			// Advisory dedupe is an accepted delivery; a missing session or a
+			// rejected push above intentionally leaves the queue unsettled.
+			_internals.notifyPrFeedbackLoop(directory, sub.sessionID);
+		}
 		_internals.log(
 			`[pr-monitor] Delivered ${event.type} advisory to session ${sub.sessionID}`,
 		);
