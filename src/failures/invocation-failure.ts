@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
 	extractStatusCode,
 	QUOTA_ERROR_PATTERN,
+	REQUEST_SHAPE_REJECTION_PATTERN,
 	TRANSIENT_MODEL_ERROR_PATTERN,
 	TRANSIENT_STATUS_CODES,
 } from '../utils/provider-error-classification.js';
@@ -444,6 +445,17 @@ function providerSignal(error: unknown): string {
 	return signalFrom(error).trim();
 }
 
+/**
+ * Provider failure categories in use (enumerated per issue #2673 plan-critic
+ * finding 6, so downstream category-prefix consumers — telemetry filters,
+ * dashboards, circuit thresholds — can discover every leaf):
+ *   provider.cancelled, provider.authentication_configuration,
+ *   provider.quota_billing, provider.rate_limit, provider.unavailable,
+ *   provider.context_window, provider.content_policy,
+ *   provider.request_shape (#2673: deterministic request-shape rejections,
+ *   e.g. a strict single-system provider rejecting a multi-system payload),
+ *   provider.unknown.
+ */
 export function classifyProviderFailure(
 	error: unknown,
 	action?: ActionIdentityInput,
@@ -543,6 +555,18 @@ export function classifyProviderFailure(
 			category: 'provider.content_policy',
 			retryClass: 'do_not_retry',
 			risk: 'medium',
+			action,
+			display: signal,
+			code,
+			statusCode,
+		});
+	}
+	if (REQUEST_SHAPE_REJECTION_PATTERN.test(signal)) {
+		return buildRecord({
+			source: 'provider',
+			category: 'provider.request_shape',
+			retryClass: 'do_not_retry',
+			risk: 'low',
 			action,
 			display: signal,
 			code,

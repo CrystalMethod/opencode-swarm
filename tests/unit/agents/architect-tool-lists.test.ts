@@ -15,7 +15,11 @@
  */
 
 import { beforeAll, describe, expect, it } from 'bun:test';
-import { createArchitectAgent } from '../../../src/agents/architect.js';
+import {
+	ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
+	capToolDescriptionForPrompt,
+	createArchitectAgent,
+} from '../../../src/agents/architect.js';
 import {
 	AGENT_TOOL_MAP,
 	COUNCIL_AGENT_TOOL_MAP,
@@ -156,13 +160,112 @@ describe('Available Tools generation from AGENT_TOOL_MAP', () => {
 			const description =
 				TOOL_DESCRIPTIONS[tool as keyof typeof TOOL_DESCRIPTIONS];
 			expect(description).toBeTruthy();
-			expect(resolvedPrompt).toContain(`${tool} (${description})`);
+			// Issue #2671: descriptions render in the prompt bounded by
+			// capToolDescriptionForPrompt (cap + trailing unclosed parenthetical
+			// stripped so entries keep balanced parentheses) followed by a
+			// visible ellipsis when truncation occurred. Asserting the capped
+			// PREFIX with no trailing character holds for both the full render
+			// (cap is the identity) and the bounded render.
+			const capped = capToolDescriptionForPrompt(description);
+			expect(resolvedPrompt).toContain(`${tool} (${capped}`);
+			if (capped !== description) {
+				expect(resolvedPrompt).toContain(`${tool} (${capped}…)`);
+			}
 		}
 	});
 
 	it('tool count matches AGENT_TOOL_MAP.architect.length', () => {
 		const tools = extractAvailableToolsNames(resolvedPrompt);
 		expect(tools.length).toBe(ARCHITECT_TOOL_COUNT);
+	});
+
+	it('caps every over-cap TOOL_DESCRIPTIONS entry to balanced output (property pin, issue #2671 review)', () => {
+		// Independent of the helper-as-oracle coupling: this pins a PROPERTY
+		// (balanced parens, under-cap prefix, visible ellipsis) over every real
+		// description reachable in the architect render, not exact text.
+		let overCap = 0;
+		for (const [tool, description] of Object.entries(TOOL_DESCRIPTIONS)) {
+			if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
+				continue;
+			}
+			overCap++;
+			const capped = capToolDescriptionForPrompt(description);
+			expect(
+				capped.length,
+				`${tool}: capped form must not exceed the cap`,
+			).toBeLessThanOrEqual(ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS);
+			// Review ROW-1: balancing now APPENDS closers for unmatched opens
+			// instead of discarding the parenthetical, so the output is the
+			// description's prefix plus a short synthetic closer run — strip the
+			// closers before checking the prefix property.
+			const stripped = capped.replace(/\)+$/, '');
+			expect(
+				description.startsWith(stripped),
+				`${tool}: capped form minus its appended closers must be a prefix of the description`,
+			).toBe(true);
+			let depth = 0;
+			let minDepth = 0;
+			for (const ch of capped) {
+				if (ch === '(') depth++;
+				if (ch === ')') depth--;
+				minDepth = Math.min(minDepth, depth);
+			}
+			expect(
+				depth,
+				`${tool}: capped form must be paren-balanced (closers appended)`,
+			).toBe(0);
+			expect(
+				minDepth,
+				`${tool}: capped form must not contain text outside a closed leading parenthetical group`,
+			).toBeGreaterThanOrEqual(0);
+		}
+		expect(overCap).toBeGreaterThan(0);
+	});
+
+	it('retains near-cap content for descriptions whose cap window falls mid-parenthetical (magnitude pin, review ROW-1/ROW-2)', () => {
+		// The previous discard-from-last-unmatched-open strategy collapsed
+		// get_qa_gate_profile 310→81 and context_status 657→146 chars. The
+		// append-closers strategy must retain near-cap content for these real
+		// descriptions — pin the magnitude so a future regression to a
+		// discarding strategy fails here.
+		const magnitudePinnedTools = [
+			'get_qa_gate_profile',
+			'context_status',
+		] as const;
+		for (const tool of magnitudePinnedTools) {
+			const description = TOOL_DESCRIPTIONS[tool];
+			expect(description?.length ?? 0).toBeGreaterThan(
+				ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
+			);
+			const capped = capToolDescriptionForPrompt(description!);
+			expect(
+				capped.length,
+				`${tool}: cap must retain near-cap content (magnitude pin)`,
+			).toBeGreaterThanOrEqual(
+				ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS - 10,
+			);
+		}
+	});
+
+	it('capToolDescriptionForPrompt strips multi-iteration unclosed groups and passes through balanced input', () => {
+		// Dedicated unit coverage for the strip loop (review PRR-111): nested
+		// unclosed groups require multiple loop iterations.
+		const nested = `${'a'.repeat(200)} (outer (inner (deepest ${'b'.repeat(50)}`;
+		const capped = capToolDescriptionForPrompt(nested);
+		expect(capped.length).toBeLessThanOrEqual(
+			ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS,
+		);
+		let depth = 0;
+		for (const ch of capped) {
+			if (ch === '(') depth++;
+			if (ch === ')') depth--;
+		}
+		expect(depth).toBeLessThanOrEqual(0);
+		expect(capped.endsWith('(')).toBe(false);
+
+		// Balanced within-cap input is byte-identical.
+		const balanced = 'tool use (with parens (nested) too) for caps';
+		expect(capToolDescriptionForPrompt(balanced)).toBe(balanced);
 	});
 
 	it('tools are sorted alphabetically', () => {

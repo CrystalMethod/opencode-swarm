@@ -53,6 +53,19 @@ export const QUOTA_ERROR_PATTERN =
 	/quota|usage.?limit|insufficient.?(?:quota|credits?)|\b402\b|payment.?required|credit.?balance|out of credits|billing.?(?:hard.?)?limit/i;
 
 /**
+ * Issue #2673: deterministic request-SHAPE rejection by a strict provider —
+ * the payload itself is invalid for this provider's request contract (the
+ * canonical case: a strict single-system provider rejecting a multi-system
+ * request). This is NOT transient: retrying the identical payload can never
+ * succeed, so it must never match {@link TRANSIENT_MODEL_ERROR_PATTERN} nor
+ * enter the generic retry path (AGENTS.md invariant 9: "deterministic
+ * provider payload failures are not generic retries"). Kept disjoint from the
+ * transient vocabulary by construction and pinned by negative-control tests.
+ */
+export const REQUEST_SHAPE_REJECTION_PATTERN =
+	/\b(?:single|one|only|exactly)[^.]{0,48}?\bsystem\s+messages?\b|\bmultiple\s+system\s+messages?\b|\bsystem\s+messages?\s+(?:are\s+)?not\s+supported\b/i;
+
+/**
  * True when a model-DISPATCH error is a transient provider failure OR a
  * quota/rate-limit exhaustion — both are retry + model-fallback eligible.
  * Do NOT use this on arbitrary tool output; use `TRANSIENT_MODEL_ERROR_PATTERN`

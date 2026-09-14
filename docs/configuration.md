@@ -133,6 +133,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `skillPropagation` | object | — | Skill propagation gate/injection settings. |
 | `skill_improver` | object | — | Low-frequency, expensive-model skill improvement loop (issue #629, v2). |
 | `harness_evolution` | object (strict) | — | Declarative, non-executing HarnessOpt mutation policy (issue #1825). |
+| `harness_opt` | object (strict) | — | Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm. |
 | `spec_writer` | object | — | Spec writer agent (v2) — independent model for .swarm/spec.md authorship. |
 | `tool_output` | object | — | Tool output truncation settings (enable/disable, max lines, per-tool overrides). |
 | `slop_detector` | object | — | Slop detector settings (v6.29). |
@@ -158,6 +159,46 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 Sections marked `(strict)` reject unknown nested keys at config load time - a typo there makes the loader fall back to safe defaults with a startup warning. All other sections silently ignore unknown nested keys.
 
 <!-- opencode-swarm: end generated top-level-config-keys -->
+
+## Architect prompt budget (characters and model tokens)
+
+The architect's built-in prompt composition is bounded by a published
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,000 chars in
+`src/agents/architect.ts`). Every supported feature combination — the default
+render, the work-complete council on or off, the advisory General Council
+(`council.general.enabled`) composed together with every documented opt-in
+(ui_review, design_docs, architectural_supervision, adversarial_testing,
+memory, external_skills, skills, turbo), multi-swarm prefixed variants, and
+memory-only / review-only cells — must render under that ceiling. The feature
+matrix is pinned as a named regression fixture
+(`tests/unit/agents/architect-prompt-budget-matrix.test.ts`), so any
+combination that would push the composed prompt over the budget fails CI
+instead of shipping.
+
+Two separate quantities are measured and recorded for every composition:
+
+- **Characters** — the authoritative count. The ceiling is defined in
+  characters because the built-in prompt is a source string whose length is
+  exact and platform-independent.
+- **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
+  characters per token, rounded up). Real token usage varies by model and
+  content; the estimate is reported next to the character count, never instead
+  of it, so a ~40K-token estimate at the 161K-char ceiling is understood as an
+  approximation of the system prompt's share of a 128K-token context window.
+
+Overflow policy (deterministic, guidance-preserving):
+
+- Tool descriptions in the architect prompt's AVAILABLE TOOLS line render
+  capped at `ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS` (240) with a visible
+  ellipsis marker. The tool-registration surface is unaffected — the host still
+  delivers each tool's full description through the tools API; only the
+  redundant in-prompt summary index is bounded.
+- An over-budget composition at runtime (possible today only through
+  user-variable inputs, e.g. an extreme multi-swarm name) emits a bounded,
+  visible `ARCHITECT_PROMPT_BUDGET_EXCEEDED` advisory (visible in
+  `/swarm diagnose` and under `OPENCODE_SWARM_DEBUG=1`). The full prompt is
+  kept — mandatory guidance, including the phase-completion lifecycle gate
+  instructions, is never silently dropped.
 
 ## Pricing fallback estimates
 
@@ -2039,6 +2080,32 @@ projection and read commands never repair it implicitly. Once the store has to
 compact, it rewrites the active ledger to a single authenticated snapshot under
 the ledger generation pointer, prunes inactive candidate directories not named
 by that snapshot, and leaves version-linked candidates available for rollback.
+
+## Governed HarnessOpt Capstone
+
+`harness_opt` governs the `/swarm harness-opt` command family (issue #2503):
+the executing capstone over the declarative `harness_evolution` surface. It is
+disabled by default; `/swarm harness-opt run` requires `enabled: true` AND an
+explicit `--confirm`, executes ONE governed round through the production
+evaluation substrate inside a disposable worktree (the substrate
+fingerprints the active checkout before and after every execution, so the
+running checkout is never mutated), and records durable round lineage with
+task-cost accounting
+(missing host token data stays `unknown`, never zero). A `test` split consumes
+the held-out set exactly once, enforced by the substrate. Activation and
+rollback are NOT part of this surface — they stay on the human-only
+`/swarm approve-write` + harness store path. Consulted only inside command
+handlers, never on the plugin init path.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | boolean | `false` | Master opt-in for executing governed rounds. |
+| `max_rounds` | number | `5` | Max governed rounds before the controller stops (1–50). |
+| `max_transient_retries` | number | `2` | Max transient-retries per round, the retry-circuit bound (0–10). |
+| `max_wall_clock_ms` | number | `3600000` | Hard wall-clock budget for a single round; exceeding it stops the round with `wall_clock_budget_exhausted`. |
+| `max_spend_usd` | number | — | Optional soft spend budget for a single round; host-reported spend above it stops the round with `spend_budget_exhausted`. |
+| `run_ablation_arm` | boolean | `true` | Run the ablation arm in `harness-opt compare` (the baseline arm always runs). |
+| `run_simple_agent_arm` | boolean | `true` | Run the simple-agent control arm in `harness-opt compare`. |
 
 ## External Skills Curation Pipeline
 

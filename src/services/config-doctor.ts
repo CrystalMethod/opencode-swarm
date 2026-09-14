@@ -1426,6 +1426,11 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 			break;
 		}
 
+		case 'harness_opt': {
+			emitObjectTypeMismatch('harness_opt', value, findings);
+			break;
+		}
+
 		case 'phase_complete': {
 			emitObjectTypeMismatch('phase_complete', value, findings);
 			break;

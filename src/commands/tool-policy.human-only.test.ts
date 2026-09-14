@@ -56,6 +56,12 @@ describe('tool-policy — human-only command refusal (issue #890)', () => {
 			'recover',
 			// #1824: only a human may issue an exact one-shot write approval.
 			'approve-write',
+			// #2503: governed HarnessOpt capstone — mutating commands
+			// (round execution, comparative execution, operator stop) are
+			// human-gated.
+			'harness-opt run',
+			'harness-opt compare',
+			'harness-opt stop',
 		]);
 		const actual = new Set<string>();
 		for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
@@ -63,7 +69,7 @@ describe('tool-policy — human-only command refusal (issue #890)', () => {
 				actual.add(name);
 			}
 		}
-		expect(actual.size).toBe(15);
+		expect(actual.size).toBe(18);
 		for (const name of expectedHumanOnly) {
 			expect(actual.has(name)).toBe(true);
 		}

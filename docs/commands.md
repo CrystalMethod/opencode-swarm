@@ -521,6 +521,50 @@ Show the append-only lifecycle event log for a candidate
 
 **Args:** `<slug> <candidateId> [--json]`
 
+### `/swarm harness-opt`
+
+Governed HarnessOpt capstone (issue #2503). Freezes the comparative task set and drives isolated, approved, reversible optimization rounds through the evaluation substrate.
+
+**Args:** `plan|run|status|stop|history [--tasks <json>] [--split train|validation|test] [--seed <s>] [--confirm] [--json] [--reason <text>]`
+
+Disabled by default. `run` requires harness_opt.enabled=true AND --confirm, executes one governed round in a disposable worktree (a test split consumes the held-out set exactly once, substrate-enforced), and records durable lineage with task-cost accounting (unknown-not-zero). Activation/rollback stay on /swarm approve-write + the harness store; the controller never mutates the live harness.
+
+#### `/swarm harness-opt plan`
+
+Freeze the comparative task set and report loop status (dry-run)
+
+**Args:** `--tasks <json> [--split train|validation|test] [--seed <s>] [--json]`
+
+#### `/swarm harness-opt run`
+
+Execute ONE governed optimization round in a disposable worktree. Requires harness_opt.enabled=true and --confirm; a test split consumes the held-out set exactly once.
+
+**Args:** `--tasks <json> --confirm [--split train|validation|test] [--seed <s>] [--json]`
+
+#### `/swarm harness-opt status`
+
+Show loop status and the latest round lineage summary
+
+**Args:** `[--json]`
+
+#### `/swarm harness-opt stop`
+
+Human-only operator stop: halt governed rounds with a recorded reason
+
+**Args:** `[--reason <text>] [--json]`
+
+#### `/swarm harness-opt compare`
+
+Separately executable comparative evaluation (issue #2503): baseline, ablation, and simple-agent arms on one frozen task population with an independently validated manifest, the independent oracle verdict, and a retained pilot-graduation record.
+
+**Args:** `--tasks <json> --confirm [--manifest <json>] [--seed <s>] [--lower-ci <n>] [--json]`
+
+#### `/swarm harness-opt history`
+
+List durable round lineage records (bounded to the last 20)
+
+**Args:** `[--json]`
+
 ### `/swarm export`
 
 Export plan and context as JSON

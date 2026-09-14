@@ -48,6 +48,26 @@ Swarm enforces discipline:
 - Handles failures and escalations
 - Maintains project memory
 
+### Prompt composition accounting (issue #2671)
+
+The architect prompt is composed from the built-in template plus feature
+blocks (council, architectural supervision, memory guidance), feature-gated
+tool lists, the planning-profile directive, and sentinel substitution
+(SWARM_ID, AGENT_PREFIX, project context). Composition is measured against
+the published ceiling twice: at factory exit (`createArchitectAgent`) and
+after sentinel substitution plus the multi-swarm header in
+`src/agents/index.ts` — the point where user-controlled swarm names enter the
+prompt. Characters are the authoritative quantity; model tokens are recorded
+as a separate estimate (~4 chars/token via `estimateModelTokens`). Tool
+descriptions render in the prompt capped at
+`ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS` with a visible ellipsis marker
+(full descriptions still reach the model through the tools API), and an
+over-budget composition emits a bounded `ARCHITECT_PROMPT_BUDGET_EXCEEDED`
+advisory while keeping the full prompt — mandatory guidance, including the
+General Council feature block and the phase-completion lifecycle gate, is
+never silently dropped. Every supported feature combination is pinned under
+the ceiling by the matrix regression fixture.
+
 ### DEEP_DIVE Protocol (On-Demand Skill)
 When the architect receives a `[MODE: DEEP_DIVE ...]` signal, it triggers a high-rigor, read-only codebase audit. This protocol is now implemented as a specialized **Skill**, loaded on-demand to keep the core architect prompt lean and focused.
 

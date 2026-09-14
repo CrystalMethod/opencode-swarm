@@ -97,8 +97,10 @@ function shouldConsumeHandoff(
 /**
  * Build the [spec-drift] advisory injected into the model's system prompt
  * after every loadPlan whenever spec staleness is detected (issue #853
- * Layer A). The text is appended to `output.system` and survives the
- * single-system-message collapse at `experimental.chat.system.transform`.
+ * Layer A). The text is appended to `output.system`; when the system render
+ * boundary (issue #2673) resolves `strict-single-system` for this request's
+ * model, the joined single entry retains the `[spec-drift]` block
+ * byte-verbatim (pinned by the boundary's acceptance checks).
  *
  * The "Do NOT proceed" line enumerates every tool in SPEC_DRIFT_BLOCKED_TOOLS
  * so the architect knows exactly which calls will return SPEC_DRIFT_BLOCK
