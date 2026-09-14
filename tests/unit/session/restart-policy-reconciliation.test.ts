@@ -48,6 +48,7 @@ import {
 	swarmState,
 	sweepStaleSessions,
 } from '../../../src/state.js';
+import { pushAdvisory } from '../../../src/utils/advisory-queue.js';
 import { freezeClock } from '../../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
@@ -253,6 +254,30 @@ describe('owner-named reconciliation for interrupted executions (#2668)', () => 
 		expect(file.entries).toHaveLength(0);
 		// Absence is clean on BOTH surfaces: no artifact entry and no advisory.
 		expect(restored?.pendingAdvisoryMessages ?? []).toHaveLength(0);
+	});
+
+	test('advisory dedupe key is embedded literally in the message (F-5 discriminator)', async () => {
+		const snapshot = bootSessionWithInFlightExecution();
+		const restored = await crossBoundary(snapshot);
+		const advisories = restored?.pendingAdvisoryMessages ?? [];
+		expect(advisories).toHaveLength(1);
+		// The dedupe key MUST be a literal prefix: pushAdvisory matches keys
+		// by substring against queued text, so if the builder stops embedding
+		// the key, this assertion fails even though the advisory is present.
+		expect(
+			advisories[0].startsWith(
+				'[restart-reconciliation:' + SESSION + ':' + TASK + ']',
+			),
+		).toBe(true);
+		// A second push of the same producer key is suppressed by dedupe.
+		const session = getAgentSession(SESSION)!;
+		const pushed = pushAdvisory(
+			session,
+			restored!.pendingAdvisoryMessages![0],
+			{ dedupeKey: '[restart-reconciliation:' + SESSION + ':' + TASK + ']' },
+		);
+		expect(pushed).toBe(false);
+		expect(session.pendingAdvisoryMessages).toHaveLength(1);
 	});
 
 	test('repeated restart dedupes by (session, task) instead of appending', async () => {

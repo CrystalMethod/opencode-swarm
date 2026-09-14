@@ -812,8 +812,11 @@ async function rehydrateStateGlobal(snapshot: SnapshotData): Promise<void> {
 				}
 			}
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Same mutable-resetValue clone as the scoped path: the shared
+				// module-level [] must never be assigned by reference.
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
 			}
 			// Full-auto run-state reconciliation, same fail-closed rule as the
 			// scoped path: without a directory there is no durable run state to
