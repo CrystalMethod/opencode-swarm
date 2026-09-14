@@ -17,7 +17,7 @@
  * that requires a protected trust root outside the project workspace.
  */
 
-import { mkdirSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import {
@@ -152,6 +152,59 @@ export interface ApplicableGateSet {
 	satisfiedGates: string[];
 	missingGates: string[];
 	readOnlyNoMutation: boolean;
+}
+
+const MAX_PLAN_SCOPE_INSPECTION_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Read the current task scope for a completion-time guard. A generation-0
+ * no-mutation settlement is meaningful only while the current task still has
+ * an empty scope. If the plan cannot be read, parsed, or identifies the task
+ * ambiguously, return null so callers fail closed rather than trusting stale
+ * proof.
+ */
+export function readCurrentTaskDeclaredFiles(
+	directory: string,
+	taskId: string,
+): string[] | null {
+	try {
+		const planPath = validateSwarmPath(directory, 'plan.json');
+		const stat = statSync(planPath);
+		if (!stat.isFile() || stat.size > MAX_PLAN_SCOPE_INSPECTION_BYTES) {
+			return null;
+		}
+		const parsed = JSON.parse(readFileSync(planPath, 'utf8')) as {
+			phases?: unknown;
+		};
+		if (!Array.isArray(parsed.phases)) return null;
+		let declaredFiles: string[] | null = null;
+		for (const phase of parsed.phases) {
+			if (!phase || typeof phase !== 'object') return null;
+			const tasks = (phase as { tasks?: unknown }).tasks;
+			if (!Array.isArray(tasks)) return null;
+			for (const task of tasks) {
+				if (!task || typeof task !== 'object') return null;
+				const record = task as {
+					id?: unknown;
+					files_touched?: unknown;
+				};
+				if (record.id !== taskId) continue;
+				if (
+					!Array.isArray(record.files_touched) ||
+					!record.files_touched.every(
+						(file): file is string => typeof file === 'string',
+					)
+				) {
+					return null;
+				}
+				if (declaredFiles !== null) return null;
+				declaredFiles = [...record.files_touched];
+			}
+		}
+		return declaredFiles;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -647,6 +700,7 @@ function isNoMutationSettlementMetadata(
  */
 export function deriveApplicableGateSet(
 	evidence: TaskEvidence | null | undefined,
+	options?: { currentDeclaredFiles?: readonly string[] | null },
 ): ApplicableGateSet {
 	if (!evidence) {
 		return {
@@ -657,7 +711,12 @@ export function deriveApplicableGateSet(
 		};
 	}
 	const workflow = getTaskWorkflowSnapshot(evidence);
-	const readOnlyNoMutation = isNoMutationSettlementMetadata(workflow);
+	const readOnlyNoMutation =
+		isNoMutationSettlementMetadata(workflow) &&
+		(options?.currentDeclaredFiles === undefined
+			? true
+			: options.currentDeclaredFiles !== null &&
+				options.currentDeclaredFiles.length === 0);
 	const requiredGates = [...new Set(evidence.required_gates ?? [])];
 	if (!readOnlyNoMutation && !requiredGates.includes('pre_check')) {
 		requiredGates.unshift('pre_check');
@@ -677,8 +736,9 @@ export function deriveApplicableGateSet(
 
 export function isReadOnlyNoMutationEligible(
 	evidence: TaskEvidence | null | undefined,
+	options?: { currentDeclaredFiles?: readonly string[] | null },
 ): boolean {
-	return isNoMutationSettlementMetadata(getTaskWorkflowSnapshot(evidence));
+	return deriveApplicableGateSet(evidence, options).readOnlyNoMutation;
 }
 
 export function reduceTaskWorkflowSnapshot(

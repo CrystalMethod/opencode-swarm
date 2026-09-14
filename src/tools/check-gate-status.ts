@@ -10,7 +10,11 @@ import type { tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
 import { isSecretscanEvidence, loadEvidence } from '../evidence/manager.js';
 import type { TaskEvidence } from '../gate-evidence.js';
-import { deriveApplicableGateSet } from '../gate-evidence.js';
+import {
+	deriveApplicableGateSet,
+	readCurrentTaskDeclaredFiles,
+	TASK_WORKFLOW_SCHEMA_MARKER,
+} from '../gate-evidence.js';
 import { isStrictTaskId } from '../validation/task-id';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
@@ -233,19 +237,46 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 			return JSON.stringify(errorResult, null, 2);
 		}
 
-		// Calculate passed and missing gates
-		const derivedGates = deriveApplicableGateSet(evidenceData as TaskEvidence);
-		const requiredGates = derivedGates.requiredGates;
+		// Calculate passed and missing gates. Legacy evidence predates the
+		// authoritative workflow schema and must retain its direct required_gates
+		// semantics; only authoritative evidence participates in derived gates and
+		// the generation-0 empty-scope exception.
 		const gatesMap = evidenceData.gates || {};
-		const passedGates = derivedGates.satisfiedGates;
-		const missingGates = derivedGates.missingGates;
+		const authoritativeWorkflow =
+			evidenceData.workflow?.schema === TASK_WORKFLOW_SCHEMA_MARKER;
+		let requiredGates: string[];
+		let passedGates: string[];
+		let missingGates: string[];
+		let readOnlyNoMutation = false;
+		if (authoritativeWorkflow) {
+			const derivedGates = deriveApplicableGateSet(
+				evidenceData as TaskEvidence,
+				{
+					currentDeclaredFiles: readCurrentTaskDeclaredFiles(
+						directory,
+						taskIdInput,
+					),
+				},
+			);
+			requiredGates = derivedGates.requiredGates;
+			passedGates = derivedGates.satisfiedGates;
+			missingGates = derivedGates.missingGates;
+			readOnlyNoMutation = derivedGates.readOnlyNoMutation;
+		} else {
+			requiredGates = evidenceData.required_gates;
+			passedGates = requiredGates.filter((gate) => gatesMap[gate] != null);
+			missingGates = requiredGates.filter((gate) => gatesMap[gate] == null);
+		}
 
 		// Determine overall status
-		let status: 'all_passed' | 'incomplete' =
-			missingGates.length === 0 &&
-			(derivedGates.readOnlyNoMutation ||
-				evidenceData.workflow?.state === 'tests_run' ||
-				evidenceData.workflow?.state === 'complete')
+		let status: 'all_passed' | 'incomplete' = authoritativeWorkflow
+			? missingGates.length === 0 &&
+				(readOnlyNoMutation ||
+					evidenceData.workflow?.state === 'tests_run' ||
+					evidenceData.workflow?.state === 'complete')
+				? 'all_passed'
+				: 'incomplete'
+			: requiredGates.length > 0 && missingGates.length === 0
 				? 'all_passed'
 				: 'incomplete';
 

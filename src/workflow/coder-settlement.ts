@@ -214,7 +214,10 @@ async function scopedObservedFiles(
 	const observed = await changedFilesSinceSnapshotAsync(directory, baseline);
 	if (!observed || !context.declaredFiles) return null;
 	if (hasUnattributedEmptyScopeMutation(context.declaredFiles, observed)) {
-		return null;
+		// Preserve the raw observation so recovery can record a failed rework
+		// settlement rather than silently reducing an empty-scope mutation to a
+		// no-op proof (issue #2763).
+		return observed;
 	}
 	return observed.filter((filePath) =>
 		isPathWithinDeclaredScope(filePath, context.declaredFiles ?? [], directory),
@@ -1033,6 +1036,14 @@ export async function recoverCoderSettlement(
 						`CODER_SETTLEMENT_RECOVERY_UNCERTAIN: transition ${wal.transitionId} for isolated task ${taskId} could not attribute worktree changes to the declared scope (${filePath}, state ${wal.state}). Run /swarm recover ${taskId} (or /swarm reset-session), then retry; do not remove the WAL by hand.`,
 					);
 				}
+				const unattributedEmptyScopeMutation =
+					hasUnattributedEmptyScopeMutation(
+						wal.context.declaredFiles,
+						observed,
+					);
+				const accepted = observed.length > 0 || unattributedEmptyScopeMutation;
+				const settlementFailed =
+					wal.settlementFailed === true || unattributedEmptyScopeMutation;
 				if (wal.mergeProvenance) {
 					const landed = await reconcileLandedMerge(
 						directory,
@@ -1048,7 +1059,8 @@ export async function recoverCoderSettlement(
 							...wal,
 							state: 'PREPARED',
 							observedFiles: observed,
-							accepted: observed.length > 0,
+							accepted,
+							settlementFailed,
 							testEngineerExempt: isMarkdownOnlyTaskChange(
 								wal.context.declaredFiles,
 								observed,
@@ -1142,7 +1154,8 @@ export async function recoverCoderSettlement(
 							wal = {
 								...wal,
 								state: 'PREPARED',
-								accepted: observed.length > 0,
+								accepted,
+								settlementFailed,
 								testEngineerExempt: isMarkdownOnlyTaskChange(
 									wal.context.declaredFiles,
 									observed,

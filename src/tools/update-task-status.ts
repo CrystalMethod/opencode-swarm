@@ -21,6 +21,7 @@ import {
 	deriveApplicableGateSet,
 	getTaskWorkflowSnapshot,
 	isReadOnlyNoMutationEligible,
+	readCurrentTaskDeclaredFiles,
 	readTaskEvidenceRaw,
 	TASK_GATE_REQUIREMENTS_RECONSTRUCTION_SENTINEL,
 } from '../gate-evidence.js';
@@ -504,11 +505,7 @@ export function checkReviewerGate(
 				// Find the task and check its files_touched
 				for (const planPhase of plan.phases ?? []) {
 					for (const task of planPhase.tasks ?? []) {
-						if (
-							task.id === taskId &&
-							Array.isArray(task.files_touched) &&
-							task.files_touched.length > 0
-						) {
+						if (task.id === taskId && task.files_touched) {
 							// If no Tier 3 patterns matched, bypass Stage B
 							if (!matchesTier3(task.files_touched)) {
 								return reviewerGateDecision(
@@ -597,7 +594,12 @@ export function checkReviewerGate(
 					);
 				}
 				const workflow = getTaskWorkflowSnapshot(evidence);
-				const derivedGates = deriveApplicableGateSet(evidence);
+				const derivedGates = deriveApplicableGateSet(evidence, {
+					currentDeclaredFiles: readCurrentTaskDeclaredFiles(
+						authoritativeDir,
+						taskId,
+					),
+				});
 				const requiredGates = derivedGates.requiredGates;
 				const satisfiedGates = derivedGates.satisfiedGates;
 				const missingGates = derivedGates.missingGates;
@@ -2103,7 +2105,9 @@ export async function executeUpdateTaskStatus(
 					qaExempt: !lockedPhaseRequiresReviewer,
 					readOnlyNoMutation: !lockedPhaseRequiresReviewer
 						? false
-						: isReadOnlyNoMutationEligible(evidence),
+						: isReadOnlyNoMutationEligible(evidence, {
+								currentDeclaredFiles: lockedTask.files_touched,
+							}),
 				}),
 				currentPlan: authoritativePlan,
 				validateEvidence: async () => {

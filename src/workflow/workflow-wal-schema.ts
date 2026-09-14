@@ -274,11 +274,13 @@ export function parseCoderSettlementWal(
 					(candidatePath) =>
 						typeof candidatePath !== 'string' ||
 						candidatePath.length > 4096 ||
-						!isPathWithinDeclaredScope(
-							candidatePath,
-							context.declaredFiles ?? [],
-							baseline.directory,
-						),
+						(Array.isArray(context.declaredFiles) &&
+							context.declaredFiles.length > 0 &&
+							!isPathWithinDeclaredScope(
+								candidatePath,
+								context.declaredFiles,
+								baseline.directory,
+							)),
 				))) ||
 		(worktree !== undefined &&
 			(typeof worktree.callID !== 'string' ||

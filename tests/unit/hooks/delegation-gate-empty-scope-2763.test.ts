@@ -9,6 +9,7 @@ import {
 } from '../../../src/gate-evidence';
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
+import { checkReviewerGate } from '../../../src/tools/update-task-status';
 import { writeApprovedPlan } from '../../helpers/approved-plan';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
@@ -143,6 +144,45 @@ describe('issue #2763 — delegation gate empty-scope admission', () => {
 				transitionId: 'coder-preflight:empty-plan-rejected',
 				declaredFiles: [],
 			});
+		},
+		{ timeout: 30_000 },
+	);
+
+	test(
+		'revokes the no-mutation exception when the current plan later gains scope',
+		async () => {
+			const hook = createDelegationGateHook(config, directory);
+			const args = {
+				subagent_type: 'coder',
+				task_id: TASK_ID,
+				prompt: 'TASK: 1.1\nACCEPTANCE: verify no code change is required',
+			};
+
+			await expect(
+				hook.toolBefore(
+					{ tool: 'Task', sessionID: 'parent', callID: 'empty-plan-expanded' },
+					{ args },
+				),
+			).rejects.toThrow('SCOPE_NOT_DECLARED');
+
+			const planPath = path.join(directory, '.swarm', 'plan.json');
+			const plan = JSON.parse(fs.readFileSync(planPath, 'utf8')) as {
+				phases: Array<{
+					tasks: Array<{ id: string; files_touched: string[] }>;
+				}>;
+			};
+			plan.phases[0].tasks[0].files_touched = ['src/expanded.ts'];
+			fs.writeFileSync(planPath, JSON.stringify(plan));
+
+			const decision = checkReviewerGate(
+				TASK_ID,
+				directory,
+				false,
+				'parent',
+				directory,
+			);
+			expect(decision.blocked).toBe(true);
+			expect(decision.missingGates).toContain('pre_check');
 		},
 		{ timeout: 30_000 },
 	);

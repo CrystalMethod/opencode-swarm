@@ -2341,13 +2341,25 @@ async function settleRejectedEmptyPlanScope(
 				workflowGeneration: expectedGeneration,
 			},
 		});
+		const observedFiles = await changedFilesSinceSnapshotAsync(
+			directory,
+			baseline,
+		);
+		if (observedFiles === null) {
+			throw new Error(
+				'CODER_SETTLEMENT_BASELINE_UNAVAILABLE: empty-scope preflight could not prove a clean post-baseline workspace.',
+			);
+		}
 		return await settleCoderDispatch({
 			directory,
 			taskId,
 			transitionId,
 			accepted: false,
 			testEngineerExempt: false,
-			observedFiles: [],
+			// Preserve the raw post-baseline observation. Any concurrent mutation
+			// is converted to accepted_mutation_failed by settlement rather than
+			// being filtered into a read-only proof.
+			observedFiles,
 		});
 	} catch (error) {
 		try {
