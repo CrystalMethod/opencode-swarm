@@ -378,6 +378,45 @@ describe('durable Stage A attribution', () => {
 		).toBe(true);
 	});
 
+	test('rework_required pass identifies the required coder mutation without recovery advice', async () => {
+		await transitionTaskWorkflowEvidence(directory, '9.10', {
+			type: 'accepted_mutation',
+			agentType: 'coder',
+			expectedGeneration: 0,
+			transitionId: 'coder:setup-9.10',
+		});
+		await transitionTaskWorkflowEvidence(directory, '9.10', {
+			type: 'stage_a_failed',
+			expectedGeneration: 1,
+			transitionId: 'stage-a:setup-9.10',
+		});
+		expect(
+			getTaskWorkflowSnapshot(await readTaskEvidence(directory, '9.10')).state,
+		).toBe('rework_required');
+		ensureAgentSession('architect').currentTaskId = '9.10';
+
+		const hooks = createGuardrailsHooks(directory, defaultConfig());
+		await hooks.toolBefore(
+			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
+			{ args: {} },
+		);
+		await hooks.toolAfter(
+			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
+			{ title: '', output: PASS_PAYLOAD, metadata: null },
+		);
+
+		const messages =
+			swarmState.agentSessions.get('architect')?.pendingAdvisoryMessages ?? [];
+		const advisory = messages.find((message) =>
+			message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
+		);
+		expect(advisory).toBeDefined();
+		expect(advisory).toContain('accepted coder mutation');
+		expect(advisory).toContain('before Stage A');
+		expect(advisory).not.toContain('NOT attributed');
+		expect(advisory).not.toContain('/swarm recover');
+	});
+
 	test('normal correlated flow is unchanged (no fallback needed)', async () => {
 		await settleTask('3.1');
 		const session = ensureAgentSession('architect');
