@@ -7,8 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PluginConfig } from '../../src/config';
 import {
@@ -24,6 +23,7 @@ import {
 	bootSwarmPluginHost,
 	createPluginHostProject,
 } from '../helpers/plugin-host';
+import { canonicalMkdtemp } from '../helpers/tmpdir.js';
 
 describe('ATTACK VECTOR 4: Gating Bypass Attempts', () => {
 	let tempDir: string;
@@ -207,7 +207,7 @@ describe('Additional Decision Drift Edge Cases', () => {
 	let tempDir: string;
 
 	beforeEach(async () => {
-		tempDir = await mkdtemp(join(tmpdir(), 'drift-edge-'));
+		tempDir = canonicalMkdtemp('drift-edge-');
 		await mkdir(join(tempDir, '.swarm'), { recursive: true });
 	});
 
