@@ -278,6 +278,9 @@ describe('captured provider request parity (issue #2526 AC2)', () => {
 		const fixture = JSON.parse(fixtureRaw) as CapturedRequest;
 
 		const derived = await deriveCapturedRequest();
+		// Issue #2759 keeps the established transcript prefix intact and stages
+		// changing guidance as trailing user-role carriers; deep equality below
+		// remains the non-vacuous ordering and content guard.
 
 		expect(derived.pinnedHostVersion).toBe('1.18.3');
 		expect(fixture.pinnedHostVersion).toBe('1.18.3');
