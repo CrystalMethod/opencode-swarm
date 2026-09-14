@@ -1,5 +1,6 @@
 import type { Evidence } from '../config/evidence-schema';
 import {
+	deriveApplicableGateSet,
 	isValidTaskId,
 	readTaskEvidence,
 	readTaskEvidenceRaw,
@@ -49,10 +50,7 @@ export function getDurableGateEvidenceStatus(
 		};
 	}
 
-	if (
-		!Array.isArray(evidence.required_gates) ||
-		evidence.required_gates.length === 0
-	) {
+	if (!Array.isArray(evidence.required_gates)) {
 		return {
 			isComplete: false,
 			missingGates: ['required_gates'],
@@ -61,12 +59,10 @@ export function getDurableGateEvidenceStatus(
 		};
 	}
 
-	const missingGates = evidence.required_gates.filter(
-		(gate) => evidence.gates[gate] == null,
-	);
+	const derivedGates = deriveApplicableGateSet(evidence);
 	return {
-		isComplete: missingGates.length === 0,
-		missingGates,
+		isComplete: derivedGates.missingGates.length === 0,
+		missingGates: derivedGates.missingGates,
 		evidenceExists: true,
 		invalid: false,
 	};

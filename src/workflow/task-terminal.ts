@@ -54,6 +54,7 @@ async function applyTerminalEvidence(
 			? {
 					type: 'task_completed',
 					qaExempt: wal.qaExempt,
+					readOnlyNoMutation: wal.readOnlyNoMutation,
 					expectedGeneration: wal.generation,
 					transitionId: wal.transitionId,
 				}
@@ -256,6 +257,7 @@ export async function commitTaskTerminalUnderPlanLock<TPlan>(options: {
 		targetStatus: TerminalPlanStatus;
 		qaExempt: boolean;
 		preserveEvidence?: boolean;
+		readOnlyNoMutation?: boolean;
 	};
 	planIdentityHash?: string;
 	planEpoch?: string;
@@ -309,6 +311,8 @@ export async function commitTaskTerminalUnderPlanLock<TPlan>(options: {
 				existingWal?.state === 'COMMITTED' &&
 				existingWal.transitionId === options.transitionId &&
 				existingWal.newPlanStatus === terminal.targetStatus &&
+				(existingWal.readOnlyNoMutation === true) ===
+					(terminal.readOnlyNoMutation === true) &&
 				evidenceMatchesTerminal(evidence, existingWal)
 			) {
 				return {
@@ -380,6 +384,9 @@ export async function commitTaskTerminalUnderPlanLock<TPlan>(options: {
 				newWorkflowState,
 				generation: workflow.generation,
 				qaExempt: terminal.qaExempt,
+				...(terminal.readOnlyNoMutation === true
+					? { readOnlyNoMutation: true }
+					: {}),
 				recordedAt: new Date().toISOString(),
 			};
 			const wal: TaskTerminalWal =

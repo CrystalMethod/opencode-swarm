@@ -218,6 +218,10 @@ function settlementTransitionEvent(
 		: {
 				type: 'dispatch_no_mutation',
 				agentType: 'coder',
+				context: {
+					declaredFiles: wal.context.declaredFiles,
+					settlementTransitionId: wal.transitionId,
+				},
 				expectedGeneration: wal.expectedGeneration,
 				transitionId: wal.transitionId,
 			};
@@ -267,9 +271,13 @@ async function commitPrepared(
 								? 'accepted_mutation_failed'
 								: 'accepted_mutation') &&
 						snapshot.lastTransitionId === lockedWal.transitionId
-					: snapshot.generation === lockedWal.expectedGeneration &&
-						snapshot.lastOutcome === 'dispatch_no_mutation' &&
-						snapshot.lastTransitionId === lockedWal.transitionId;
+					: snapshot.authoritative &&
+						snapshot.generation === lockedWal.expectedGeneration &&
+						(lockedWal.context.declaredFiles?.length === 0
+							? snapshot.noMutationSettlement?.transitionId ===
+								lockedWal.transitionId
+							: snapshot.lastOutcome === 'dispatch_no_mutation' &&
+								snapshot.lastTransitionId === lockedWal.transitionId);
 			if (evidenceAlreadySettled) {
 				const evidence = transaction.read() as TaskEvidence;
 				if (lockedWal.accepted === true) {
@@ -301,7 +309,14 @@ async function commitPrepared(
 					alreadyApplied: true,
 				};
 			}
-			if (lockedWal.state !== 'PREPARED') {
+			if (
+				lockedWal.state !== 'PREPARED' &&
+				!(
+					lockedWal.state === 'COMMITTED' &&
+					lockedWal.accepted !== true &&
+					snapshot.state === 'idle'
+				)
+			) {
 				throw new Error('CODER_SETTLEMENT_NOT_PREPARED');
 			}
 			const evidence = await transaction.transition(transitionEvent);
