@@ -505,7 +505,11 @@ export function checkReviewerGate(
 				// Find the task and check its files_touched
 				for (const planPhase of plan.phases ?? []) {
 					for (const task of planPhase.tasks ?? []) {
-						if (task.id === taskId && task.files_touched) {
+						if (
+							task.id === taskId &&
+							Array.isArray(task.files_touched) &&
+							task.files_touched.length > 0
+						) {
 							// If no Tier 3 patterns matched, bypass Stage B
 							if (!matchesTier3(task.files_touched)) {
 								return reviewerGateDecision(
