@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.181.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.0...v7.181.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **workflow:** address PR [#2760](https://github.com/ZaxbyHub/opencode-swarm/issues/2760) review findings (audit honesty, supervised marker, pins, tests) ([c1d7801](https://github.com/ZaxbyHub/opencode-swarm/commit/c1d78017ef3e83280487882004de7c77b06b15ad))
+* **workflow:** architect-only audited exit from rework_required ([#2755](https://github.com/ZaxbyHub/opencode-swarm/issues/2755)) ([c49125a](https://github.com/ZaxbyHub/opencode-swarm/commit/c49125a81f170b1e15e190e0efc8f443bbd659f0))
+
 ## [7.181.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.180.1...v7.181.0) (2026-09-14)
 
 
