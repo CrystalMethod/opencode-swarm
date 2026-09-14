@@ -1323,10 +1323,11 @@ export function createGuardrailsHooks(
 									emitStageARoute('valid_pass', taskId);
 								} catch (err) {
 									// Duplicate transitions return existing evidence without
-									// throwing, so any error here is abnormal. Attribution-miss
+									// throwing, so any error here is abnormal. These category-specific
 									// codes are exactly how tasks silently wedge at
-									// coder_delegated post-reset — escalate them to a visible
-									// advisory instead of swallowing (TASK_WORKFLOW_TERMINAL and
+									// coder_delegated post-reset — escalate both category-specific
+									// routing codes to a visible advisory instead of swallowing
+									// (TASK_WORKFLOW_TERMINAL and
 									// WAL-fencing codes stay log-only: late gate results after
 									// close/settlement are expected churn, not a wedge).
 									const code = stageAWriteErrorCode(err);
