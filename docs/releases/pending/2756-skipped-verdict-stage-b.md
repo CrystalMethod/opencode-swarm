@@ -11,7 +11,7 @@ Issue: #2756
 
 ## Why
 
-An agent that followed the tool's own advice (`scope:"all"`) could not succeed — the recommended scope is blocked — and models without a natural `files:` habit (observed: Kim K2.7 Code, 10–11 identical calls) looped until the repetition breaker fired. The prompt's SKIP CONDITION 1 then legitimately produced a `[TESTED] ... SKIPPED` verdict, which the gate scored as a code failure: `rework_required` plus deletion of the reviewer's approval for code that was correct and passing (`python -m pytest` green). Together with #2755 (no autonomous exit from `rework_required`, fixed by PR #2760's audited recovery tool), a single tool-argument mistake stranded tasks that only a human could free. This fix removes the wrongful entry: tests-not-run is retryable state, not failure.
+An agent that followed the tool's own advice (`scope:"all"`) could not succeed — the recommended scope is blocked — and models without a natural `files:` habit (observed: Kimi K2.7 Code, 10–11 identical calls) looped until the repetition breaker fired. The prompt's SKIP CONDITION 1 then legitimately produced a `[TESTED] ... SKIPPED` verdict, which the gate scored as a code failure: `rework_required` plus deletion of the reviewer's approval for code that was correct and passing (`python -m pytest` green). Together with #2755 (no autonomous exit from `rework_required`, fixed by PR #2760's audited recovery tool), a single tool-argument mistake stranded tasks that only a human could free. This fix removes the wrongful entry: tests-not-run is retryable state, not failure.
 
 ## Tests
 

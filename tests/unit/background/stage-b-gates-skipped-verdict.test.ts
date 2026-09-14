@@ -4,8 +4,9 @@
  * `ingestBackgroundStageBCompletion` must classify a `[TESTED] | task-N |
  * SKIPPED | ...` structured verdict as a not-run skip (issue #2756 defect 2,
  * background path): no stage_b_failed transition, no rework_required, reviewer
- * gate proof preserved, and the record consumed with `skipped: true` so the
- * completion observer publishes the dedicated skip advisory. Genuine FAIL
+ * gate proof preserved, and the record consumed with `skipped: true`. The
+ * observer-path test additionally proves the completion observer publishes the
+ * dedicated skip advisory (not the generic "ingestion failed"). Genuine FAIL
  * verdicts keep the rejection semantics.
  */
 
@@ -13,9 +14,11 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type {
-	BackgroundDelegationRecord,
-	BackgroundWorkspaceSnapshot,
+import { createBackgroundCompletionObserver } from '../../../src/background/completion-observer';
+import {
+	type BackgroundWorkspaceSnapshot,
+	findByCorrelationId,
+	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
 import { ingestBackgroundStageBCompletion } from '../../../src/background/stage-b-gates.js';
 import { captureWorkspaceSnapshot } from '../../../src/background/workspace-snapshot.js';
@@ -51,7 +54,7 @@ function git(...args: string[]): void {
 
 function stageBRecord(
 	workspace: BackgroundWorkspaceSnapshot,
-): BackgroundDelegationRecord {
+): import('../../../src/background/pending-delegations.js').BackgroundDelegationRecord {
 	return {
 		schemaVersion: 2,
 		correlationId: 'call-2756-skip:correlation',
@@ -196,5 +199,67 @@ describe('background Stage B TESTED SKIPPED verdict is retryable, not a failure 
 		expect(outcome.ok).toBe(false);
 		const session = swarmState.agentSessions.get('parent-2756-skip')!;
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('rework_required');
+	});
+});
+
+describe('completion observer publishes the dedicated skip advisory (#2756, PRR-006)', () => {
+	const CORRELATION_ID = 'call-2756-skip-obs';
+	const PARENT = 'parent-2756-skip';
+	const SKIP_TEXT = `[TESTED] | task-${TASK_ID} | SKIPPED | PROHIBITED SCOPE: tests not run`;
+
+	function completedEnvelope(): object {
+		return {
+			event: {
+				type: 'message.part.updated',
+				properties: {
+					part: {
+						type: 'text',
+						synthetic: true,
+						sessionID: PARENT,
+						text: `<task id="${CORRELATION_ID}" state="completed">\n<task_result>${SKIP_TEXT}\n</task_result>\n</task>`,
+					},
+				},
+			},
+		};
+	}
+
+	test('observer path: skip advisory queued for the session, no stage_b_failed, record consumed', async () => {
+		await prepareTask();
+		const session = swarmState.agentSessions.get(PARENT)!;
+		await recordPendingDelegation(directory, {
+			correlationId: CORRELATION_ID,
+			jobId: `${CORRELATION_ID}:job`,
+			subagentSessionId: CORRELATION_ID,
+			parentSessionId: PARENT,
+			callID: CORRELATION_ID,
+			normalizedAgent: 'test_engineer',
+			swarmPrefixedAgent: 'test_engineer',
+			planTaskId: TASK_ID,
+			evidenceTaskId: TASK_ID,
+			workflowGeneration: 1,
+			workspace: captureWorkspaceSnapshot(directory),
+		});
+
+		const observer = createBackgroundCompletionObserver({
+			config: { enabled: true },
+			directory,
+		});
+		await observer.event(completedEnvelope());
+
+		const advisories = session.pendingAdvisoryMessages ?? [];
+		expect(
+			advisories.some((message) => message.includes('skipped (tests not run)')),
+		).toBe(true);
+		expect(
+			advisories.some((message) => message.includes('ingestion failed')),
+		).toBe(false);
+
+		const record = findByCorrelationId(directory, CORRELATION_ID);
+		expect(record?.status).not.toBe('stale');
+
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
+		const evidence = await readTaskEvidence(directory, TASK_ID);
+		expect(evidence?.workflow?.lastOutcome).not.toBe('stage_b_failed');
+		expect(evidence?.gates?.reviewer).toBeDefined();
 	});
 });
