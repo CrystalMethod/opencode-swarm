@@ -45,12 +45,14 @@ import {
 	swarmState,
 	sweepStaleSessions,
 } from '../../../src/state.js';
+import { freezeClock } from '../../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 const SESSION = 'sess-2668-unit';
 const TASK = '1.1';
 
 let project: string;
+let restoreClock: () => void = () => {};
 
 function writeMinimalPlanJson(directory: string): void {
 	const plan = {
@@ -124,9 +126,14 @@ async function crossBoundary(
 
 beforeEach(() => {
 	project = canonicalMkdtemp('swarm-2668-unit-');
+	// Whole-file freeze (check:test-clock): fixedNow is captured from the real
+	// clock BEFORE the freeze so the stale-eviction arithmetic below keeps its
+	// relative semantics while every read inside the test is deterministic.
+	restoreClock = freezeClock({ fixedNow: Date.now() });
 });
 
 afterEach(() => {
+	restoreClock();
 	resetSwarmStatePreservingSingletons();
 	try {
 		rmSync(project, { recursive: true, force: true, maxRetries: 3 });
