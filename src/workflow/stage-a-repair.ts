@@ -51,7 +51,7 @@ export interface StageARepairResult {
  * failure surfaced via criticalWarn so a silently missing audit line is
  * visible.
  */
-async function appendStageARepairEvent(
+export async function appendStageARepairEvent(
 	directory: string,
 	payload: Record<string, unknown>,
 ): Promise<void> {
@@ -105,7 +105,7 @@ export type PreCheckGreennessResult =
  * persists its bundle under bucket `sast_scan` (see `src/tools/sast-scan.ts`)
  * with individual entries tagged `type: 'sast'`.
  */
-async function hasGreenPostSettlementPreCheck(
+export async function hasGreenPostSettlementPreCheck(
 	directory: string,
 	settledAfterMs: number | null,
 ): Promise<PreCheckGreennessResult> {

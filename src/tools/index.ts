@@ -246,6 +246,10 @@ export {
 	record_recurrence_sweep,
 } from './record-recurrence-sweep';
 export {
+	executeRecoverReworkTask,
+	recover_rework_task,
+} from './recover-rework-task';
+export {
 	executeRunPrFeedbackStageA,
 	run_pr_feedback_stage_a,
 } from './run-pr-feedback-stage-a';

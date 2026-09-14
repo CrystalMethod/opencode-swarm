@@ -241,6 +241,14 @@ export type TaskWorkflowTransitionEvent =
 	  }
 	| {
 			type: 'stage_a_passed';
+			/**
+			 * Architect-supervised recovery only (issue #2755): the recover_rework_task
+			 * tool sets this to admit stage_a_passed from rework_required when the
+			 * Stage B verdict did not require a code change. Mechanical emitters
+			 * (the guardrails recorder, stage-a-repair) never set it, so they still
+			 * fail closed with TASK_WORKFLOW_CODER_MUTATION_REQUIRED from that state.
+			 */
+			supervisedRecovery?: boolean;
 			expectedGeneration: number;
 			transitionId?: string;
 	  }
@@ -647,7 +655,11 @@ export function reduceTaskWorkflowSnapshot(
 		case 'stage_a_passed':
 			if (
 				current.state !== 'coder_delegated' &&
-				current.state !== 'pre_check_passed'
+				current.state !== 'pre_check_passed' &&
+				!(
+					current.state === 'rework_required' &&
+					event.supervisedRecovery === true
+				)
 			) {
 				throw new Error(
 					`TASK_WORKFLOW_CODER_MUTATION_REQUIRED: cannot pass Stage A from ${current.state}`,

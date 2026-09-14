@@ -4455,10 +4455,21 @@ export function createDelegationGateHook(
 						);
 						return;
 					}
+					// Two distinct remediation fragments (never merged into one
+					// literal): rework_required has an architect-legal autonomous
+					// exit (issue #2755), every other pre-Stage-A state still gets
+					// the attribution-wedge guidance where /swarm recover applies.
+					const stageARemediation =
+						workflow.state === 'rework_required'
+							? 'Remediation: if the Stage B verdict did not require a code change, call recover_rework_task for task ' +
+								taskId +
+								' (architect-only, audited; requires a green pre_check_batch run taken after the verdict), then re-dispatch. ' +
+								'Otherwise delegate the coder to repair the code, re-run pre_check_batch, and re-dispatch once stage_a_passed has fired.'
+							: `Remediation: run pre_check_batch on the task's changed files first. If pre_check_batch passes but the task remains coder_delegated (typical after /swarm reset-session), run /swarm recover ${taskId} to repair Stage A attribution, then re-dispatch.`;
 					throw new Error(
 						`TASK_WORKFLOW_STAGE_A_REQUIRED: cannot dispatch ${targetAgent} for task ${taskId} from ${workflow.state}. ` +
 							`Stage B (${targetAgent}) requires the task to be at pre_check_passed (or later) — a state written only by the stage_a_passed transition, which is emitted when pre_check_batch completes with the task correctly attributed. ` +
-							`Remediation: run pre_check_batch on the task's changed files first. If pre_check_batch passes but the task remains coder_delegated (typical after /swarm reset-session), run /swarm recover ${taskId} to repair Stage A attribution, then re-dispatch.` +
+							stageARemediation +
 							(targetAgent === 'reviewer' || targetAgent === 'test_engineer'
 								? ` For PR-review re-entry outside the task workflow, issue a one-use authorization with authorize_pr_review_reentry immediately before the Task dispatch.`
 								: ''),
