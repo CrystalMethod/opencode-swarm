@@ -3811,6 +3811,11 @@ async function initializeOpenCodeSwarm(
 					description:
 						'Use /swarm skill-opt to govern skill optimization (plan|run|status|diff|approve|reject|rollback|history)',
 				},
+				'swarm-harness-opt': {
+					template: '/swarm harness-opt $ARGUMENTS',
+					description:
+						'Use /swarm harness-opt to govern harness optimization rounds (plan|run|status|stop|history)',
+				},
 				'swarm-costs': {
 					template: '/swarm costs $ARGUMENTS',
 					description:
