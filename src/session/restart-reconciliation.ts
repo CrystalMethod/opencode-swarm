@@ -167,6 +167,12 @@ export async function recordInterruptedExecution(
  * Pushed into `pendingAdvisoryMessages` AFTER the transient-field reset so
  * it survives the rehydrate that produced it.
  */
+export function buildInterruptedAdvisoryDedupeKey(
+	entry: Pick<RestartReconciliationEntry, 'sessionId' | 'taskId'>,
+): string {
+	return `[restart-reconciliation:${entry.sessionId}:${entry.taskId}]`;
+}
+
 export function buildInterruptedAdvisoryMessage(
 	entry: Pick<
 		RestartReconciliationEntry,
@@ -174,7 +180,11 @@ export function buildInterruptedAdvisoryMessage(
 	> & { guidance?: string },
 ): string {
 	return (
-		`[swarm] Restart reconciliation: session ${entry.sessionId} (agent ` +
+		// The dedupe key is embedded literally: pushAdvisory matches keys by
+		// substring against already-queued message text, so a key that never
+		// appears in the message would make the dedupe dead code.
+		`${buildInterruptedAdvisoryDedupeKey(entry)} [swarm] Restart ` +
+		`reconciliation: session ${entry.sessionId} (agent ` +
 		`${entry.agentName}) was interrupted mid-execution on task ${entry.taskId}. ` +
 		`The outcome is UNKNOWN — do not treat absence as success. ` +
 		`${entry.guidance ?? RESTART_RECONCILIATION_GUIDANCE}.`

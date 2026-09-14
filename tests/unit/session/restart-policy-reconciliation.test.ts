@@ -29,6 +29,7 @@ import {
 } from '../../../src/db/qa-gate-session-override.js';
 import { beginHydrationScope } from '../../../src/session/hydration-ownership.js';
 import {
+	MAX_RESTART_RECONCILIATION_ENTRIES,
 	RESTART_RECONCILIATION_FILE,
 	readRestartReconciliation,
 	recordInterruptedExecution,
@@ -40,8 +41,10 @@ import {
 } from '../../../src/session/snapshot-writer.js';
 import {
 	endAgentSession,
+	ensureAgentSession,
 	getAgentSession,
 	resetSwarmStatePreservingSingletons,
+	startAgentSession,
 	swarmState,
 	sweepStaleSessions,
 } from '../../../src/state.js';
@@ -91,14 +94,6 @@ function writeMinimalPlanJson(directory: string): void {
 function bootSessionWithInFlightExecution(inFlight = true): SnapshotData {
 	writeMinimalPlanJson(project);
 	resetSwarmStatePreservingSingletons();
-	const { startAgentSession } = require('../../../src/state.js') as {
-		startAgentSession: (
-			id: string,
-			agent: string,
-			ttl: number,
-			dir: string,
-		) => void;
-	};
 	startAgentSession(SESSION, 'architect', 7_200_000, project);
 	const session = getAgentSession(SESSION);
 	if (!session) throw new Error('session missing');
@@ -146,14 +141,6 @@ describe('durable tightened QA policy across the restart boundary (#2668)', () =
 	test('command-written override survives rehydrate; effective gates stay tightened', async () => {
 		writeMinimalPlanJson(project);
 		resetSwarmStatePreservingSingletons();
-		const { startAgentSession } = require('../../../src/state.js') as {
-			startAgentSession: (
-				id: string,
-				agent: string,
-				ttl: number,
-				dir: string,
-			) => void;
-		};
 		startAgentSession(SESSION, 'architect', 7_200_000, project);
 		const out = await handleQaGatesCommand(
 			project,
@@ -184,14 +171,6 @@ describe('durable tightened QA policy across the restart boundary (#2668)', () =
 			mutation_test: true,
 		});
 		resetSwarmStatePreservingSingletons();
-		const { startAgentSession } = require('../../../src/state.js') as {
-			startAgentSession: (
-				id: string,
-				agent: string,
-				ttl: number,
-				dir: string,
-			) => void;
-		};
 		startAgentSession('fresh-session', 'architect', 7_200_000, project);
 		expect(
 			getAgentSession('fresh-session')?.qaGateSessionOverrides ?? {},
@@ -269,9 +248,11 @@ describe('owner-named reconciliation for interrupted executions (#2668)', () => 
 
 	test('idle sessions record nothing (absence of authority is clean)', async () => {
 		const snapshot = bootSessionWithInFlightExecution(false);
-		await crossBoundary(snapshot);
+		const restored = await crossBoundary(snapshot);
 		const file = readRestartReconciliation(project);
 		expect(file.entries).toHaveLength(0);
+		// Absence is clean on BOTH surfaces: no artifact entry and no advisory.
+		expect(restored?.pendingAdvisoryMessages ?? []).toHaveLength(0);
 	});
 
 	test('repeated restart dedupes by (session, task) instead of appending', async () => {
@@ -311,7 +292,9 @@ describe('owner-named reconciliation for interrupted executions (#2668)', () => 
 			});
 		}
 		const file = readRestartReconciliation(project);
-		expect(file.entries.length).toBeLessThanOrEqual(50);
+		expect(file.entries.length).toBeLessThanOrEqual(
+			MAX_RESTART_RECONCILIATION_ENTRIES,
+		);
 		expect(file.entries[0].sessionId).toBe('sess-51');
 	});
 
@@ -323,6 +306,46 @@ describe('owner-named reconciliation for interrupted executions (#2668)', () => 
 			'{corrupt',
 		);
 		expect(readRestartReconciliation(project).entries).toHaveLength(0);
+	});
+});
+
+describe('orphan override-row reaper at the rehydrate boundary (#2668 F-4)', () => {
+	test('a row whose session was evicted without project context is pruned at the next rehydrate', async () => {
+		// Simulate the hot-path eviction gap: sweepStaleSessions with NO
+		// directory can remove the in-memory session but cannot reach the
+		// durable row (no project DB handle). The stale session's row becomes
+		// an orphan; the NEXT rehydrate boundary (which knows the directory)
+		// must reap it.
+		setOverrideForSession(project, 'orphan-stale', { mutation_test: true });
+		setOverrideForSession(project, SESSION, { mutation_test: true });
+		const snapshot = bootSessionWithInFlightExecution();
+		// Evict 'orphan-stale' in-memory without any directory: the durable
+		// row survives this call (that is the documented gap).
+		sweepStaleSessions(7_200_000, Date.now(), undefined);
+		// Rehydrate: keep-set = snapshot sessions + live sessions owned by
+		// this project. 'orphan-stale' is in neither -> its row is pruned.
+		const restored = await crossBoundary(snapshot);
+		expect(getOverrideForSession(project, 'orphan-stale')).toEqual({});
+		// The LIVE session's policy row survives the reaper.
+		expect(getOverrideForSession(project, SESSION)).toEqual({
+			mutation_test: true,
+		});
+		expect(restored?.qaGateSessionOverrides?.mutation_test).toBe(true);
+	});
+
+	test('reaper never creates the project DB when none exists', async () => {
+		const fresh = canonicalMkdtemp('swarm-2668-reaper-none-');
+		try {
+			const snapshot = bootSessionWithInFlightExecution();
+			await crossBoundary(snapshot);
+			expect(existsSync(path.join(fresh, '.swarm', 'swarm.db'))).toBe(false);
+		} finally {
+			try {
+				rmSync(fresh, { recursive: true, force: true });
+			} catch {
+				// best-effort
+			}
+		}
 	});
 });
 
@@ -347,9 +370,6 @@ describe('durable override row teardown in lockstep with the session (#2668)', (
 		// invocation (ensureAgentSession claims it); mirror that here so the
 		// durable teardown follows the same locally-owned path as the
 		// snapshot rows.
-		const { ensureAgentSession } = require('../../../src/state.js') as {
-			ensureAgentSession: (id: string, agent?: string, dir?: string) => unknown;
-		};
 		ensureAgentSession(SESSION, 'architect', project);
 		// Force the session stale, then sweep with the directory in hand.
 		restored!.lastToolCallTime = Date.now() - 3 * 7_200_000;

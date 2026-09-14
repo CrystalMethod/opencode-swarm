@@ -193,3 +193,45 @@ export function clearAllSessionOverrides(directory: string): number {
 		},
 	);
 }
+
+/**
+ * Delete override rows whose session is no longer live in this project
+ * (#2668 orphan-row reaper). `sweepStaleSessions` can evict a stale session
+ * in-memory WITHOUT being able to clear its durable row — the hot-path
+ * `ensureAgentSession` sweep runs with no `directory`, so the project DB is
+ * unreachable there. This reaper runs at the rehydrate boundary (which knows
+ * the directory) and removes every row whose session id is not in
+ * `keepSessionIds` — the restored/live sessions of the hydrating project.
+ * Bounded: one indexed scan over a session-keyed table. Returns the number
+ * of orphaned rows removed.
+ */
+export function sweepOrphanOverrides(
+	directory: string,
+	keepSessionIds: ReadonlySet<string>,
+): number {
+	if (!projectDbExists(directory)) return 0;
+	const db = getProjectDb(directory);
+	return withSharedImmediateTransaction(
+		db,
+		DURABILITY_CLASSES.qa_gate_session_override,
+		() => {
+			const rows = db
+				.query<Pick<QaGateSessionOverrideRow, 'session_id'>, []>(
+					'SELECT session_id FROM qa_gate_session_override',
+				)
+				.all();
+			const orphans = rows
+				.map((row) => row.session_id)
+				.filter((sessionId) => !keepSessionIds.has(sessionId));
+			let removed = 0;
+			for (const sessionId of orphans) {
+				const result = db.run(
+					'DELETE FROM qa_gate_session_override WHERE session_id = ?',
+					[sessionId],
+				);
+				removed += result.changes;
+			}
+			return removed;
+		},
+	);
+}

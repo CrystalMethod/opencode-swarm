@@ -4,7 +4,10 @@
  */
 
 import { renameSync } from 'node:fs';
-import { getOverrideForSession } from '../db/qa-gate-session-override.js';
+import {
+	getOverrideForSession,
+	sweepOrphanOverrides,
+} from '../db/qa-gate-session-override.js';
 import { loadFullAutoRunState } from '../full-auto/state';
 import { validateSwarmPath } from '../hooks/utils';
 import type { AgentSessionState, TaskWorkflowState } from '../state';
@@ -26,6 +29,7 @@ import {
 	recordHydratedAggregateKeys,
 } from './hydration-ownership.js';
 import {
+	buildInterruptedAdvisoryDedupeKey,
 	buildInterruptedAdvisoryMessage,
 	recordInterruptedExecution,
 } from './restart-reconciliation.js';
@@ -593,8 +597,15 @@ export async function rehydrateState(
 			//   - scopeViolationDetected: false scope violation warnings
 			//   - delegationActive: prevents clean delegation lifecycle on restart
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Clone mutable reset values (e.g. the [] for
+				// pendingAdvisoryMessages): resetValue is a module-level literal
+				// evaluated once, so assigning it directly would give EVERY
+				// reset session the same array instance — a push into one
+				// session's advisories would leak into all later resets
+				// (invariant 8).
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
 			}
 
 			// ── Durable QA policy restore (#2668) ────────────────────────
@@ -635,16 +646,16 @@ export async function rehydrateState(
 				try {
 					const recorded = await recordInterruptedExecution(directory, entry);
 					// pushAdvisory (not a bare push) per the advisory-injection
-					// ratchet: bounded queue + dedupe on the producer key.
+					// ratchet: bounded queue + dedupe. The dedupe key is embedded
+					// literally in the message text by the builder below —
+					// pushAdvisory matches keys by substring against queued text.
 					pushAdvisory(
 						session,
 						buildInterruptedAdvisoryMessage({
 							...entry,
 							guidance: recorded.guidance,
 						}),
-						{
-							dedupeKey: `[restart-reconciliation:${sessionId}:${entry.taskId}]`,
-						},
+						{ dedupeKey: buildInterruptedAdvisoryDedupeKey(entry) },
 					);
 				} catch (error) {
 					log(
@@ -703,6 +714,38 @@ export async function rehydrateState(
 			if (swarmState.agentSessions.has(key) && !isProtectedLiveSession(key)) {
 				swarmState.delegationChains.set(key, value);
 			}
+		}
+	}
+
+	// ── Durable QA override orphan-row reaper (#2668) ────────────────
+	// The hot-path stale sweep (ensureAgentSession → maybeSweepStaleSessions)
+	// runs with no directory, so it can evict a stale session in-memory while
+	// its durable qa_gate_session_override row survives — an orphaned policy
+	// row that a later session reusing the id would inherit. The rehydrate
+	// boundary knows the project, so prune rows whose session is neither in
+	// the restored snapshot nor live under this project's ownership. Fail-open
+	// like every rehydrate-side durable access.
+	if (directory) {
+		try {
+			const keep = new Set<string>();
+			for (const sessionId of Object.keys(snapshot.agentSessions ?? {})) {
+				keep.add(sessionId);
+			}
+			for (const [sessionId, live] of swarmState.agentSessions) {
+				if (live.owningProjectKey === projectKey) keep.add(sessionId);
+			}
+			const removed = sweepOrphanOverrides(directory, keep);
+			if (removed > 0) {
+				log(
+					`[snapshot-reader] pruned ${removed} orphaned QA override row(s) for ${projectKey}`,
+				);
+			}
+		} catch (error) {
+			log(
+				`[snapshot-reader] override orphan reaper failed for ${projectKey}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 		}
 	}
 	return { applied: true };
