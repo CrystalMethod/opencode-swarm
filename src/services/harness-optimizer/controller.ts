@@ -262,6 +262,28 @@ export async function runHarnessOptRound(args: {
 			throw new HarnessOptInputTamperedError(contentHash);
 		}
 		const roundStartedAtMs = Date.now();
+		// Wall-clock bound forwarded INTO the substrate (review PRR-C03): a
+		// deadline signal aborts the run at the budget so the lock tenure
+		// cannot exceed it. Built with an explicitly cleared timer rather
+		// than native AbortSignal.timeout, which the runtime-timeout source
+		// guard forbids (#1964/#2103).
+		const roundAbortSignal = new AbortController();
+		let wallClockTimer: ReturnType<typeof setTimeout> | undefined;
+		if (args.maxWallClockMs !== undefined) {
+			wallClockTimer = setTimeout(
+				() => roundAbortSignal.abort(new Error('wall-clock budget elapsed')),
+				args.maxWallClockMs,
+			);
+		}
+		const forwardCallerAbort = () =>
+			roundAbortSignal.abort(args.abortSignal?.reason);
+		if (args.abortSignal) {
+			if (args.abortSignal.aborted) forwardCallerAbort();
+			else
+				args.abortSignal.addEventListener('abort', forwardCallerAbort, {
+					once: true,
+				});
+		}
 		const decidedAt = new Date().toISOString();
 		const maxTransientRetries = args.maxTransientRetries ?? 0;
 		// Orphan window (documented in the harness-opt-store retention row):
@@ -283,15 +305,12 @@ export async function runHarnessOptRound(args: {
 			maxTransientRetries,
 			maxSpendUsd: args.maxSpendUsd,
 			executor: args.executor,
-			abortSignal:
-				args.maxWallClockMs === undefined
-					? args.abortSignal
-					: AbortSignal.any([
-							...(args.abortSignal ? [args.abortSignal] : []),
-							AbortSignal.timeout(args.maxWallClockMs),
-						]),
+			abortSignal: roundAbortSignal.signal,
 		});
 		const roundElapsedMs = Date.now() - roundStartedAtMs;
+		if (wallClockTimer !== undefined) clearTimeout(wallClockTimer);
+		if (args.abortSignal)
+			args.abortSignal.removeEventListener('abort', forwardCallerAbort);
 		const candidateOutcomes = result.outcomes.filter(
 			(outcome) => !outcome.candidateId.startsWith('harnessopt-baseline-'),
 		);
