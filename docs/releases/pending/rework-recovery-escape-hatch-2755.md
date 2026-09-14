@@ -13,8 +13,20 @@
   architect, the exact plan task id, durable workflow state exactly
   `rework_required`, and green pre-check proof for the wedged generation
   (both secretscan and sast_scan bundles green and newer than the failure
-  transition — the same #2665 bar the Stage A wedge repair uses). Every
-  refusal is a distinct typed error (`RECOVER_REWORK_*`, `PLAN_*`).
+  transition — the same #2665 bar the Stage A wedge repair uses; bundle
+  recency is global, not correlated to the task's changed files). Every
+  refusal is a distinct typed error (`RECOVER_REWORK_*`, `PLAN_*`). Known
+  limitation: a project with `gates.sast_scan.enabled` disabled never
+  persists a sast_scan bundle, so `recover_rework_task` cannot succeed
+  there by design — use the coder repair loop instead (or re-enable SAST).
+- **Durable distinguishability.** The supervised pass also persists a
+  `supervisedRecovery` marker in the task's workflow evidence (mirroring the
+  `forcedCompletion` precedent: preserved across same-generation
+  transitions, cleared when `repair_idle` opens a new generation), so a
+  supervised recovery stays distinguishable from a mechanical Stage A pass
+  even after later transitions overwrite the transition id; the append
+  outcome of the `.swarm/events.jsonl` audit event is surfaced in the tool
+  result (`audit_event_recorded`) instead of being asserted.
 - **Mechanical guardrail unchanged.** The reducer admits `stage_a_passed`
   from `rework_required` only when the new `supervisedRecovery` event flag is
   set, which only this tool sets. The guardrails recorder and the

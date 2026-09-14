@@ -3,10 +3,11 @@ import * as path from 'node:path';
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import {
 	getTaskWorkflowSnapshot,
-	readTaskEvidence,
+	readTaskEvidenceState,
 	transitionTaskWorkflowEvidence,
 } from '../gate-evidence.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
+import { sanitizeDiagnosticText } from '../scope/path-identity.js';
 import { ensureAgentSession } from '../state.js';
 import {
 	appendStageARepairEvent,
@@ -19,6 +20,13 @@ export interface ReworkRecoverySummary {
 	state: string;
 	transitionId: string;
 	recordedAt: string;
+	/**
+	 * Whether the stage_a_repair audit event actually landed in
+	 * `.swarm/events.jsonl`. The durable transition is authoritative regardless;
+	 * this surfaces the best-effort append honestly instead of asserting an
+	 * audit record that may not exist (issue #2755 review, FB-001).
+	 */
+	auditEventRecorded: boolean;
 }
 
 /**
@@ -95,7 +103,18 @@ export async function forceRecoverReworkTask(
 		);
 	}
 
-	const evidence = await readTaskEvidence(directory, taskId);
+	// Discriminated evidence read (issue #2755 review, FB-004): readTaskEvidence
+	// collapses missing and unparseable files to null, which would misreport a
+	// corrupt evidence file as "no evidence exists" and steer the architect away
+	// from evidence repair. Mirrors the plan missing/corrupt distinction below.
+	const evidenceRead = await readTaskEvidenceState(directory, taskId);
+	if (evidenceRead.kind === 'unparseable') {
+		throw new Error(
+			`RECOVER_REWORK_EVIDENCE_CORRUPT: the workflow evidence file for task ${taskId} exists but could not be parsed (${evidenceRead.evidencePath}). ` +
+				'Repair the evidence first (repair_gate_evidence or /swarm doctor); recovery cannot classify a corrupt evidence state.',
+		);
+	}
+	const evidence = evidenceRead.kind === 'ok' ? evidenceRead.evidence : null;
 	const workflow = getTaskWorkflowSnapshot(evidence);
 	if (!evidence || !workflow.authoritative) {
 		throw new Error(
@@ -122,20 +141,34 @@ export async function forceRecoverReworkTask(
 	if (!Number.isFinite(wedgeMs)) {
 		throw new Error(
 			'RECOVER_REWORK_GREEN_PRECHECK_REQUIRED: cannot prove pre-check recency ' +
-				`(workflow updatedAt "${workflow.updatedAt}" is not a parseable timestamp). Re-run pre_check_batch on the task's changed files, then retry.`,
+				`(workflow updatedAt "${workflow.updatedAt}" is not a parseable timestamp — the evidence file for task ${taskId} is likely corrupt). ` +
+				'Repair the evidence (repair_gate_evidence or /swarm doctor); re-running pre_check_batch cannot fix an unparseable timestamp.',
 		);
 	}
 	const greenness = await hasGreenPostSettlementPreCheck(directory, wedgeMs);
 	if (!greenness.green) {
+		// FB-007: in a SAST-disabled config this refusal is permanent (no
+		// sast_scan bundle is ever persisted), so the generic retry advice would
+		// dead-end; name the config cause and the working alternative.
+		const sastHint =
+			greenness.reason === 'no_pre_check_bundles'
+				? ' Note: if gates.sast_scan.enabled is false, no sast_scan bundle is ever persisted and this recovery is unavailable by design — enable gates.sast_scan.enabled and run sast_scan, or use the coder repair loop.'
+				: '';
 		throw new Error(
 			`RECOVER_REWORK_GREEN_PRECHECK_REQUIRED: refusing to mark Stage A passed without proof (${greenness.reason}). ` +
-				"Re-run pre_check_batch on the task's changed files and retry once it is green.",
+				"The bar is a green secretscan AND sast_scan evidence pair newer than the failing verdict — normally provided by a fresh pre_check_batch run (bundle proof is global, not correlated to the task's changed files)." +
+				sastHint,
 		);
 	}
 
+	// FB-005: the reason reaches the human-readable audit trail; apply the
+	// repo's untrusted-diagnostic scrubber so control/bidi characters cannot
+	// spoof audit renders (sibling stage-a-repair sanitizes its repair-failed
+	// messages the same way). Also makes the release fragment's "sanitized
+	// reason" claim true.
 	const sanitizedReason =
 		typeof options.reason === 'string' && options.reason.trim().length > 0
-			? options.reason.trim().slice(0, 500)
+			? sanitizeDiagnosticText(options.reason.trim(), 500)
 			: undefined;
 	const recordedAt = new Date().toISOString();
 	// Deterministic per generation: a repeat call after success can never reach
@@ -157,8 +190,10 @@ export async function forceRecoverReworkTask(
 	// Best-effort audit event through the shared #2665 stage_a_repair wrapper
 	// (appendCoreEventSync seam, criticalWarn on failure): the durable
 	// transition above is authoritative; this event is the human-readable
-	// trail distinguishing a supervised recovery from a mechanical pass.
-	await appendStageARepairEvent(directory, {
+	// trail distinguishing a supervised recovery from a mechanical pass. The
+	// append outcome is surfaced to the caller (FB-001) instead of asserting
+	// an audit record that may not exist.
+	const auditEventRecorded = await appendStageARepairEvent(directory, {
 		action: 'rework_recovered',
 		taskId,
 		transitionId,
@@ -173,5 +208,6 @@ export async function forceRecoverReworkTask(
 		state: updatedWorkflow.state,
 		transitionId,
 		recordedAt,
+		auditEventRecorded,
 	};
 }

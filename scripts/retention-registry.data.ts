@@ -1675,14 +1675,14 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/gate-evidence.ts', 'src/council/council-evidence-writer.ts'],
 		writerCitations: [
-			'src/gate-evidence.ts:879 transitionTaskWorkflowEvidence / :956 recordGateEvidence / :1010 recordAgentDispatch — locked read-modify-write, atomic write',
+			'src/gate-evidence.ts:984 transitionTaskWorkflowEvidence / :1094 recordGateEvidence / :1152 recordAgentDispatch — locked read-modify-write, atomic write',
 			'src/council/council-evidence-writer.ts:96 writeCouncilEvidence — gates.council section under withTaskEvidenceLock',
 		],
 		readerCitations: [
-			'src/gate-evidence.ts:1054 readTaskEvidence — FULL-FILE fail-open, async; :1071 readTaskEvidenceRaw — strict, sync',
+			'src/gate-evidence.ts:1196 readTaskEvidence — FULL-FILE fail-open, async; :1272 readTaskEvidenceRaw — strict, sync',
 			'src/council/council-evidence-writer.ts:207 hasCouncilEvidenceAttempt',
 		],
-		schemaVersion: 'workflow WAL states; unrecognized states degrade to null (documented :1048-1052)',
+		schemaVersion: 'workflow WAL states; unrecognized states degrade to null (documented :1183-1188)',
 		stateClass: 'authoritative',
 		privacyClass: 'mixed',
 		directFileExemption: {
@@ -1690,15 +1690,15 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			reviewedIssue: 2036,
 		},
 		writeLimits: {
-			bound: 'retryHistory ≤3 (schema :303); per-task file; evidence/ archived+cleaned at close',
+			bound: 'retryHistory ≤3 (schema :347); per-task file; evidence/ archived+cleaned at close',
 			scope: 'per-key',
 			keyspaceBound:
-				'FINITE BY REAPER, not by key domain: one key per taskId — a flat .swarm/evidence/{taskId}.json (src/gate-evidence.ts:798 getEvidencePath) whose taskId is only shape-validated (src/validation/task-id.ts:69-114), so the domain is open. The GLOBAL deleter is the same one the task-evidence-trajectory row cites: "evidence" is in ACTIVE_STATE_DIRS_TO_CLEAN (src/commands/close/constants.ts:253-269) and the close clean loop recursively removes the whole tree (src/commands/close/clean-stage.ts:176-190), taking every {taskId}.json with it. Note the per-file retryHistory ≤3 cap is NOT the keyspace bound — it caps one key\'s history and says nothing about how many keys exist. CAVEAT: archive-first-gated (src/commands/close/clean-stage.ts:176-185) and untouched by /swarm reset and /swarm reset-session, so an unclosed session holds one file per distinct taskId.',
-			citation: 'src/gate-evidence.ts:303; src/commands/close/constants.ts:253-269 ACTIVE_STATE_DIRS_TO_CLEAN',
+				'FINITE BY REAPER, not by key domain: one key per taskId — a flat .swarm/evidence/{taskId}.json (src/gate-evidence.ts:832 getEvidencePath) whose taskId is only shape-validated (src/validation/task-id.ts:69-114), so the domain is open. The GLOBAL deleter is the same one the task-evidence-trajectory row cites: "evidence" is in ACTIVE_STATE_DIRS_TO_CLEAN (src/commands/close/constants.ts:253-269) and the close clean loop recursively removes the whole tree (src/commands/close/clean-stage.ts:176-190), taking every {taskId}.json with it. Note the per-file retryHistory ≤3 cap is NOT the keyspace bound — it caps one key\'s history and says nothing about how many keys exist. CAVEAT: archive-first-gated (src/commands/close/clean-stage.ts:176-185) and untouched by /swarm reset and /swarm reset-session, so an unclosed session holds one file per distinct taskId.',
+			citation: 'src/gate-evidence.ts:347; src/commands/close/constants.ts:253-269 ACTIVE_STATE_DIRS_TO_CLEAN',
 		},
-		readBound: { pattern: 'full-file', bound: 'single per-task JSON', sync: true, citation: 'src/gate-evidence.ts:1054-1089' },
+		readBound: { pattern: 'full-file', bound: 'single per-task JSON', sync: true, citation: 'src/gate-evidence.ts:1196-1224' },
 		lockModel: 'withTaskEvidenceLock (evidence/{taskId}.json key) — proper-lockfile, 60 s timeout, backoff+jitter',
-		crashBehavior: 'atomic write; WAL PREPARED fencing (assertTaskEvidenceWriteAllowed :117)',
+		crashBehavior: 'atomic write; WAL PREPARED fencing (assertTaskEvidenceWriteAllowed :152)',
 		closePolicy: 'cleaned — evidence/ dir lifecycle',
 		resetPolicy: 'not reset',
 		legacyCompatibility: 'unknown workflow states read as null (graceful degrade)',

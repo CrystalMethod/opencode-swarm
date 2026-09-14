@@ -270,6 +270,7 @@ describe('forceRecoverReworkTask (issue #2755)', () => {
 		expect(summary.state).toBe('pre_check_passed');
 		expect(summary.generation).toBe(1);
 		expect(summary.transitionId).toBe('rework-recovery:1.4:gen1');
+		expect(summary.auditEventRecorded).toBe(true);
 
 		const { readTaskEvidence, getTaskWorkflowSnapshot } = await import(
 			'../../../src/gate-evidence'
@@ -302,5 +303,140 @@ describe('forceRecoverReworkTask (issue #2755)', () => {
 				reason: 'second attempt',
 			}),
 		).rejects.toThrow(/RECOVER_REWORK_STATE_REQUIRED/);
+	});
+
+	it('persists the supervisedRecovery marker in the durable evidence (FB-002)', async () => {
+		writeMinimalPlan('1.5');
+		await seedWorkflow('1.5', ['mutate', 'stageA', 'stageBFail']);
+		await writeGreenBundles('1.5');
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-6', 'architect', directory);
+		await forceRecoverReworkTask(directory, 'arch-6', {
+			taskId: '1.5',
+			reason: 'supervised recovery marker pin',
+		});
+		const { readTaskEvidence } = await import('../../../src/gate-evidence');
+		expect(
+			(await readTaskEvidence(directory, '1.5'))?.workflow?.supervisedRecovery,
+		).toBe(true);
+	});
+
+	it('refuses stale green bundles (FB-010: recency floor pinned at the call site)', async () => {
+		writeMinimalPlan('1.6');
+		await seedWorkflow('1.6', ['mutate', 'stageA', 'stageBFail']);
+		// Green bundles dated BEFORE the wedge anchor: recency must refuse even
+		// though the verdicts are green.
+		const { readTaskEvidence, getTaskWorkflowSnapshot } = await import(
+			'../../../src/gate-evidence'
+		);
+		const anchor = getTaskWorkflowSnapshot(
+			await readTaskEvidence(directory, '1.6'),
+		).updatedAt;
+		const stale = new Date(Date.parse(anchor) - 60_000).toISOString();
+		writeBundle('secretscan', stale);
+		writeBundle('sast_scan', stale);
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-7', 'architect', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'arch-7', {
+				taskId: '1.6',
+				reason: 'stale bundles',
+			}),
+		).rejects.toThrow(
+			/RECOVER_REWORK_GREEN_PRECHECK_REQUIRED.*pre_check_failed_or_stale/,
+		);
+	});
+
+	it('distinguishes corrupt evidence from missing evidence (FB-004)', async () => {
+		writeMinimalPlan('1.7');
+		await seedWorkflow('1.7', ['mutate', 'stageA', 'stageBFail']);
+		const evidencePath = path.join(directory, '.swarm', 'evidence', '1.7.json');
+		writeFileSync(evidencePath, '{ not valid json', 'utf-8');
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-8', 'architect', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'arch-8', {
+				taskId: '1.7',
+				reason: 'corrupt evidence',
+			}),
+		).rejects.toThrow(/RECOVER_REWORK_EVIDENCE_CORRUPT/);
+	});
+
+	it('refuses a plan task with no durable evidence as NO_WORKFLOW (FB-013)', async () => {
+		writeMinimalPlan('1.8');
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-9', 'architect', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'arch-9', {
+				taskId: '1.8',
+				reason: 'no evidence yet',
+			}),
+		).rejects.toThrow(/RECOVER_REWORK_NO_WORKFLOW/);
+	});
+
+	it('refuses PLAN_CORRUPT for an unparseable plan (FB-013)', async () => {
+		mkdirSync(path.join(directory, '.swarm'), { recursive: true });
+		writeFileSync(
+			path.join(directory, '.swarm', 'plan.json'),
+			'{ not json',
+			'utf-8',
+		);
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-10', 'architect', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'arch-10', {
+				taskId: '1.1',
+				reason: 'corrupt plan',
+			}),
+		).rejects.toThrow(/PLAN_CORRUPT/);
+	});
+
+	it('refuses an unparseable workflow updatedAt as corrupt evidence (FB-013)', async () => {
+		writeMinimalPlan('1.9');
+		// Hand-write schema-valid evidence with a garbage updatedAt: the
+		// TaskWorkflowMetadata schema only requires a string, so corruption can
+		// reach the recency anchor.
+		await seedWorkflow('1.9', ['mutate', 'stageA', 'stageBFail']);
+		const evidencePath = path.join(directory, '.swarm', 'evidence', '1.9.json');
+		const raw = JSON.parse(readFileSync(evidencePath, 'utf-8') ?? '{}') as {
+			workflow?: { updatedAt?: string };
+		};
+		expect(raw.workflow).toBeDefined();
+		raw.workflow!.updatedAt = 'garbage-not-a-date';
+		writeFileSync(evidencePath, JSON.stringify(raw), 'utf-8');
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('arch-11', 'architect', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'arch-11', {
+				taskId: '1.9',
+				reason: 'corrupt updatedAt',
+			}),
+		).rejects.toThrow(
+			/RECOVER_REWORK_GREEN_PRECHECK_REQUIRED.*not a parseable timestamp/,
+		);
+	});
+
+	it('accepts a multi-swarm prefixed architect and still refuses a prefixed non-architect (FB-012)', async () => {
+		writeMinimalPlan('1.11');
+		await seedWorkflow('1.11', ['mutate', 'stageA', 'stageBFail']);
+		await writeGreenBundles('1.11');
+		const { ensureAgentSession } = await import('../../../src/state');
+		ensureAgentSession('pref-1', 'local_architect', directory);
+		const summary = await forceRecoverReworkTask(directory, 'pref-1', {
+			taskId: '1.11',
+			reason: 'prefixed architect acceptance pin',
+		});
+		expect(summary.state).toBe('pre_check_passed');
+
+		// Prefixed non-architect: still refused.
+		writeMinimalPlan('1.12');
+		await seedWorkflow('1.12', ['mutate', 'stageA', 'stageBFail']);
+		ensureAgentSession('pref-2', 'mega_coder', directory);
+		await expect(
+			forceRecoverReworkTask(directory, 'pref-2', {
+				taskId: '1.12',
+				reason: 'prefixed non-architect',
+			}),
+		).rejects.toThrow(/RECOVER_REWORK_ARCHITECT_REQUIRED/);
 	});
 });

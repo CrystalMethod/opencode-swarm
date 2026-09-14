@@ -49,24 +49,29 @@ export interface StageARepairResult {
  * (which owns `.swarm` creation, lock retry, and torn-tail framing — its
  * single atomic append replaces the former EBUSY/EPERM one-retry), final
  * failure surfaced via criticalWarn so a silently missing audit line is
- * visible.
+ * visible. Returns whether the audit line actually landed, so callers on
+ * supervised-write paths can surface audit honesty instead of asserting it
+ * (issue #2755 review: the recover_rework_task tool must not claim an audit
+ * record exists when the append failed).
  */
 export async function appendStageARepairEvent(
 	directory: string,
 	payload: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
 	try {
 		appendCoreEventSync(directory, {
 			type: 'stage_a_repair',
 			timestamp: new Date().toISOString(),
 			...payload,
 		});
+		return true;
 	} catch (error) {
 		logger.criticalWarn(
 			`[stage-a-repair] audit event write failed: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
+		return false;
 	}
 }
 

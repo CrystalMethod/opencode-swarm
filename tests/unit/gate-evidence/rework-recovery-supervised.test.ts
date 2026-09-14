@@ -155,6 +155,111 @@ describe('gate-evidence supervised stage_a_passed (issue #2755)', () => {
 		).rejects.toThrow(/TASK_WORKFLOW_TERMINAL/);
 	});
 
+	it('rejects a supervised stage_a_passed from reviewer_run (FB-003: mutation-probe gap)', async () => {
+		// Seed to reviewer_run: supervised recovery, then the reviewer gate
+		// completes without completing the route.
+		await seedReworkRequired('1.8');
+		await transitionTaskWorkflowEvidence(tempDir, '1.8', {
+			type: 'stage_a_passed',
+			supervisedRecovery: true,
+			expectedGeneration: 1,
+			transitionId: 'rr-1.8',
+		});
+		await transitionTaskWorkflowEvidence(tempDir, '1.8', {
+			type: 'stage_b_completed',
+			gate: 'reviewer',
+			sessionId: 'rev-session',
+			routeComplete: false,
+			expectedGeneration: 1,
+			transitionId: 'rev-partial',
+		});
+		expect(readTaskEvidenceRaw(tempDir, '1.8')?.workflow?.state).toBe(
+			'reviewer_run',
+		);
+		// The supervised admission must NOT widen into reviewer_run.
+		await expect(
+			transitionTaskWorkflowEvidence(tempDir, '1.8', {
+				type: 'stage_a_passed',
+				supervisedRecovery: true,
+				expectedGeneration: 1,
+				transitionId: 'supervised-from-reviewer-run',
+			}),
+		).rejects.toThrow(/TASK_WORKFLOW_CODER_MUTATION_REQUIRED/);
+	});
+
+	it('persists supervisedRecovery on the supervised pass, only on the supervised pass, and clears it on generation rotation (FB-002)', async () => {
+		// Mechanical pass from coder_delegated: no marker.
+		await transitionTaskWorkflowEvidence(tempDir, '2.1', {
+			type: 'accepted_mutation',
+			agentType: 'coder',
+			expectedGeneration: 0,
+			transitionId: 'mut-2.1',
+		});
+		await transitionTaskWorkflowEvidence(tempDir, '2.1', {
+			type: 'stage_a_passed',
+			expectedGeneration: 1,
+			transitionId: 'mech-2.1',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.1')?.workflow?.supervisedRecovery,
+		).toBeUndefined();
+
+		// Supervised pass from rework_required: marker persisted and durable
+		// across a subsequent same-generation transition.
+		await seedReworkRequired('2.2');
+		await transitionTaskWorkflowEvidence(tempDir, '2.2', {
+			type: 'stage_a_passed',
+			supervisedRecovery: true,
+			expectedGeneration: 1,
+			transitionId: 'rr-2.2',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.2')?.workflow?.supervisedRecovery,
+		).toBe(true);
+		await transitionTaskWorkflowEvidence(tempDir, '2.2', {
+			type: 'stage_b_completed',
+			gate: 'reviewer',
+			sessionId: 'rev',
+			routeComplete: false,
+			expectedGeneration: 1,
+			transitionId: 'rev-2.2',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.2')?.workflow?.supervisedRecovery,
+		).toBe(true);
+
+		// Generation rotation (accepted_mutation) clears the marker.
+		await transitionTaskWorkflowEvidence(tempDir, '2.2', {
+			type: 'accepted_mutation',
+			agentType: 'coder',
+			expectedGeneration: 1,
+			transitionId: 'mut-2.2',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.2')?.workflow?.supervisedRecovery,
+		).toBeUndefined();
+
+		// repair_idle also clears it (mirrors forcedCompletion semantics).
+		await seedReworkRequired('2.3');
+		await transitionTaskWorkflowEvidence(tempDir, '2.3', {
+			type: 'stage_a_passed',
+			supervisedRecovery: true,
+			expectedGeneration: 1,
+			transitionId: 'rr-2.3',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.3')?.workflow?.supervisedRecovery,
+		).toBe(true);
+		await transitionTaskWorkflowEvidence(tempDir, '2.3', {
+			type: 'repair_idle',
+			expectedGeneration: 1,
+			transitionId: 'repair-2.3',
+		});
+		expect(
+			readTaskEvidenceRaw(tempDir, '2.3')?.workflow?.supervisedRecovery,
+		).toBeUndefined();
+	});
+
 	it('still admits the plain stage_a_passed from coder_delegated and pre_check_passed', async () => {
 		await transitionTaskWorkflowEvidence(tempDir, '1.7', {
 			type: 'accepted_mutation',

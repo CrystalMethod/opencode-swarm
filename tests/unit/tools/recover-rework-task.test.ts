@@ -6,6 +6,7 @@ import {
 	readTaskEvidence,
 	transitionTaskWorkflowEvidence,
 } from '../../../src/gate-evidence';
+import { TOOL_METADATA } from '../../../src/tools/tool-metadata';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import {
 	executeRecoverReworkTask,
@@ -200,6 +201,7 @@ describe('recover_rework_task tool (issue #2755)', () => {
 			generation: number;
 			state: string;
 			transition_id: string;
+			audit_event_recorded: boolean;
 			method: string;
 			message: string;
 		};
@@ -208,6 +210,7 @@ describe('recover_rework_task tool (issue #2755)', () => {
 		expect(parsed.generation).toBe(1);
 		expect(parsed.state).toBe('pre_check_passed');
 		expect(parsed.transition_id).toBe('rework-recovery:1.2:gen1');
+		expect(parsed.audit_event_recorded).toBe(true);
 		expect(parsed.method).toBe('supervised_recovery');
 		expect(parsed.message).toContain(
 			'Reviewer/test_engineer dispatch is permitted again',
@@ -215,9 +218,48 @@ describe('recover_rework_task tool (issue #2755)', () => {
 		expect(parsed.message).toContain('rework_recovered');
 	});
 
+	it('rejects an oversized task_id instead of echoing it (FB-014)', async () => {
+		const raw = await executeRecoverReworkTask(
+			{ task_id: `9.9${'X'.repeat(80)}`, reason: 'too long' },
+			directory,
+			{ sessionID: 's-1' },
+		);
+		const parsed = JSON.parse(raw) as { success: boolean; message: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.message).toContain('Invalid recover_rework_task call');
+	});
+
+	it('surfaces audit_event_recorded:false with a WARNING when the audit append fails (FB-001)', async () => {
+		writeMinimalPlan('1.3');
+		await seedReworkRequired('1.3');
+		await writeGreenBundles('1.3');
+		ensureAgentSession('tool-arch-3', 'architect', directory);
+		// Force the events append to fail: the canonical .swarm/events.jsonl
+		// path is occupied by a directory, so appendCoreEventSync cannot write
+		// (EISDIR class — same probe the review used).
+		mkdirSync(path.join(directory, '.swarm', 'events.jsonl'), {
+			recursive: true,
+		});
+		const raw = await executeRecoverReworkTask(
+			{ task_id: '1.3', reason: 'audit append will fail' },
+			directory,
+			{ sessionID: 'tool-arch-3' },
+		);
+		const parsed = JSON.parse(raw) as {
+			success: boolean;
+			audit_event_recorded: boolean;
+			message: string;
+		};
+		expect(parsed.success).toBe(true);
+		expect(parsed.audit_event_recorded).toBe(false);
+		expect(parsed.message).toContain('WARNING');
+		expect(parsed.message).not.toContain('is audited to .swarm/events.jsonl');
+	});
+
 	it('is registered with an architect-only grant and a two-arg execute (invariant 11)', () => {
 		expect(recover_rework_task.description).toContain('rework_required');
 		expect(typeof recover_rework_task.execute).toBe('function');
 		expect(recover_rework_task.execute.length).toBeGreaterThanOrEqual(2);
+		expect(TOOL_METADATA.recover_rework_task.agents).toEqual(['architect']);
 	});
 });

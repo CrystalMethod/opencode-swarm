@@ -100,6 +100,19 @@ export interface TaskWorkflowMetadata {
 	 * the same answer those files would have given anyway.
 	 */
 	forcedCompletion?: boolean;
+	/**
+	 * True when this task's current generation entered `pre_check_passed` via the
+	 * architect-supervised `recover_rework_task` escape hatch (issue #2755) rather
+	 * than the mechanical pre_check_batch recorder.
+	 *
+	 * Same rationale as `forcedCompletion`: the reducer consumes the event-scoped
+	 * `supervisedRecovery` flag transiently, so without a persisted marker the
+	 * evidence file becomes byte-identical to a mechanically-earned Stage A pass
+	 * as soon as the next transition overwrites `lastTransitionId`. Preserved
+	 * across subsequent transitions in the same generation, cleared by
+	 * `repair_idle` (which opens a new generation for genuinely new work).
+	 */
+	supervisedRecovery?: boolean;
 }
 
 export interface TaskWorkflowSnapshot extends TaskWorkflowMetadata {
@@ -337,6 +350,7 @@ const TaskWorkflowMetadataSchema = z.object({
 	lastTransitionId: z.string().min(1).nullable().optional().default(null),
 	updatedAt: z.string(),
 	forcedCompletion: z.boolean().optional(),
+	supervisedRecovery: z.boolean().optional(),
 });
 
 const TaskEvidenceSchema = z.object({
@@ -604,6 +618,12 @@ export function reduceTaskWorkflowSnapshot(
 		// completion stays visible downstream. Cleared by repair_idle, which opens a new
 		// generation for genuinely new work.
 		...(current.forcedCompletion === true ? { forcedCompletion: true } : {}),
+		// Same durability contract for the supervised Stage A entry mode (issue
+		// #2755): preserved across same-generation transitions, set by the
+		// supervised stage_a_passed below, stripped when a new generation opens.
+		...(current.supervisedRecovery === true
+			? { supervisedRecovery: true }
+			: {}),
 	};
 
 	switch (event.type) {
@@ -643,6 +663,8 @@ export function reduceTaskWorkflowSnapshot(
 					retryCount: Math.min(current.retryCount + 1, 3),
 					retryHistory: [...current.retryHistory, outcome].slice(-3),
 					retryEpoch: current.retryEpoch || current.generation + 1,
+					// New generation: any prior Stage A entry mode no longer applies.
+					supervisedRecovery: undefined,
 				};
 			}
 			return {
@@ -651,6 +673,7 @@ export function reduceTaskWorkflowSnapshot(
 				state: 'coder_delegated',
 				// A mutation is a repair attempt, not proof that prior rejections were
 				// resolved. Preserve the task-level circuit history across generations.
+				supervisedRecovery: undefined,
 			};
 		case 'stage_a_passed':
 			if (
@@ -667,6 +690,12 @@ export function reduceTaskWorkflowSnapshot(
 			}
 			return {
 				...base,
+				// Persist the supervised entry mode so the evidence file stays
+				// distinguishable from a mechanically-earned Stage A pass after
+				// later transitions overwrite lastTransitionId (issue #2755 review).
+				...(event.supervisedRecovery === true
+					? { supervisedRecovery: true as const }
+					: {}),
 				state: 'pre_check_passed',
 			};
 		case 'stage_a_failed':
@@ -750,9 +779,14 @@ export function reduceTaskWorkflowSnapshot(
 				state: 'closed',
 			};
 		case 'repair_idle': {
-			// A repair reopens the task for new work, so a prior forced completion no
-			// longer describes this generation. Drop the field rather than carrying it.
-			const { forcedCompletion: _cleared, ...withoutForced } = base;
+			// A repair reopens the task for new work, so prior forced-completion and
+			// supervised-recovery markers no longer describe this generation. Drop
+			// them rather than carrying them forward.
+			const {
+				forcedCompletion: _cleared,
+				supervisedRecovery: _clearedMarker,
+				...withoutForced
+			} = base;
 			return {
 				...withoutForced,
 				generation: current.generation + 1,

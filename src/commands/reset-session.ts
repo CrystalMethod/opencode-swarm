@@ -788,6 +788,9 @@ export async function handleResetSessionCommand(
 			'intentionally survive this reset. If a task is blocked with ' +
 			'TASK_RETRY_CRITIC_REQUIRED waiting for a critic_sounding_board ' +
 			'APPROVED verdict that was already obtained, have the architect ' +
-			'record it with the approve_retry_sounding_board tool.',
+			'record it with the approve_retry_sounding_board tool. A task left ' +
+			'at rework_required also survives this reset; when the Stage B ' +
+			'verdict did not require a code change, the architect can exit it ' +
+			'with the recover_rework_task tool (issue #2755).',
 	].join('\n');
 }
