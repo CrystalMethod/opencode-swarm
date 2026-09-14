@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import * as path from 'node:path';
 import lockfile from 'proper-lockfile';
+import type { HarnessEvolutionConfig } from '../config/schema.js';
 import {
 	computeWriteApprovalHash,
 	consumeWriteApprovalFact,
@@ -186,6 +187,7 @@ export type ActivateHarnessCandidateResult =
 	  }
 	| { status: 'candidate_not_found'; reason: string }
 	| { status: 'candidate_not_activatable'; reason: string }
+	| { status: 'allowlist_revoked'; reason: string }
 	| { status: 'consumer_mismatch'; reason: string }
 	| { status: 'approval_required'; reason: string }
 	| {
@@ -208,6 +210,7 @@ export type RollbackHarnessVersionResult =
 			retentionFailures: string[];
 	  }
 	| { status: 'version_not_found'; reason: string }
+	| { status: 'allowlist_revoked'; reason: string }
 	| { status: 'consumer_mismatch'; reason: string }
 	| { status: 'approval_required'; reason: string }
 	| {
@@ -973,6 +976,32 @@ function computeAllowedPathDigest(paths: readonly string[]): string {
 	return computeWriteApprovalHash({
 		allowedPaths: normalizeAllowedPaths(paths),
 	});
+}
+
+/**
+ * Re-validate a recorded candidate's approved paths against the CURRENT
+ * harness evolution config (issue #2503): admission-time validation alone
+ * let a candidate recorded under a looser allowlist activate after the
+ * config tightened. Returns the first non-admitted relative path, or null.
+ * Prefix semantics mirror validateSourceCandidate's allowlist check
+ * (src/harness/source-candidate.ts isWithinPrefix + normalizeRelativePath).
+ */
+function firstNonAdmittedApprovedPath(
+	approvedPaths: readonly string[],
+	config: HarnessEvolutionConfig,
+): string | null {
+	for (const approvedPath of approvedPaths) {
+		const normalized = approvedPath.replace(/\\/g, '/').replace(/^\.\/+/, '');
+		const admitted = config.source_allowlist.some((prefix) => {
+			const normalizedPrefix = prefix.replace(/\\/g, '/').replace(/^\.\/+/, '');
+			return (
+				normalized === normalizedPrefix ||
+				normalized.startsWith(`${normalizedPrefix}/`)
+			);
+		});
+		if (!admitted) return approvedPath;
+	}
+	return null;
 }
 
 function serializeCandidateRecord(candidate: StoredHarnessCandidateV1): string {
@@ -3461,6 +3490,7 @@ export async function activateHarnessCandidate(args: {
 	expectedCurrentGeneration: number;
 	targetContentHash: string;
 	allowedPathDigest: string;
+	config?: HarnessEvolutionConfig;
 	maxVersions?: number;
 	maxReplayRecords?: number;
 	maxInactiveCandidates?: number;
@@ -3483,6 +3513,28 @@ export async function activateHarnessCandidate(args: {
 				status: 'candidate_not_activatable',
 				reason: 'candidate has no validated target harness blueprint',
 			};
+		}
+		// Issue #2503 allowlist re-validation (defense in depth). Runs ONLY
+		// when the caller supplies the live harness_evolution config: the
+		// default config has an EMPTY source_allowlist (which admission
+		// itself rejects), so defaulting absent config to it would refuse
+		// every activation a caller recorded under an explicit allowlist.
+		// Today activation is driven by external package-API consumers
+		// (harnessMutationV1) after /swarm approve-write issues the one-shot
+		// fact; callers that pass the live config get the revocation check,
+		// and absent config keeps the pre-#2503 admission-time-only
+		// validation.
+		if (args.config) {
+			const revokedApprovedPath = firstNonAdmittedApprovedPath(
+				stored.candidate.approvedPaths,
+				args.config,
+			);
+			if (revokedApprovedPath) {
+				return {
+					status: 'allowlist_revoked',
+					reason: `recorded approved path ${revokedApprovedPath} is no longer admitted by the current harness_evolution source allowlist`,
+				};
+			}
 		}
 		if (
 			!candidateCommittedWithinReplayBound(
@@ -3686,6 +3738,7 @@ export async function rollbackHarnessVersion(args: {
 	expectedCurrentGeneration: number;
 	targetContentHash: string;
 	allowedPathDigest: string;
+	config?: HarnessEvolutionConfig;
 	maxVersions?: number;
 	maxReplayRecords?: number;
 	maxInactiveCandidates?: number;
@@ -3743,6 +3796,31 @@ export async function rollbackHarnessVersion(args: {
 				reason:
 					'rollback approval binding no longer matches the stored target version content or paths',
 			};
+		}
+		const rollbackCandidate = readStoredCandidate(
+			args.directory,
+			targetVersion.candidateId,
+		);
+		if (!rollbackCandidate) {
+			return {
+				status: 'allowlist_revoked',
+				reason: `target version candidate ${targetVersion.candidateId} record is missing; rollback allowlist re-validation cannot pass`,
+			};
+		}
+		// Same issue #2503 guard shape as activation (defense in depth for
+		// the rollback path): re-validate only when the caller supplies the
+		// live harness_evolution config.
+		if (args.config) {
+			const rollbackRevokedApprovedPath = firstNonAdmittedApprovedPath(
+				rollbackCandidate.candidate.approvedPaths,
+				args.config,
+			);
+			if (rollbackRevokedApprovedPath) {
+				return {
+					status: 'allowlist_revoked',
+					reason: `recorded approved path ${rollbackRevokedApprovedPath} for the rollback target is no longer admitted by the current harness_evolution source allowlist`,
+				};
+			}
 		}
 		const targetSessionId = args.targetSessionId ?? args.consumerSessionId;
 		if (targetSessionId !== args.consumerSessionId) {

@@ -369,7 +369,10 @@ describe('swarm-subcommand-parity', () => {
 		// .claude/skills/swarm/SKILL.md.
 		// 115 → 116: /swarm ci added — advisory headless CI (#2497), documented
 		// in .claude/skills/swarm/SKILL.md.
-		expect(expectedCommands.size).toBe(121);
+		// 121 → 127: /swarm harness-opt family added for the governed HarnessOpt
+		// capstone (issue #2503), documented in .claude/skills/swarm/SKILL.md.
+		// 127 → 128: /swarm harness-opt compare added (reviewer revision).
+		expect(expectedCommands.size).toBe(128);
 
 		console.info(
 			`[swarm-subcommand-parity] skill documented commands (raw): ${skillRawCommands.length}`,

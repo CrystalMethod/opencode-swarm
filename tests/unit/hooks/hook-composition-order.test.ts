@@ -150,6 +150,19 @@ describe('system.transform composition order (#2107 §2)', () => {
 			),
 		).toBeLessThan(orderOf(systemChain, 'swarmCommandSystemRuleHook'));
 	});
+
+	// #2673: the system render boundary must run LAST — after every producer
+	// and the role filter — so the finalized shape is decided once, after all
+	// pushes and prunes. A future handler appended after it silently weakens
+	// the last-position guarantee; this pin makes that a test failure.
+	test('the system render boundary runs after the role filter (last position, #2673)', () => {
+		expect(orderOf(systemChain, 'roleFilterSystemHook')).toBeLessThan(
+			orderOf(
+				systemChain,
+				"systemRenderBoundaryHook['experimental.chat.system.transform']",
+			),
+		);
+	});
 });
 
 describe('session compaction advances the ledger generation (#2107 §4)', () => {

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { createArchitectAgent } from '../../../src/agents/architect';
 
 describe('src/agents/architect.ts - SOUNDING BOARD PROTOCOL (ADVERSARIAL TESTS)', () => {
 	const ARCHITECT_FILE = join(process.cwd(), 'src', 'agents', 'architect.ts');
@@ -292,8 +293,15 @@ describe('src/agents/architect.ts - SOUNDING BOARD PROTOCOL (ADVERSARIAL TESTS)'
 
 		it('should fit within the overall prompt budget', () => {
 			// Check that the addition of section 6a doesn't cause the overall prompt
-			// to exceed reasonable limits
-			const totalCharacters = architectContent.length;
+			// to exceed reasonable limits. Measure the RENDERED prompt, not the
+			// architect.ts source file (issue #2671): the source also carries
+			// non-prompt code (budget accounting helpers, docblocks), so a
+			// source-size proxy reports growth even when the shipped prompt
+			// shrank — it had reached ~97.9% of this bound before #2671 while the
+			// rendered prompt actually got ~3.8K chars SMALLER under the
+			// description-cap repair.
+			const renderedPrompt = createArchitectAgent('test-model').config.prompt;
+			const totalCharacters = renderedPrompt?.length ?? 0;
 			const estimatedTotalTokens = Math.ceil(totalCharacters / 4);
 
 			// The entire prompt should be within reasonable bounds. A typical
@@ -302,7 +310,8 @@ describe('src/agents/architect.ts - SOUNDING BOARD PROTOCOL (ADVERSARIAL TESTS)'
 			// MODE: COUNCIL, General Council early workflow option, and three
 			// BEHAVIORAL_GUIDANCE blocks for QA gate hardening. Subsequent releases
 			// added additional anti-rationalization hardening (time-pressure, urgency,
-			// quick-fix patterns), bringing the prompt to approximately 37–38K tokens.
+			// quick-fix patterns), bringing the prompt to approximately 34K tokens
+			// post-#2671 (bounded AVAILABLE TOOLS descriptions).
 			expect(estimatedTotalTokens).toBeLessThan(40000);
 		});
 	});

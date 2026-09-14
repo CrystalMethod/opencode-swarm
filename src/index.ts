@@ -10,6 +10,7 @@ import {
 	extractSwarmIdFromAgentName,
 	getAgentConfigs,
 	getSwarmAgents,
+	resetArchitectPromptBudgetAdvisories,
 } from './agents';
 import {
 	applyAlwaysSurfacePolicy,
@@ -216,6 +217,7 @@ import { createSteeringConsumedHook } from './hooks/steering-consumed.js';
 // the hook factories; the dispose-fence helper is a lifecycle utility used
 // solely by this file's dispose block (PR #2588 bot finding 7).
 import { cancelDeferredMaintenanceScans } from './hooks/system-enhancer';
+import { createSystemRenderBoundaryHook } from './hooks/system-render-boundary.js';
 import {
 	createTrajectoryLoggerHook,
 	recordDeniedToolCall,
@@ -1099,6 +1101,7 @@ async function initializeOpenCodeSwarm(
 	// review PRR-007). O(1) — bounded, no init-path I/O.
 	clearDeferredWarnings();
 	resetConfigAdvisoryDedup();
+	resetArchitectPromptBudgetAdvisories();
 
 	// PARALLEL INIT I/O (issue #1782 / repro-704 T1 Windows failures).
 	//
@@ -1973,6 +1976,7 @@ async function initializeOpenCodeSwarm(
 	const roleFilterSystemHook = createRoleFilterSystemHook(
 		getActiveReviewAgentName,
 	);
+	const systemRenderBoundaryHook = createSystemRenderBoundaryHook();
 	const commandHandler = createSwarmCommandHandler(
 		ctx.directory,
 		agentDefinitionMap,
@@ -3807,6 +3811,11 @@ async function initializeOpenCodeSwarm(
 					description:
 						'Use /swarm skill-opt to govern skill optimization (plan|run|status|diff|approve|reject|rollback|history)',
 				},
+				'swarm-harness-opt': {
+					template: '/swarm harness-opt $ARGUMENTS',
+					description:
+						'Use /swarm harness-opt to govern harness optimization rounds (plan|run|status|stop|history)',
+				},
 				'swarm-costs': {
 					template: '/swarm costs $ARGUMENTS',
 					description:
@@ -4300,18 +4309,22 @@ async function initializeOpenCodeSwarm(
 						: undefined,
 				swarmCommandSystemRuleHook,
 				roleFilterSystemHook['experimental.chat.system.transform'],
-				// NOTE (#1619): there is deliberately no "collapse output.system to a
-				// single entry" handler here. One existed (added by c8ad147e for
-				// Qwen3.6/Gemma compatibility, #628) but it REBOUND `output.system`,
-				// and the host discards a hook's return value and afterwards reads its
-				// own local array — so a rebind is invisible and the collapse never
-				// took effect. Converting it to an in-place collapse is also wrong:
-				// the host marks prompt-cache breakpoints on the first two system
-				// messages, so folding the stable base prompt and the per-request
-				// swarm injections into one message moves the breakpoint behind
-				// varying content and defeats caching on every request. See
-				// docs/engineering-invariants.md § "v6.85.1 — Multiple system messages
-				// crashing local models".
+				// (#2673) System render boundary — LAST in the chain, after every
+				// producer and the role filter, so the finalized shape is decided
+				// once. The historical note it supersedes (#1619): an unconditional
+				// "collapse output.system to a single entry" handler was deliberately
+				// absent — the c8ad147e version REBOUND `output.system` (invisible to
+				// the host, which reads its own array), and an in-place unconditional
+				// collapse would move the host's prompt-cache breakpoints (first two
+				// system messages) behind per-request varying content. #2673 resolves
+				// the per-request rendering capability from the model the host hands
+				// this hook: strict single-system providers (Qwen3.6/Gemma class,
+				// v6.85.1) get exactly ONE in-place-joined system entry;
+				// cache-capable and unknown providers are left byte-identical. See
+				// src/hooks/system-render-boundary.ts and
+				// docs/engineering-invariants.md § "Issue #2673 — system render
+				// capability at the final request boundary".
+				systemRenderBoundaryHook['experimental.chat.system.transform'],
 			].filter(Boolean) as Array<
 				(input: unknown, output: unknown) => Promise<void>
 			>),

@@ -82,6 +82,10 @@ describe('toolPolicy classification snapshot — no regression', () => {
 		'skill-opt status',
 		'skill-opt diff',
 		'skill-opt history',
+		'harness-opt',
+		'harness-opt plan',
+		'harness-opt status',
+		'harness-opt history',
 	]);
 
 	const EXPECTED_RESTRICTED = new Set<string>([
@@ -111,7 +115,6 @@ describe('toolPolicy classification snapshot — no regression', () => {
 			expect(EXPECTED_AGENT.has(name)).toBe(true);
 		}
 	});
-
 	test("'restricted' bucket contains exactly the expected 9 commands", () => {
 		const actual = new Set<string>();
 		for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
@@ -127,7 +130,6 @@ describe('toolPolicy classification snapshot — no regression', () => {
 			expect(EXPECTED_RESTRICTED.has(name)).toBe(true);
 		}
 	});
-
 	test('every standalone command (no aliasOf, no subcommandOf) has a toolPolicy', () => {
 		for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
 			const e = entry as CommandEntry;
@@ -139,7 +141,6 @@ describe('toolPolicy classification snapshot — no regression', () => {
 			}
 		}
 	});
-
 	test('subcommands may have their own toolPolicy (they do not REQUIRE one — optional override)', () => {
 		// Subcommands are skipped by validateToolPolicy() — they don't require a toolPolicy.
 		// But some subcommands DO have one (e.g. config doctor, sdd project) as an explicit override.
@@ -161,7 +162,6 @@ describe('toolPolicy classification snapshot — no regression', () => {
 		// Verify some subcommands DON'T have toolPolicy (inheriting from parent is valid)
 		expect(subcommandsWithoutPolicy.size).toBeGreaterThan(0);
 	});
-
 	test('aliases have no toolPolicy (they inherit from target)', () => {
 		for (const [name, entry] of Object.entries(COMMAND_REGISTRY)) {
 			const e = entry as CommandEntry;

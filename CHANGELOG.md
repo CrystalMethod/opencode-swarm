@@ -1,5 +1,33 @@
 # Changelog
 
+## [7.181.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.180.1...v7.181.0) (2026-09-14)
+
+
+### Features
+
+* **harness-opt:** governed HarnessOpt capstone with held-out validation ([#2503](https://github.com/ZaxbyHub/opencode-swarm/issues/2503)) ([fc9876b](https://github.com/ZaxbyHub/opencode-swarm/commit/fc9876b6601d852eef3ab3e50bc623e03627e49c))
+
+
+### Bug Fixes
+
+* **harness-opt:** bound wall-clock via cleared timer instead of native AbortSignal.timeout ([#2503](https://github.com/ZaxbyHub/opencode-swarm/issues/2503) CI) ([f78fba6](https://github.com/ZaxbyHub/opencode-swarm/commit/f78fba61d31540b9d24949d95bc97f710b3184f1))
+
+## [7.180.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.180.0...v7.180.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **agents:** budget advisory dedup, docblock restore, cap property test ([#2671](https://github.com/ZaxbyHub/opencode-swarm/issues/2671) review) ([8653981](https://github.com/ZaxbyHub/opencode-swarm/commit/86539817e5a7a47260a2e7b1721a7c785ff55c0d))
+* **agents:** budget advisory session-start reset; split parser pins ([#2671](https://github.com/ZaxbyHub/opencode-swarm/issues/2671) review r2) ([caf3c93](https://github.com/ZaxbyHub/opencode-swarm/commit/caf3c9347e68dad737eecdc346f0cbe576e54870))
+* **agents:** enforce architect prompt budgets across supported feature combinations ([#2671](https://github.com/ZaxbyHub/opencode-swarm/issues/2671)) ([7f125e8](https://github.com/ZaxbyHub/opencode-swarm/commit/7f125e8f751b0a2d54cb014f823e46bd47ce5efa))
+* **agents:** enforce architect prompt budgets across supported feature combinations ([#2671](https://github.com/ZaxbyHub/opencode-swarm/issues/2671)) ([33ba1e0](https://github.com/ZaxbyHub/opencode-swarm/commit/33ba1e07d9f60d68774b66b2c3eaaadd515d5ea4))
+* **agents:** resolve review findings ROW-1/2/3/4/7 on architect prompt budget ([b273291](https://github.com/ZaxbyHub/opencode-swarm/commit/b273291f7b4e724a7bd65c6465991a3e612a33d1))
+* **council:** preserve explicit general-council stances and negated concessions ([#2578](https://github.com/ZaxbyHub/opencode-swarm/issues/2578)) ([a3a9fab](https://github.com/ZaxbyHub/opencode-swarm/commit/a3a9fabdb9466bdf8f2f28c98fc2a4fb04d52533))
+* **council:** preserve explicit general-council stances and negated concessions ([#2578](https://github.com/ZaxbyHub/opencode-swarm/issues/2578)) ([235d407](https://github.com/ZaxbyHub/opencode-swarm/commit/235d407de14d9b3b8c7af57f1e644ff475c52768))
+* **council:** resolve review findings F-3/F-1/N6/NUANCE/FRAG-EXPORT ([e12e5e3](https://github.com/ZaxbyHub/opencode-swarm/commit/e12e5e342842dd3f009c7087c3b5bef2e03b53d6))
+* **guidance:** capability-conditional system render boundary for strict single-system providers ([#2673](https://github.com/ZaxbyHub/opencode-swarm/issues/2673)) ([69f1e52](https://github.com/ZaxbyHub/opencode-swarm/commit/69f1e520a1662a36d49823b3d4dce5bcf3cdccd9))
+* **guidance:** capability-conditional system render boundary for strict single-system providers ([#2673](https://github.com/ZaxbyHub/opencode-swarm/issues/2673)) ([1f60961](https://github.com/ZaxbyHub/opencode-swarm/commit/1f609612d153ac8a1045939ae7520bf818c2012c))
+
 ## [7.180.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.179.1...v7.180.0) (2026-09-13)
 
 

@@ -134,7 +134,10 @@ describe('synthesizeGeneralCouncil', () => {
 		const round2 = [
 			deliberation(
 				'm1',
-				'On reflection I CONCEDE — Y was wrong, X is correct.',
+				// Paragraph-leading CONCEDE per the documented Round 2 stance
+				// grammar (council-prompts.ts); a mid-sentence "I CONCEDE" is prose,
+				// not a declaration (issue #2578).
+				'CONCEDE — on reflection, Y was wrong, X is correct.',
 				topic ? [topic] : [],
 			),
 		];

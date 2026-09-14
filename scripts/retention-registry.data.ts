@@ -1809,6 +1809,67 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 	},
 	{
+		id: 'harness-opt-store',
+		category: 4,
+		pathGrammar:
+			'.swarm/evolution/harness-opt/{state.json,tasksets/{taskSetHash}/**,rounds/{roundId}/record.json,pilots/{recordId}/record.json}',
+		canonicalRoot: 'project-swarm',
+		writerModules: [
+			'src/services/harness-optimizer/lineage.ts',
+			'src/services/harness-optimizer/controller.ts',
+			'src/services/harness-optimizer/execution.ts',
+		],
+		writerCitations: [
+			'src/services/harness-optimizer/lineage.ts recordHarnessOptRound — atomic immutable round-lineage write',
+			'src/services/harness-optimizer/controller.ts freezeHarnessOptTaskSet / runHarnessOptRound / evaluatePilotGraduation / stopHarnessOptLoop — locked state, task-set materialization, and pilot-record writes',
+			'src/services/harness-optimizer/execution.ts materializeHarnessOptInput — content-addressed task-set input writes pinned by the task-population hash',
+		],
+		readerCitations: [
+			'src/services/harness-optimizer/controller.ts harnessOptStatus / loadState — single-file state read',
+			'src/services/harness-optimizer/lineage.ts listHarnessOptLineage / loadHarnessOptLineageRecord — bounded directory listing and single-record reads',
+		],
+		schemaVersion:
+			'v1 strict state, round-lineage, and pilot-graduation records; content-addressed task-set inputs are pinned by their hash',
+		stateClass: 'authoritative',
+		privacyClass: 'mixed',
+		directFileExemption: {
+			reason:
+				'Governed-round lineage and pilot evidence must be content-addressed immutable files whose replay identity is a runId derived from file-content hashes (the #2503 replay contract); a database row cannot provide the substrate runEvaluation identity binding the frozen task-set inputs to their hash-pinned materialization.',
+			reviewedIssue: 2503,
+		},
+		writeLimits: {
+			bound:
+				'harness_opt.max_rounds bounds governed rounds (default 5, max 50); task-set inputs are content-addressed and immutable; pilot records are content-addressed by criteria plus evidence',
+			scope: 'global',
+			citation:
+				'src/services/harness-optimizer/controller.ts runHarnessOptRound round budget; src/config/schema.ts HarnessOptConfigSchema',
+		},
+		readBound: {
+			pattern: 'directory listing + single-file reads',
+			bound:
+				'history is bounded to the last 20 round records; status reads one state file; replay reads exactly one lineage record',
+			sync: true,
+			citation:
+				'src/services/harness-optimizer/lineage.ts listHarnessOptLineage; src/commands/harness-opt.ts handleHarnessOptHistory',
+		},
+		lockModel:
+			'proper-lockfile on the harness-opt root serializes freeze, round, and stop mutations',
+		crashBehavior:
+			'state, round, and pilot records are atomic renames; a round counter consumed just before a crash only skips one round number',
+		closePolicy:
+			'untouched — governed-round lineage and pilot evidence intentionally survive sessions',
+		resetPolicy: 'not reset',
+		legacyCompatibility: 'none — v1 is the initial layout',
+		healthSignal:
+			'typed FROZEN_CONTENT_MISMATCH, substrate TestAlreadyConsumedError pass-through, and REPLAY_DECISION_MISMATCH failures',
+		owner: '#2503',
+		disposition: {
+			kind: 'retain-by-design',
+			citation:
+				'Issue #2503 requires durable governed-round lineage and pilot-graduation evidence. Round records are bounded by harness_opt.max_rounds while task-set inputs are content-addressed and immutable; coverage lives in tests/unit/harness-opt/.',
+		},
+	},
+	{
 		id: 'task-gate-evidence',
 		category: 4,
 		pathGrammar: '.swarm/evidence/task-gate-requirements/{taskId}.jsonl (+ repaired task-gate evidence files + task-gate-quarantine/ sidecars)',

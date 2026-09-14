@@ -114,6 +114,126 @@ export const ARCHITECT_MEMORY_OUTCOME_GUIDANCE = `After using recalled memory or
 // allowance), keeping the F#1649 ratchet intact for unreviewed growth.
 export const ARCHITECT_PROMPT_BUDGET_CHARS = 161_000;
 
+/**
+ * Per-tool description cap for the architect prompt's AVAILABLE TOOLS line
+ * (issue #2671): composing the general council with every supported opt-in
+ * pushed renders past ARCHITECT_PROMPT_BUDGET_CHARS. Bounds ONLY the prompt
+ * render (tool registration keeps full descriptions); truncation is visible
+ * (`…`), names are never truncated, and the names-only YOUR TOOLS line is
+ * untouched. Measurements: docs/configuration.md "Architect prompt budget".
+ */
+export const ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS = 240;
+
+/**
+ * Model-token ESTIMATE (~4 chars/token — the ratio the budget contract
+ * documents). An estimate, not a tokenizer; recorded next to the
+ * authoritative character count, never instead of it (issue #2671).
+ */
+export function estimateModelTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
+export interface ArchitectPromptBudgetMetrics {
+	/** Authoritative length in characters. */
+	chars: number;
+	/** Model-token estimate (chars / 4, rounded up) — a separate quantity. */
+	tokenEstimate: number;
+	withinBudget: boolean;
+}
+
+/** Measure a composed prompt against the published ceiling. */
+export function measureArchitectPromptBudget(
+	prompt: string,
+): ArchitectPromptBudgetMetrics {
+	const chars = prompt.length;
+	return {
+		chars,
+		tokenEstimate: estimateModelTokens(prompt),
+		withinBudget: chars < ARCHITECT_PROMPT_BUDGET_CHARS,
+	};
+}
+
+export type ArchitectPromptBudgetEnforcement =
+	| { ok: true; chars: number; tokenEstimate: number }
+	| { ok: false; error: string; chars: number; tokenEstimate: number };
+
+/**
+ * Emit an ARCHITECT_PROMPT_BUDGET_EXCEEDED advisory once per session per
+ * distinct overflow signature (issue #2671 review follow-up): getAgentConfigs
+ * runs twice during plugin init and once per command re-resolution, so a
+ * deterministic over-budget config would otherwise push 2-4 identical
+ * advisories into the capped diagnose buffer per session.
+ *
+ * The signature NORMALIZES digit runs out of the bounded error text (review
+ * ROW-4): the exact char/token counts vary by ±1 across turns, so keying on
+ * the raw text defeated dedup and flooded the set. The label survives
+ * normalization, so a genuinely different overflowing agent still warns.
+ * The set is bounded (review ROW-3, AGENTS.md invariant 8: module-level
+ * state needs an explicit eviction strategy) — the oldest signature is
+ * evicted FIFO past MAX_ARCHITECT_BUDGET_SIGNATURES.
+ */
+const emittedBudgetAdvisories = new Set<string>();
+const MAX_ARCHITECT_BUDGET_SIGNATURES = 100;
+
+function budgetAdvisorySignature(error: string): string {
+	return error.replace(/\d+/g, 'N');
+}
+
+export function warnArchitectPromptBudgetExceededOnce(error: string): void {
+	const signature = budgetAdvisorySignature(error);
+	if (emittedBudgetAdvisories.has(signature)) return;
+	if (emittedBudgetAdvisories.size >= MAX_ARCHITECT_BUDGET_SIGNATURES) {
+		const oldest = emittedBudgetAdvisories.values().next().value;
+		if (oldest !== undefined) emittedBudgetAdvisories.delete(oldest);
+	}
+	emittedBudgetAdvisories.add(signature);
+	advisoryWarn(error);
+}
+
+/**
+ * Session-start reset (called next to clearDeferredWarnings in src/index.ts):
+ * a fixed config must warn again in a new session instead of staying
+ * suppressed by a signature emitted before the reload. Mirrors
+ * resetConfigAdvisoryDedup (issue #2524 review PRR-007).
+ */
+export function resetArchitectPromptBudgetAdvisories(): void {
+	emittedBudgetAdvisories.clear();
+}
+
+/**
+ * Deterministic overflow policy (issue #2671): over budget returns a BOUNDED
+ * (<= 400 chars, label sliced) error prefixed ARCHITECT_PROMPT_BUDGET_EXCEEDED
+ * instead of silently dropping guidance. Callers advisoryWarn it and keep the
+ * full prompt; the CI matrix regression keeps built-in compositions off this
+ * branch, so at runtime it fires only on user-variable inputs (e.g. an
+ * extreme multi-swarm name).
+ */
+export function enforceArchitectPromptBudget(
+	label: string,
+	prompt: string,
+): ArchitectPromptBudgetEnforcement {
+	const metrics = measureArchitectPromptBudget(prompt);
+	if (metrics.withinBudget) {
+		return {
+			ok: true,
+			chars: metrics.chars,
+			tokenEstimate: metrics.tokenEstimate,
+		};
+	}
+	const boundedLabel = label.slice(0, 200);
+	const error =
+		`ARCHITECT_PROMPT_BUDGET_EXCEEDED: composed architect prompt for '${boundedLabel}' ` +
+		`is ${metrics.chars} chars (> ${ARCHITECT_PROMPT_BUDGET_CHARS} ceiling, ~${metrics.tokenEstimate} model-token estimate). ` +
+		'The full prompt is kept (guidance is never dropped silently); shorten user-variable inputs ' +
+		'(e.g. swarm names) or trim feature prose.';
+	return {
+		ok: false,
+		error: error.slice(0, 400),
+		chars: metrics.chars,
+		tokenEstimate: metrics.tokenEstimate,
+	};
+}
+
 const ARCHITECT_PROMPT = `You are Architect - orchestrator of a multi-agent swarm.
 
 ## COMMAND NAMESPACE — CRITICAL
@@ -1569,8 +1689,77 @@ Wait for the user to answer all four in a single reply. Then persist them agains
 }
 
 /**
+ * Bound a tool description for the in-prompt AVAILABLE TOOLS render
+ * (issue #2671): unchanged when it fits the cap; otherwise the capped prefix
+ * with trailing unclosed parenthetical groups stripped so entries keep
+ * BALANCED parentheses (the comma-separated line is parsed by
+ * comma-at-depth-0 readers; an entry ending inside a parenthetical makes
+ * later entry boundaries ambiguous). The `…` marker is appended by the
+ * caller so under-cap renders stay byte-identical to the uncapped form.
+ *
+ * Precondition: the input description is paren-balanced (as TOOL_METADATA
+ * entries are reviewed to be). For balanced input, a prefix can only leave
+ * '(' unmatched — never ')' — so stripping trailing unmatched '(' groups
+ * suffices; an input that already contains unmatched ')' passes them through
+ * (output no worse than input).
+ */
+export function capToolDescriptionForPrompt(description: string): string {
+	if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
+		return description;
+	}
+	const depthOf = (s: string): number => {
+		let depth = 0;
+		for (let i = 0; i < s.length; i++) {
+			if (s[i] === '(') depth++;
+			else if (s[i] === ')') depth--;
+		}
+		return depth;
+	};
+	let end = ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS;
+	let capped = description.slice(0, end);
+	let depth = depthOf(capped);
+	// A window that cuts between ')' and its '(' leaves stray closers at the
+	// tail; strip them before balancing opens.
+	while (depth < 0 && capped.endsWith(')')) {
+		capped = capped.slice(0, -1).trimEnd();
+		depth = depthOf(capped);
+	}
+	// Review ROW-1: balance by RESERVING room for the closers of unmatched
+	// opens and appending them, instead of retreating to the last unmatched
+	// '(' and discarding the parenthetical (which lost up to ~78% of a
+	// description whose cap window fell mid-parenthetical).
+	while (
+		depth > 0 &&
+		end + depth > ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS
+	) {
+		end -= end + depth - ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS;
+		if (end <= 0) {
+			// Degenerate all-open-paren input: content cannot fit alongside
+			// its closers. Documented unreachable with real metadata.
+			return '';
+		}
+		capped = description.slice(0, end);
+		depth = depthOf(capped);
+	}
+	return capped.trimEnd() + ')'.repeat(Math.max(depth, 0));
+}
+
+/** Render one tool's in-prompt entry (bounded description + visible `…`). */
+function renderToolPromptDescription(
+	tool: string,
+	description: string | undefined,
+): string {
+	if (!description) return tool;
+	if (description.length <= ARCHITECT_TOOL_DESCRIPTION_PROMPT_CAP_CHARS) {
+		return `${tool} (${description})`;
+	}
+	return `${tool} (${capToolDescriptionForPrompt(description)}…)`;
+}
+
+/**
  * Generate the Available Tools block from AGENT_TOOL_MAP.architect, enabled opt-in tool maps, and TOOL_DESCRIPTIONS.
- * Format: "tool1 (description), tool2 (description), ..." — tools without descriptions use name only.
+ * Format: "tool1 (description), tool2 (description), ..." — descriptions are
+ * bounded by capToolDescriptionForPrompt (issue #2671).
  *
  * When `council?.enabled !== true`, the QA-council tools
  * (`submit_council_verdicts`, `declare_council_criteria`, `submit_phase_council_verdicts`)
@@ -1604,10 +1793,7 @@ function buildAvailableToolsList(
 	];
 	const sorted = [...tools].sort();
 	return sorted
-		.map((t) => {
-			const desc = TOOL_DESCRIPTIONS[t];
-			return desc ? `${t} (${desc})` : t;
-		})
+		.map((t) => renderToolPromptDescription(t, TOOL_DESCRIPTIONS[t]))
 		.join(', ');
 }
 
@@ -2014,6 +2200,18 @@ export function createArchitectAgent(
 
 	if (memoryEnabled) {
 		prompt = `${prompt ?? ''}\n\n${ARCHITECT_MEMORY_OUTCOME_GUIDANCE}`.trim();
+	}
+
+	// Issue #2671: measure the final composed prompt against the ceiling.
+	// Within budget the prompt is byte-for-byte unchanged; over budget the
+	// bounded error goes through advisoryWarn while the FULL prompt is kept
+	// (guidance never dropped silently; init stays fail-open).
+	const budgetEnforcement = enforceArchitectPromptBudget(
+		'architect',
+		prompt ?? '',
+	);
+	if (!budgetEnforcement.ok) {
+		warnArchitectPromptBudgetExceededOnce(budgetEnforcement.error);
 	}
 
 	return {
