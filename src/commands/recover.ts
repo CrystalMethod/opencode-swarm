@@ -56,6 +56,12 @@ function renderStageARepairOutcome(outcome: StageARepairOutcome): string {
 		case 'repaired':
 			return `✅ Task ${outcome.taskId}: Stage A repaired — stage_a_passed written at generation ${outcome.generation} without re-running the coder`;
 		case 'skipped_not_wedged':
+			// Issue #2755: rework_required wedges have their own architect-legal
+			// exit that this scan deliberately does not touch — point at it instead
+			// of reporting a bare dead end.
+			if (outcome.state === 'rework_required') {
+				return `⏭️ Task ${outcome.taskId}: workflow state is rework_required — not a coder_delegated Stage A wedge, nothing to repair here. If the Stage B verdict did not require a code change, have the architect run the recover_rework_task tool for this task; otherwise delegate the coder to repair first.`;
+			}
 			return `⏭️ Task ${outcome.taskId}: workflow state is ${outcome.state} with pre_check proof present or not settled — nothing to repair`;
 		case 'skipped_not_green':
 			return `⏭️ Task ${outcome.taskId}: no green post-settlement pre-check evidence (${outcome.reason === 'no_pre_check_bundles' ? 'missing or non-green secretscan/SAST bundle — run pre_check_batch first' : 'latest pre-check run failed or predates the settlement'}) — refusing to mark Stage A passed without proof`;

@@ -94,6 +94,10 @@ export const CORE_EVENTS_MENTION_ALLOWLIST: Readonly<
 		reason: 'tool description/help strings describing where the audit event lands (documentation text, no I/O) — mirrors the approve-plan-critic entry for the #2703 sibling gate',
 		cls: 'prompt-doc',
 	},
+	'src/tools/recover-rework-task.ts': {
+		reason: 'tool description/result strings describing where the audit event lands (documentation text, no I/O — the append itself goes through appendStageARepairEvent/appendCoreEventSync) — the #2755 sibling of the approve-* entries',
+		cls: 'prompt-doc',
+	},
 	'src/services/diagnose-service.ts': {
 		reason: 'user-facing diagnostic output strings naming the checked store (the reads themselves go through the seam API)',
 		cls: 'prompt-doc',

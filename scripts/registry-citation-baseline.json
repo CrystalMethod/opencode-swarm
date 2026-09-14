@@ -590,41 +590,6 @@
 			"note": "Pre-existing debt, not approved drift: \"writeCouncilEvidence\" exists in src/council/council-evidence-writer.ts but not inside src/council/council-evidence-writer.ts:96 (task-workflow-evidence.writerCitations[1])."
 		},
 		{
-			"rowId": "task-workflow-evidence",
-			"file": "src/gate-evidence.ts",
-			"identifier": "readTaskEvidence",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"readTaskEvidence\" exists in src/gate-evidence.ts but not inside src/gate-evidence.ts:1054 (task-workflow-evidence.readerCitations[0])."
-		},
-		{
-			"rowId": "task-workflow-evidence",
-			"file": "src/gate-evidence.ts",
-			"identifier": "readTaskEvidenceRaw",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"readTaskEvidenceRaw\" exists in src/gate-evidence.ts but not inside :1071 (task-workflow-evidence.readerCitations[0])."
-		},
-		{
-			"rowId": "task-workflow-evidence",
-			"file": "src/gate-evidence.ts",
-			"identifier": "recordAgentDispatch",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"recordAgentDispatch\" exists in src/gate-evidence.ts but not inside :1010 (task-workflow-evidence.writerCitations[0])."
-		},
-		{
-			"rowId": "task-workflow-evidence",
-			"file": "src/gate-evidence.ts",
-			"identifier": "recordGateEvidence",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"recordGateEvidence\" exists in src/gate-evidence.ts but not inside :956 (task-workflow-evidence.writerCitations[0])."
-		},
-		{
-			"rowId": "task-workflow-evidence",
-			"file": "src/gate-evidence.ts",
-			"identifier": "transitionTaskWorkflowEvidence",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"transitionTaskWorkflowEvidence\" exists in src/gate-evidence.ts but not inside src/gate-evidence.ts:879 (task-workflow-evidence.writerCitations[0])."
-		},
-		{
 			"rowId": "telemetry-jsonl",
 			"file": "src/services/cost-accounting.ts",
 			"identifier": "readTelemetryEvents",

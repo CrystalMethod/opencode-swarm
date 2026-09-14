@@ -255,6 +255,11 @@ export const TOOL_METADATA = {
 			'record a MANUAL critic_sounding_board gate entry to unblock the coder retry circuit-breaker gate when the sounding board returned APPROVED but the mechanical recorder missed it (issue #2703)',
 		agents: ['architect'],
 	},
+	recover_rework_task: {
+		description:
+			'recover a task wedged at rework_required when the reviewer/test_engineer verdict did not require a code change: write a supervised stage_a_passed so those gates can be re-dispatched without re-running the coder (issue #2755)',
+		agents: ['architect'],
+	},
 	prepare_pr_workflow_checkout: {
 		description:
 			'prepare an auditable PR workflow checkout or restore its exact original branch/HEAD and preserved stash after terminal cleanup',
