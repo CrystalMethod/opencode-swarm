@@ -51,6 +51,7 @@ export {
 	dispatchPrFeedbackOversight,
 	evaluatePrFeedbackCurrentHead,
 	getPrFeedbackLoopRuntime,
+	isPrFeedbackLoopEnabled,
 	type PrFeedbackLoopOversightInput,
 	type PrFeedbackLoopOversightOutcome,
 	type PrFeedbackLoopRuntime,

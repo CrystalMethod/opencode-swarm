@@ -52,6 +52,7 @@ import { withTimeout } from '../utils/timeout';
 import {
 	claimPrFeedbackMonitorEvents,
 	clearPrFeedbackMonitorEvents,
+	enqueuePrFeedbackMonitorEvent,
 	type PrFeedbackMonitorEvent,
 	readPrFeedbackMonitorQueue,
 	releasePrFeedbackMonitorEventClaim,
@@ -59,6 +60,7 @@ import {
 import {
 	dispatchPrFeedbackOversight,
 	evaluatePrFeedbackCurrentHead,
+	isPrFeedbackLoopEnabled,
 } from './pr-feedback-loop-runtime.js';
 import { listActive } from './pr-subscriptions';
 
@@ -74,6 +76,8 @@ const PR_FEEDBACK_LOOP_STATE_LOCK_REL = path.join(
 );
 const MAX_TRACKED_SESSIONS = 200;
 const MAX_PROCESSED_DIGESTS = 64;
+export const MAX_IN_FLIGHT_SESSIONS = 64;
+export const MAX_CANCELLATION_REQUESTS = 64;
 const MAX_PERFORM_ATTEMPTS = 3; // 1 initial + 2 bounded retries (transient only)
 const SETTLE_TIMEOUT_MS = 10_000;
 const LOOP_STATE_LOCK_MAX_ATTEMPTS = 50;
@@ -145,6 +149,19 @@ export interface PrFeedbackLoopResult {
 	authorization: PrFeedbackLoopAuthorization | null;
 	action: PrFeedbackLoopAction | null;
 	terminal: PrFeedbackLoopTerminal | null;
+}
+
+/**
+ * Durable cancellation state exposed to the PR-event intake boundary.
+ *
+ * A read failure is deliberately distinct from "not cancelled": callers that
+ * can create new queue work must fail closed when the stop barrier cannot be
+ * read reliably.
+ */
+export interface PrFeedbackLoopCancellationStatus {
+	cancelled: boolean;
+	unavailable: boolean;
+	reason?: string;
 }
 
 interface CircuitState {
@@ -513,6 +530,13 @@ function reservationIsLive(
 	return _internals.isProcessAlive(reservation.ownerPid);
 }
 
+function clearHalfOpenProbeMarker(circuit: CircuitState): void {
+	circuit.halfOpenProbes = 0;
+	delete circuit.halfOpenProbeStartedAt;
+	delete circuit.halfOpenProbeOwnerToken;
+	delete circuit.halfOpenProbeOwnerPid;
+}
+
 async function readLoopState(
 	directory: string,
 ): Promise<LoopStateV1 | { corrupt: true }> {
@@ -818,10 +842,7 @@ async function admitHalfOpenProbe(
 				};
 			}
 			// A properly identified dead owner is the only safe recovery path.
-			currentCorrelation.circuit.halfOpenProbes = 0;
-			delete currentCorrelation.circuit.halfOpenProbeStartedAt;
-			delete currentCorrelation.circuit.halfOpenProbeOwnerToken;
-			delete currentCorrelation.circuit.halfOpenProbeOwnerPid;
+			clearHalfOpenProbeMarker(currentCorrelation.circuit);
 		}
 		if (currentCorrelation.circuit.halfOpenProbes >= 1) {
 			return {
@@ -875,11 +896,41 @@ async function finishHalfOpenProbe(
 			correlation.circuit = { failures: 0, openUntil: 0, halfOpenProbes: 0 };
 		} else {
 			correlation.circuit.openUntil = _internals.now() + 60_000;
-			correlation.circuit.halfOpenProbes = 0;
-			delete correlation.circuit.halfOpenProbeStartedAt;
-			delete correlation.circuit.halfOpenProbeOwnerToken;
-			delete correlation.circuit.halfOpenProbeOwnerPid;
+			clearHalfOpenProbeMarker(correlation.circuit);
 		}
+		bumpCorrelationRevision(correlation);
+		await _internals.writeState(directory, state);
+		return state;
+	});
+}
+
+/**
+ * Abandon an admitted probe before oversight/action starts. This is distinct
+ * from `finishHalfOpenProbe(false)`: an admission that never reached an
+ * external effect must release its exclusive marker without manufacturing a
+ * circuit failure or cooldown.
+ */
+async function releaseHalfOpenProbe(
+	directory: string,
+	key: string,
+	probeOwnerToken: string | undefined,
+	probeOwnerPid: number | undefined,
+): Promise<LoopStateV1 | null> {
+	return withLoopStateLock(directory, async () => {
+		const readResult = await _internals.readState(directory);
+		if (isCorruptState(readResult)) return null;
+		const state = readResult;
+		const correlation = state.correlations[key];
+		if (!correlation) return state;
+		if (
+			correlation.circuit.halfOpenProbeOwnerToken !== probeOwnerToken ||
+			correlation.circuit.halfOpenProbeOwnerPid !== probeOwnerPid
+		) {
+			// A newer worker may have recovered and replaced this marker. Never
+			// clear another worker's probe during cleanup of a late exit.
+			return state;
+		}
+		clearHalfOpenProbeMarker(correlation.circuit);
 		bumpCorrelationRevision(correlation);
 		await _internals.writeState(directory, state);
 		return state;
@@ -972,17 +1023,6 @@ function digestFor(
 	return createHash('sha256')
 		.update(`${type}\0${repo}\0${pr}\0${head ?? ''}\0${actionClass}`, 'utf-8')
 		.digest('hex');
-}
-
-function isLoopEnabled(config: {
-	pr_monitor?: { enabled?: boolean; auto_pr_feedback?: boolean };
-	pr_feedback_loop?: { enabled?: boolean };
-}): boolean {
-	return (
-		config.pr_monitor?.enabled === true &&
-		config.pr_monitor?.auto_pr_feedback === true &&
-		config.pr_feedback_loop?.enabled === true
-	);
 }
 
 function classifyEvent(event: { type: string }): PrFeedbackLoopClassification {
@@ -1106,7 +1146,6 @@ function emptyResult(reason?: string): PrFeedbackLoopResult {
  * for the first, then observes the queue empty. Bounded (invariant 8).
  */
 const settlementsInProgress = new Map<string, Promise<unknown>>();
-const MAX_IN_FLIGHT_SESSIONS = 64;
 /**
  * Active action invocations, keyed by the serialized settlement identity.
  *
@@ -1124,9 +1163,11 @@ const cancellationRequests = new Map<string, string>();
  * only for keys in activeActionSettlements.
  */
 const activeActionCancellationReserve = new Map<string, string>();
-const MAX_CANCELLATION_REQUESTS = 64;
 let activeCancellationRequests = 0;
-let cancellationAdmissionOverflow = false;
+/** Roots whose own cancellation registry is saturated. Never cross-pause a
+ * different project when one root has too many concurrent operator stops. */
+const cancellationAdmissionOverflowRoots = new Set<string>();
+const activeCancellationRequestsByRoot = new Map<string, number>();
 
 function settlementKey(directory: string, sessionID: string): string {
 	return `${canonicalRootKeyFresh(directory)}${SESSION_KEY_SEPARATOR}${sessionID}`;
@@ -1136,12 +1177,15 @@ function rememberCancellationRequest(
 	directory: string,
 	sessionID: string,
 	reason: string,
-): string {
+): { key: string; rootKey: string } {
 	const key = settlementKey(directory, sessionID);
+	const rootKey = canonicalRootKeyFresh(directory);
+	const activeForRoot = activeCancellationRequestsByRoot.get(rootKey) ?? 0;
 	activeCancellationRequests += 1;
+	activeCancellationRequestsByRoot.set(rootKey, activeForRoot + 1);
 	if (
 		!cancellationRequests.has(key) &&
-		cancellationRequests.size >= MAX_CANCELLATION_REQUESTS
+		activeForRoot >= MAX_CANCELLATION_REQUESTS
 	) {
 		if (activeActionSettlements.has(key)) {
 			// Preserve targeted cancellation for an action already admitted even
@@ -1149,19 +1193,19 @@ function rememberCancellationRequest(
 			// bounded registry.
 			activeActionCancellationReserve.delete(key);
 			activeActionCancellationReserve.set(key, reason);
-			return key;
+			return { key, rootKey };
 		}
 		// Never evict an active stop request: doing so could let a settlement
 		// through while the corresponding cancellation is waiting on its lock.
 		// Never evict an active stop. The overflow marker is a distinct capacity
 		// condition for unrelated action admissions; it must never masquerade as
 		// an operator cancellation.
-		cancellationAdmissionOverflow = true;
-		return key;
+		cancellationAdmissionOverflowRoots.add(rootKey);
+		return { key, rootKey };
 	}
 	cancellationRequests.delete(key);
 	cancellationRequests.set(key, reason);
-	return key;
+	return { key, rootKey };
 }
 
 function localCancellationReason(
@@ -1176,11 +1220,17 @@ function localCancellationReason(
 	);
 }
 
-function cancellationAdmissionCapacityExceeded(): boolean {
-	return cancellationAdmissionOverflow;
+function cancellationAdmissionCapacityExceeded(directory: string): boolean {
+	return cancellationAdmissionOverflowRoots.has(
+		canonicalRootKeyFresh(directory),
+	);
 }
 
-function releaseCancellationRequest(key: string, reason: string): void {
+function releaseCancellationRequest(
+	key: string,
+	rootKey: string,
+	reason: string,
+): void {
 	if (cancellationRequests.get(key) === reason) {
 		cancellationRequests.delete(key);
 	}
@@ -1188,10 +1238,21 @@ function releaseCancellationRequest(key: string, reason: string): void {
 		activeActionCancellationReserve.delete(key);
 	}
 	activeCancellationRequests = Math.max(0, activeCancellationRequests - 1);
+	const activeForRoot = Math.max(
+		0,
+		(activeCancellationRequestsByRoot.get(rootKey) ?? 0) - 1,
+	);
+	if (activeForRoot === 0) {
+		activeCancellationRequestsByRoot.delete(rootKey);
+		cancellationAdmissionOverflowRoots.delete(rootKey);
+	} else {
+		activeCancellationRequestsByRoot.set(rootKey, activeForRoot);
+	}
 	if (activeCancellationRequests === 0) {
 		cancellationRequests.clear();
 		activeActionCancellationReserve.clear();
-		cancellationAdmissionOverflow = false;
+		cancellationAdmissionOverflowRoots.clear();
+		activeCancellationRequestsByRoot.clear();
 	}
 }
 
@@ -1224,6 +1285,52 @@ async function readFreshCancellationStatus(
 	} catch {
 		return { reason: null, unavailable: true };
 	}
+}
+
+/**
+ * Read the current cancellation barrier before admitting new monitor work.
+ * This includes an in-process cancellation request while it is being durably
+ * recorded, and the session terminal persisted by a completed cancellation.
+ */
+export async function readPrFeedbackLoopCancellation(
+	directory: string,
+	sessionID: string,
+): Promise<PrFeedbackLoopCancellationStatus> {
+	try {
+		const status = await readFreshCancellationStatus(directory, sessionID);
+		return {
+			cancelled: status.reason !== null,
+			unavailable: status.unavailable,
+			...(status.reason ? { reason: status.reason } : {}),
+		};
+	} catch {
+		return { cancelled: false, unavailable: true };
+	}
+}
+
+/**
+ * Admit a new monitor event while holding the loop-state lock. Cancellation
+ * persists its stop barrier under this same lock before it clears the queue;
+ * keeping the check and enqueue in the loop → queue order prevents a stop
+ * from racing between the check and a queue write after cleanup.
+ */
+export async function enqueuePrFeedbackMonitorEventIfNotCancelled(
+	directory: string,
+	sessionID: string,
+	event: Omit<
+		PrFeedbackMonitorEvent,
+		'claimedWorkflowInstanceId' | 'claimedAt' | 'claimedOwnerPid'
+	>,
+): Promise<boolean> {
+	return withLoopStateLock(directory, async () => {
+		const cancellation = await readPrFeedbackLoopCancellation(
+			directory,
+			sessionID,
+		);
+		if (cancellation.cancelled || cancellation.unavailable) return false;
+		await enqueuePrFeedbackMonitorEvent(directory, sessionID, event);
+		return true;
+	});
 }
 
 function cancelledResult(
@@ -1337,7 +1444,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 ): Promise<PrFeedbackLoopResult> {
 	const requestedCancellation = localCancellationReason(directory, sessionID);
 	if (requestedCancellation) return cancelledResult(requestedCancellation);
-	if (cancellationAdmissionCapacityExceeded()) {
+	if (cancellationAdmissionCapacityExceeded(directory)) {
 		return emptyResult(
 			'paused: cancellation admission capacity exhausted; retry after active stops finish',
 		);
@@ -1349,7 +1456,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	} catch {
 		return emptyResult('disabled');
 	}
-	if (!isLoopEnabled(config)) {
+	if (!isPrFeedbackLoopEnabled(config)) {
 		// The disabled no-op still reports the classification/authorization
 		// shape (authorized:false, reason naming the disabled gate) so callers
 		// and checks can distinguish it from a queue miss.
@@ -1395,7 +1502,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	if (!pending) return emptyResult('queue-empty');
 	const classification = classifyEvent(pending);
 
-	if (!isLoopEnabled(config)) {
+	if (!isPrFeedbackLoopEnabled(config)) {
 		// Defensive re-check after the await (config could not change, but the
 		// shape stays uniform for tests).
 		return emptyResult('disabled');
@@ -1755,6 +1862,34 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 		classification.actionClass,
 	);
 	const replay = correlation.processedDigests.includes(digest);
+	let halfOpenProbe = false;
+	let halfOpenProbeOwnerToken: string | undefined;
+	let halfOpenProbeOwnerPid: number | undefined;
+	let probeCleanupAttempted = false;
+	const releaseAdmittedProbe = async (): Promise<void> => {
+		if (!halfOpenProbe || probeCleanupAttempted) return;
+		probeCleanupAttempted = true;
+		try {
+			const released = await releaseHalfOpenProbe(
+				directory,
+				key,
+				halfOpenProbeOwnerToken,
+				halfOpenProbeOwnerPid,
+			);
+			if (released) {
+				state = released;
+				correlation = state.correlations[key] ?? correlation;
+			}
+		} catch (err) {
+			warn(
+				`[pr-feedback-loop] half-open marker cleanup failed (fail-closed): ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		} finally {
+			halfOpenProbe = false;
+		}
+	};
 
 	// ── Ambiguity: head evaluation failed → pending, no write-class action (AC2). ──
 	if (head === null) {
@@ -1828,6 +1963,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 		extra: { stale?: boolean; replay?: boolean } = {},
 		terminal?: PrFeedbackLoopTerminal,
 	): Promise<PrFeedbackLoopResult> => {
+		await releaseAdmittedProbe();
 		if (terminal) correlation.terminal = terminal;
 		// Await so the terminal is durable before returning: a fire-and-forget
 		// write here races the settlement lock release and a rapid follow-up
@@ -1870,10 +2006,18 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	// must equal the freshly evaluated head (AC7). A mismatch was already given
 	// one delayed re-read above, so this is a defensive invariant check.
 	const subscriptionHead = subscriptionSnapshot.record?.headRefOid ?? null;
-	const stale = subscriptionHead !== null && subscriptionHead !== head;
+	// Autonomous feedback events are bound to the authenticated head observed by
+	// the monitor. Missing provenance is treated as stale (legacy/hand-crafted
+	// queue rows must never gain authorization against a newer head).
+	const eventHeadMismatch = event.headRefOid !== head;
+	const stale =
+		eventHeadMismatch ||
+		(subscriptionHead !== null && subscriptionHead !== head);
 	if (stale) {
 		return await refuseAuthorization(
-			'stale: event head does not match the freshly evaluated PR head',
+			eventHeadMismatch
+				? 'stale: queued event head provenance is missing or does not match the freshly evaluated PR head'
+				: 'stale: event head does not match the freshly evaluated PR head',
 			{ stale: true },
 		);
 	}
@@ -1949,9 +2093,6 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	// fresh read under the lock prevents a process restart or another worker from
 	// dispatching a second probe; only a marker whose owner PID is proven dead is
 	// reclaimed there. Legacy ownerless markers remain fail-closed.
-	let halfOpenProbe = false;
-	let halfOpenProbeOwnerToken: string | undefined;
-	let halfOpenProbeOwnerPid: number | undefined;
 	try {
 		const probe = await admitHalfOpenProbe(
 			directory,
@@ -2004,6 +2145,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 		sessionID,
 	);
 	if (cancellationBeforeOversight.reason) {
+		await releaseAdmittedProbe();
 		return cancelledResult(cancellationBeforeOversight.reason, base);
 	}
 	if (cancellationBeforeOversight.unavailable) {
@@ -2197,8 +2339,34 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 				durableCancellation?.state === 'cancelled'
 					? durableCancellation.reason || 'operator cancellation'
 					: localCancellation;
+			const persistedCorrelation = freshState.correlations[key];
+			// Once a correlation has any durable history, its disappearance is a
+			// state-integrity failure. Never recreate it from this worker's stale
+			// in-memory snapshot during final admission; doing so could resurrect a
+			// completed action, digest ledger, reservation, or cancellation.
+			if (
+				!persistedCorrelation &&
+				(normalizeRevision(correlation.revision) > 0 ||
+					correlation.prActionsUsed > 0 ||
+					correlation.processedDigests.length > 0 ||
+					correlation.terminal !== null ||
+					correlation.inFlight !== null ||
+					correlation.circuit.failures > 0 ||
+					correlation.circuit.openUntil > 0 ||
+					correlation.circuit.halfOpenProbes > 0)
+			) {
+				return {
+					state: freshState,
+					correlation: normalizeCorrelation(correlation),
+					cancelReason: null,
+					unavailable: false,
+					claimHeld: true,
+					retryableReason:
+						'paused: durable correlation disappeared before final action admission; event remains retryable (state repair required)',
+				};
+			}
 			const freshCorrelation = normalizeCorrelation(
-				freshState.correlations[key] ?? correlation,
+				persistedCorrelation ?? correlation,
 			);
 			freshState.correlations[key] = freshCorrelation;
 			if (cancelReason) {
@@ -2323,6 +2491,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	state = finalAdmission.state;
 	correlation = finalAdmission.correlation;
 	if (finalAdmission.retryableReason) {
+		await releaseAdmittedProbe();
 		// A retryable reservation conflict owns this exact queue claim only. Release
 		// by the full workflow+PID identity; never clear another worker's claim.
 		const released = await releasePrFeedbackMonitorEventClaim(
@@ -2339,6 +2508,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 		);
 	}
 	if (finalAdmission.cancelReason) {
+		await releaseAdmittedProbe();
 		return cancelledResult(finalAdmission.cancelReason, base);
 	}
 	if (finalAdmission.unavailable) {
@@ -2380,6 +2550,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	// synchronous local check immediately before entering the performer loop.
 	const lateLocalCancellation = localCancellationReason(directory, sessionID);
 	if (lateLocalCancellation) {
+		await releaseAdmittedProbe();
 		return cancelledResult(lateLocalCancellation, base);
 	}
 
@@ -2451,16 +2622,22 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 					reason: cancellationReason,
 				};
 				if (outcome.performed) recordProcessedDigest(freshCorrelation, digest);
+				if (
+					halfOpenProbe &&
+					freshCorrelation.circuit.halfOpenProbeOwnerToken ===
+						halfOpenProbeOwnerToken &&
+					freshCorrelation.circuit.halfOpenProbeOwnerPid ===
+						halfOpenProbeOwnerPid
+				) {
+					clearHalfOpenProbeMarker(freshCorrelation.circuit);
+				}
 				freshCorrelation.inFlight = null;
 			} else if (!outcome.performed) {
 				freshCorrelation.circuit.failures += 1;
 				// A failed half-open probe (including a permanent failure) must
 				// re-open the cooldown and clear its exclusive marker.
 				freshCorrelation.circuit.openUntil = _internals.now() + 60_000;
-				freshCorrelation.circuit.halfOpenProbes = 0;
-				delete freshCorrelation.circuit.halfOpenProbeStartedAt;
-				delete freshCorrelation.circuit.halfOpenProbeOwnerToken;
-				delete freshCorrelation.circuit.halfOpenProbeOwnerPid;
+				clearHalfOpenProbeMarker(freshCorrelation.circuit);
 				freshCorrelation.terminal = outcome.permanent
 					? {
 							state: 'paused_for_human',
@@ -2494,12 +2671,14 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 			await _internals.writeState(directory, freshState);
 			return { state: freshState, correlation: freshCorrelation };
 		}));
+		if (settledByOwner) halfOpenProbe = false;
 	} catch (err) {
 		warn(
 			`[pr-feedback-loop] post-action settlement failed: ${
 				err instanceof Error ? err.message : String(err)
 			}`,
 		);
+		await releaseAdmittedProbe();
 		return {
 			...base,
 			authorization,
@@ -2512,6 +2691,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 		};
 	}
 	if (!settledByOwner) {
+		await releaseAdmittedProbe();
 		return {
 			...base,
 			authorization,
@@ -2564,7 +2744,7 @@ export async function cancelPrFeedbackLoop(
 	reason: string;
 	cleanupReceipt: { path: string; clearedEvents: string[] };
 }> {
-	const cancellationKey = rememberCancellationRequest(
+	const cancellationRequest = rememberCancellationRequest(
 		directory,
 		sessionID,
 		reason,
@@ -2577,7 +2757,11 @@ export async function cancelPrFeedbackLoop(
 			{ kind: 'cancellation' },
 		);
 	} finally {
-		releaseCancellationRequest(cancellationKey, reason);
+		releaseCancellationRequest(
+			cancellationRequest.key,
+			cancellationRequest.rootKey,
+			reason,
+		);
 	}
 }
 
@@ -2628,10 +2812,16 @@ async function cancelPrFeedbackLoopUnlocked(
 				if (correlation.sessionID !== sessionID) continue;
 				if (correlation.terminal?.state === 'cancelled') continue;
 				correlation.terminal = { state: 'cancelled', reason };
-				// Keep an already-started reservation owned by its performer so the
+				// Keep an already-started reservation owned by a live performer so its
 				// post-action exact-owner settlement can record a performed digest. A
-				// pre-action reservation is safe to clear before queue cleanup.
-				if (correlation.inFlight?.actionStartedAt === undefined) {
+				// dead owner cannot settle; cancellation is the explicit operator
+				// decision that makes that otherwise-permanent reservation reclaimable.
+				const inFlight = correlation.inFlight;
+				const ownerAlive =
+					inFlight && hasReservationIdentity(inFlight)
+						? _internals.isProcessAlive(inFlight.ownerPid)
+						: false;
+				if (inFlight?.actionStartedAt === undefined || !ownerAlive) {
 					correlation.inFlight = null;
 				}
 				bumpCorrelationRevision(correlation);
@@ -2716,7 +2906,7 @@ async function cancelPrFeedbackLoopUnlocked(
 export function notifyPrFeedbackLoop(
 	directory: string,
 	sessionID: string,
-): void {
+): Promise<void> {
 	// withTimeout is Promise.race: the timeout rejection is consumed by the
 	// .catch below, but the SETTLE promise itself can still reject later (e.g.
 	// a writeState I/O failure) and its rejection needs its own handler or it
@@ -2729,9 +2919,11 @@ export function notifyPrFeedbackLoop(
 			}`,
 		);
 	});
-	void withTimeout(
+	return withTimeout(
 		settle,
 		SETTLE_TIMEOUT_MS,
 		new Error('pr-feedback-loop settlement timeout'),
-	).catch(() => {});
+	)
+		.then(() => undefined)
+		.catch(() => {});
 }

@@ -1,9 +1,14 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { getGlobalEventBus } from '../../src/background/event-bus.js';
+import {
+	_internals as deliveryInternals,
+	isPrEventDeliveryRegistered,
+} from '../../src/background/pr-event-delivery.js';
+import { _internals as loopInternals } from '../../src/background/pr-feedback-loop.js';
 import {
 	getPrFeedbackLoopRuntime,
 	_internals as runtimeInternals,
@@ -24,10 +29,20 @@ import {
 	resolveGhExecutable,
 } from '../../src/utils/gh-executable.js';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
+import { acquireLoopInternals } from '../helpers/loop-internals-lease';
+import { acquirePrFeedbackBackgroundLease } from '../helpers/pr-feedback-background-lease';
+import { acquireProcessEnvLease } from '../helpers/process-env-lease';
 import { createSafeTestDir } from '../helpers/safe-test-dir.js';
 
 const originalSnapshot = runtimeInternals.getPRPollSnapshot;
 const originalDispatch = runtimeInternals.dispatchEphemeralAgent;
+const originalLoopWriteState = loopInternals.writeState;
+const originalDeliveryCanonical = deliveryInternals.canonicalRootKeyFresh;
+const originalDeliveryCanonicalAsync =
+	deliveryInternals.canonicalRootKeyFreshAsync;
+const originalRuntimeCanonical = runtimeInternals.canonicalRootKeyFresh;
+const originalRuntimeCanonicalAsync =
+	runtimeInternals.canonicalRootKeyFreshAsync;
 
 function pluginContext(directory: string, client: unknown) {
 	return {
@@ -91,28 +106,44 @@ function installFakeGh(directory: string): string {
 	return binary;
 }
 
-async function waitFor(label: string, check: () => boolean): Promise<void> {
-	const deadline = performance.now() + 8_000;
-	while (!check()) {
-		if (performance.now() >= deadline)
-			throw new Error(`timed out waiting for ${label}`);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-	}
-}
-
 describe('issue #2745 production init boundary', () => {
 	let restoreIndexInternals: () => void = () => {};
 	let cleanupEnvironment: () => void = () => {};
+	let releaseLoopInternals: (() => void) | null = null;
+	let releaseProcessEnv: (() => void) | null = null;
+	let releaseBackground: (() => void) | null = null;
 	const directories: Array<{ dir: string; cleanup: () => void }> = [];
 
+	beforeEach(async () => {
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
+		releaseProcessEnv = await acquireProcessEnvLease();
+		releaseLoopInternals = await acquireLoopInternals();
+	});
+
 	afterEach(async () => {
-		runtimeInternals.getPRPollSnapshot = originalSnapshot;
-		runtimeInternals.dispatchEphemeralAgent = originalDispatch;
-		restoreIndexInternals();
-		restoreIndexInternals = () => {};
-		cleanupEnvironment();
-		cleanupEnvironment = () => {};
-		for (const entry of directories.splice(0)) entry.cleanup();
+		try {
+			runtimeInternals.getPRPollSnapshot = originalSnapshot;
+			runtimeInternals.dispatchEphemeralAgent = originalDispatch;
+			runtimeInternals.canonicalRootKeyFresh = originalRuntimeCanonical;
+			runtimeInternals.canonicalRootKeyFreshAsync =
+				originalRuntimeCanonicalAsync;
+			loopInternals.writeState = originalLoopWriteState;
+			deliveryInternals.canonicalRootKeyFresh = originalDeliveryCanonical;
+			deliveryInternals.canonicalRootKeyFreshAsync =
+				originalDeliveryCanonicalAsync;
+			restoreIndexInternals();
+			restoreIndexInternals = () => {};
+			cleanupEnvironment();
+			cleanupEnvironment = () => {};
+			for (const entry of directories.splice(0)) entry.cleanup();
+		} finally {
+			releaseLoopInternals?.();
+			releaseLoopInternals = null;
+			releaseProcessEnv?.();
+			releaseProcessEnv = null;
+			releaseBackground?.();
+			releaseBackground = null;
+		}
 	});
 
 	it('registers only after triple opt-in, without eager head or model work', async () => {
@@ -146,6 +177,44 @@ describe('issue #2745 production init boundary', () => {
 		expect(dispatchCalls).toBe(0);
 		await plugin.dispose?.();
 		expect(getPrFeedbackLoopRuntime(fixture.dir)).toBeNull();
+	});
+
+	it('promotes the event-delivery owner through the deferred init queue', async () => {
+		cleanupEnvironment = createIsolatedTestEnv().cleanup;
+		const physicalRoot = 'physical-pr-delivery-init-root';
+		deliveryInternals.canonicalRootKeyFresh = () => physicalRoot;
+		deliveryInternals.canonicalRootKeyFreshAsync = async () => physicalRoot;
+		runtimeInternals.canonicalRootKeyFresh = () => physicalRoot;
+		runtimeInternals.canonicalRootKeyFreshAsync = async () => physicalRoot;
+		let scheduled: readonly Array<() => void | Promise<void>> = [];
+		restoreIndexInternals = overrideIndexInternalsForTest({
+			schedulePostResolutionTasks: (tasks) => {
+				scheduled = tasks;
+			},
+		});
+		const fixture = createSafeTestDir('pr-delivery-init-');
+		directories.push(fixture);
+
+		const plugin = await boot(
+			fixture.dir,
+			{
+				pr_monitor: {
+					enabled: true,
+					auto_pr_feedback: true,
+					event_delivery: 'prompt',
+				},
+				pr_feedback_loop: { enabled: true },
+				repo_graph: { enabled: false },
+			},
+			{},
+		);
+		expect(isPrEventDeliveryRegistered(fixture.dir)).toBe(true);
+		expect(scheduled.length).toBeGreaterThanOrEqual(2);
+		await Promise.all(scheduled.map((task) => task()));
+		expect(isPrEventDeliveryRegistered('physical-alias')).toBe(true);
+		expect(getPrFeedbackLoopRuntime('physical-alias')).not.toBeNull();
+
+		await plugin.dispose?.();
 	});
 
 	it('keeps any flag-off init inert and cleans roots independently', async () => {
@@ -240,6 +309,20 @@ describe('issue #2745 production init boundary', () => {
 		]);
 
 		const trace = { creates: 0, prompts: 0 };
+		let resolveCompleted!: () => void;
+		const completed = new Promise<void>((resolve) => {
+			resolveCompleted = resolve;
+		});
+		loopInternals.writeState = async (stateDirectory, state) => {
+			await originalLoopWriteState(stateDirectory, state);
+			if (
+				Object.values(state.correlations).some(
+					(entry) => entry.terminal?.state === 'completed',
+				)
+			) {
+				resolveCompleted();
+			}
+		};
 		const client = {
 			session: {
 				create: async () => {
@@ -287,6 +370,7 @@ describe('issue #2745 production init boundary', () => {
 					prNumber: 2745,
 					repoFullName: 'fixture-owner/fixture-repo',
 					prUrl: 'https://github.com/fixture-owner/fixture-repo/pull/2745',
+					headRefOid: 'fixture-head-2745',
 				},
 				'issue-2745-integration',
 			);
@@ -296,16 +380,7 @@ describe('issue #2745 production init boundary', () => {
 				'.swarm',
 				'pr-feedback-loop-state.json',
 			);
-			await waitFor('public critic and completed terminal', () => {
-				if (!fs.existsSync(statePath) || trace.creates < 1 || trace.prompts < 1)
-					return false;
-				const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
-					correlations?: Record<string, { terminal?: { state?: string } }>;
-				};
-				return Object.values(raw.correlations ?? {}).some(
-					(entry) => entry.terminal?.state === 'completed',
-				);
-			});
+			await completed;
 			const raw = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
 				correlations?: Record<
 					string,

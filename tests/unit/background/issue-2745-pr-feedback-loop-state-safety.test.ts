@@ -126,6 +126,45 @@ test('the first probe marker is durable before oversight dispatch and external s
 	).toBe(NOW);
 });
 
+test('F-CORE releases an admitted probe when cancellation lands before oversight', async () => {
+	const dir = makeProject();
+	await createCorrelation(dir);
+	setExpiredProbe(dir, 'stale');
+	const seams = installHappySeams();
+	loopInternals.now = () => NOW;
+	const productionWriteState = loopInternals.writeState;
+	let cancellationWritten = false;
+	loopInternals.writeState = async (directory, state) => {
+		await productionWriteState(directory, state);
+		if (
+			!cancellationWritten &&
+			state.correlations[CORRELATION]?.circuit.halfOpenProbes
+		) {
+			cancellationWritten = true;
+			const latest = readState(dir);
+			latest.sessionTerminals[SESSION] = {
+				state: 'cancelled',
+				reason: 'operator stop during probe admission',
+			};
+			writeState(dir, latest);
+		}
+	};
+	await enqueue(dir, {
+		dedupToken: 'cancel-before-oversight',
+		type: 'pr.merge.conflict',
+	});
+
+	const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
+	const circuit = readState(dir).correlations[CORRELATION].circuit;
+
+	expect(result.terminal?.state).toBe('cancelled');
+	expect(circuit.halfOpenProbes).toBe(0);
+	expect(circuit.halfOpenProbeOwnerToken).toBeUndefined();
+	expect(circuit.halfOpenProbeOwnerPid).toBeUndefined();
+	expect(seams.performer).not.toHaveBeenCalled();
+	expect(loopInternals.dispatchOversight).not.toHaveBeenCalled();
+});
+
 test.each([
 	['oversight denial', 'deny' as const],
 	['permanent action failure', 'fail' as const],
@@ -208,6 +247,10 @@ test('durable cancellation written during a gated performer wins the post-action
 	const gate = new Promise<void>((resolve) => {
 		release = resolve;
 	});
+	let resolveActionStarted!: () => void;
+	const actionStarted = new Promise<void>((resolve) => {
+		resolveActionStarted = resolve;
+	});
 	loopInternals.evaluateCurrentHead = mock(
 		async () => HEAD,
 	) as unknown as typeof loopInternals.evaluateCurrentHead;
@@ -216,16 +259,14 @@ test('durable cancellation written during a gated performer wins the post-action
 		decision: 'allow',
 	})) as unknown as typeof loopInternals.dispatchOversight;
 	loopInternals.performAuthorizedAction = mock(async () => {
+		resolveActionStarted();
 		await gate;
 		return started();
 	}) as unknown as typeof loopInternals.performAuthorizedAction;
 	await enqueue(dir);
 
 	const processing = claimAndProcessPrFeedbackEvent(dir, SESSION);
-	for (let attempt = 0; attempt < 80; attempt++) {
-		if (loopInternals.performAuthorizedAction.mock.calls.length > 0) break;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
+	await actionStarted;
 	expect(loopInternals.performAuthorizedAction).toHaveBeenCalledTimes(1);
 	const state = readState(dir);
 	state.sessionTerminals[SESSION] = {

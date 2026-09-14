@@ -12,6 +12,7 @@ import {
 	type PrEventSubscriberOptions,
 } from '../../../src/background/pr-event-subscribers.js';
 import type { PrSubscriptionRecord } from '../../../src/background/pr-subscriptions.js';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
 import { safeRmRecursive } from '../../../tests/helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir.js';
 
@@ -57,7 +58,10 @@ function subscription(): PrSubscriptionRecord {
 	};
 }
 
-function event(type = 'pr.ci.failed') {
+function event(
+	type = 'pr.ci.failed',
+	payloadOverrides: Record<string, unknown> = {},
+) {
 	return {
 		type,
 		payload: {
@@ -66,17 +70,20 @@ function event(type = 'pr.ci.failed') {
 			prUrl,
 			checkName: 'ci/build',
 			checkState: 'failure',
+			...payloadOverrides,
 		},
 	};
 }
 
 let saved: typeof _internals;
+let releaseBackground: (() => void) | null = null;
 let session:
 	| { sessionID: string; pendingAdvisoryMessages: string[] }
 	| undefined;
 let notify: ReturnType<typeof mock>;
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseBackground = await acquirePrFeedbackBackgroundLease();
 	if (!directory) {
 		directory = canonicalMkdtemp('pr-subscriber-2745-');
 		cleanupDirectory = () => safeRmRecursive(directory);
@@ -100,7 +107,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	Object.assign(_internals, saved);
+	try {
+		Object.assign(_internals, saved);
+	} finally {
+		releaseBackground?.();
+		releaseBackground = null;
+	}
 });
 
 describe('subscriber delivery acceptance (#2745)', () => {
@@ -155,6 +167,46 @@ describe('subscriber delivery acceptance (#2745)', () => {
 			config({ event_delivery: 'prompt' }),
 		);
 
+		expect(notify).not.toHaveBeenCalled();
+	});
+
+	test('FB-010 accepts a legacy payload without prUrl using the subscription fallback', async () => {
+		_internals.isPrEventDeliveryRegistered = mock(() => true);
+		_internals.deliverPrActivity = mock(async (_session, events) => {
+			// Older producers omit prUrl; delivery must still identify the canonical
+			// subscribed PR rather than dropping the otherwise valid event.
+			expect(events[0]?.prUrl).toBe(prUrl);
+			return true;
+		});
+		const legacyEvent = event();
+		delete (legacyEvent.payload as { prUrl?: string }).prUrl;
+
+		await _internals.handlePrEvent(
+			legacyEvent,
+			directory,
+			config({ event_delivery: 'prompt' }),
+		);
+
+		expect(_internals.deliverPrActivity).toHaveBeenCalledTimes(1);
+		// Legacy events are delivered through the normal subscriber channel; they
+		// do not enter the PR_FEEDBACK monitor queue when prUrl is absent.
+		expect(_internals.enqueuePrFeedbackMonitorEvent).not.toHaveBeenCalled();
+	});
+
+	test.each([
+		['foreign payload URL', 'https://github.com/other/repo/pull/42'],
+		['malformed payload URL', 'https://github.com/owner/repo/pull/42/files'],
+	])('FB-010 rejects a %s for the matching repo and PR', async (_label, payloadPrUrl) => {
+		// Before FB-010, matching only repo + PR let a foreign payload URL reach
+		// queueing and delivery even though it did not identify the subscribed PR.
+		await _internals.handlePrEvent(
+			event('pr.ci.failed', { prUrl: payloadPrUrl }),
+			directory,
+			config(),
+		);
+
+		expect(_internals.enqueuePrFeedbackMonitorEvent).not.toHaveBeenCalled();
+		expect(_internals.deliverPrActivity).not.toHaveBeenCalled();
 		expect(notify).not.toHaveBeenCalled();
 	});
 });

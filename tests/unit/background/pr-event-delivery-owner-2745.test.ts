@@ -4,14 +4,17 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+	_getSessionQueueStats,
 	_internals,
 	buildWakeMessage,
 	deliverPrActivity,
 	isPrEventDeliveryRegistered,
+	noteSessionIdle,
 	registerPrEventDelivery,
 	unregisterPrEventDelivery,
 } from '../../../src/background/pr-event-delivery.js';
 import type { PrMonitorConfig } from '../../../src/config/schema.js';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
 
 const config = {
 	enabled: true,
@@ -41,8 +44,10 @@ function client() {
 
 let roots: string[] = [];
 let savedInternals: typeof _internals;
+let releaseBackground: (() => void) | null = null;
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseBackground = await acquirePrFeedbackBackgroundLease();
 	savedInternals = { ..._internals };
 	_internals.log = mock(() => {}) as typeof _internals.log;
 	_internals.sendWakePrompt = savedInternals.sendWakePrompt;
@@ -54,11 +59,16 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-	Object.assign(_internals, savedInternals);
-	unregisterPrEventDelivery();
-	await Promise.all(
-		roots.map((root) => fs.rm(root, { recursive: true, force: true })),
-	);
+	try {
+		Object.assign(_internals, savedInternals);
+		unregisterPrEventDelivery();
+		await Promise.all(
+			roots.map((root) => fs.rm(root, { recursive: true, force: true })),
+		);
+	} finally {
+		releaseBackground?.();
+		releaseBackground = null;
+	}
 });
 
 describe('PR event delivery ownership (#2745)', () => {
@@ -75,7 +85,10 @@ describe('PR event delivery ownership (#2745)', () => {
 			config,
 		});
 		expect(isPrEventDeliveryRegistered(roots[0])).toBe(true);
-		expect(syncCanonical).not.toHaveBeenCalled();
+		// Current lookup intentionally refreshes the physical key first. The
+		// registration itself is still lexical-only; this call is the explicit
+		// lookup boundary that exercises the fresh canonical seam.
+		expect(syncCanonical).toHaveBeenCalledTimes(1);
 		expect(asyncCanonical).not.toHaveBeenCalled();
 
 		await registration.promote();
@@ -83,6 +96,64 @@ describe('PR event delivery ownership (#2745)', () => {
 		// roots[1] is a deterministic alias in the injected canonical seam;
 		// lookup uses the promoted physical identity after the init boundary.
 		expect(isPrEventDeliveryRegistered(roots[1])).toBe(true);
+		expect(syncCanonical).toHaveBeenCalledTimes(2);
+		registration();
+	});
+
+	test('migrates a busy session queue when promotion changes its root key', async () => {
+		const physicalRoot = 'shared-physical-busy-session-root';
+		_internals.canonicalRootKeyFresh = mock(() => physicalRoot);
+		_internals.canonicalRootKeyFreshAsync = mock(async () => physicalRoot);
+		const owner = client();
+		const registration = registerPrEventDelivery({
+			client: owner.client,
+			directory: roots[0]!,
+			config,
+		});
+
+		await deliverPrActivity(
+			'session',
+			[event({ type: 'pr.ci.failed' })],
+			roots[0],
+		);
+		await deliverPrActivity(
+			'session',
+			[
+				event({
+					type: 'pr.new.comment',
+					dedupToken: '[pr-monitor:pr.new.comment:owner/repo#42]',
+				}),
+			],
+			roots[0],
+		);
+		expect(_getSessionQueueStats('session', roots[0])).toMatchObject({
+			queued: 1,
+			busy: true,
+		});
+
+		await registration.promote();
+		expect(_getSessionQueueStats('session', roots[1])).toMatchObject({
+			queued: 1,
+			busy: true,
+		});
+		await deliverPrActivity(
+			'session',
+			[
+				event({
+					type: 'pr.merge.conflict',
+					dedupToken: '[pr-monitor:pr.merge.conflict:owner/repo#42]',
+				}),
+			],
+			roots[1],
+		);
+
+		// The queue migrated with the owner, so the alias lookup remains busy
+		// and appends instead of accidentally waking the wrong root.
+		expect(owner.promptAsync).toHaveBeenCalledTimes(1);
+		expect(_getSessionQueueStats('session', roots[1])).toMatchObject({
+			queued: 2,
+			busy: true,
+		});
 		registration();
 	});
 
@@ -162,6 +233,74 @@ describe('PR event delivery ownership (#2745)', () => {
 		expect(b.promptAsync).toHaveBeenCalledTimes(1);
 	});
 
+	test('routes session.idle flushes to the owning client for each root', async () => {
+		const a = client();
+		const b = client();
+		registerPrEventDelivery({ client: a.client, directory: roots[0]!, config });
+		registerPrEventDelivery({ client: b.client, directory: roots[1]!, config });
+
+		await deliverPrActivity(
+			'shared-session',
+			[event({ type: 'pr.ci.failed' })],
+			roots[0],
+		);
+		await deliverPrActivity(
+			'shared-session',
+			[event({ type: 'pr.new.comment' })],
+			roots[0],
+		);
+		await deliverPrActivity(
+			'shared-session',
+			[event({ type: 'pr.ci.failed' })],
+			roots[1],
+		);
+		await deliverPrActivity(
+			'shared-session',
+			[event({ type: 'pr.new.comment' })],
+			roots[1],
+		);
+
+		_internals.readPrFeedbackMonitorQueue = mock(async () => null) as never;
+		const flushedRoots: string[] = [];
+		let resolveA!: () => void;
+		let resolveB!: () => void;
+		const flushedA = new Promise<void>((resolve) => {
+			resolveA = resolve;
+		});
+		const flushedB = new Promise<void>((resolve) => {
+			resolveB = resolve;
+		});
+		_internals.sendWakePrompt = mock(
+			async (
+				_sessionID: string,
+				_events: unknown[],
+				_messageID: string,
+				directory?: string,
+			) => {
+				if (directory) flushedRoots.push(directory);
+				if (directory === roots[0]) resolveA();
+				if (directory === roots[1]) resolveB();
+				return true;
+			},
+		) as never;
+
+		noteSessionIdle('shared-session', roots[0]);
+		noteSessionIdle('shared-session', roots[1]);
+		await Promise.all([flushedA, flushedB]);
+
+		expect(new Set(flushedRoots)).toEqual(new Set(roots));
+		expect(a.promptAsync).toHaveBeenCalledTimes(1);
+		expect(b.promptAsync).toHaveBeenCalledTimes(1);
+		expect(_getSessionQueueStats('shared-session', roots[0])).toMatchObject({
+			queued: 0,
+			busy: true,
+		});
+		expect(_getSessionQueueStats('shared-session', roots[1])).toMatchObject({
+			queued: 0,
+			busy: true,
+		});
+	});
+
 	test('stale same-root cleanup cannot remove the replacement owner', async () => {
 		const first = client();
 		const replacement = client();
@@ -198,5 +337,21 @@ describe('PR event delivery ownership (#2745)', () => {
 		expect(text.match(/\[MODE: PR_FEEDBACK/g)?.length).toBe(1);
 		expect(text).toContain(signal);
 		expect(text).toContain('(MODE: PR_FEEDBACK pr="evil"]');
+	});
+
+	test('suppresses trusted mode signals in mixed queued groups', () => {
+		const signal = `[MODE: PR_FEEDBACK pr="https://github.com/owner/repo/pull/42"]`;
+		const text = buildWakeMessage([
+			event({ modeSignal: signal, message: `${event().message}\n${signal}` }),
+			event({
+				type: 'pr.new.comment',
+				dedupToken: '[pr-monitor:pr.new.comment:owner/repo#42]',
+				disposition: 'queued-for-later',
+			}),
+		]);
+
+		expect(text).toContain('disposition="queued-for-later"');
+		expect(text).not.toContain(signal);
+		expect(text).toContain('The active workflow remains authoritative');
 	});
 });

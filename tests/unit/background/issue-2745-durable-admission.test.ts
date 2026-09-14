@@ -8,12 +8,7 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import {
-	claimPrFeedbackMonitorEvents,
-	_internals as queueInternals,
-	readPrFeedbackMonitorQueue,
-	releasePrFeedbackMonitorEventClaim,
-} from '../../../src/background/pr-feedback-event-queue.js';
+import { readPrFeedbackMonitorQueue } from '../../../src/background/pr-feedback-event-queue.js';
 import {
 	cancelPrFeedbackLoop,
 	claimAndProcessPrFeedbackEvent,
@@ -43,7 +38,7 @@ function putInFlight(
 }
 
 let releaseLoopInternals!: () => void;
-const originalQueueIsProcessAlive = queueInternals.isProcessAlive;
+const ACTION_STARTED_AT = 1_700_000_000_000;
 
 beforeEach(async () => {
 	releaseLoopInternals = await acquireLoopInternals();
@@ -59,164 +54,10 @@ function reservation(overrides: Record<string, unknown> = {}) {
 		performed: false,
 		attempts: 0,
 		claimedAt: new Date(0).toISOString(),
-		actionStartedAt: Date.now(),
+		actionStartedAt: ACTION_STARTED_AT,
 		...overrides,
 	};
 }
-
-test('queue release requires the exact workflow and owner PID pair', async () => {
-	const directory = makeProject();
-	await enqueue(directory, { dedupToken: 'owner-pair' });
-	const claimed = await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'workflow-owner-pair',
-		'https://github.com/example/repo/pull/42',
-		['owner-pair'],
-		42_424,
-	);
-	expect(claimed).toHaveLength(1);
-	expect(claimed[0]).toMatchObject({
-		claimedWorkflowInstanceId: 'workflow-owner-pair',
-		claimedOwnerPid: 42_424,
-	});
-
-	expect(
-		await releasePrFeedbackMonitorEventClaim(
-			directory,
-			SESSION,
-			'owner-pair',
-			'workflow-owner-pair',
-			42_425,
-		),
-	).toBe(false);
-	expect(
-		(await readPrFeedbackMonitorQueue(directory, SESSION))?.events[0]
-			?.claimedOwnerPid,
-	).toBe(42_424);
-	expect(
-		await releasePrFeedbackMonitorEventClaim(
-			directory,
-			SESSION,
-			'owner-pair',
-			'workflow-owner-pair',
-			42_424,
-		),
-	).toBe(true);
-	expect(
-		(await readPrFeedbackMonitorQueue(directory, SESSION))?.events[0]
-			?.claimedWorkflowInstanceId,
-	).toBeUndefined();
-});
-
-test('reclaims only the selected event from a demonstrably dead queue owner', async () => {
-	const directory = makeProject();
-	await enqueue(directory, { dedupToken: 'dead-queue-claim' });
-	await enqueue(directory, { dedupToken: 'unselected-queue-claim' });
-	const initiallyClaimed = await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'crashed-worker',
-		'https://github.com/example/repo/pull/42',
-		['dead-queue-claim'],
-		42_424,
-	);
-	expect(initiallyClaimed).toHaveLength(1);
-
-	queueInternals.isProcessAlive = () => false;
-	const reclaimed = await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'restarted-worker',
-		'https://github.com/example/repo/pull/42',
-		['dead-queue-claim'],
-		42_425,
-	);
-
-	expect(reclaimed).toHaveLength(1);
-	expect(reclaimed[0]).toMatchObject({
-		dedupToken: 'dead-queue-claim',
-		claimedWorkflowInstanceId: 'restarted-worker',
-		claimedOwnerPid: 42_425,
-	});
-	const queue = await readPrFeedbackMonitorQueue(directory, SESSION);
-	expect(
-		queue?.events.find((entry) => entry.dedupToken === 'unselected-queue-claim')
-			?.claimedWorkflowInstanceId,
-	).toBeUndefined();
-});
-
-test('does not reclaim a queue claim owned by a live PID', async () => {
-	const directory = makeProject();
-	await enqueue(directory, { dedupToken: 'live-queue-claim' });
-	await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'live-worker',
-		'https://github.com/example/repo/pull/42',
-		['live-queue-claim'],
-		42_424,
-	);
-	queueInternals.isProcessAlive = () => true;
-
-	const attempted = await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'other-worker',
-		'https://github.com/example/repo/pull/42',
-		['live-queue-claim'],
-		42_425,
-	);
-
-	expect(attempted).toEqual([]);
-	expect(
-		(await readPrFeedbackMonitorQueue(directory, SESSION))?.events[0],
-	).toMatchObject({
-		claimedWorkflowInstanceId: 'live-worker',
-		claimedOwnerPid: 42_424,
-	});
-});
-
-test('does not reclaim a legacy queue claim without a PID', async () => {
-	const directory = makeProject();
-	await enqueue(directory, { dedupToken: 'legacy-queue-claim' });
-	const queue = await readPrFeedbackMonitorQueue(directory, SESSION);
-	const firstEvent = queue?.events[0];
-	expect(firstEvent).toBeDefined();
-	const legacyEvent = {
-		...firstEvent,
-		claimedWorkflowInstanceId: 'legacy-worker',
-		claimedAt: new Date(0).toISOString(),
-	};
-	delete legacyEvent.claimedOwnerPid;
-	fs.writeFileSync(
-		path.join(directory, '.swarm', queueInternals.queueRelativePath(SESSION)),
-		JSON.stringify({ ...queue, events: [legacyEvent] }),
-		'utf8',
-	);
-	queueInternals.resetQueueCache();
-	queueInternals.isProcessAlive = () => false;
-
-	const attempted = await claimPrFeedbackMonitorEvents(
-		directory,
-		SESSION,
-		'restarted-worker',
-		'https://github.com/example/repo/pull/42',
-		['legacy-queue-claim'],
-		42_425,
-	);
-
-	expect(attempted).toEqual([]);
-	expect(
-		(await readPrFeedbackMonitorQueue(directory, SESSION))?.events[0],
-	).toMatchObject({
-		claimedWorkflowInstanceId: 'legacy-worker',
-	});
-	expect(
-		(await readPrFeedbackMonitorQueue(directory, SESSION))?.events[0]
-			?.claimedOwnerPid,
-	).toBeUndefined();
-});
 
 test('a live cross-process reservation returns retryable busy and releases only its claim', async () => {
 	const directory = makeProject();
@@ -243,6 +84,52 @@ test('a live cross-process reservation returns retryable busy and releases only 
 			ownerPid: process.pid,
 		},
 	);
+});
+
+test('does not resurrect historical in-memory correlation when final admission loses its durable key (FB-015)', async () => {
+	const directory = makeProject();
+	await createCorrelation(directory);
+	const seams = installHappySeams();
+	const productionReadState = loopInternals.readState;
+	const productionWriteState = loopInternals.writeState;
+	let removed = false;
+	let writesAfterRemoval = 0;
+	loopInternals.readState = async (stateDirectory) => {
+		const state = await productionReadState(stateDirectory);
+		// The oversight sequence is incremented immediately before final action
+		// admission. This project already consumed sequence 1 while seeding the
+		// historical correlation, so sequence 2 identifies the final read for the
+		// new event. Model another durable writer removing the key at that boundary;
+		// the stale local snapshot must not be written back.
+		if (!removed && state.oversightSeq >= 2) {
+			removed = true;
+			const observed = JSON.parse(JSON.stringify(state)) as typeof state;
+			delete observed.correlations[CORRELATION];
+			return observed;
+		}
+		return state;
+	};
+	loopInternals.writeState = async (stateDirectory, state) => {
+		if (removed) writesAfterRemoval += 1;
+		await productionWriteState(stateDirectory, state);
+	};
+	await enqueue(directory, {
+		dedupToken: 'missing-final-correlation',
+		type: 'pr.merge.conflict',
+	});
+
+	const result = await claimAndProcessPrFeedbackEvent(directory, SESSION);
+
+	expect(result.reason).toMatch(/durable correlation disappeared/i);
+	expect(seams.performer).not.toHaveBeenCalled();
+	expect(writesAfterRemoval).toBe(0);
+	expect(readState(directory).correlations[CORRELATION]?.inFlight).toBeNull();
+	const queueAfter = await readPrFeedbackMonitorQueue(directory, SESSION);
+	expect(
+		queueAfter?.events.find(
+			(event) => event.dedupToken === 'missing-final-correlation',
+		)?.claimedWorkflowInstanceId,
+	).toBeUndefined();
 });
 
 test('final admission counts live reservations from every PR in the session budget', async () => {
@@ -321,7 +208,7 @@ test('a dead owner after actionStartedAt remains counted and blocks recovery', a
 		reservation({
 			workflowInstanceId: 'dead-after-start',
 			ownerPid: 42_424,
-			actionStartedAt: Date.now(),
+			actionStartedAt: ACTION_STARTED_AT,
 		}),
 	);
 	const seams = installHappySeams();
@@ -343,6 +230,29 @@ test('a dead owner after actionStartedAt remains counted and blocks recovery', a
 	);
 });
 
+test('F-BUDGET cancellation reclaims a started reservation whose owner is dead', async () => {
+	const directory = makeProject();
+	await createCorrelation(directory);
+	putInFlight(
+		directory,
+		reservation({
+			workflowInstanceId: 'cancelled-dead-owner',
+			ownerPid: 42_424,
+			actionStartedAt: ACTION_STARTED_AT,
+		}),
+	);
+	loopInternals.isProcessAlive = mock(() => false);
+
+	const stopped = await cancelPrFeedbackLoop(
+		directory,
+		SESSION,
+		'operator stop reclaims stale action reservation',
+	);
+
+	expect(stopped.terminalState).toBe('cancelled');
+	expect(readState(directory).correlations[CORRELATION].inFlight).toBeNull();
+});
+
 test('a late result cannot settle over a replacement reservation owner', async () => {
 	const directory = makeProject();
 	await createCorrelation(directory);
@@ -351,7 +261,12 @@ test('a late result cannot settle over a replacement reservation owner', async (
 		release = resolve;
 	});
 	const seams = installHappySeams();
+	let resolveActionStarted!: () => void;
+	const actionStarted = new Promise<void>((resolve) => {
+		resolveActionStarted = resolve;
+	});
 	loopInternals.performAuthorizedAction = mock(async () => {
+		resolveActionStarted();
 		await gate;
 		return { performed: true };
 	}) as unknown as typeof loopInternals.performAuthorizedAction;
@@ -360,10 +275,7 @@ test('a late result cannot settle over a replacement reservation owner', async (
 		type: 'pr.merge.conflict',
 	});
 	const processing = claimAndProcessPrFeedbackEvent(directory, SESSION);
-	for (let attempt = 0; attempt < 80; attempt++) {
-		if (loopInternals.performAuthorizedAction.mock.calls.length > 0) break;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
+	await actionStarted;
 	expect(loopInternals.performAuthorizedAction).toHaveBeenCalledTimes(1);
 	putInFlight(
 		directory,
@@ -442,8 +354,6 @@ test('correlation CAS revisions increase across durable cancellation and remain 
 afterEach(() => {
 	try {
 		restoreProductionLoopInternals();
-		queueInternals.isProcessAlive = originalQueueIsProcessAlive;
-		queueInternals.resetQueueCache();
 	} finally {
 		releaseLoopInternals();
 	}

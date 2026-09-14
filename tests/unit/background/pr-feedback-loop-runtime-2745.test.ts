@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import {
 	_internals,
@@ -6,6 +6,7 @@ import {
 	type PrFeedbackLoopRuntimeOptions,
 	registerPrFeedbackLoopRuntime,
 } from '../../../src/background/pr-feedback-loop-runtime.js';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
 
 const rootA = 'C:\\workspace\\pr-feedback-a';
 const rootB = 'C:\\workspace\\pr-feedback-b';
@@ -16,33 +17,43 @@ const originalSnapshot = _internals.getPRPollSnapshot;
 const originalDispatch = _internals.dispatchEphemeralAgent;
 const originalCanonical = _internals.canonicalRootKeyFresh;
 const originalCanonicalAsync = _internals.canonicalRootKeyFreshAsync;
+let releaseBackground: (() => void) | null = null;
+
+beforeEach(async () => {
+	releaseBackground = await acquirePrFeedbackBackgroundLease();
+});
 
 afterEach(() => {
-	_internals.getPRPollSnapshot = originalSnapshot;
-	_internals.dispatchEphemeralAgent = originalDispatch;
-	_internals.canonicalRootKeyFresh = originalCanonical;
-	_internals.canonicalRootKeyFreshAsync = originalCanonicalAsync;
-	// The registry cleanup tests own their registrations. This extra cleanup is
-	// only a defensive reset for a failed assertion that could otherwise leak
-	// into the next test in Bun's shared process.
-	const activeA = getPrFeedbackLoopRuntime(rootA);
-	const activeB = getPrFeedbackLoopRuntime(rootB);
-	if (activeA)
-		registerPrFeedbackLoopRuntime({
-			client: clientA,
-			directory: rootA,
-			config: {} as PrFeedbackLoopRuntimeOptions['config'],
-			agentNames: [],
-			resolveSessionAgent: () => undefined,
-		})();
-	if (activeB)
-		registerPrFeedbackLoopRuntime({
-			client: clientB,
-			directory: rootB,
-			config: {} as PrFeedbackLoopRuntimeOptions['config'],
-			agentNames: [],
-			resolveSessionAgent: () => undefined,
-		})();
+	try {
+		_internals.getPRPollSnapshot = originalSnapshot;
+		_internals.dispatchEphemeralAgent = originalDispatch;
+		_internals.canonicalRootKeyFresh = originalCanonical;
+		_internals.canonicalRootKeyFreshAsync = originalCanonicalAsync;
+		// The registry cleanup tests own their registrations. This extra cleanup is
+		// only a defensive reset for a failed assertion that could otherwise leak
+		// into the next test in Bun's shared process.
+		const activeA = getPrFeedbackLoopRuntime(rootA);
+		const activeB = getPrFeedbackLoopRuntime(rootB);
+		if (activeA)
+			registerPrFeedbackLoopRuntime({
+				client: clientA,
+				directory: rootA,
+				config: {} as PrFeedbackLoopRuntimeOptions['config'],
+				agentNames: [],
+				resolveSessionAgent: () => undefined,
+			})();
+		if (activeB)
+			registerPrFeedbackLoopRuntime({
+				client: clientB,
+				directory: rootB,
+				config: {} as PrFeedbackLoopRuntimeOptions['config'],
+				agentNames: [],
+				resolveSessionAgent: () => undefined,
+			})();
+	} finally {
+		releaseBackground?.();
+		releaseBackground = null;
+	}
 });
 
 function options(
@@ -71,7 +82,9 @@ describe('issue #2745 production runtime boundary', () => {
 		// Exact-directory lookup must not need physical canonicalization before
 		// the post-resolution promotion runs.
 		expect(getPrFeedbackLoopRuntime(rootA)).not.toBeNull();
-		expect(syncCanonical).not.toHaveBeenCalled();
+		// The current resolver refreshes the physical key at lookup time while
+		// retaining the lexical registration as the init-time fallback.
+		expect(syncCanonical).toHaveBeenCalledTimes(1);
 		expect(asyncCanonical).not.toHaveBeenCalled();
 
 		await registration.promote();

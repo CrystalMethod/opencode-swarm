@@ -61,6 +61,22 @@ export interface PrFeedbackLoopRuntimeOptions {
 	resolveSessionAgent: ResolveSessionAgent;
 }
 
+/**
+ * Return whether the autonomous PR feedback loop has all of its opt-in gates.
+ *
+ * Keep this policy in the runtime composition boundary so plugin init and the
+ * settling loop cannot drift into subtly different activation semantics.
+ */
+export function isPrFeedbackLoopEnabled(
+	config: Pick<PluginConfig, 'pr_monitor' | 'pr_feedback_loop'>,
+): boolean {
+	return (
+		config.pr_monitor?.enabled === true &&
+		config.pr_monitor?.auto_pr_feedback === true &&
+		config.pr_feedback_loop?.enabled === true
+	);
+}
+
 export interface PrFeedbackLoopRuntime {
 	readonly directory: string;
 	evaluateCurrentHead(
@@ -103,14 +119,18 @@ function removeRegistration(entry: RegisteredRuntime): void {
 
 function resolveRegistration(directory: string): RegisteredRuntime | null {
 	const lexical = canonicalRootKeyLexical(directory);
-	const direct = registrationsByLexical.get(lexical);
-	if (direct) return direct;
 	try {
-		return (
-			registrationsByCanonical.get(
-				_internals.canonicalRootKeyFresh(directory),
-			) ?? null
-		);
+		const freshKey = _internals.canonicalRootKeyFresh(directory);
+		const canonical = registrationsByCanonical.get(freshKey);
+		if (canonical) return canonical;
+		const direct = registrationsByLexical.get(lexical);
+		// A promoted registration whose path was physically retargeted must not
+		// be recovered through its stale lexical spelling. Unpromoted entries
+		// remain available during the bounded init-to-promotion handoff.
+		if (direct && (!direct.canonicalKey || direct.canonicalKey === freshKey)) {
+			return direct;
+		}
+		return null;
 	} catch {
 		return null;
 	}

@@ -20,6 +20,7 @@ import {
 import {
 	type BackgroundAutomationManager,
 	createAutomationManager,
+	isPrFeedbackLoopEnabled,
 	PlanSyncWorker,
 	type PreflightTriggerManager,
 	type PrFeedbackLoopRuntimeRegistration,
@@ -2731,11 +2732,7 @@ async function initializeOpenCodeSwarm(
 	let prEventCleanup: (() => void) | null = null;
 	let prFeedbackLoopRuntimeCleanup: PrFeedbackLoopRuntimeRegistration | null =
 		null;
-	if (
-		prMonitorConfig.enabled &&
-		prMonitorConfig.auto_pr_feedback === true &&
-		config.pr_feedback_loop?.enabled === true
-	) {
+	if (isPrFeedbackLoopEnabled(config)) {
 		try {
 			// Pure in-memory registration only. Head polling, agent dispatch, and
 			// all other external work remain event-driven and off the init path.

@@ -25,6 +25,8 @@ import {
 } from '../../../src/background/pr-subscriptions.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 export const SESSION = 'issue-2745-state-safety-session';
@@ -40,19 +42,25 @@ const CONFIG = {
 };
 const oldXdg = process.env.XDG_CONFIG_HOME;
 const dirs: string[] = [];
-let loopInternalsTail = Promise.resolve();
+let releaseProcessEnv: (() => void) | null = null;
 
-beforeAll(() => {
+beforeAll(async () => {
+	releaseProcessEnv = await acquireProcessEnvLease();
 	const xdg = canonicalMkdtemp('issue-2745-state-safety-xdg-');
 	dirs.push(xdg);
 	process.env.XDG_CONFIG_HOME = xdg;
 });
 
 afterAll(() => {
-	if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-	else process.env.XDG_CONFIG_HOME = oldXdg;
-	for (const dir of dirs.splice(0))
-		fs.rmSync(dir, { recursive: true, force: true });
+	try {
+		if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = oldXdg;
+		for (const dir of dirs.splice(0))
+			fs.rmSync(dir, { recursive: true, force: true });
+	} finally {
+		releaseProcessEnv?.();
+		releaseProcessEnv = null;
+	}
 });
 
 beforeEach(() => {
@@ -75,15 +83,7 @@ afterEach(() => {
  * next lease begins. This keeps a snapshot-only listActive mock from being
  * reset (or observed) by a sibling test while its async pipeline is pending.
  */
-export async function acquireLoopInternals(): Promise<() => void> {
-	const predecessor = loopInternalsTail;
-	let release!: () => void;
-	loopInternalsTail = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	await predecessor;
-	return release;
-}
+export { acquireLoopInternals };
 
 /** Restore every loop seam, with an explicit production listActive binding. */
 export function restoreProductionLoopInternals(): void {
@@ -122,6 +122,7 @@ export async function enqueue(
 		repoFullName: REPO,
 		prNumber: PR,
 		prUrl: URL,
+		headRefOid: HEAD,
 		message: 'ci failed',
 		dedupToken: options.dedupToken ?? 'token',
 		authorized: true,
@@ -130,7 +131,7 @@ export async function enqueue(
 }
 
 export function installHappySeams() {
-	loopInternals.now = () => Date.now();
+	loopInternals.now = () => NOW;
 	loopInternals.evaluateCurrentHead = mock(
 		async () => HEAD,
 	) as unknown as typeof loopInternals.evaluateCurrentHead;

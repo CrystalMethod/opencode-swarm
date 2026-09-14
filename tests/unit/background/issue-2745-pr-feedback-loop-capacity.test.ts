@@ -25,6 +25,8 @@ import {
 	cancelPrFeedbackLoop,
 	claimAndProcessPrFeedbackEvent,
 	_internals as loopInternals,
+	MAX_CANCELLATION_REQUESTS,
+	MAX_IN_FLIGHT_SESSIONS,
 } from '../../../src/background/pr-feedback-loop.js';
 import {
 	subscribe,
@@ -32,6 +34,8 @@ import {
 } from '../../../src/background/pr-subscriptions.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 const SESSION = 'issue-2745-session';
@@ -46,32 +50,46 @@ const CONFIG = {
 const originals = { ...loopInternals };
 const oldXdg = process.env.XDG_CONFIG_HOME;
 const dirs: string[] = [];
+let releaseLoopInternals: (() => void) | null = null;
+let releaseProcessEnv: (() => void) | null = null;
 
-beforeAll(() => {
+beforeAll(async () => {
+	releaseProcessEnv = await acquireProcessEnvLease();
 	const xdg = canonicalMkdtemp('issue-2745-capacity-xdg-');
 	dirs.push(xdg);
 	process.env.XDG_CONFIG_HOME = xdg;
 });
 
 afterAll(() => {
-	if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-	else process.env.XDG_CONFIG_HOME = oldXdg;
-	for (const dir of dirs.splice(0))
-		fs.rmSync(dir, { recursive: true, force: true });
+	try {
+		if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = oldXdg;
+		for (const dir of dirs.splice(0))
+			fs.rmSync(dir, { recursive: true, force: true });
+	} finally {
+		releaseProcessEnv?.();
+		releaseProcessEnv = null;
+	}
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseLoopInternals = await acquireLoopInternals();
 	queueInternals.resetQueueCache();
 	gateInternals.resetTrackedStateCache();
 });
 
 afterEach(() => {
-	Object.assign(loopInternals, originals);
-	queueInternals.resetQueueCache();
-	gateInternals.resetTrackedStateCache();
-	closeAllProjectDbs();
-	for (const dir of dirs.splice(1))
-		fs.rmSync(dir, { recursive: true, force: true });
+	try {
+		Object.assign(loopInternals, originals);
+		queueInternals.resetQueueCache();
+		gateInternals.resetTrackedStateCache();
+		closeAllProjectDbs();
+		for (const dir of dirs.splice(1))
+			fs.rmSync(dir, { recursive: true, force: true });
+	} finally {
+		releaseLoopInternals?.();
+		releaseLoopInternals = null;
+	}
 });
 
 function makeProject(): string {
@@ -111,6 +129,7 @@ async function enqueue(
 		repoFullName: REPO,
 		prNumber: PR,
 		prUrl: URL,
+		headRefOid: HEAD,
 		message: 'ci failed',
 		dedupToken: options.dedupToken ?? 'token',
 		authorized: options.authorized ?? true,
@@ -132,47 +151,38 @@ function installHappySeams(): ReturnType<typeof mock> {
 	return performer;
 }
 
-async function waitFor(check: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 80; attempt++) {
-		if (check()) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error('test condition did not become ready');
-}
-
 describe('issue #2745 cancellation admission barrier — capacity regressions', () => {
 	test('cancellation overflow fails closed without evicting active stops', async () => {
-		const blockedDirs = Array.from({ length: 65 }, () => makeProject());
-		let release!: () => void;
-		const gate = new Promise<void>((resolve) => {
-			release = resolve;
-		});
-		let reads = 0;
-		let markReady!: () => void;
-		const ready = new Promise<void>((resolve) => {
-			markReady = resolve;
-		});
-		loopInternals.readState = mock(async () => {
-			reads += 1;
-			if (reads === blockedDirs.length) markReady();
-			await gate;
-			return {
-				schemaVersion: 1,
-				updatedAt: new Date(0).toISOString(),
-				oversightSeq: 0,
-				correlations: {},
-				sessionTerminals: {},
-			};
-		}) as unknown as typeof loopInternals.readState;
-		const stops = blockedDirs.map((dir, index) =>
-			cancelPrFeedbackLoop(dir, `overflow-session-${index}`, 'overflow stop'),
+		const blockedRoot = makeProject();
+		const blockedSessions = Array.from(
+			{ length: MAX_CANCELLATION_REQUESTS + 1 },
+			(_, index) => `overflow-session-${index}`,
 		);
-		await ready;
+		let releaseStateLock!: () => void;
+		const stateLockGate = new Promise<void>((resolve) => {
+			releaseStateLock = resolve;
+		});
+		let markStateLockHeld!: () => void;
+		const stateLockHeld = new Promise<void>((resolve) => {
+			markStateLockHeld = resolve;
+		});
+		loopInternals.beforeLoopStateLockWrite = async () => {
+			markStateLockHeld();
+			await stateLockGate;
+		};
+		const stops = blockedSessions.map((sessionID) =>
+			cancelPrFeedbackLoop(blockedRoot, sessionID, 'overflow stop'),
+		);
+		// Cancellation admission is recorded synchronously before each stop waits
+		// for durable state. Holding the first state lock keeps all 65 requests
+		// active while the overflow branch is exercised, without blocking reads.
+		await stateLockHeld;
 
-		const dirAfterOverflow = makeProject();
+		// The overflow marker belongs to the root whose request could not enter
+		// the bounded registry; it must not pause an unrelated project root.
 		const performer = installHappySeams();
 		const blocked = await claimAndProcessPrFeedbackEvent(
-			dirAfterOverflow,
+			blockedRoot,
 			'overflow-admission-session',
 		);
 
@@ -183,7 +193,13 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 		// operator cancellation and could overwrite a completed action.
 		expect(blocked.terminal).toBeNull();
 		expect(performer).not.toHaveBeenCalled();
-		release();
+		const unrelatedRoot = makeProject();
+		const unrelated = await claimAndProcessPrFeedbackEvent(
+			unrelatedRoot,
+			'unrelated-admission-session',
+		);
+		expect(unrelated.reason).not.toMatch(/cancellation admission capacity/i);
+		releaseStateLock();
 		await Promise.all(stops);
 	});
 
@@ -192,13 +208,16 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 		const activeSession = 'active-stop';
 		await prime(activeDir, activeSession);
 		await enqueue(activeDir, { sessionID: activeSession });
-		let headStarted = false;
+		let markHeadStarted!: () => void;
+		const headStarted = new Promise<void>((resolve) => {
+			markHeadStarted = resolve;
+		});
 		let releaseHead!: () => void;
 		const headGate = new Promise<void>((resolve) => {
 			releaseHead = resolve;
 		});
 		loopInternals.evaluateCurrentHead = mock(async () => {
-			headStarted = true;
+			markHeadStarted();
 			await headGate;
 			return HEAD;
 		}) as unknown as typeof loopInternals.evaluateCurrentHead;
@@ -210,7 +229,7 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 		loopInternals.performAuthorizedAction =
 			performer as unknown as typeof loopInternals.performAuthorizedAction;
 		const processing = claimAndProcessPrFeedbackEvent(activeDir, activeSession);
-		await waitFor(() => headStarted);
+		await headStarted;
 
 		let reads = 0;
 		let markSaturated!: () => void;
@@ -223,7 +242,7 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 		});
 		loopInternals.readState = mock(async () => {
 			reads += 1;
-			if (reads === 64) markSaturated();
+			if (reads === MAX_CANCELLATION_REQUESTS) markSaturated();
 			await readsGate;
 			return {
 				schemaVersion: 1,
@@ -233,7 +252,9 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 				sessionTerminals: {},
 			};
 		}) as unknown as typeof loopInternals.readState;
-		const ordinaryDirs = Array.from({ length: 64 }, () => makeProject());
+		const ordinaryDirs = Array.from({ length: MAX_CANCELLATION_REQUESTS }, () =>
+			makeProject(),
+		);
 		const ordinaryStops = ordinaryDirs.map((dir, index) =>
 			cancelPrFeedbackLoop(dir, `ordinary-${index}`, 'ordinary stop'),
 		);
@@ -257,15 +278,42 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 	});
 
 	test('leaves the 65th action unclaimed, admits a stop, and retries after capacity frees', async () => {
-		const sessions = Array.from({ length: 64 }, (_, index) => `busy-${index}`);
+		const sessions = Array.from(
+			{ length: MAX_IN_FLIGHT_SESSIONS },
+			(_, index) => `busy-${index}`,
+		);
 		const busyDirs = sessions.map(() => makeProject());
+		// This case only exercises settlement admission. Supply the durable
+		// subscription view through the existing DI seam so the 64-fixture setup
+		// does not repeatedly migrate/open one SQLite database per project.
+		const activeSubscriptions = sessions.map((sessionID) => ({
+			correlationId: `${sessionID}::${REPO}::${PR}`,
+			sessionID,
+			prNumber: PR,
+			repoFullName: REPO,
+			prUrl: URL,
+			headRefOid: HEAD,
+			lastCheckedAt: 0,
+			isWatching: true,
+			hasUnaddressedEvents: false,
+			status: 'active' as const,
+			createdAt: 0,
+			updatedAt: 0,
+			errorCount: 0,
+		}));
+		loopInternals.listActive = mock(async () => activeSubscriptions);
 		let started = 0;
+		let markAllStarted!: () => void;
+		const allStarted = new Promise<void>((resolve) => {
+			markAllStarted = resolve;
+		});
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		loopInternals.evaluateCurrentHead = mock(async () => {
 			started += 1;
+			if (started === sessions.length) markAllStarted();
 			await gate;
 			return HEAD;
 		}) as unknown as typeof loopInternals.evaluateCurrentHead;
@@ -276,36 +324,40 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 		loopInternals.performAuthorizedAction = mock(async () => ({
 			performed: true,
 		}));
-		for (const [index, sessionID] of sessions.entries()) {
-			const busyDir = busyDirs[index]!;
-			await prime(busyDir, sessionID);
-			await enqueue(busyDir, { dedupToken: `token-${sessionID}`, sessionID });
-		}
+		await Promise.all(
+			sessions.map((sessionID, index) =>
+				enqueue(busyDirs[index]!, {
+					dedupToken: `token-${sessionID}`,
+					sessionID,
+				}),
+			),
+		);
 		const busy = sessions.map((sessionID, index) =>
 			claimAndProcessPrFeedbackEvent(busyDirs[index]!, sessionID),
 		);
-		for (
-			let attempt = 0;
-			attempt < 1000 && started !== sessions.length;
-			attempt++
-		) {
-			await new Promise((resolve) => setTimeout(resolve, 5));
-		}
-		if (started !== sessions.length) {
-			release();
-			await Promise.allSettled(busy);
-			throw new Error(
-				'settlement capacity did not fill within the bounded wait',
-			);
-		}
+		await allStarted;
 
 		const dir = makeProject();
 		const retrySession = 'retry-after-capacity';
-		await prime(dir, retrySession);
+		activeSubscriptions.push({
+			correlationId: `${retrySession}::${REPO}::${PR}`,
+			sessionID: retrySession,
+			prNumber: PR,
+			repoFullName: REPO,
+			prUrl: URL,
+			headRefOid: HEAD,
+			lastCheckedAt: 0,
+			isWatching: true,
+			hasUnaddressedEvents: false,
+			status: 'active',
+			createdAt: 0,
+			updatedAt: 0,
+			errorCount: 0,
+		});
 		await enqueue(dir, { dedupToken: 'retry-token', sessionID: retrySession });
 		const blocked = await claimAndProcessPrFeedbackEvent(dir, retrySession);
 		expect(blocked.reason).toMatch(/settlement capacity exhausted/i);
-		expect(started).toBe(sessions.length);
+		expect(started).toBe(MAX_IN_FLIGHT_SESSIONS);
 		expect(
 			(await readPrFeedbackMonitorQueue(dir, retrySession))?.events[0]
 				?.claimedWorkflowInstanceId,
@@ -337,5 +389,5 @@ describe('issue #2745 cancellation admission barrier — capacity regressions', 
 
 		const retried = await claimAndProcessPrFeedbackEvent(dir, retrySession);
 		expect(retried.action?.performed).toBe(true);
-	});
+	}, 60_000);
 });

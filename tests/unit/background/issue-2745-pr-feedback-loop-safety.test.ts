@@ -32,6 +32,8 @@ import {
 } from '../../../src/background/pr-subscriptions.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 const SESSION = 'issue-2745-session';
@@ -47,32 +49,46 @@ const CONFIG = {
 const originals = { ...loopInternals };
 const oldXdg = process.env.XDG_CONFIG_HOME;
 const dirs: string[] = [];
+let releaseLoopInternals: (() => void) | null = null;
+let releaseProcessEnv: (() => void) | null = null;
 
-beforeAll(() => {
+beforeAll(async () => {
+	releaseProcessEnv = await acquireProcessEnvLease();
 	const xdg = canonicalMkdtemp('issue-2745-safety-xdg-');
 	dirs.push(xdg);
 	process.env.XDG_CONFIG_HOME = xdg;
 });
 
 afterAll(() => {
-	if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-	else process.env.XDG_CONFIG_HOME = oldXdg;
-	for (const dir of dirs.splice(0))
-		fs.rmSync(dir, { recursive: true, force: true });
+	try {
+		if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = oldXdg;
+		for (const dir of dirs.splice(0))
+			fs.rmSync(dir, { recursive: true, force: true });
+	} finally {
+		releaseProcessEnv?.();
+		releaseProcessEnv = null;
+	}
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseLoopInternals = await acquireLoopInternals();
 	queueInternals.resetQueueCache();
 	gateInternals.resetTrackedStateCache();
 });
 
 afterEach(() => {
-	Object.assign(loopInternals, originals);
-	queueInternals.resetQueueCache();
-	gateInternals.resetTrackedStateCache();
-	closeAllProjectDbs();
-	for (const dir of dirs.splice(1))
-		fs.rmSync(dir, { recursive: true, force: true });
+	try {
+		Object.assign(loopInternals, originals);
+		queueInternals.resetQueueCache();
+		gateInternals.resetTrackedStateCache();
+		closeAllProjectDbs();
+		for (const dir of dirs.splice(1))
+			fs.rmSync(dir, { recursive: true, force: true });
+	} finally {
+		releaseLoopInternals?.();
+		releaseLoopInternals = null;
+	}
 });
 
 function makeProject(): string {
@@ -112,6 +128,7 @@ async function enqueue(
 		repoFullName: REPO,
 		prNumber: PR,
 		prUrl: URL,
+		headRefOid: HEAD,
 		message: 'ci failed',
 		dedupToken: options.dedupToken ?? 'token',
 		authorized: options.authorized ?? true,
@@ -131,14 +148,6 @@ function installHappySeams(): ReturnType<typeof mock> {
 	loopInternals.performAuthorizedAction =
 		performer as unknown as typeof loopInternals.performAuthorizedAction;
 	return performer;
-}
-
-async function waitFor(check: () => boolean): Promise<void> {
-	for (let attempt = 0; attempt < 80; attempt++) {
-		if (check()) return;
-		await new Promise((resolve) => setTimeout(resolve, 5));
-	}
-	throw new Error('test condition did not become ready');
 }
 
 function readState(dir: string): Record<string, any> {
@@ -239,20 +248,23 @@ describe('issue #2745 cancellation admission barrier', () => {
 		const dir = makeProject();
 		await prime(dir);
 		const performer = installHappySeams();
-		let started = false;
+		let signalStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			signalStarted = resolve;
+		});
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		loopInternals.dispatchOversight = mock(async () => {
-			started = true;
+			signalStarted();
 			await gate;
 			return { dispatched: true, decision: 'allow' };
 		}) as unknown as typeof loopInternals.dispatchOversight;
 		await enqueue(dir);
 
 		const processing = claimAndProcessPrFeedbackEvent(dir, SESSION);
-		await waitFor(() => started);
+		await started;
 		const cancellation = cancelPrFeedbackLoop(dir, SESSION, 'operator stop');
 		release();
 		const result = await processing;
@@ -266,14 +278,17 @@ describe('issue #2745 cancellation admission barrier', () => {
 	test('stop during an in-flight action preserves cancelled terminal state', async () => {
 		const dir = makeProject();
 		await prime(dir);
-		let started = false;
+		let signalStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			signalStarted = resolve;
+		});
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		installHappySeams();
 		const performer = mock(async () => {
-			started = true;
+			signalStarted();
 			await gate;
 			return { performed: true };
 		});
@@ -283,7 +298,7 @@ describe('issue #2745 cancellation admission barrier', () => {
 		await enqueue(dir);
 
 		const processing = claimAndProcessPrFeedbackEvent(dir, SESSION);
-		await waitFor(() => started);
+		await started;
 		const cancellation = cancelPrFeedbackLoop(
 			dir,
 			SESSION,
@@ -308,20 +323,23 @@ describe('issue #2745 cancellation admission barrier', () => {
 		const dir = makeProject();
 		await prime(dir);
 		const performer = installHappySeams();
-		let started = false;
+		let signalStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			signalStarted = resolve;
+		});
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
 		loopInternals.dispatchOversight = mock(async () => {
-			started = true;
+			signalStarted();
 			await gate;
 			return { dispatched: true, decision: 'allow' };
 		}) as unknown as typeof loopInternals.dispatchOversight;
 		await enqueue(dir);
 
 		const processing = claimAndProcessPrFeedbackEvent(dir, SESSION);
-		await waitFor(() => started);
+		await started;
 		await clearPrFeedbackMonitorEvents(dir, SESSION, ['token']);
 		release();
 		const result = await processing;

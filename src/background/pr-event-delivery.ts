@@ -43,6 +43,7 @@ import {
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 } from './pr-feedback-event-queue.js';
+import { notifyPrFeedbackLoop } from './pr-feedback-loop.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -131,14 +132,21 @@ function sessionKey(entry: RegisteredDelivery, sessionID: string): string {
 function resolveRegistration(directory?: string): RegisteredDelivery | null {
 	if (directory) {
 		const lexical = canonicalRootKeyLexical(directory);
-		const direct = registrationsByLexical.get(lexical);
-		if (direct) return direct;
 		try {
-			return (
-				registrationsByCanonical.get(
-					_internals.canonicalRootKeyFresh(directory),
-				) ?? null
-			);
+			const freshKey = _internals.canonicalRootKeyFresh(directory);
+			const canonical = registrationsByCanonical.get(freshKey);
+			if (canonical) return canonical;
+			const direct = registrationsByLexical.get(lexical);
+			// A promoted registration whose path was physically retargeted must not
+			// be recovered through its stale lexical spelling. Unpromoted entries
+			// remain available during the bounded init-to-promotion handoff.
+			if (
+				direct &&
+				(!direct.canonicalKey || direct.canonicalKey === freshKey)
+			) {
+				return direct;
+			}
+			return null;
 		} catch {
 			return null;
 		}
@@ -402,8 +410,12 @@ export async function deliverPrActivity(
  * idle and flushes any queued events, coalescing them into ONE wake message.
  * No-op unless delivery is registered. Never throws.
  */
-export function noteSessionIdle(sessionID: string, directory?: string): void {
-	void handleSessionIdle(sessionID, directory).catch((err) => {
+export function noteSessionIdle(
+	sessionID: string,
+	directory?: string,
+): Promise<void> {
+	if (!sessionID) return Promise.resolve();
+	return handleSessionIdle(sessionID, directory).catch((err) => {
 		_internals.log('[pr-monitor] noteSessionIdle failed', {
 			error: err instanceof Error ? err.message : String(err),
 		});
@@ -436,64 +448,18 @@ async function handleSessionIdle(
 	);
 	const unclaimed =
 		durable?.events.filter((event) => !event.claimedWorkflowInstanceId) ?? [];
-	let workflow = await _internals.readPrWorkflowGateState(
-		active.directory,
-		sessionID,
-	);
-	let activatedFromQueue = false;
-	if (!workflow) {
-		const authorized = unclaimed.find((event) => event.authorized);
-		if (authorized) {
-			try {
-				workflow = await _internals.activatePrWorkflow(
-					active.directory,
-					sessionID,
-					'PR_FEEDBACK',
-					{ requireCheckoutPreflight: true, prUrl: authorized.prUrl },
-				);
-				activatedFromQueue = true;
-			} catch (error) {
-				_internals.log(
-					'[pr-monitor] Deferred PR_FEEDBACK activation remains blocked',
-					{
-						sessionID,
-						error: error instanceof Error ? error.message : String(error),
-					},
-				);
-			}
-		}
-	}
-
-	let durableToSend: FormattedPrEvent[] = [];
-	let durablePrUrl: string | undefined;
-	if (
-		activatedFromQueue &&
-		workflow?.mode === 'PR_FEEDBACK' &&
-		!workflow.prFeedbackInventory &&
-		workflow.workflowInstanceId
-	) {
-		const target =
-			workflow.prFeedbackTargetUrl ?? workflow.prFeedbackReviewHandoff?.prUrl;
-		if (target) {
-			durablePrUrl = target;
-			durableToSend = unclaimed
-				.filter((event) => sameGitHubPr(event.prUrl, target))
-				.map((event) => {
-					const modeSignal = event.authorized
-						? trustedModeSignal(event.type, event.prUrl)
-						: undefined;
-					return {
-						type: event.type,
-						repoFullName: event.repoFullName,
-						prNumber: event.prNumber,
-						prUrl: event.prUrl,
-						message: event.message,
-						dedupToken: event.dedupToken,
-						...(modeSignal ? { modeSignal } : {}),
-					};
-				});
-		}
-	}
+	// Durable events are an intake signal, not approval to switch modes. Keep
+	// them queued until the feedback loop's independent oversight gate approves
+	// an action; the idle wake only tells the active workflow/user what is waiting.
+	const durableToSend: FormattedPrEvent[] = unclaimed.map((event) => ({
+		type: event.type,
+		repoFullName: event.repoFullName,
+		prNumber: event.prNumber,
+		prUrl: event.prUrl,
+		message: event.message,
+		dedupToken: event.dedupToken,
+		disposition: 'queued-for-later',
+	}));
 
 	const inMemory = state.queue.splice(0, state.queue.length);
 	const toSend = dedupeFormattedEvents([...inMemory, ...durableToSend]);
@@ -505,33 +471,15 @@ async function handleSessionIdle(
 		enqueueBounded(state, inMemory);
 		return;
 	}
-	if (
-		durableToSend.length > 0 &&
-		durablePrUrl &&
-		workflow?.workflowInstanceId
-	) {
-		const postWakeWorkflow = await _internals.readPrWorkflowGateState(
-			active.directory,
-			sessionID,
-		);
-		const postWakeTarget =
-			postWakeWorkflow?.prFeedbackTargetUrl ??
-			postWakeWorkflow?.prFeedbackReviewHandoff?.prUrl;
-		if (
-			postWakeWorkflow?.mode === 'PR_FEEDBACK' &&
-			postWakeWorkflow.workflowInstanceId === workflow.workflowInstanceId &&
-			!postWakeWorkflow.prFeedbackInventory &&
-			postWakeTarget &&
-			sameGitHubPr(postWakeTarget, durablePrUrl)
-		) {
-			await _internals.claimPrFeedbackMonitorEvents(
-				active.directory,
-				sessionID,
-				workflow.workflowInstanceId,
-				durablePrUrl,
-				durableToSend.map((event) => event.dedupToken),
-			);
-		}
+	// Only an idle session with no active PR_REVIEW is eligible for the loop's
+	// post-wake settlement notification. PR_REVIEW remains authoritative, so a
+	// queued event must not be claimed or acted on from this wake.
+	const postWakeWorkflow = await _internals.readPrWorkflowGateState(
+		active.directory,
+		sessionID,
+	);
+	if (!postWakeWorkflow || postWakeWorkflow.mode === 'PR_FEEDBACK') {
+		_internals.notifyPrFeedbackLoop(active.directory, sessionID);
 	}
 }
 
@@ -542,32 +490,6 @@ function dedupeFormattedEvents(events: FormattedPrEvent[]): FormattedPrEvent[] {
 		latestByToken.set(event.dedupToken, event);
 	}
 	return [...latestByToken.values()].slice(-MAX_QUEUED_EVENTS_PER_SESSION);
-}
-
-function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!match
-		) {
-			return null;
-		}
-		const number = Number(match[3]);
-		if (!Number.isSafeInteger(number) || number <= 0) return null;
-		return `github.com/${match[1].toLowerCase()}/${match[2].toLowerCase()}/pull/${number}`;
-	} catch {
-		return null;
-	}
-}
-
-function sameGitHubPr(left: string, right: string): boolean {
-	const leftCanonical = canonicalGitHubPrUrl(left);
-	return (
-		leftCanonical !== null && leftCanonical === canonicalGitHubPrUrl(right)
-	);
 }
 
 async function sendWakePromptWithMarker(
@@ -611,14 +533,6 @@ const QUEUED_WAKE_INSTRUCTION = [
 	'workflow first; the controller will re-deliver authorized queued events through normal feedback intake.',
 ].join('\n');
 
-const AUTO_PR_FEEDBACK_EVENTS = new Set(['pr.ci.failed', 'pr.merge.conflict']);
-
-function trustedModeSignal(type: string, prUrl: string): string | undefined {
-	if (!AUTO_PR_FEEDBACK_EVENTS.has(type)) return undefined;
-	const safePrUrl = String(prUrl).replace(/["<>\r\n[\]]/g, '');
-	return `[MODE: PR_FEEDBACK pr="${safePrUrl}"]`;
-}
-
 function sanitizeAttribute(value: string): string {
 	return value.replace(/["<>\r\n]/g, '');
 }
@@ -661,13 +575,19 @@ export function buildWakeMessage(events: FormattedPrEvent[]): string {
 		)
 			? 'queued-for-later'
 			: 'active';
-		const trustedModeSignals = [
-			...new Set(
-				groupEvents
-					.map((event) => sanitizeModeSignal(event.modeSignal))
-					.filter((signal): signal is string => signal !== null),
-			),
-		];
+		// A mixed group must remain mode-neutral: a queued event means the
+		// active workflow is still authoritative, so do not let a trusted
+		// signal from a different event in the same PR group switch modes.
+		const trustedModeSignals =
+			disposition === 'active'
+				? [
+						...new Set(
+							groupEvents
+								.map((event) => sanitizeModeSignal(event.modeSignal))
+								.filter((signal): signal is string => signal !== null),
+						),
+					]
+				: [];
 		const lines = groupEvents
 			.map((event) => {
 				const withoutTrustedSignal = event.modeSignal
@@ -770,6 +690,7 @@ export const _internals: {
 	activatePrWorkflow: typeof activatePrWorkflow;
 	readPrFeedbackMonitorQueue: typeof readPrFeedbackMonitorQueue;
 	claimPrFeedbackMonitorEvents: typeof claimPrFeedbackMonitorEvents;
+	notifyPrFeedbackLoop: typeof notifyPrFeedbackLoop;
 	canonicalRootKeyFresh: typeof canonicalRootKeyFresh;
 	canonicalRootKeyFreshAsync: typeof canonicalRootKeyFreshAsync;
 	wakePromptTimeoutMs: number;
@@ -781,6 +702,7 @@ export const _internals: {
 	activatePrWorkflow,
 	readPrFeedbackMonitorQueue,
 	claimPrFeedbackMonitorEvents,
+	notifyPrFeedbackLoop,
 	canonicalRootKeyFresh,
 	canonicalRootKeyFreshAsync,
 	wakePromptTimeoutMs: WAKE_PROMPT_TIMEOUT_MS,

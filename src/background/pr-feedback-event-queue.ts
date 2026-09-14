@@ -28,6 +28,8 @@ export interface PrFeedbackMonitorEvent {
 	dedupToken: string;
 	authorized: boolean;
 	queuedAt: string;
+	/** Head authenticated by the monitor when this event was emitted. */
+	headRefOid?: string;
 	claimedWorkflowInstanceId?: string;
 	/** Exact process owner paired with the workflow instance id. */
 	claimedOwnerPid?: number;
@@ -57,8 +59,31 @@ const PrFeedbackMonitorEventSchema = z
 		dedupToken: z.string().min(1).max(512),
 		authorized: z.boolean(),
 		queuedAt: z.string().min(1),
+		headRefOid: z.string().min(1).max(256).optional(),
 		claimedWorkflowInstanceId: z.string().min(1).max(128).optional(),
 		claimedOwnerPid: z.number().int().positive().optional(),
+		claimedAt: z.string().min(1).optional(),
+	})
+	.strict();
+
+/**
+ * The queue file is also read by older plugin versions. Keep its persisted
+ * event shape limited to fields those versions understand; fields added for
+ * the current worker's provenance and process fencing live in the paired
+ * metadata sidecar below. This lets a downgrade continue to read and clear a
+ * queue without giving an older worker a new strict-schema record to parse.
+ */
+const PrFeedbackMonitorEventDiskSchema = z
+	.object({
+		type: z.string().min(1).max(128),
+		repoFullName: z.string().min(1).max(512),
+		prNumber: z.number().int().positive(),
+		prUrl: z.string().url().max(2000),
+		message: z.string().min(1).max(20_000),
+		dedupToken: z.string().min(1).max(512),
+		authorized: z.boolean(),
+		queuedAt: z.string().min(1),
+		claimedWorkflowInstanceId: z.string().min(1).max(128).optional(),
 		claimedAt: z.string().min(1).optional(),
 	})
 	.strict();
@@ -70,6 +95,36 @@ const QueueRecordSchema = z
 		sessionID: z.string().min(1),
 		events: z
 			.array(PrFeedbackMonitorEventSchema)
+			.max(MAX_PR_FEEDBACK_MONITOR_EVENTS),
+	})
+	.strict();
+
+const QueueRecordDiskSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		revision: z.number().int().nonnegative(),
+		sessionID: z.string().min(1),
+		events: z
+			.array(PrFeedbackMonitorEventDiskSchema)
+			.max(MAX_PR_FEEDBACK_MONITOR_EVENTS),
+	})
+	.strict();
+
+const QueueMetadataRecordSchema = z
+	.object({
+		schemaVersion: z.literal(1),
+		revision: z.number().int().nonnegative(),
+		sessionID: z.string().min(1),
+		events: z
+			.array(
+				z
+					.object({
+						dedupToken: z.string().min(1).max(512),
+						headRefOid: z.string().min(1).max(256).optional(),
+						claimedOwnerPid: z.number().int().positive().optional(),
+					})
+					.strict(),
+			)
 			.max(MAX_PR_FEEDBACK_MONITOR_EVENTS),
 	})
 	.strict();
@@ -335,6 +390,7 @@ export async function releasePrFeedbackMonitorEventClaim(
 
 export const _internals = {
 	queueRelativePath,
+	queueMetadataRelativePath,
 	queueLockRelativePath,
 	resetQueueCache: () => {
 		trackedQueuesByProjectSession.clear();
@@ -382,8 +438,54 @@ async function writeQueueRecord(
 		directory,
 		queueRelativePath(record.sessionID),
 	);
-	await writePrWorkflowAtomicJson(directory, filePath, record);
+	const diskRecord = QueueRecordDiskSchema.parse({
+		...record,
+		events: record.events.map(
+			({ headRefOid: _, claimedOwnerPid: __, ...event }) => event,
+		),
+	});
+	// Write the sidecar first. If the legacy-compatible primary write fails (or
+	// a process dies between the two atomic renames), its newer revision will not
+	// match the old primary and the extended fields are ignored fail-closed.
+	await writeQueueMetadata(directory, record);
+	await writePrWorkflowAtomicJson(directory, filePath, diskRecord);
 	rememberQueue(directory, record.sessionID, record);
+}
+
+/**
+ * Extended queue fields are persisted separately so the primary queue record
+ * remains readable by the version-1 strict schema shipped by older peers.
+ * A revision/session binding makes a stale sidecar fail closed after a legacy
+ * peer mutates the primary queue.
+ */
+async function writeQueueMetadata(
+	directory: string,
+	record: PrFeedbackMonitorQueueRecord,
+): Promise<void> {
+	const metadata = QueueMetadataRecordSchema.parse({
+		schemaVersion: 1,
+		revision: record.revision,
+		sessionID: record.sessionID,
+		events: record.events
+			.filter(
+				(event) =>
+					event.headRefOid !== undefined || event.claimedOwnerPid !== undefined,
+			)
+			.map((event) => ({
+				dedupToken: event.dedupToken,
+				...(event.headRefOid !== undefined
+					? { headRefOid: event.headRefOid }
+					: {}),
+				...(event.claimedOwnerPid !== undefined
+					? { claimedOwnerPid: event.claimedOwnerPid }
+					: {}),
+			})),
+	});
+	const filePath = validateSwarmPath(
+		directory,
+		queueMetadataRelativePath(record.sessionID),
+	);
+	await writePrWorkflowAtomicJson(directory, filePath, metadata);
 }
 
 async function withQueueMutation<T>(
@@ -650,10 +752,110 @@ async function readPrFeedbackMonitorQueueFromDisk(
 			`BLOCKED: PR feedback monitor queue for session "${sessionID}" is not valid JSON`,
 		);
 	}
-	const parsed = QueueRecordSchema.safeParse(parsedJson);
-	if (!parsed.success) {
+	const parsed = QueueRecordDiskSchema.safeParse(parsedJson);
+	if (parsed.success) {
+		return mergeQueueMetadata(directory, parsed.data);
+	}
+	// A newer worker may have written the extended fields before this
+	// compatibility projection was installed. Read that one-generation shape
+	// so the next mutation can rewrite the primary file in the old-peer format;
+	// never accept an arbitrary unknown schema.
+	const extended = QueueRecordSchema.safeParse(parsedJson);
+	if (!extended.success) {
 		throw new Error(
 			`BLOCKED: PR feedback monitor queue for session "${sessionID}" is invalid`,
+		);
+	}
+	return extended.data;
+}
+
+async function mergeQueueMetadata(
+	directory: string,
+	record: z.infer<typeof QueueRecordDiskSchema>,
+): Promise<PrFeedbackMonitorQueueRecord> {
+	const metadata = await readQueueMetadata(directory, record.sessionID);
+	if (
+		!metadata ||
+		metadata.revision !== record.revision ||
+		metadata.sessionID !== record.sessionID
+	) {
+		return record;
+	}
+	const metadataByToken = new Map(
+		metadata.events.map((event) => [event.dedupToken, event]),
+	);
+	return {
+		...record,
+		events: record.events.map((event) => {
+			const extended = metadataByToken.get(event.dedupToken);
+			if (!extended) return event;
+			return {
+				...event,
+				...(extended.headRefOid !== undefined
+					? { headRefOid: extended.headRefOid }
+					: {}),
+				...(extended.claimedOwnerPid !== undefined
+					? { claimedOwnerPid: extended.claimedOwnerPid }
+					: {}),
+			};
+		}),
+	};
+}
+
+async function readQueueMetadata(
+	directory: string,
+	sessionID: string,
+): Promise<z.infer<typeof QueueMetadataRecordSchema> | null> {
+	const queueDirectory = await ensureQueueDirectory(directory, false);
+	if (!queueDirectory) return null;
+	const filePath = validateSwarmPath(
+		directory,
+		queueMetadataRelativePath(sessionID),
+	);
+	let stat: Awaited<ReturnType<typeof fsp.lstat>>;
+	try {
+		stat = await fsp.lstat(filePath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw error;
+	}
+	let realPath: string;
+	try {
+		realPath = await fsp.realpath(filePath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw error;
+	}
+	if (
+		stat.isSymbolicLink() ||
+		!stat.isFile() ||
+		stat.size > MAX_QUEUE_BYTES ||
+		normalizeComparablePath(path.dirname(realPath)) !==
+			normalizeComparablePath(queueDirectory)
+	) {
+		throw new Error(
+			`BLOCKED: PR feedback monitor queue metadata for session "${sessionID}" must be a bounded regular file`,
+		);
+	}
+	let raw: string;
+	try {
+		raw = await fsp.readFile(filePath, 'utf8');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw error;
+	}
+	let parsedJson: unknown;
+	try {
+		parsedJson = JSON.parse(raw);
+	} catch {
+		throw new Error(
+			`BLOCKED: PR feedback monitor queue metadata for session "${sessionID}" is not valid JSON`,
+		);
+	}
+	const parsed = QueueMetadataRecordSchema.safeParse(parsedJson);
+	if (!parsed.success) {
+		throw new Error(
+			`BLOCKED: PR feedback monitor queue metadata for session "${sessionID}" is invalid`,
 		);
 	}
 	return parsed.data;
@@ -775,6 +977,13 @@ function queueRelativePath(sessionID: string): string {
 	return path.join(
 		PR_FEEDBACK_EVENT_QUEUE_DIR,
 		`${prWorkflowSessionFileStem(sessionID)}.json`,
+	);
+}
+
+function queueMetadataRelativePath(sessionID: string): string {
+	return path.join(
+		PR_FEEDBACK_EVENT_QUEUE_DIR,
+		`${prWorkflowSessionFileStem(sessionID)}.meta.json`,
 	);
 }
 
