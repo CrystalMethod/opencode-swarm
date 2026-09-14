@@ -12,6 +12,31 @@ Repository-native skill roots are project-owned:
 
 The plugin does not install its runtime protocols into those roots. Shipped protocols are materialized privately under `.swarm/bundled-skills/<name>/`, so a repository skill may reuse a shipped slug without overwrite or native registry collision. Reachability into that private tree happens through two mechanisms, not one: most shipped skills load explicitly by `/swarm` MODE dispatch (a `/swarm <command>` emits a `[MODE: ...]` signal that an architect stub loads via `file:.swarm/bundled-skills/<name>/SKILL.md`); a smaller set of playbook/support skills (e.g. `ci-failure-batching`, `merge-queue-readiness`, `gate-attribution`, `worktree-retry-cleanup`, `test-file-split`, `skill-edit-validation`) are not MODE-dispatched at all — they load via an explicit `file:` trigger-point reference embedded in the body of the owning skill or contract doc that covers the relevant workflow step (e.g. `execute` references `gate-attribution` before its Stage B gate). `.swarm/bundled-skills` is intentionally excluded from the automatic keyword-scoring skill roots, so a skill placed there is unreachable unless one of these two explicit mechanisms references it (see issue #1806).
 
+### Bundled-skill reachability dispositions (issue #2672)
+
+Every bundled skill carries a measured disposition in
+`src/config/bundled-skill-dispositions.ts`, verified per skill by named
+consumer controls in
+`tests/unit/skills/bundled-skill-consumer-controls.test.ts`. A control fails
+when a skill is neither reachable (a live consumer reference plus full
+inventory presence) nor explicitly retired with full inventory parity - a
+missing literal search hit can never delete a skill. Current dispositions for
+the six skills named by issue #2672:
+
+| Skill | Disposition | Consumer path |
+|---|---|---|
+| `ci-failure-batching` | reachable | `swarm-pr-feedback` reads it for the 6-step CI failure batching protocol |
+| `gate-attribution` | reachable | `execute` reads it when set-dispatch verdict rows must be attributed to plan tasks |
+| `merge-queue-readiness` | reachable | `swarm-ci-monitor` and the Claude-side `commit-pr` adapter read it for the pre-queue merge-group CI simulation |
+| `skill-edit-validation` | reachable | Claude-side `commit-pr` and `editing-skills` adapters read it for the content-assertion sweep on SKILL.md wording changes |
+| `worktree-retry-cleanup` | reachable | `execute` reads it before re-dispatching a coder for a task that already has a lane |
+| `parallel-work-check` | reachable | `swarm-implement` reads it before lane binding; `swarm-pr-review` reads it before dispatching review lanes |
+
+Retiring a skill is a deliberate act: remove it from
+`BUNDLED_PROJECT_SKILLS`, `package.json#files`, and the package-smoke
+allowlist together, add it to `RETIRED_BUNDLED_PROJECT_SKILLS`, and update
+its disposition entry - the controls fail on any partial retirement.
+
 Static skills declare a top-level audience:
 
 ```yaml

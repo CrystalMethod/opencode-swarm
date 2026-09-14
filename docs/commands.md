@@ -892,7 +892,11 @@ Export current Swarm memory to JSONL files
 
 Run golden Swarm memory recall evaluation fixtures
 
-**Args:** `--json, --fixtures <directory>, --profiles <list>, --manifest <file>`
+**Args:** `--json, --instruction-pairing, --fixtures <directory>, --profiles <list>, --manifest <file>`
+
+With `--instruction-pairing`, runs the paired cached-vs-uncached
+instruction-selection control (issue #2672) and writes
+`.swarm/memory/instruction-pairing-report.json`.
 
 #### `/swarm memory audit-verify`
 
