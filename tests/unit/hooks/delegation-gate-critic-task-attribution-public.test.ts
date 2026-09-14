@@ -1,7 +1,7 @@
 /** Public-hook guardrails for issue #2757 critic task attribution. */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { createBackgroundCompletionObserver } from '../../../src/background/completion-observer';
 import { findByCorrelationId } from '../../../src/background/pending-delegations';
@@ -16,6 +16,7 @@ import {
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 import { makeConfig } from './_delegation-gate-helpers';
 
@@ -107,12 +108,7 @@ beforeEach(() => {
 afterEach(() => {
 	resetSwarmState();
 	closeProjectDb(tmpDir);
-	rmSync(tmpDir, {
-		recursive: true,
-		force: true,
-		maxRetries: 5,
-		retryDelay: 100,
-	});
+	safeRmRecursive(tmpDir);
 	isolatedEnv?.cleanup();
 	isolatedEnv = undefined;
 });

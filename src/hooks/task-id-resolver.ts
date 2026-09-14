@@ -45,7 +45,7 @@ export type TaskIdPlanContextOptions = Pick<
 >;
 
 const TEXT_FIELDS = ['prompt', 'description', 'task', 'input'] as const;
-const EXPLICIT_FIELDS = [
+export const EXPLICIT_TASK_ID_FIELDS = [
 	'plan_task_id',
 	'planTaskId',
 	'task_id',
@@ -177,7 +177,7 @@ export function resolveTaskId(
 		}
 
 		const explicit = new Set<string>();
-		for (const field of EXPLICIT_FIELDS) {
+		for (const field of EXPLICIT_TASK_ID_FIELDS) {
 			const raw = input[field];
 			if (raw === undefined || raw === null) continue;
 			if (typeof raw !== 'string') return { status: 'invalid', input: field };

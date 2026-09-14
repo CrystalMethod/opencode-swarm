@@ -128,6 +128,7 @@ import {
 	toTaskIdPlanContextOptions,
 } from './plan-task-id-context.js';
 import {
+	EXPLICIT_TASK_ID_FIELDS,
 	resolveDelegatedPlanTaskId,
 	resolveTaskId,
 	TASK_ID_RESOLUTION_LIMITS,
@@ -2670,6 +2671,9 @@ const TASK_GATE_AGENTS = new Set([
 const EXPLICIT_TASK_EVIDENCE_AGENTS = new Set([
 	'critic',
 	'critic_sounding_board',
+	'critic_drift_verifier',
+	'critic_hallucination_verifier',
+	'critic_architecture_supervisor',
 ]);
 
 function isExplicitTaskEvidenceAgent(targetAgent: string): boolean {
@@ -3101,15 +3105,37 @@ async function resolveEvidenceTaskId(
 				...planContextOptions,
 			});
 			if (resolution.status === 'resolved') {
+				let resolvedTaskId = resolution.taskId;
+				if (policy === 'attribution' && !isStrictTaskId(resolvedTaskId)) {
+					// The generic attribution resolver intentionally accepts safe named
+					// IDs for non-gate consumers. Durable task-gate evidence is stricter:
+					// retry marker-only attribution so a named explicit value cannot
+					// shadow a valid numeric TASK marker, then fail closed otherwise.
+					const markerOnlyArgs = { ...args };
+					for (const field of EXPLICIT_TASK_ID_FIELDS) {
+						delete markerOnlyArgs[field];
+					}
+					const markerResolution = resolveTaskId(markerOnlyArgs, {
+						policy,
+						...planContextOptions,
+					});
+					if (
+						markerResolution.status !== 'resolved' ||
+						!isStrictTaskId(markerResolution.taskId)
+					) {
+						return null;
+					}
+					resolvedTaskId = markerResolution.taskId;
+				}
 				if (
 					planTaskIdContext?.status === 'over_limit' &&
 					!plan?.phases.some((phase) =>
-						phase?.tasks?.some((task) => task?.id === resolution.taskId),
+						phase?.tasks?.some((task) => task?.id === resolvedTaskId),
 					)
 				) {
 					return null;
 				}
-				return resolution.taskId;
+				return resolvedTaskId;
 			}
 			if (
 				resolution.status === 'invalid' ||
