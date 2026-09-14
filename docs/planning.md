@@ -89,7 +89,7 @@ Each task in the swarm follows a per-task state machine. The Architect advances 
 | `pre_check_passed` | Automated gates passed | `pre_check_batch` returns `gates_passed: true` |
 | `reviewer_run` | Human-style review complete | Reviewer delegation returns APPROVED |
 | `tests_run` | Verification tests passed | Test engineer delegation returns PASS |
-| `rework_required` | Current-generation verification failed and same-task repair is required | Stage A fails, or reviewer/test engineer returns a negative or malformed verdict |
+| `rework_required` | Current-generation verification failed and same-task repair is required | Stage A fails, or reviewer/test engineer returns a negative or malformed verdict. A TESTED `SKIPPED` verdict (tests not run) is the exception: it stays Stage B eligible for test-gate re-dispatch instead of entering `rework_required` (#2756) |
 | `blocked` | Task ended without completion and no verification debt remains | `update_task_status(status: 'blocked')` commits the terminal transaction |
 | `closed` | A session ended with unfinished work; this is not successful completion | `/swarm close` commits a plan-bound `task_closed` transition |
 | `complete` | Task fully complete | `update_task_status(status: 'completed')` called |
