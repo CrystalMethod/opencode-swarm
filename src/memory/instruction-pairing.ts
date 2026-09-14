@@ -46,6 +46,7 @@ import type {
 	SwarmKnowledgeEntry,
 } from '../hooks/knowledge-types.js';
 import { swarmState } from '../state.js';
+import { invalidateCachedArtifact } from '../utils/swarm-artifact-cache.js';
 
 export type InstructionPairingDirectivePriority =
 	| 'critical'
@@ -225,13 +226,12 @@ function pairingConfig(injectCharBudget: number): KnowledgeConfig {
 }
 
 function makeMessages(sessionId: string): { messages: MessageWithParts[] } {
+	// #2526: src/ never constructs role:'system' entries — the hook resolves
+	// the agent via swarmState.activeAgent and the session from any message
+	// info, so the user message alone is the complete host input here.
 	swarmState.activeAgent.set(sessionId, 'architect');
 	return {
 		messages: [
-			{
-				info: { role: 'system', agent: 'architect', sessionID: sessionId },
-				parts: [{ type: 'text', text: 'System prompt' }],
-			},
 			{
 				info: { role: 'user', sessionID: sessionId },
 				parts: [{ type: 'text', text: 'continue the current task' }],
@@ -447,6 +447,8 @@ async function verifyCacheInvalidation(): Promise<{
 		mkdirSync(path.join(root, '.swarm'), { recursive: true });
 		const briefingPath = path.join(root, '.swarm', 'curator-briefing.md');
 		writeFileSync(briefingPath, 'PAIRING-BRIEFING-v1 original', 'utf8');
+		// G2 (#1729): curator-briefing.md is a cached artifact name — invalidate.
+		invalidateCachedArtifact(briefingPath);
 		const hook = createKnowledgeInjectorHook(
 			root,
 			pairingConfig(DEFAULT_INJECT_CHAR_BUDGET),
@@ -459,6 +461,8 @@ async function verifyCacheInvalidation(): Promise<{
 			};
 		}
 		writeFileSync(briefingPath, 'PAIRING-BRIEFING-v2 updated', 'utf8');
+		// G2 (#1729): same cached-artifact name on the flip write.
+		invalidateCachedArtifact(briefingPath);
 		const second = await measureInvocation(hook, sessionId, true);
 		const fresh =
 			second.renderedText.includes('PAIRING-BRIEFING-v2') &&
