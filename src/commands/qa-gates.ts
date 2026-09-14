@@ -21,6 +21,7 @@ import {
 	type QaGates,
 	setGatesForIdentity,
 } from '../db/qa-gate-profile.js';
+import { setOverrideForSession } from '../db/qa-gate-session-override.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
 import { derivePlanId } from '../plan/utils.js';
 import { formatLegacyQaBindingOnlyCall } from '../qa-gate/recovery.js';
@@ -159,9 +160,20 @@ export async function handleQaGatesCommand(
 		for (const g of gateArgs) {
 			if (isGateName(g)) next[g] = true;
 		}
-		session.qaGateSessionOverrides = next;
+		// #2668 durable-first write: the override is durable runtime policy
+		// (qa_gate_session_override) that must survive restart. Commit the
+		// durable row BEFORE touching the in-memory cache so the restart
+		// boundary can never be behind the live session; on durable failure
+		// the in-memory field stays untouched and the error is surfaced.
+		try {
+			const durableMerged = setOverrideForSession(directory, sessionID, next);
+			session.qaGateSessionOverrides = { ...durableMerged };
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			return `Error: failed to persist session overrides: ${msg}`;
+		}
 		return [
-			`Session overrides updated for plan_id=${planId}:`,
+			`Session overrides updated (durable across restart) for plan_id=${planId}:`,
 			Object.keys(next)
 				.filter((k) => next[k as keyof QaGates] === true)
 				.map((k) => `  - ${k}: on`)

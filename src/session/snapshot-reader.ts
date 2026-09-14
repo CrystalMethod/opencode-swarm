@@ -4,6 +4,7 @@
  */
 
 import { renameSync } from 'node:fs';
+import { getOverrideForSession } from '../db/qa-gate-session-override.js';
 import { loadFullAutoRunState } from '../full-auto/state';
 import { validateSwarmPath } from '../hooks/utils';
 import type { AgentSessionState, TaskWorkflowState } from '../state';
@@ -13,6 +14,7 @@ import {
 	MAX_TRACKED_TASK_FILE_ATTRIBUTIONS,
 	swarmState,
 } from '../state';
+import { pushAdvisory } from '../utils/advisory-queue.js';
 import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';
 import {
@@ -23,6 +25,10 @@ import {
 	hydrationProjectKey,
 	recordHydratedAggregateKeys,
 } from './hydration-ownership.js';
+import {
+	buildInterruptedAdvisoryMessage,
+	recordInterruptedExecution,
+} from './restart-reconciliation.js';
 import type {
 	SerializedAgentSession,
 	SerializedInvocationWindow,
@@ -589,6 +595,64 @@ export async function rehydrateState(
 			for (const field of TRANSIENT_SESSION_FIELDS) {
 				(session as unknown as Record<string, unknown>)[field.name] =
 					field.resetValue;
+			}
+
+			// ── Durable QA policy restore (#2668) ────────────────────────
+			// Ratchet-tighter session overrides are durable runtime policy in
+			// the project DB (qa_gate_session_override), never snapshot bytes
+			// (see SESSION_TRANSIENT_FIELDS). Restore them here so restart
+			// preserves the EFFECTIVE tightened gates; fail-open — a DB error
+			// must degrade to profile-only, never break rehydration.
+			if (directory) {
+				try {
+					const durableOverrides = getOverrideForSession(directory, sessionId);
+					if (Object.keys(durableOverrides).length > 0) {
+						session.qaGateSessionOverrides = durableOverrides;
+					}
+				} catch (error) {
+					log(
+						`[snapshot-reader] override restore failed for session ${sessionId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
+
+			// ── Owner-named reconciliation for interrupted executions (#2668)
+			// The SERIALIZED delegationActive (pre-deserialize) is the signal:
+			// the transient reset above has already cleared the live flag, and
+			// that expiry is correct — only its SILENCE was the defect. Record
+			// a bounded owner-named outcome (durable artifact + one-shot
+			// advisory pushed after the reset so it survives) so an
+			// interrupted execution can never read as a clean shutdown.
+			// Fail-open: the record must never fail the rehydrate.
+			if (directory && serializedSession.delegationActive === true) {
+				const entry = {
+					sessionId,
+					agentName: session.agentName,
+					taskId: serializedSession.currentTaskId || '(unknown)',
+				};
+				try {
+					const recorded = await recordInterruptedExecution(directory, entry);
+					// pushAdvisory (not a bare push) per the advisory-injection
+					// ratchet: bounded queue + dedupe on the producer key.
+					pushAdvisory(
+						session,
+						buildInterruptedAdvisoryMessage({
+							...entry,
+							guidance: recorded.guidance,
+						}),
+						{
+							dedupeKey: `[restart-reconciliation:${sessionId}:${entry.taskId}]`,
+						},
+					);
+				} catch (error) {
+					log(
+						`[snapshot-reader] restart reconciliation failed for session ${sessionId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
 			}
 
 			// ── Full-auto run-state reconciliation ────────────────────────

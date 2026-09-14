@@ -758,7 +758,7 @@ export const TOOL_METADATA = {
 	},
 	get_qa_gate_profile: {
 		description:
-			'retrieve the QA gate profile for the current or exact future plan identity: gates (reviewer, test_engineer, sme_enabled, critic_pre_plan, sast_enabled, council_mode, hallucination_guard, mutation_test, phase_council, drift_check, final_council), lock state, and profile hash. Read-only and never creates state.',
+			'retrieve the QA gate profile for the current or exact future plan identity: gates (reviewer, test_engineer, sme_enabled, critic_pre_plan, sast_enabled, council_mode, hallucination_guard, mutation_test, phase_council, drift_check, final_council), lock state, profile hash, the calling session\u2019s ratchet-tighter overrides, and the EFFECTIVE gates (profile merged with those overrides; durable across restart). Read-only and never creates state.',
 		agents: ['architect'],
 	},
 	set_qa_gates: {
