@@ -1,12 +1,17 @@
 /** Regression coverage for the failure-side coder-mutation workflow guard. */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import type { GuardrailsConfig } from '../../../src/config/schema';
+import {
+	getTaskWorkflowSnapshot,
+	readTaskEvidence,
+} from '../../../src/gate-evidence';
 import { createGuardrailsHooks } from '../../../src/hooks/guardrails';
 import {
 	ensureAgentSession,
 	resetSwarmState,
 	swarmState,
 } from '../../../src/state';
+import * as logger from '../../../src/utils/logger';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 const FAIL_PAYLOAD = JSON.stringify({
@@ -59,26 +64,47 @@ afterEach(() => {
 describe('coder-mutation-required Stage A failure guidance', () => {
 	test('does not mislabel a failed Stage A write as an attribution miss', async () => {
 		ensureAgentSession('architect').currentTaskId = '9.11';
+		expect(
+			getTaskWorkflowSnapshot(await readTaskEvidence(directory, '9.11')).state,
+		).toBe('idle');
 		const hooks = createGuardrailsHooks(directory, defaultConfig());
-
-		await hooks.toolBefore(
-			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c-fail' },
-			{ args: {} },
-		);
-		await hooks.toolAfter(
-			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c-fail' },
-			{ title: '', output: FAIL_PAYLOAD, metadata: null },
+		const criticalWarnSpy = spyOn(logger, 'criticalWarn').mockImplementation(
+			() => {},
 		);
 
-		const messages =
-			swarmState.agentSessions.get('architect')?.pendingAdvisoryMessages ?? [];
-		const advisory = messages.find((message) =>
-			message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
-		);
-		expect(advisory).toBeDefined();
-		expect(advisory).toContain('accepted coder mutation');
-		expect(advisory).toContain('before Stage A');
-		expect(advisory).not.toContain('NOT attributed');
-		expect(advisory).not.toContain('/swarm recover');
+		try {
+			await hooks.toolBefore(
+				{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c-fail' },
+				{ args: {} },
+			);
+			await hooks.toolAfter(
+				{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c-fail' },
+				{ title: '', output: FAIL_PAYLOAD, metadata: null },
+			);
+
+			const messages =
+				swarmState.agentSessions.get('architect')?.pendingAdvisoryMessages ??
+				[];
+			const advisory = messages.find((message) =>
+				message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
+			);
+			expect(advisory).toBeDefined();
+			expect(advisory).toContain('accepted coder mutation');
+			expect(advisory).toContain('before Stage A');
+			expect(advisory).not.toContain('NOT attributed');
+			expect(advisory).not.toContain('/swarm recover');
+			expect(criticalWarnSpy).toHaveBeenCalledTimes(1);
+			expect(criticalWarnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('accepted coder mutation'),
+			);
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
+				'NOT attributed',
+			);
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
+				'/swarm recover',
+			);
+		} finally {
+			criticalWarnSpy.mockRestore();
+		}
 	});
 });

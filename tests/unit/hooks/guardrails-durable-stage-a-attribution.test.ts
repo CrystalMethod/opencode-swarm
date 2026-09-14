@@ -14,7 +14,7 @@
  *    of a swallowed warn;
  *  - the normal correlated flow is unchanged.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import type { GuardrailsConfig } from '../../../src/config/schema';
 import {
 	getTaskWorkflowSnapshot,
@@ -27,6 +27,7 @@ import {
 	resetSwarmState,
 	swarmState,
 } from '../../../src/state';
+import * as logger from '../../../src/utils/logger';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 // Deterministic fixture instant (explicit-arg Date constructor, not a raw
@@ -351,7 +352,7 @@ describe('durable Stage A attribution', () => {
 		).toBe(true);
 	});
 
-	test('attribution-miss write failure escalates to a visible advisory', async () => {
+	test('coder-mutation write failure escalates to a visible advisory', async () => {
 		// Correlated task with NO durable coder_delegated evidence: the Stage A
 		// pass transition throws TASK_WORKFLOW_CODER_MUTATION_REQUIRED — the
 		// exact error class previously swallowed into an invisible warn.
@@ -396,25 +397,44 @@ describe('durable Stage A attribution', () => {
 		ensureAgentSession('architect').currentTaskId = '9.10';
 
 		const hooks = createGuardrailsHooks(directory, defaultConfig());
-		await hooks.toolBefore(
-			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
-			{ args: {} },
-		);
-		await hooks.toolAfter(
-			{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
-			{ title: '', output: PASS_PAYLOAD, metadata: null },
+		const criticalWarnSpy = spyOn(logger, 'criticalWarn').mockImplementation(
+			() => {},
 		);
 
-		const messages =
-			swarmState.agentSessions.get('architect')?.pendingAdvisoryMessages ?? [];
-		const advisory = messages.find((message) =>
-			message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
-		);
-		expect(advisory).toBeDefined();
-		expect(advisory).toContain('accepted coder mutation');
-		expect(advisory).toContain('before Stage A');
-		expect(advisory).not.toContain('NOT attributed');
-		expect(advisory).not.toContain('/swarm recover');
+		try {
+			await hooks.toolBefore(
+				{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
+				{ args: {} },
+			);
+			await hooks.toolAfter(
+				{ tool: 'pre_check_batch', sessionID: 'architect', callID: 'c5' },
+				{ title: '', output: PASS_PAYLOAD, metadata: null },
+			);
+
+			const messages =
+				swarmState.agentSessions.get('architect')?.pendingAdvisoryMessages ??
+				[];
+			const advisory = messages.find((message) =>
+				message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
+			);
+			expect(advisory).toBeDefined();
+			expect(advisory).toContain('accepted coder mutation');
+			expect(advisory).toContain('before Stage A');
+			expect(advisory).not.toContain('NOT attributed');
+			expect(advisory).not.toContain('/swarm recover');
+			expect(criticalWarnSpy).toHaveBeenCalledTimes(1);
+			expect(criticalWarnSpy).toHaveBeenCalledWith(
+				expect.stringContaining('accepted coder mutation'),
+			);
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
+				'NOT attributed',
+			);
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
+				'/swarm recover',
+			);
+		} finally {
+			criticalWarnSpy.mockRestore();
+		}
 	});
 
 	test('normal correlated flow is unchanged (no fallback needed)', async () => {
