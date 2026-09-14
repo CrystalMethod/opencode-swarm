@@ -732,8 +732,14 @@ export function reduceTaskWorkflowSnapshot(
 	};
 
 	switch (event.type) {
-		case 'dispatch_attempted':
-			return base;
+		case 'dispatch_attempted': {
+			// A new coder dispatch opens a fresh attribution window. A prior
+			// generation-0 no-mutation proof must not survive it, even when the
+			// later dispatch is aborted before it can publish its own settlement.
+			const { noMutationSettlement: _clearedSettlement, ...withoutSettlement } =
+				base;
+			return withoutSettlement;
+		}
 		case 'dispatch_no_mutation': {
 			const { noMutationSettlement: _clearedSettlement, ...withoutSettlement } =
 				base;

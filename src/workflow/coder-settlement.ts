@@ -165,6 +165,23 @@ function baselineAttributionDoomed(baseline: {
 	);
 }
 
+/**
+ * An empty declared scope cannot distinguish a coder mutation from an
+ * out-of-scope workspace change. Such a change must not be reduced to the
+ * empty scoped observation that powers the generation-0 read-only exception.
+ */
+export function hasUnattributedEmptyScopeMutation(
+	declaredFiles: readonly string[] | null | undefined,
+	rawObservedFiles: readonly string[] | null | undefined,
+): boolean {
+	return (
+		Array.isArray(declaredFiles) &&
+		declaredFiles.length === 0 &&
+		Array.isArray(rawObservedFiles) &&
+		rawObservedFiles.length > 0
+	);
+}
+
 function doomedReason(baseline: {
 	gitHead: string | null;
 	changedFiles?: string[] | null;
@@ -196,6 +213,9 @@ async function scopedObservedFiles(
 	const baseline = { ...context.baseline, directory };
 	const observed = await changedFilesSinceSnapshotAsync(directory, baseline);
 	if (!observed || !context.declaredFiles) return null;
+	if (hasUnattributedEmptyScopeMutation(context.declaredFiles, observed)) {
+		return null;
+	}
 	return observed.filter((filePath) =>
 		isPathWithinDeclaredScope(filePath, context.declaredFiles ?? [], directory),
 	);
@@ -481,6 +501,8 @@ export async function settleCoderDispatch(options: {
 	accepted: boolean;
 	testEngineerExempt: boolean;
 	settlementFailed?: boolean;
+	/** Raw workspace changes used to prevent empty-scope no-mutation proofs. */
+	observedFiles?: readonly string[] | null;
 	/** #2508: landed via squash-unstaged — retain the lane branch at cleanup. */
 	landedUnstaged?: boolean;
 }): Promise<CoderSettlementResult> {
@@ -496,11 +518,18 @@ export async function settleCoderDispatch(options: {
 			if (wal.transitionId !== options.transitionId) {
 				throw new Error('CODER_SETTLEMENT_WAL_REPLACED');
 			}
+			const unattributedEmptyScopeMutation = hasUnattributedEmptyScopeMutation(
+				wal.context.declaredFiles,
+				options.observedFiles,
+			);
+			const accepted = options.accepted || unattributedEmptyScopeMutation;
+			const settlementFailed =
+				options.settlementFailed === true || unattributedEmptyScopeMutation;
 			if (wal.state === 'COMMITTED') {
 				if (
-					wal.accepted !== options.accepted ||
+					wal.accepted !== accepted ||
 					wal.testEngineerExempt !== options.testEngineerExempt ||
-					wal.settlementFailed !== (options.settlementFailed === true)
+					wal.settlementFailed !== settlementFailed
 				) {
 					throw new Error('CODER_SETTLEMENT_IDEMPOTENCY_CONFLICT');
 				}
@@ -513,18 +542,18 @@ export async function settleCoderDispatch(options: {
 			}
 			if (
 				wal.state === 'PREPARED' &&
-				(wal.accepted !== options.accepted ||
+				(wal.accepted !== accepted ||
 					wal.testEngineerExempt !== options.testEngineerExempt ||
-					wal.settlementFailed !== (options.settlementFailed === true))
+					wal.settlementFailed !== settlementFailed)
 			) {
 				throw new Error('CODER_SETTLEMENT_IDEMPOTENCY_CONFLICT');
 			}
 			const prepared: CoderSettlementWal = {
 				...wal,
 				state: 'PREPARED',
-				accepted: options.accepted,
+				accepted,
 				testEngineerExempt: options.testEngineerExempt,
-				settlementFailed: options.settlementFailed === true,
+				settlementFailed,
 			};
 			if (wal.state !== 'PREPARED') await writeWal(filePath, prepared);
 			liveDispatches.delete(
@@ -1182,6 +1211,10 @@ export async function recoverCoderSettlement(
 				directory,
 				wal.context.baseline,
 			);
+			const unattributedEmptyScopeMutation = hasUnattributedEmptyScopeMutation(
+				wal.context.declaredFiles,
+				rawObserved,
+			);
 			let observed: string[] | null;
 			if (rawObserved === null) {
 				if (baselineAttributionDoomed(wal.context.baseline)) {
@@ -1210,13 +1243,15 @@ export async function recoverCoderSettlement(
 			} else if (wal.context.declaredFiles === null) {
 				observed = [];
 			} else {
-				observed = rawObserved.filter((filePath) =>
-					isPathWithinDeclaredScope(
-						filePath,
-						wal.context.declaredFiles ?? [],
-						directory,
-					),
-				);
+				observed = unattributedEmptyScopeMutation
+					? rawObserved
+					: rawObserved.filter((filePath) =>
+							isPathWithinDeclaredScope(
+								filePath,
+								wal.context.declaredFiles ?? [],
+								directory,
+							),
+						);
 			}
 			if (observed === null) {
 				throw new Error(
@@ -1227,6 +1262,8 @@ export async function recoverCoderSettlement(
 				...wal,
 				state: 'PREPARED',
 				accepted: observed.length > 0,
+				settlementFailed:
+					wal.settlementFailed === true || unattributedEmptyScopeMutation,
 				testEngineerExempt: isMarkdownOnlyTaskChange(
 					wal.context.declaredFiles,
 					observed,

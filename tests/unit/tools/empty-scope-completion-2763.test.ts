@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BackgroundTaskChangeContext } from '../../../src/background/pending-delegations';
+import { changedFilesSinceSnapshotAsync } from '../../../src/background/workspace-snapshot';
 import {
 	getTaskWorkflowSnapshot,
 	readTaskEvidenceRaw,
@@ -279,6 +280,65 @@ describe('issue #2763 — empty-scope read-only completion', () => {
 		expect(afterWorkflow.noMutationSettlement).toEqual(
 			beforeWorkflow.noMutationSettlement,
 		);
+	});
+
+	test('does not treat an actual empty-scope mutation as a no-mutation settlement', async () => {
+		const transitionId = 'issue-2763-out-of-scope-mutation';
+		const context = makeContext(directory, []);
+		await beginCoderSettlement({
+			directory,
+			taskId: TASK_ID,
+			transitionId,
+			actor: 'issue-2763-test',
+			expectedGeneration: 0,
+			context,
+		});
+		// Before the fix, the empty declared scope filtered this real workspace
+		// change away before settlement, allowing read-only completion.
+		fs.mkdirSync(path.join(directory, 'src'), { recursive: true });
+		fs.writeFileSync(
+			path.join(directory, 'src', 'undeclared.ts'),
+			'export const changed = true;\n',
+		);
+		const observedFiles = await changedFilesSinceSnapshotAsync(
+			directory,
+			context.baseline,
+		);
+		expect(observedFiles).toContain('src/undeclared.ts');
+
+		const settlement = await settleCoderDispatch({
+			directory,
+			taskId: TASK_ID,
+			transitionId,
+			accepted: false,
+			testEngineerExempt: false,
+			observedFiles,
+		});
+		expect(settlement.accepted).toBe(true);
+		expect(getTaskWorkflowSnapshot(settlement.evidence)).toMatchObject({
+			state: 'rework_required',
+			generation: 1,
+			lastOutcome: 'accepted_mutation_failed',
+		});
+		expect(settlement.evidence.workflow?.noMutationSettlement).toBeUndefined();
+	});
+
+	test('clears a prior read-only proof when a new dispatch starts', async () => {
+		await settleNoMutation(directory, [], 'issue-2763-proof-reset');
+		await transitionTaskWorkflowEvidence(directory, TASK_ID, {
+			type: 'dispatch_attempted',
+			agentType: 'coder',
+			expectedGeneration: 0,
+			transitionId: 'issue-2763-new-dispatch',
+		});
+
+		const evidence = readTaskEvidenceRaw(directory, TASK_ID);
+		expect(evidence?.workflow?.noMutationSettlement).toBeUndefined();
+		expect(getTaskWorkflowSnapshot(evidence)).toMatchObject({
+			state: 'idle',
+			generation: 0,
+			lastOutcome: 'dispatch_attempted',
+		});
 	});
 
 	test('keeps the secretscan overlay authoritative for a proven empty-scope task', async () => {
