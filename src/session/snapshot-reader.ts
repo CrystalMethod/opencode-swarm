@@ -4,6 +4,10 @@
  */
 
 import { renameSync } from 'node:fs';
+import {
+	getOverrideForSession,
+	sweepOrphanOverrides,
+} from '../db/qa-gate-session-override.js';
 import { loadFullAutoRunState } from '../full-auto/state';
 import { validateSwarmPath } from '../hooks/utils';
 import type { AgentSessionState, TaskWorkflowState } from '../state';
@@ -13,6 +17,7 @@ import {
 	MAX_TRACKED_TASK_FILE_ATTRIBUTIONS,
 	swarmState,
 } from '../state';
+import { pushAdvisory } from '../utils/advisory-queue.js';
 import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';
 import {
@@ -23,6 +28,11 @@ import {
 	hydrationProjectKey,
 	recordHydratedAggregateKeys,
 } from './hydration-ownership.js';
+import {
+	buildInterruptedAdvisoryDedupeKey,
+	buildInterruptedAdvisoryMessage,
+	recordInterruptedExecution,
+} from './restart-reconciliation.js';
 import type {
 	SerializedAgentSession,
 	SerializedInvocationWindow,
@@ -587,8 +597,73 @@ export async function rehydrateState(
 			//   - scopeViolationDetected: false scope violation warnings
 			//   - delegationActive: prevents clean delegation lifecycle on restart
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Clone mutable reset values (e.g. the [] for
+				// pendingAdvisoryMessages): resetValue is a module-level literal
+				// evaluated once, so assigning it directly would give EVERY
+				// reset session the same array instance — a push into one
+				// session's advisories would leak into all later resets
+				// (invariant 8).
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
+			}
+
+			// ── Durable QA policy restore (#2668) ────────────────────────
+			// Ratchet-tighter session overrides are durable runtime policy in
+			// the project DB (qa_gate_session_override), never snapshot bytes
+			// (see SESSION_TRANSIENT_FIELDS). Restore them here so restart
+			// preserves the EFFECTIVE tightened gates; fail-open — a DB error
+			// must degrade to profile-only, never break rehydration.
+			if (directory) {
+				try {
+					const durableOverrides = getOverrideForSession(directory, sessionId);
+					if (Object.keys(durableOverrides).length > 0) {
+						session.qaGateSessionOverrides = durableOverrides;
+					}
+				} catch (error) {
+					log(
+						`[snapshot-reader] override restore failed for session ${sessionId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
+
+			// ── Owner-named reconciliation for interrupted executions (#2668)
+			// The SERIALIZED delegationActive (pre-deserialize) is the signal:
+			// the transient reset above has already cleared the live flag, and
+			// that expiry is correct — only its SILENCE was the defect. Record
+			// a bounded owner-named outcome (durable artifact + one-shot
+			// advisory pushed after the reset so it survives) so an
+			// interrupted execution can never read as a clean shutdown.
+			// Fail-open: the record must never fail the rehydrate.
+			if (directory && serializedSession.delegationActive === true) {
+				const entry = {
+					sessionId,
+					agentName: session.agentName,
+					taskId: serializedSession.currentTaskId || '(unknown)',
+				};
+				try {
+					const recorded = await recordInterruptedExecution(directory, entry);
+					// pushAdvisory (not a bare push) per the advisory-injection
+					// ratchet: bounded queue + dedupe. The dedupe key is embedded
+					// literally in the message text by the builder below —
+					// pushAdvisory matches keys by substring against queued text.
+					pushAdvisory(
+						session,
+						buildInterruptedAdvisoryMessage({
+							...entry,
+							guidance: recorded.guidance,
+						}),
+						{ dedupeKey: buildInterruptedAdvisoryDedupeKey(entry) },
+					);
+				} catch (error) {
+					log(
+						`[snapshot-reader] restart reconciliation failed for session ${sessionId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
 			}
 
 			// ── Full-auto run-state reconciliation ────────────────────────
@@ -639,6 +714,38 @@ export async function rehydrateState(
 			if (swarmState.agentSessions.has(key) && !isProtectedLiveSession(key)) {
 				swarmState.delegationChains.set(key, value);
 			}
+		}
+	}
+
+	// ── Durable QA override orphan-row reaper (#2668) ────────────────
+	// The hot-path stale sweep (ensureAgentSession → maybeSweepStaleSessions)
+	// runs with no directory, so it can evict a stale session in-memory while
+	// its durable qa_gate_session_override row survives — an orphaned policy
+	// row that a later session reusing the id would inherit. The rehydrate
+	// boundary knows the project, so prune rows whose session is neither in
+	// the restored snapshot nor live under this project's ownership. Fail-open
+	// like every rehydrate-side durable access.
+	if (directory) {
+		try {
+			const keep = new Set<string>();
+			for (const sessionId of Object.keys(snapshot.agentSessions ?? {})) {
+				keep.add(sessionId);
+			}
+			for (const [sessionId, live] of swarmState.agentSessions) {
+				if (live.owningProjectKey === projectKey) keep.add(sessionId);
+			}
+			const removed = sweepOrphanOverrides(directory, keep);
+			if (removed > 0) {
+				log(
+					`[snapshot-reader] pruned ${removed} orphaned QA override row(s) for ${projectKey}`,
+				);
+			}
+		} catch (error) {
+			log(
+				`[snapshot-reader] override orphan reaper failed for ${projectKey}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 		}
 	}
 	return { applied: true };
@@ -705,8 +812,11 @@ async function rehydrateStateGlobal(snapshot: SnapshotData): Promise<void> {
 				}
 			}
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Same mutable-resetValue clone as the scoped path: the shared
+				// module-level [] must never be assigned by reference.
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
 			}
 			// Full-auto run-state reconciliation, same fail-closed rule as the
 			// scoped path: without a directory there is no durable run state to

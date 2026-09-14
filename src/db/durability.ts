@@ -23,6 +23,10 @@ export const DURABILITY_CLASSES: Readonly<Record<string, 'full' | 'normal'>> = {
 	// Terminal-state streams — FULL.
 	qa_gate_profile: 'full',
 	qa_gate_profile_identity: 'full',
+	// #2668: session-level ratchet-tighter overrides are durable runtime
+	// policy that must survive restart — same full-durability class as the
+	// spec-level profile they tighten.
+	qa_gate_session_override: 'full',
 	task_checkpoint_receipt: 'full',
 	coordination_event: 'full',
 	coordination_state: 'full',

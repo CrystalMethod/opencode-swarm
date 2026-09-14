@@ -742,3 +742,9 @@ chat.message path is a pure Map hit.
 | Lock execution profile | `save_plan` with `execution_profile.locked: true` |
 | View worktree lanes | `/swarm lanes [--json]` |
 | Recover orphaned worktrees | Automatic on session start (see [Recovery Runbook](troubleshooting/recovery-guide.md)) |
+
+## See also
+
+- [Restart reconciliation — durable policy vs ephemeral authority](restart-reconciliation.md)
+  (issue #2668): the restart-boundary field classification, owner-named
+  reconciliation for interrupted executions, and the restart/inspect runbook.
