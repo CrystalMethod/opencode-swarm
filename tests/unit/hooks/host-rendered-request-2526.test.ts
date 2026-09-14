@@ -20,6 +20,9 @@
  *    the memory record's createdAt/updatedAt, the recall bundle id
  *    (`bundle_<timestamp>_<hash>`), and the recency-scored `age=` field are
  *    identical on every derivation;
+ *  - the project config explicitly pins `execution_mode: "balanced"`, so a
+ *    user-level/global config cannot change the meaningful planning-profile
+ *    directive in the architect-session carrier;
  *  - TWO per-run random tokens are normalized to placeholders in BOTH the
  *    derived capture and the fixture text:
  *      1. `trace_id: <uuid>` — the knowledge retrieval trace id is a fresh
@@ -227,6 +230,7 @@ export async function deriveCapturedRequest(): Promise<CapturedRequest> {
 		await seedMemoryRecordAsync(directory, SESSION_ID);
 
 		const plugin = await bootKnowledgeHost(directory, {
+			execution_mode: 'balanced',
 			memory: { enabled: true },
 			guardrails: { enabled: true },
 		});
