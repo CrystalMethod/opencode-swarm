@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.181.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.180.1...v7.181.0) (2026-09-14)
+
+
+### Features
+
+* **harness-opt:** governed HarnessOpt capstone with held-out validation ([#2503](https://github.com/ZaxbyHub/opencode-swarm/issues/2503)) ([fc9876b](https://github.com/ZaxbyHub/opencode-swarm/commit/fc9876b6601d852eef3ab3e50bc623e03627e49c))
+
+
+### Bug Fixes
+
+* **harness-opt:** bound wall-clock via cleared timer instead of native AbortSignal.timeout ([#2503](https://github.com/ZaxbyHub/opencode-swarm/issues/2503) CI) ([f78fba6](https://github.com/ZaxbyHub/opencode-swarm/commit/f78fba61d31540b9d24949d95bc97f710b3184f1))
+
 ## [7.180.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.180.0...v7.180.1) (2026-09-14)
 
 
