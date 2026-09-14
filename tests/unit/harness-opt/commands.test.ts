@@ -7,6 +7,7 @@ import {
 	handleHarnessOptPlan,
 	handleHarnessOptRun,
 	handleHarnessOptStatus,
+	handleHarnessOptStop,
 } from '../../../src/commands/harness-opt.js';
 import { COMMAND_REGISTRY } from '../../../src/commands/registry.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
@@ -140,6 +141,15 @@ describe('harness-opt run gating', () => {
 		expect(output).toMatch(/inside the project root/);
 	});
 
+	test('rejects a task id that would traverse the input root (PRR-C02)', async () => {
+		writeFileSync(
+			path.join(root, 'tasks.json'),
+			JSON.stringify([{ id: '../escape', instruction: 'x' }]),
+		);
+		const output = await handleHarnessOptPlan(root, ['--tasks', 'tasks.json']);
+		expect(output).toMatch(/task id must match/);
+	});
+
 	test('rejects a malformed tasks file', async () => {
 		writeFileSync(path.join(root, 'tasks.json'), JSON.stringify([{ id: 'x' }]));
 		const output = await handleHarnessOptPlan(root, ['--tasks', 'tasks.json']);
@@ -208,6 +218,31 @@ describe('harness-opt compare gating (separately executable comparative package)
 			'manifest.json',
 		]);
 		expect(output).toMatch(/MANIFEST_FIELD_EMPTY/);
+	});
+});
+
+describe('harness-opt stop --resume (PRR-C01)', () => {
+	test('resume clears an operator stop through the registered handler', async () => {
+		await handleHarnessOptStop(root, [
+			'--reason',
+			'halt for maintenance',
+			'--json',
+		]);
+		const resumed = await handleHarnessOptStop(root, ['--resume', '--json']);
+		const parsed = JSON.parse(resumed) as {
+			status: string;
+			resumed: boolean;
+			previousReason: string;
+		};
+		expect(parsed.status).toBe('ok');
+		expect(parsed.resumed).toBe(true);
+		expect(parsed.previousReason).toBe('halt for maintenance');
+	});
+
+	test('resume when not stopped reports resumed:false', async () => {
+		const resumed = await handleHarnessOptStop(root, ['--resume', '--json']);
+		const parsed = JSON.parse(resumed) as { resumed: boolean };
+		expect(parsed.resumed).toBe(false);
 	});
 });
 

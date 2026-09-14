@@ -267,6 +267,24 @@ describe('stop and status', () => {
 		// from the pre-stop round.
 		expect(stopped.roundCounter).toBe(1);
 		expect(stopped.decision.decisionId).toBe('');
+
+		// Resume (PRR-C01): the advertised recovery path must actually clear
+		// the stop so governed rounds run again.
+		const { resumeHarnessOptLoop } = await import(
+			'../../../src/services/harness-optimizer/controller.js'
+		);
+		const resumed = await resumeHarnessOptLoop({ projectRoot: root });
+		expect(resumed.resumed).toBe(true);
+		expect(resumed.previousReason).toBe('operator halt');
+		const afterResume = await runHarnessOptRound({
+			projectRoot: root,
+			tasks,
+			split: 'validation',
+			seed: 'resumed-seed',
+			executor: okExecutor,
+		});
+		expect(afterResume.stopReason).toBe('inconclusive');
+		expect(afterResume.roundCounter).toBe(2);
 	});
 
 	test('status reports the round counter and frozen task sets', async () => {

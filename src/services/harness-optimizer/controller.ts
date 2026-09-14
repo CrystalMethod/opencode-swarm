@@ -210,6 +210,7 @@ export async function runHarnessOptRound(args: {
 		if (state.stopReason) {
 			// Operator stop is a typed stop, not an error: the round reports
 			// it as its stop reason with no execution and no consumption.
+			// Resume with /swarm harness-opt stop --resume (human-only).
 			return {
 				stopReason: 'stopped_by_operator',
 				transientRetries: 0,
@@ -263,6 +264,12 @@ export async function runHarnessOptRound(args: {
 		const roundStartedAtMs = Date.now();
 		const decidedAt = new Date().toISOString();
 		const maxTransientRetries = args.maxTransientRetries ?? 0;
+		// Orphan window (documented in the harness-opt-store retention row):
+		// the counter is durable before the substrate call, and a crash or
+		// unexpected throw in the substrate/lineage window leaves the round
+		// without a lineage record — the substrate run itself remains durable
+		// under .swarm/evolution/runs and the next round derives a fresh
+		// salted seed, so recovery is a new round, not a corrupt state.
 		const result = await runSubstrateEvaluation({
 			projectRoot: args.projectRoot,
 			inputRoot,
@@ -276,7 +283,13 @@ export async function runHarnessOptRound(args: {
 			maxTransientRetries,
 			maxSpendUsd: args.maxSpendUsd,
 			executor: args.executor,
-			abortSignal: args.abortSignal,
+			abortSignal:
+				args.maxWallClockMs === undefined
+					? args.abortSignal
+					: AbortSignal.any([
+							...(args.abortSignal ? [args.abortSignal] : []),
+							AbortSignal.timeout(args.maxWallClockMs),
+						]),
 		});
 		const roundElapsedMs = Date.now() - roundStartedAtMs;
 		const candidateOutcomes = result.outcomes.filter(
@@ -453,7 +466,8 @@ export function loadPilotGraduationRecord(
 	return JSON.parse(readFileSync(recordPath, 'utf8')) as PilotGraduationRecord;
 }
 
-/** Human-only operator stop: halts further rounds until cleared by plan. */
+/** Human-only operator stop: halts further rounds until explicitly resumed
+ * via resumeHarnessOptLoop (harness-opt stop --resume). */
 export async function stopHarnessOptLoop(args: {
 	projectRoot: string;
 	reason: string;
@@ -466,6 +480,26 @@ export async function stopHarnessOptLoop(args: {
 			`${JSON.stringify(state, null, '\t')}\n`,
 		);
 		return { stopped: true, reason: args.reason };
+	});
+}
+
+/** Human-only operator resume: clears an operator stop so rounds run again. */
+export async function resumeHarnessOptLoop(args: {
+	projectRoot: string;
+}): Promise<{ resumed: boolean; previousReason: string | null }> {
+	return withHarnessOptLock(args.projectRoot, async () => {
+		const state = loadState(args.projectRoot);
+		const previousReason = state.stopReason;
+		if (previousReason === null) {
+			return { resumed: false, previousReason };
+		}
+		state.stopReason = null;
+		await atomicWriteSwarmFile(
+			statePath(args.projectRoot),
+			`${JSON.stringify(state, null, '	')}
+`,
+		);
+		return { resumed: true, previousReason };
 	});
 }
 

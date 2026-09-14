@@ -36,6 +36,7 @@ import {
 	evaluatePilotGraduation,
 	freezeHarnessOptTaskSet,
 	harnessOptStatus,
+	resumeHarnessOptLoop,
 	runHarnessOptRound,
 	stopHarnessOptLoop,
 } from '../services/harness-optimizer/controller.js';
@@ -46,6 +47,7 @@ import { evaluateIndependentOracle } from '../services/harness-optimizer/oracle.
 interface ParsedHarnessOptArgs {
 	json: boolean;
 	confirm: boolean;
+	resume: boolean;
 	tasksFile: string | undefined;
 	manifestFile: string | undefined;
 	lowerCi: number | undefined;
@@ -72,6 +74,7 @@ function parseHarnessOptArgs(args: string[]): ParsedHarnessOptArgs {
 	return {
 		json,
 		confirm,
+		resume: args.includes('--resume'),
 		tasksFile: flagValue('--tasks'),
 		manifestFile: flagValue('--manifest'),
 		lowerCi,
@@ -144,6 +147,19 @@ function loadTasksFile(
 		) {
 			return {
 				error: 'tasks file must be a non-empty array of {id, instruction}',
+			};
+		}
+		// Task ids become filesystem path segments under the content-addressed
+		// input root (issue #2578-review PRR-C02): reject ids that could
+		// traverse or escape before anything is materialized.
+		const unsafeId = parsed.find(
+			(entry) =>
+				!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test((entry as { id: string }).id) ||
+				(entry as { id: string }).id.includes('..'),
+		);
+		if (unsafeId !== undefined) {
+			return {
+				error: `task id must match [A-Za-z0-9][A-Za-z0-9._-]* (no '..', no separators): ${String((unsafeId as { id: string }).id)}`,
 			};
 		}
 		return { tasks: parsed as ComparativeTaskDescriptor[] };
@@ -271,7 +287,7 @@ export async function handleHarnessOptRun(
 				status: 'stopped',
 				stopReason: 'stopped_by_operator',
 				operatorReason: status.stopReason,
-				note: 'the loop is stopped; clear the stop with harness-opt plan before running',
+				note: 'the loop is stopped; resume with /swarm harness-opt stop --resume',
 			},
 			parsed.json,
 		);
@@ -337,12 +353,25 @@ export async function handleHarnessOptStatus(
 	);
 }
 
-/** `/swarm harness-opt stop` — human-only operator stop. */
+/** `/swarm harness-opt stop` — human-only operator stop (or --resume). */
 export async function handleHarnessOptStop(
 	directory: string,
 	args: string[],
 ): Promise<string> {
 	const parsed = parseHarnessOptArgs(args);
+	if (parsed.resume) {
+		const result = await resumeHarnessOptLoop({ projectRoot: directory });
+		return emit(
+			{
+				status: 'ok',
+				...result,
+				note: result.resumed
+					? 'loop resumed; governed rounds may run again'
+					: 'loop was not stopped',
+			},
+			parsed.json,
+		);
+	}
 	const reason =
 		parsed.reason ?? 'stopped by operator via /swarm harness-opt stop';
 	const result = await stopHarnessOptLoop({
