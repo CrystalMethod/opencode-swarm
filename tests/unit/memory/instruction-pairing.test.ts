@@ -10,20 +10,20 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
 import {
 	DEFAULT_INSTRUCTION_PAIRING_TASKS,
 	type InstructionPairingReport,
 	runInstructionSelectionPairing,
 } from '../../../src/memory/instruction-pairing.js';
 import { swarmState } from '../../../src/state.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 afterEach(() => {
 	swarmState.activeAgent.clear();
 });
 
 function makeProject(): string {
-	const dir = mkdtempSync(path.join(tmpdir(), 'pairing-test-2672-'));
+	const dir = canonicalMkdtemp('pairing-test-2672-');
 	mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	return dir;
 }

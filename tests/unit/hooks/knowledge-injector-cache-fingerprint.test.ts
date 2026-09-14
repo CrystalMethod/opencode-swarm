@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-
 import {
 	createKnowledgeInjectorHook,
 	_internals as injectorInternals,
@@ -24,6 +23,7 @@ import type {
 	SwarmKnowledgeEntry,
 } from '../../../src/hooks/knowledge-types.js';
 import { swarmState } from '../../../src/state.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const SESSION_ID = 'fingerprint-2672-session';
 let restoreSearch: (() => void) | null = null;
@@ -92,7 +92,7 @@ function injectedText(output: { messages: MessageWithParts[] }): string {
 }
 
 function makeProject(): string {
-	const dir = mkdtempSync(path.join(tmpdir(), 'fingerprint-2672-'));
+	const dir = canonicalMkdtemp('fingerprint-2672-');
 	mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	return dir;
 }
