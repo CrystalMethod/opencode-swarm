@@ -201,8 +201,9 @@ function expectControlPasses(slug: string): void {
 		inputs.inRetiredList ? 'retired' : 'reachable',
 	);
 	for (const consumer of disposition.consumers) {
+		// join() normalizes separators on every platform — never hand-convert.
 		expect(
-			existsSync(join(ROOT, consumer.split('/').join('\\'))),
+			existsSync(join(ROOT, consumer)),
 			`${slug} disposition consumer ${consumer} must exist`,
 		).toBe(true);
 		expect(

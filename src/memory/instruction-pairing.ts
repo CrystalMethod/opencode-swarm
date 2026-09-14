@@ -424,6 +424,8 @@ async function runTaskPairing(
 			negative_result: qualityOutcome !== 'improved',
 		};
 	} finally {
+		// Invariant-8 hygiene: never leave synthetic pairing sessions mapped.
+		swarmState.activeAgent.delete(sessionId);
 		sessionTempRoot.delete(sessionId);
 		rmSync(root, { recursive: true, force: true });
 	}
@@ -468,6 +470,8 @@ async function verifyCacheInvalidation(): Promise<{
 				: 'identical-context replay after a curator-briefing change re-served the stale cached instruction set',
 		};
 	} finally {
+		// Invariant-8 hygiene: never leave synthetic pairing sessions mapped.
+		swarmState.activeAgent.delete(sessionId);
 		sessionTempRoot.delete(sessionId);
 		rmSync(root, { recursive: true, force: true });
 	}
