@@ -4463,7 +4463,7 @@ export function createDelegationGateHook(
 						workflow.state === 'rework_required'
 							? 'Remediation: if the Stage B verdict did not require a code change, call recover_rework_task for task ' +
 								taskId +
-								" (architect-only, audited; requires green secretscan AND sast_scan evidence newer than the verdict — normally from a fresh pre_check_batch run; unavailable when SAST is disabled), then re-dispatch. " +
+								' (architect-only, audited; requires green secretscan AND sast_scan evidence newer than the verdict — normally from a fresh pre_check_batch run; unavailable when SAST is disabled), then re-dispatch. ' +
 								'Otherwise delegate the coder to repair the code, re-run pre_check_batch, and re-dispatch once stage_a_passed has fired.'
 							: `Remediation: run pre_check_batch on the task's changed files first. If pre_check_batch passes but the task remains coder_delegated (typical after /swarm reset-session), run /swarm recover ${taskId} to repair Stage A attribution, then re-dispatch.`;
 					throw new Error(

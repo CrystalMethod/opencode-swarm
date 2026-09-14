@@ -6,12 +6,12 @@ import {
 	readTaskEvidence,
 	transitionTaskWorkflowEvidence,
 } from '../../../src/gate-evidence';
-import { TOOL_METADATA } from '../../../src/tools/tool-metadata';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import {
 	executeRecoverReworkTask,
 	recover_rework_task,
 } from '../../../src/tools/recover-rework-task';
+import { TOOL_METADATA } from '../../../src/tools/tool-metadata';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 /**
