@@ -1,7 +1,7 @@
 /** Regression coverage for issue #2757's plan-critic task attribution dead-end. */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { createBackgroundCompletionObserver } from '../../../src/background/completion-observer';
 import { findByCorrelationId } from '../../../src/background/pending-delegations';
@@ -16,6 +16,7 @@ import {
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 import { makeConfig } from './_delegation-gate-helpers';
 
@@ -106,12 +107,7 @@ beforeEach(() => {
 afterEach(() => {
 	resetSwarmState();
 	closeProjectDb(tmpDir);
-	rmSync(tmpDir, {
-		recursive: true,
-		force: true,
-		maxRetries: 5,
-		retryDelay: 100,
-	});
+	safeRmRecursive(tmpDir);
 	isolatedEnv?.cleanup();
 	isolatedEnv = undefined;
 });
@@ -224,6 +220,61 @@ describe('delegation-gate — regression: plan-level critic attribution (#2757)'
 		expect(evidence?.gates.critic).toBeDefined();
 	});
 
+	it('does not let a named ID shadow a valid TASK marker (F3)', async () => {
+		const sessionID = 'critic-mixed-attribution';
+		ensureAgentSession(sessionID, 'architect', tmpDir);
+		const hook = createDelegationGateHook(makeConfig(), tmpDir);
+
+		await settleCritic(hook, sessionID, 'critic-mixed-attribution', {
+			subagent_type: 'critic',
+			task_id: 'runtime-session-handle',
+			prompt: `MODE: CRITIC-GATE\nTASK: ${TASK_ID}`,
+		});
+
+		const evidence = await readTaskEvidence(tmpDir, TASK_ID);
+		expect(evidence?.required_gates).toContain('critic');
+		expect(evidence?.gates.critic).toBeDefined();
+	});
+
+	it('re-satisfies explicit critic evidence after an accepted coder mutation (F14)', async () => {
+		const sessionID = 'critic-explicit-rerun';
+		ensureAgentSession(sessionID, 'architect', tmpDir);
+		const hook = createDelegationGateHook(makeConfig(), tmpDir);
+
+		await settleCritic(hook, sessionID, 'critic-before-mutation', {
+			subagent_type: 'critic',
+			task_id: TASK_ID,
+			prompt: 'MODE: CRITIC-GATE\nReview the explicit task before execution.',
+		});
+		const beforeMutation = await readTaskEvidence(tmpDir, TASK_ID);
+		expect(beforeMutation?.gates.critic).toBeDefined();
+
+		const accepted = await transitionTaskWorkflowEvidence(tmpDir, TASK_ID, {
+			type: 'accepted_mutation',
+			agentType: 'coder',
+			expectedGeneration: getTaskWorkflowSnapshot(beforeMutation).generation,
+			transitionId: 'coder-after-explicit-critic',
+		});
+		const generation = getTaskWorkflowSnapshot(accepted).generation;
+		expect(accepted.required_gates).toContain('critic');
+		expect(accepted.gates.critic).toBeUndefined();
+
+		await transitionTaskWorkflowEvidence(tmpDir, TASK_ID, {
+			type: 'stage_a_passed',
+			expectedGeneration: generation,
+			transitionId: 'stage-a-before-explicit-critic-rerun',
+		});
+		await settleCritic(hook, sessionID, 'critic-after-mutation', {
+			subagent_type: 'critic',
+			task_id: TASK_ID,
+			prompt:
+				'MODE: CRITIC-GATE\nRe-review the explicit task after the coder mutation.',
+		});
+
+		const afterRerun = await readTaskEvidence(tmpDir, TASK_ID);
+		expect(afterRerun?.gates.critic).toBeDefined();
+	});
+
 	it('does not leave an unsatisfiable critic requirement after a coder mutation', async () => {
 		const sessionID = 'plan-critic-orphan';
 		ensureAgentSession(sessionID, 'architect', tmpDir);
@@ -324,5 +375,77 @@ describe('delegation-gate — regression: plan-level critic attribution (#2757)'
 			authoritative: true,
 		});
 		expect(await hasPassedAllGates(tmpDir, TASK_ID)).toBe(true);
+	});
+
+	it('preserves ambient plan-text routing for reviewer and test_engineer (F17)', async () => {
+		const sessionID = 'stage-b-plan-text';
+		await seedStageA(sessionID);
+		const session = ensureAgentSession(sessionID, 'architect', tmpDir);
+		// Force this regression through the plan-text parser rather than the
+		// session fallback that is intentionally available to non-critic gates.
+		session.currentTaskId = null;
+		session.lastCoderDelegationTaskId = null;
+		const hook = createDelegationGateHook(makeConfig(), tmpDir);
+		const reviewerArgs = {
+			subagent_type: 'reviewer',
+			prompt:
+				'Implementation plan excerpt:\n- [ ] 1.1: Review the implementation plan.\nACCEPTANCE: DONE = review complete.',
+		};
+		await hook.toolBefore(
+			{ tool: 'Task', sessionID, callID: 'reviewer-plan-text' },
+			{ args: reviewerArgs },
+		);
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'reviewer-plan-text',
+				args: reviewerArgs,
+			},
+			{
+				output: `[REVIEWED] | task-${TASK_ID} | APPROVED | plan text preserved`,
+			},
+		);
+		const testEngineerArgs = {
+			subagent_type: 'test_engineer',
+			prompt:
+				'Implementation plan excerpt:\n- [ ] 1.1: Test the implementation plan.',
+		};
+		await hook.toolBefore(
+			{ tool: 'Task', sessionID, callID: 'test-engineer-plan-text' },
+			{ args: testEngineerArgs },
+		);
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'test-engineer-plan-text',
+				args: testEngineerArgs,
+			},
+			{ output: `[TESTED] | task-${TASK_ID} | PASS | plan text preserved` },
+		);
+
+		const evidence = await readTaskEvidence(tmpDir, TASK_ID);
+		expect(evidence?.gates.reviewer).toBeDefined();
+		expect(evidence?.gates.test_engineer).toBeDefined();
+	});
+
+	it('requires explicit attribution for every critic-family role (F15)', async () => {
+		const roles = [
+			'critic_drift_verifier',
+			'critic_hallucination_verifier',
+			'critic_architecture_supervisor',
+		] as const;
+		for (const role of roles) {
+			const sessionID = `unbound-${role}`;
+			ensureAgentSession(sessionID, 'architect', tmpDir);
+			const hook = createDelegationGateHook(makeConfig(), tmpDir);
+			await settleCritic(hook, sessionID, `call-${role}`, {
+				subagent_type: role,
+				prompt: `MODE: CRITIC-GATE\nReview the plan; task 1.1 is mentioned in prose.`,
+			});
+		}
+
+		expect(await readTaskEvidence(tmpDir, TASK_ID)).toBeNull();
 	});
 });

@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { _internals as delegationGateInternals } from '../../../src/hooks/delegation-gate';
 import { TASK_ID_RESOLUTION_LIMITS } from '../../../src/hooks/task-id-resolver';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const { resolveEvidenceTaskId } = delegationGateInternals;
 const LARGE_PLAN_TASK_ID = `1.${TASK_ID_RESOLUTION_LIMITS.maxKnownIds + 1}`;
@@ -42,9 +42,7 @@ let directory: string;
 
 beforeEach(() => {
 	resetSwarmState();
-	directory = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'critic-large-plan-')),
-	);
+	directory = canonicalMkdtemp('critic-large-plan-');
 	fs.mkdirSync(path.join(directory, '.swarm'), { recursive: true });
 	fs.writeFileSync(
 		path.join(directory, '.swarm', 'plan.json'),
