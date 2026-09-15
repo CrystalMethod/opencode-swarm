@@ -441,6 +441,7 @@ export function checkReviewerGate(
 	stageBParallelEnabled = false,
 	sessionID?: string,
 	fallbackDir?: string,
+	currentDeclaredFiles?: readonly string[] | null,
 ): ReviewerGateResult {
 	try {
 		// === Lean Turbo bypass check ===
@@ -600,10 +601,10 @@ export function checkReviewerGate(
 				}
 				const workflow = getTaskWorkflowSnapshot(evidence);
 				const derivedGates = deriveApplicableGateSet(evidence, {
-					currentDeclaredFiles: readCurrentTaskDeclaredFiles(
-						authoritativeDir,
-						taskId,
-					),
+					currentDeclaredFiles:
+						currentDeclaredFiles === undefined
+							? readCurrentTaskDeclaredFiles(authoritativeDir, taskId)
+							: currentDeclaredFiles,
 				});
 				const requiredGates = derivedGates.requiredGates;
 				const satisfiedGates = derivedGates.satisfiedGates;
@@ -2122,6 +2123,7 @@ export async function executeUpdateTaskStatus(
 						false,
 						ctx?.sessionID,
 						fallbackDir ?? directory,
+						lockedTask.files_touched ?? null,
 					);
 					const lockedCouncil = checkCouncilGate(directory, args.task_id);
 					if (

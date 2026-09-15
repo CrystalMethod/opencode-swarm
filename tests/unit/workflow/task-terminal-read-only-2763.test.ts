@@ -9,7 +9,11 @@ import {
 	readTaskEvidenceRaw,
 } from '../../../src/gate-evidence';
 import { getOrAdoptPlanEpochUnderLock } from '../../../src/plan/ledger';
-import { loadPlanJsonOnly, savePlan } from '../../../src/plan/manager';
+import {
+	loadPlanJsonOnly,
+	savePlan,
+	updateTaskStatus,
+} from '../../../src/plan/manager';
 import { resetSwarmState } from '../../../src/state';
 import {
 	beginCoderSettlement,
@@ -229,5 +233,45 @@ describe('issue #2763 — read-only terminal WAL', () => {
 		expect(JSON.parse(fs.readFileSync(walPath, 'utf8')).state).toBe(
 			'COMMITTED',
 		);
+	});
+
+	test('issue #2763 review regression: does not replay read-only proof after scope expands', async () => {
+		const walPath = await seedPreparedReadOnlyTerminal(directory);
+		await updateTaskStatus(directory, TASK_ID, 'completed');
+		const forwardedPlan = await loadPlanJsonOnly(directory);
+		if (!forwardedPlan) throw new Error('terminal fixture plan missing');
+		const expandedPlan: Plan = {
+			...forwardedPlan,
+			phases: forwardedPlan.phases.map((phase) => ({
+				...phase,
+				tasks: phase.tasks.map((task) =>
+					task.id === TASK_ID
+						? { ...task, files_touched: ['src/new-file.ts'] }
+						: task,
+				),
+			})),
+		};
+		await savePlan(directory, expandedPlan);
+
+		// The persisted true marker proves only that the original declaration was
+		// empty. Recovery must not apply it after the ledger-authoritative scope
+		// has expanded while the WAL is still PREPARED.
+		await expect(
+			recoverPreparedTaskTerminal(
+				directory,
+				TASK_ID,
+				'issue-2763-expanded-scope-recovery',
+			),
+		).rejects.toThrow('TASK_TERMINAL_READ_ONLY_SCOPE_CHANGED');
+
+		const recoveredPlan = await loadPlanJsonOnly(directory);
+		expect(recoveredPlan?.phases[0]?.tasks[0]?.status).toBe('in_progress');
+		expect(JSON.parse(fs.readFileSync(walPath, 'utf8')).state).toBe('ABORTED');
+		expect(
+			getTaskWorkflowSnapshot(readTaskEvidenceRaw(directory, TASK_ID)),
+		).toMatchObject({
+			state: 'idle',
+			generation: 0,
+		});
 	});
 });
