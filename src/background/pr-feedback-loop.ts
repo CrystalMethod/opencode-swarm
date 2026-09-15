@@ -71,9 +71,10 @@ export const PR_FEEDBACK_LOOP_STATE_REL = path.join(
 );
 const PR_FEEDBACK_CLEANUP_DIR = 'pr-feedback-loop-cleanups';
 const PR_FEEDBACK_EVIDENCE_DIR = path.join('.swarm', 'pr-feedback-evidence');
+const PR_FEEDBACK_LOOP_STATE_LOCK_FILENAME = 'pr-feedback-loop-state.lock';
 const PR_FEEDBACK_LOOP_STATE_LOCK_REL = path.join(
 	'.swarm',
-	'pr-feedback-loop-state.lock',
+	PR_FEEDBACK_LOOP_STATE_LOCK_FILENAME,
 );
 const MAX_TRACKED_SESSIONS = 200;
 const MAX_PROCESSED_DIGESTS = 64;
@@ -630,7 +631,7 @@ async function acquireLoopStateLock(
 ): Promise<LoopStateLockHandle> {
 	const lockPath = validateSwarmPath(
 		directory,
-		path.basename(PR_FEEDBACK_LOOP_STATE_LOCK_REL),
+		PR_FEEDBACK_LOOP_STATE_LOCK_FILENAME,
 	);
 	const verifiedStateDirectory = await ensurePrWorkflowSafeParentDirectory(
 		directory,
