@@ -119,8 +119,9 @@ function sanitizeForMarkdownText(s: string): string {
 
 /**
  * Format config doctor result as markdown for command output.
+ * Exported for the #2504 "Defaults changes (v8)" section coverage test.
  */
-function formatDoctorMarkdown(result: ConfigDoctorResult): string {
+export function formatDoctorMarkdown(result: ConfigDoctorResult): string {
 	const lines = [
 		'## Config Doctor Report',
 		'',

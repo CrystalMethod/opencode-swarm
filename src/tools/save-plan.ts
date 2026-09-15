@@ -7,7 +7,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
-// QA gate check — first save-plan integration with profile store
 import { loadPluginConfigWithMeta } from '../config';
 import {
 	type ExecutionProfile,
@@ -19,6 +18,7 @@ import {
 	type Task,
 	type TaskStatus,
 } from '../config/plan-schema';
+// QA gate check — first save-plan integration with profile store
 import {
 	getOrCreateProfileForIdentity,
 	getProfileLookupForIdentity,

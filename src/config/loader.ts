@@ -815,7 +815,20 @@ function buildConfigWithMeta(
 			strippedKeys: userGatesStripped,
 			rawGates: userRawGates,
 		} = sanitizeSectionConfigs(rawUserConfig);
-		const userParseResult = PluginConfigSchema.safeParse(userSanitized);
+		// #2504: mirror steps 3/3b for the fallback input so a conservative
+		// preset survives the broken-project-config recovery exactly as on the
+		// normal path — without this, the schema preprocess would fill a
+		// partial auto_review section with the release-gated (v8) default
+		// before any preset-aware consumer could see the user's intent.
+		const userPresetMigrated = migratePresetsConfig(userSanitized);
+		const userPresetReady =
+			userPresetMigrated.preset === 'conservative'
+				? (deepMergeFn(CONSERVATIVE_PRESET_BASE, userPresetMigrated) as Record<
+						string,
+						unknown
+					>)
+				: userPresetMigrated;
+		const userParseResult = PluginConfigSchema.safeParse(userPresetReady);
 		if (userParseResult.success) {
 			advisoryWarn(
 				'[opencode-swarm] Project config ignored due to validation errors. Using user config.',
@@ -832,7 +845,7 @@ function buildConfigWithMeta(
 		}
 		// Last targeted attempt: strip unrecognized keys from user config too.
 		const userStripped = stripUnrecognizedKeys(
-			userSanitized,
+			userPresetReady,
 			userParseResult.error,
 		);
 		if (userStripped.removed.length > 0) {

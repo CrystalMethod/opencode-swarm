@@ -2259,6 +2259,14 @@ export function runConfigDoctor(
 		}
 	}
 
+	// Recompute the severity counts: the defaults-flip loop above appends info
+	// findings after the snapshot taken when summary was first built, and the
+	// report header plus the .swarm/config-doctor.json artifact must reflect
+	// every emitted finding (#2504 review round 2).
+	summary.info = findings.filter((f) => f.severity === 'info').length;
+	summary.warn = findings.filter((f) => f.severity === 'warn').length;
+	summary.error = findings.filter((f) => f.severity === 'error').length;
+
 	return {
 		findings,
 		summary,
@@ -2781,7 +2789,16 @@ export async function runConfigDoctorWithFixes(
 					: null;
 			if (stampPath) {
 				const stampContent = fs.readFileSync(stampPath, 'utf-8');
-				const stampConfig = JSON.parse(stampContent) as Record<string, unknown>;
+				// Strip a UTF-8 BOM like the config loader does — JSON.parse
+				// throws on a leading BOM, which would silently skip the stamp.
+				const sanitizedStampContent =
+					stampContent.charCodeAt(0) === 0xfeff
+						? stampContent.slice(1)
+						: stampContent;
+				const stampConfig = JSON.parse(sanitizedStampContent) as Record<
+					string,
+					unknown
+				>;
 				const currentVersion = stampConfig.config_format_version;
 				const shouldStamp =
 					typeof currentVersion !== 'number' ||
@@ -2797,9 +2814,12 @@ export async function runConfigDoctorWithFixes(
 					atomicWriteFileSync(stampPath, JSON.stringify(stampConfig, null, 2));
 				}
 			}
-		} catch {
+		} catch (stampError) {
 			// Fail-open: a failed acknowledgment stamp never fails the fix pass;
 			// the rows simply keep advertising until a later successful --fix.
+			log(
+				`[ConfigDoctor] acknowledgment stamp failed (non-fatal): ${stampError instanceof Error ? stampError.message : String(stampError)}`,
+			);
 		}
 	}
 

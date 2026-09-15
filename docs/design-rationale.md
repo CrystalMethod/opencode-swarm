@@ -300,16 +300,19 @@ Architect respects dependencies. Won't start 2.2 until 2.1 is complete.
   "automation": {
     "mode": "manual",  // Default: conservative, full control
     "capabilities": {
-      "plan_sync": false,
+      "plan_sync": true,
       "phase_preflight": false,
       "config_doctor_on_startup": false,
       "config_doctor_autofix": false,
-      "evidence_auto_summaries": false,
-      "decision_drift_detection": false
+      "evidence_auto_summaries": true,
+      "decision_drift_detection": true
     }
   }
 }
 ```
+
+(The `capabilities` values above are the actual schema defaults — read-only
+capabilities default on; anything that writes or auto-runs defaults off.)
 
 **Why this works:**
 - **Progressive rollout:** Start with `manual`, enable features as needed

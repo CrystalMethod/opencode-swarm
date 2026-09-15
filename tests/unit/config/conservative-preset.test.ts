@@ -21,7 +21,10 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ConfigLoadResult } from '../../../src/config/loader';
-import { loadPluginConfig } from '../../../src/config/loader';
+import {
+	loadPluginConfig,
+	loadPluginConfigWithMeta,
+} from '../../../src/config/loader';
 import {
 	AUTO_REVIEW_V8_BURN_IN_DECISION,
 	CONSERVATIVE_PRESET_BASE,
@@ -104,6 +107,62 @@ describe('conservative preset — loader materialization (#2504)', () => {
 		const config = loadPluginConfig(dir);
 		expect(config.preset).toBe('conservative');
 		expect(config.auto_review?.enabled).toBe(false);
+	});
+
+	test('conservative preset survives the user-config-alone fallback (PRR-004)', () => {
+		// A broken PROJECT config must not defeat the user's conservative
+		// preset: the fallback re-parses the user config alone, and without
+		// the base layer the schema preprocess fills a partial auto_review
+		// section with the release-gated (v8) default. The fix mirrors steps
+		// 3/3b for the fallback input.
+		const userConfigDir = path.join(xdgDir, 'opencode');
+		fs.mkdirSync(userConfigDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(userConfigDir, 'opencode-swarm.json'),
+			JSON.stringify({
+				preset: 'conservative',
+				auto_review: { structured_findings: false },
+			}),
+			'utf-8',
+		);
+		const dir = canonicalMkdtemp('conservative-preset-fallback-');
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		// An invalid discriminated-union value cannot be key-stripped, so the
+		// merged-config ladder exhausts and the user fallback fires.
+		fs.writeFileSync(
+			path.join(dir, PROJECT_CONFIG),
+			JSON.stringify({ turbo: { strategy: 'bogus' } }),
+			'utf-8',
+		);
+		const meta = loadPluginConfigWithMeta(dir);
+		expect(meta.recovery).toBe('user_only');
+		expect(meta.config.preset).toBe('conservative');
+		expect(meta.config.auto_review?.enabled).toBe(false);
+		expect(meta.config.auto_review?.structured_findings).toBe(false);
+	});
+
+	test('explicit preset: "default" behaves identically to absent (PRR-014)', () => {
+		const dir = writeProject({ preset: 'default' });
+		const config = loadPluginConfig(dir);
+		expect(config.preset).toBe('default');
+		// No conservative base layer: the section stays absent, exactly like
+		// an omitted preset.
+		expect(config.auto_review).toBeUndefined();
+	});
+
+	test('preset: "default" also survives an agents block (PRR-018)', () => {
+		const dir = writeProject({ preset: 'default', agents: {} });
+		const config = loadPluginConfig(dir);
+		expect(config.preset).toBe('default');
+		expect(config.auto_review).toBeUndefined();
+	});
+
+	test('an unknown preset value is dropped fail-open through the full pipeline (PRR-015/024)', () => {
+		const dir = writeProject({ preset: 'turbo-ultra' });
+		const config = loadPluginConfig(dir);
+		// sanitizeMalformedValues drops the invalid leaf; the config loads
+		// without the preset (v8 defaults apply) instead of nuking the file.
+		expect(config.preset).toBeUndefined();
 	});
 
 	test('conservative preset survives an agents block (installer shape)', () => {

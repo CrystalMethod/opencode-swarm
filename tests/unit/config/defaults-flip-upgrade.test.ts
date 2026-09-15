@@ -158,4 +158,25 @@ describe('defaults-flip upgrade path (#2504)', () => {
 		const result = runConfigDoctor(config, dir);
 		expect(result.findings.some((f) => f.id === 'defaults-flip')).toBe(false);
 	});
+
+	test('--fix stamps the USER config when no project config exists (PRR-013)', async () => {
+		// Only a user-level config exists (under the isolated XDG dir); the
+		// stamp's path derivation must fall back to userConfigPath.
+		const userConfigDir = path.join(xdgDir, 'opencode');
+		fs.mkdirSync(userConfigDir, { recursive: true });
+		const userConfigPath = path.join(userConfigDir, 'opencode-swarm.json');
+		fs.writeFileSync(
+			userConfigPath,
+			JSON.stringify({ automation: { mode: 'manual' } }),
+			'utf-8',
+		);
+		const dir = canonicalMkdtemp('flip-upgrade-noproject-');
+		const config = loadPluginConfig(dir);
+		await runConfigDoctorWithFixes(dir, config, true, { applyLossy: true });
+		const stamped = JSON.parse(
+			fs.readFileSync(userConfigPath, 'utf-8'),
+		) as Record<string, unknown>;
+		expect(stamped.config_format_version).toBe(CURRENT_CONFIG_FORMAT_VERSION);
+		fs.rmSync(dir, { recursive: true, force: true });
+	});
 });
