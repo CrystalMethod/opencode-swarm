@@ -2066,7 +2066,7 @@ export const COMMAND_REGISTRY = {
 		handler: (ctx) => handleMemoryEvaluateCommand(ctx.directory, ctx.args),
 		description: 'Run golden Swarm memory recall evaluation fixtures',
 		subcommandOf: 'memory',
-		args: '--json, --fixtures <directory>, --profiles <list>, --manifest <file>',
+		args: '--json, --instruction-pairing, --fixtures <directory>, --profiles <list>, --manifest <file>',
 		category: 'diagnostics',
 		toolPolicy: 'agent',
 	},

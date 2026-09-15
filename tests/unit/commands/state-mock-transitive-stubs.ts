@@ -34,6 +34,13 @@ export const STATE_MOCK_TRANSITIVE_STUBS = {
 	advanceTaskStateAndPersist: async () => undefined,
 	getTaskState: () => undefined,
 	recordStageBCompletion: () => undefined,
+	setCriticalShownIds: () => undefined,
+	clearCriticalShownIds: () => undefined,
+	// #2672: instruction-pairing (memory barrel -> commands/memory.ts graph)
+	// transitively imports the live-context identity exports from state.js;
+	// same missing-binding failure class as above while state.js is mocked.
+	getLiveContextModelIdentity: () => null,
+	getLiveContextWindow: () => null,
 	// Issue #2491 route-bound Stage-B projection. Close-command tests do not
 	// exercise these bindings, but transitive imports resolve every named export
 	// while state.ts is mocked.

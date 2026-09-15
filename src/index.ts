@@ -285,7 +285,10 @@ import {
 	advanceTurnGeneration,
 	recordProducerEmission,
 } from './services/injection-budget';
-import { runModelPreflight } from './services/model-preflight';
+import {
+	formatModelPreflightWarning,
+	runModelPreflight,
+} from './services/model-preflight';
 import { scheduleVersionCheck } from './services/version-check.js';
 import {
 	closeSnapshotCoordinationInitialization,
@@ -1446,42 +1449,44 @@ async function initializeOpenCodeSwarm(
 		return startSnapshotCoordinationInitialization(ctx.directory);
 	});
 
-	// Issue #2271 bug 4: model-resolution preflight runs OFF the resolution
-	// path (it makes an HTTP call to the host's provider catalog — exactly the
-	// class of work invariant 1 keeps out of `server()` awaits). Pushed AFTER
-	// the repo-graph task: tests and tooling index the post-resolution queue,
-	// and the #704 ordering contract invokes scheduledTasks[0] as the
-	// repo-graph scan. Fail-open by construction: catalog errors surface
-	// nothing, and only a POSITIVE unresolved detection warns.
+	// Issue #2271 bug 4 / issue #2680: model-resolution preflight runs OFF the
+	// resolution path (it makes an HTTP call to the host's provider catalog —
+	// exactly the class of work invariant 1 keeps out of `server()` awaits).
+	// Pushed AFTER the repo-graph task: tests and tooling index the
+	// post-resolution queue, and the #704 ordering contract invokes
+	// scheduledTasks[0] as the repo-graph scan. Fail-open by construction:
+	// catalog errors surface nothing, and only a POSITIVE unresolved (or
+	// missing-selection) detection warns. Issue #2680: the run validates the
+	// FINAL effective selection of every ENABLED legacy and prefixed
+	// multi-swarm role (the live generated-name registry, populated by
+	// createAgents before server() resolves, with a config-only enumeration
+	// fallback); primary roles are host-controlled and stay silent, and
+	// disabled/optional roles are never collected, so no consumer-default
+	// warning noise is produced.
 	postResolutionTasks.push(() => {
-		void runModelPreflight(config, swarmState.opencodeClient)
+		void runModelPreflight(config, swarmState.opencodeClient, {
+			generatedAgentNames: swarmState.generatedAgentNames,
+		})
 			.then((result) => {
-				if (!result.catalogAvailable) return;
-				const unresolved = result.resolutions.filter(
-					(resolution) => resolution.status === 'unresolved',
-				);
-				if (unresolved.length === 0) return;
-				const lines = unresolved.map(
-					(resolution) =>
-						`  ${resolution.agent}: ${resolution.model} (${resolution.detail ?? 'does not resolve'})`,
-				);
-				const msg =
-					`[opencode-swarm] WARNING: ${unresolved.length} configured agent model(s) do not resolve against the provider catalog:\n` +
-					`${lines.join('\n')}\n` +
-					'Dispatching these agents will fail permanently ("Model not found"/"Forbidden"). ' +
-					'Fix agents.<role>.model in opencode-swarm.json (or remove the override to fall back to the default).';
+				const msg = formatModelPreflightWarning(result);
+				if (!msg) return;
 				if (!config.quiet) {
 					// biome-ignore lint/suspicious/noConsole: user-facing operational warning — must be visible even outside debug mode
 					console.warn(msg);
 				} else {
 					addDeferredWarning(msg);
 				}
-				for (const resolution of unresolved) {
-					telemetry.modelUnresolved(
-						resolution.agent,
-						resolution.model,
-						resolution.detail ?? 'does not resolve',
-					);
+				for (const resolution of result.resolutions) {
+					if (
+						resolution.status === 'unresolved' ||
+						resolution.status === 'missing-selection'
+					) {
+						telemetry.modelUnresolved(
+							resolution.agent,
+							resolution.model || '(no final selection)',
+							resolution.detail ?? 'does not resolve',
+						);
+					}
 				}
 			})
 			.catch(() => {
