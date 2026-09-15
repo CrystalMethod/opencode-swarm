@@ -328,15 +328,22 @@ export function computeNextMode(
 	// validator receipts must also be recorded and green before the trace may
 	// hand off to commit-pr (issue #2564). A missing receipt set, or any fail
 	// entry, parks the trace with a ONE-SHOT directive (sentinel
-	// TRACE_VALIDATION_GATE) naming the validator re-run. Explicit `=== false`
-	// (not falsy): same v2-shaped-literal transparency as row (f-0). The
+	// TRACE_VALIDATION_GATE) naming the validator re-run. The precondition on
+	// both prior gates keeps the directive's text truthful (implementation
+	// review round 3: without it, a vanished review/sweep receipt after its
+	// sentinel fired made this row claim the prior gates were satisfied). The
 	// exclusion set excludes only THIS row's own sentinel plus the handoff
-	// sentinel — REVIEW_GATE/RECURRENCE_GATE must NOT be excluded, because this
-	// row is only reached once both prior gates are verified: when the
-	// recurrence receipt lands right after RECURRENCE_GATE fired, the ladder
+	// sentinel — REVIEW_GATE/RECURRENCE_GATE must NOT be excluded, because when
+	// the recurrence receipt lands right after RECURRENCE_GATE fired, the ladder
 	// must chain into this directive rather than parking silently (final-critic
-	// round 1 finding; mirrors how row i-pre2 does not exclude REVIEW_GATE).
+	// round 1; mirrors how row i-pre2 does not exclude REVIEW_GATE). When a
+	// prior receipt VANISHES after its sentinel fired, this row declines and
+	// the final guard no-ops — the same exhausted-one-shot semantics every gate
+	// row already has (the silent-stall surfacing for those rows is #2600's
+	// DD-C002 scope, pinned by the frozen C8 preserving check).
 	if (
+		workflowArtifacts.implementationReviewVerified &&
+		workflowArtifacts.recurrenceSweepVerified &&
 		workflowArtifacts.traceValidationVerified === false &&
 		traceState.lastTransition !== 'TRACE_VALIDATION_GATE' &&
 		traceState.lastTransition !== 'EXECUTE_TO_COMMIT'

@@ -190,6 +190,36 @@ describe('row (i-pre3): TRACE_VALIDATION_GATE before the handoff', () => {
 			expect(r.nextStatus).toBe('in_progress');
 		}
 	});
+
+	test('does not claim the prior gates are satisfied when a receipt vanished (truthful text)', () => {
+		// Implementation review round 3: with the sentinel present but the
+		// underlying review/sweep receipt no longer verified, the row must
+		// decline (quiet noop under the exhausted-one-shot semantics every
+		// gate row shares) instead of emitting a directive that lies about
+		// the prior gates.
+		for (const [sentinel, artifacts] of [
+			[
+				'REVIEW_GATE',
+				{ ...completeArtifacts, implementationReviewVerified: false },
+			],
+			[
+				'RECURRENCE_GATE',
+				{ ...completeArtifacts, recurrenceSweepVerified: false },
+			],
+		] as Array<[string, WorkflowArtifacts]>) {
+			const r = computeNextMode({
+				issueReference,
+				traceState: state({ lastTransition: sentinel }),
+				workflowArtifacts: {
+					...artifacts,
+					traceValidationVerified: false,
+				},
+			});
+			expect(r.nextMode).toBeNull();
+			expect(r.directive).toBeNull();
+			expect(r.nextLastTransition).toBe(sentinel);
+		}
+	});
 });
 
 describe("row (b'): published → merge_approval_recorded (recorded, never certified)", () => {
