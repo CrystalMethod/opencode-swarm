@@ -67,6 +67,22 @@ describe('snapshotTaskAttemptCohort — stable cohort capture (AC3)', () => {
 		}
 	});
 
+	test('snapshot without caller strata derives the runtime honestly (never a bare "bun" label)', () => {
+		const snap = snapshotTaskAttemptCohort({ tasks: [] });
+		const host = snap.manifests.find((m) => m.source === 'host_status');
+		expect(host?.status).toBe('captured');
+		// The derived runtime names its real engine with a version: under bun
+		// "bun <ver>", under node "node <ver>" — never a version-less label.
+		const derived = snap.strata.runtime ?? '';
+		expect(
+			derived === '' ||
+				/ (bun|node) /.test(` ${derived} `) ||
+				derived.startsWith('bun ') ||
+				derived.startsWith('node '),
+		).toBe(true);
+		expect(derived).not.toBe('bun');
+	});
+
 	test('manifest FIFO retention keeps the latest bounded set', () => {
 		directory = canonicalMkdtemp('task-cohort-fifo-2676-');
 		try {

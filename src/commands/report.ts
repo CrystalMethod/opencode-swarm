@@ -329,10 +329,12 @@ export async function handleReportCommand(
 	// (the snapshot persists its own provenance manifest — the report itself
 	// stays read-only over the observability stores it queries).
 	const taskAttemptPopulation = collectTaskAttemptPopulation(query.rows);
+	// No runtime stratum is supplied here: the plugin bundle runs under both
+	// the Bun CLI and the OpenCode Node sidecar, so the cohort module derives
+	// the honest runtime (bun → node fallback) for the host-status manifest.
 	const taskAttemptSnapshot = snapshotTaskAttemptCohort({
 		tasks: taskAttemptPopulation,
 		directory,
-		strata: { runtime: `bun ${process.versions.bun ?? ''}`.trim() },
 	});
 	const taskAttempts = buildTaskCohortReport(taskAttemptSnapshot);
 	const timeline: TimelineEntry[] = query.rows.map((row) => ({
