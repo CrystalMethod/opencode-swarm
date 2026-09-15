@@ -83,7 +83,7 @@ function structuredStageBVerdict(
 	role: StageBStateRole,
 	text: string,
 	taskId: string,
-): 'pass' | 'fail' | null {
+): 'pass' | 'fail' | 'skip' | null {
 	const escapedTaskId = taskId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	const pattern =
 		role === 'reviewer'
@@ -97,7 +97,11 @@ function structuredStageBVerdict(
 				);
 	const match = pattern.exec(text);
 	if (!match) return null;
-	return match[1] === 'APPROVED' || match[1] === 'PASS' ? 'pass' : 'fail';
+	if (match[1] === 'APPROVED' || match[1] === 'PASS') return 'pass';
+	// SKIPPED means the tests were not run (issue #2756): a tool-argument
+	// outcome the caller can retry, not a code failure.
+	if (match[1] === 'SKIPPED') return 'skip';
+	return 'fail';
 }
 
 function normalizeAttributionPath(file: string): string | null {
@@ -218,6 +222,10 @@ export interface StageBIngestionResult {
 	ok: boolean;
 	consumed: boolean;
 	stale?: boolean;
+	/** True when the gate reported a not-run outcome (TESTED SKIPPED): no
+	 * transition fired, no proof was cleared, and the task remains Stage B
+	 * eligible for re-dispatch (issue #2756). */
+	skipped?: boolean;
 	reason?: string;
 }
 
@@ -624,6 +632,18 @@ export async function ingestBackgroundStageBCompletion(args: {
 		const verdict = stageBRole
 			? structuredStageBVerdict(stageBRole, args.result.text ?? '', taskId)
 			: null;
+		if (stageBRole && verdict === 'skip') {
+			// TESTED SKIPPED = tests not run (issue #2756): consume the record so
+			// the observer publishes the skip advisory and no retry loop forms,
+			// but fire NO stage_b_failed transition and clear no gate proof —
+			// the task stays Stage B eligible for a test-gate re-dispatch.
+			return {
+				ok: false,
+				consumed: true,
+				skipped: true,
+				reason: `background ${stageBRole} skipped task ${taskId} — tests not run; re-dispatch the test gate (task stays Stage B eligible; reviewer proof preserved)`,
+			};
+		}
 		if (stageBRole && verdict !== 'pass') {
 			const rejected = await transitionTaskWorkflowEvidence(
 				args.directory,

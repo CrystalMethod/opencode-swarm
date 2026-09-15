@@ -1481,15 +1481,18 @@ export async function executeDispatchLanesAsync(
 				: 'the complete immutable feedback inventory on the exact checked-out revision',
 			callerFocus: parsed.data.scope,
 		});
-	// Consolidated fanout lanes can exceed the explorer suffix budget before the
-	// structural floor check gets a chance to return its actionable diagnostic.
-	// Format those caller prompts first; initial/canary dispatches retain the
-	// established contract-then-format overflow behavior.
+	// Explicitly owned base/micro discovery lanes carry controller-owned row markers
+	// in the PR contract's owned-workflow line. Format those caller prompts before
+	// appending the PR contract so the explorer pass cannot mistake
+	// controller-authored markers for operator-authored text. Fanout remains
+	// format-first; ordinary workflow_lane-only lanes retain the established
+	// contract-then-format path.
 	const formatFirst =
 		parsed.data.pr_review_wave_stage === 'fanout' ||
-		(parsed.data.mode === 'swarm-pr-review:base' &&
+		((parsed.data.mode === 'swarm-pr-review:base' ||
+			parsed.data.mode === 'swarm-pr-review:micro') &&
 			parsed.data.lanes.some(
-				(lane) => (lane.owned_workflow_lanes?.length ?? 0) > 1,
+				(lane) => (lane.owned_workflow_lanes?.length ?? 0) > 0,
 			));
 	if (formatFirst) {
 		const formatted = formatExplorerLanes(lanes);
@@ -5426,12 +5429,45 @@ function applyExplorerFormatSuffix(
 		);
 		const expectedSuffixOccurrences =
 			lane.prompt.split(formatSuffix).length - 1;
-		if (
+		const isControllerOwnedIdempotent =
 			lane.prompt.endsWith(formatSuffix) &&
 			lane.prompt.includes(controllerIdentity) &&
 			embeddedKnownSuffixes.length === 1 &&
-			expectedSuffixOccurrences === 1
-		) {
+			expectedSuffixOccurrences === 1;
+		const controllerIdentityStart = lane.prompt.lastIndexOf(
+			controllerIdentity,
+			lane.prompt.length - formatSuffix.length,
+		);
+		const operatorPrompt = isControllerOwnedIdempotent
+			? `${lane.prompt.slice(0, controllerIdentityStart)}${lane.prompt.slice(controllerIdentityStart + controllerIdentity.length, -formatSuffix.length)}`.trimEnd()
+			: lane.prompt;
+		const rejectForbiddenPrReviewOperatorPrompt = (prompt: string): boolean => {
+			if (!isPrReviewDiscovery) return false;
+			const encouragesVerbatimShellQuoting =
+				/(?:\b(?:quote|copy|transcribe|reproduce)\b.{0,80}\b(?:pipeline|shell|command|text)\b.{0,80}\b(?:faithfully|verbatim|exactly|literally)\b|\b(?:faithfully|verbatim|exactly|literally)\b.{0,80}\b(?:quote|copy|transcribe|reproduce)\b.{0,80}\b(?:pipeline|shell|command|text)\b)/i.test(
+					prompt,
+				);
+			const forbidden = [
+				prompt.includes(CANDIDATE_HEADERS.base_explorer)
+					? 'the canonical base discovery header'
+					: null,
+				prompt.includes(CANDIDATE_HEADERS.micro_lane)
+					? 'the canonical micro discovery header'
+					: null,
+				/\[CANDIDATE\]/.test(prompt) ? '[CANDIDATE]' : null,
+				/\[CLEAN\]/.test(prompt) ? '[CLEAN]' : null,
+				encouragesVerbatimShellQuoting
+					? 'verbatim shell or pipeline quoting guidance'
+					: null,
+			].find((value): value is string => value !== null);
+			if (!forbidden) return false;
+			errors.push(
+				`Lane "${lane.id}" operator prompt contains ${forbidden}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract`,
+			);
+			return true;
+		};
+		if (isControllerOwnedIdempotent) {
+			rejectForbiddenPrReviewOperatorPrompt(operatorPrompt);
 			return lane;
 		}
 		if (embeddedKnownSuffixes.length > 0) {
@@ -5445,31 +5481,7 @@ function applyExplorerFormatSuffix(
 			);
 			return lane;
 		}
-		if (isPrReviewDiscovery) {
-			const encouragesVerbatimShellQuoting =
-				/(?:\b(?:quote|copy|transcribe|reproduce)\b.{0,80}\b(?:pipeline|shell|command|text)\b.{0,80}\b(?:faithfully|verbatim|exactly|literally)\b|\b(?:faithfully|verbatim|exactly|literally)\b.{0,80}\b(?:quote|copy|transcribe|reproduce)\b.{0,80}\b(?:pipeline|shell|command|text)\b)/i.test(
-					lane.prompt,
-				);
-			const forbidden = [
-				lane.prompt.includes(CANDIDATE_HEADERS.base_explorer)
-					? 'the canonical base discovery header'
-					: null,
-				lane.prompt.includes(CANDIDATE_HEADERS.micro_lane)
-					? 'the canonical micro discovery header'
-					: null,
-				/\[CANDIDATE\]/.test(lane.prompt) ? '[CANDIDATE]' : null,
-				/\[CLEAN\]/.test(lane.prompt) ? '[CLEAN]' : null,
-				encouragesVerbatimShellQuoting
-					? 'verbatim shell or pipeline quoting guidance'
-					: null,
-			].find((value): value is string => value !== null);
-			if (forbidden) {
-				errors.push(
-					`Lane "${lane.id}" operator prompt contains ${forbidden}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract`,
-				);
-				return lane;
-			}
-		}
+		if (rejectForbiddenPrReviewOperatorPrompt(lane.prompt)) return lane;
 		const prompt = `${lane.prompt}
 
 ${controllerIdentity}${formatSuffix}`;

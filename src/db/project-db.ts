@@ -502,6 +502,20 @@ const MIGRATIONS: Migration[] = [
 		sql: `CREATE INDEX IF NOT EXISTS idx_obs_event_line_hash
 			ON observability_event(line_hash)`,
 	},
+	{
+		// #2668: session-scoped ratchet-tighter QA gate overrides are durable
+		// runtime policy (they must survive restart), unlike the ephemeral
+		// execution authority that expires at the rehydrate boundary. One row
+		// per session; deleted in lockstep with the session at
+		// endAgentSession/sweepStaleSessions.
+		version: 40,
+		name: 'create_qa_gate_session_override',
+		sql: `CREATE TABLE IF NOT EXISTS qa_gate_session_override (
+			session_id TEXT PRIMARY KEY,
+			gates TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		)`,
+	},
 ];
 
 interface ProjectDbRecord {

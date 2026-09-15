@@ -523,13 +523,15 @@ export function createBackgroundCompletionObserver(opts: {
 							directory,
 							record,
 							terminal.eventId,
-							legacyTransferPending
-								? 'ingestion failed; legacy coder settlement transfer is pending; durable reconciliation will retry'
-								: legacyTransferRequiresManualRecovery
-									? 'ingestion failed; legacy coder settlement requires manual recovery; run /swarm recover for this task (or /swarm reset-session)'
-									: applied.stale
-										? 'stale'
-										: 'ingestion failed',
+							applied.skipped
+								? 'skipped (tests not run) — re-dispatch the test gate; reviewer proof preserved; task remains Stage B eligible'
+								: legacyTransferPending
+									? 'ingestion failed; legacy coder settlement transfer is pending; durable reconciliation will retry'
+									: legacyTransferRequiresManualRecovery
+										? 'ingestion failed; legacy coder settlement requires manual recovery; run /swarm recover for this task (or /swarm reset-session)'
+										: applied.stale
+											? 'stale'
+											: 'ingestion failed',
 						);
 						// Maintenance point P2b (issue #2104): the ingestion
 						// rejection has just been durably recorded — reconcile now

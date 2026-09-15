@@ -905,9 +905,12 @@ export function computeProfileHash(profile: QaGateProfile): string {
  *   completion until .swarm/evidence/final-council.json has approved verdict
  *   from 5-member project-scope review).
  *
- * Session overrides are intentionally ephemeral — they live only in
- * in-memory `AgentSessionState.qaGateSessionOverrides` and are NOT
- * persisted to the session snapshot. Process restart clears them.
+ * Session overrides are durable runtime policy (#2668): the authority lives
+ * in the project DB (`qa_gate_session_override`,
+ * `src/db/qa-gate-session-override.ts`), restored by `rehydrateState`, so a
+ * restart preserves the effective tightened gates. They are still never
+ * serialized into the session snapshot (the snapshot is a projection; the
+ * DB row is the restart authority).
  */
 export function getEffectiveGates(
 	profile: QaGateProfile,
