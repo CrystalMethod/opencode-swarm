@@ -11,7 +11,26 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginConfig } from '../../../src/config';
 import { createSystemEnhancerHook } from '../../../src/hooks/system-enhancer';
+import {
+	isGuidanceCarrier,
+	isRenderableGuidance,
+	messageTextOf,
+} from '../../../src/hooks/system-guidance-carrier';
 import { resetSwarmState, swarmState } from '../../../src/state';
+import {
+	type HostPartsMessage,
+	hostToModelMessages,
+	renderedText,
+} from '../../helpers/host-contract-v1_18_3';
+import { bootSwarmPluginHost } from '../../helpers/plugin-host';
+
+const BASE_SYSTEM = 'Stable architect system prefix';
+const HOST_CONFIG = {
+	version_check: false,
+	knowledge: { enabled: false, hive_enabled: false },
+	memory: { enabled: false },
+	hooks: { delegation_gate: false, system_enhancer: true },
+};
 
 describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 	let tempDir: string;
@@ -65,6 +84,54 @@ describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 		await transform(input, output);
 
 		return output.system;
+	}
+
+	async function invokeRegisteredArchitect(
+		agent: string,
+		activeAgent = agent,
+	): Promise<{
+		messages: HostPartsMessage[];
+		rendered: ReturnType<typeof hostToModelMessages>;
+		system: string[];
+	}> {
+		await createSwarmFiles();
+		await mkdir(join(tempDir, '.opencode'), { recursive: true });
+		swarmState.activeAgent.set('test-session', activeAgent);
+		const host = await bootSwarmPluginHost(tempDir, HOST_CONFIG);
+		const messages: HostPartsMessage[] = [
+			{
+				info: {
+					id: 'hf1b-adversarial-user',
+					role: 'user',
+					agent,
+					sessionID: 'test-session',
+				},
+				parts: [{ type: 'text', text: 'Continue the active plan.' }],
+			},
+		];
+		await host.hooks['experimental.chat.messages.transform']({}, { messages });
+		const system = [BASE_SYSTEM];
+		await host.hooks['experimental.chat.system.transform'](
+			{ sessionID: 'test-session' },
+			{ system },
+		);
+		return { messages, rendered: hostToModelMessages(messages), system };
+	}
+
+	function expectArchitectGuardCarrier(
+		result: Awaited<ReturnType<typeof invokeRegisteredArchitect>>,
+	): void {
+		const needle = '[SWARM CONFIG] You must NEVER run the full test suite';
+		const carrier = result.messages.find(
+			(message) =>
+				isGuidanceCarrier(message) && messageTextOf(message).includes(needle),
+		);
+		expect(result.system).toEqual([BASE_SYSTEM]);
+		expect(result.system.join('\n')).not.toContain(needle);
+		expect(carrier).toBeDefined();
+		expect(isRenderableGuidance(carrier)).toBe(true);
+		expect(carrier?.info.role).toBe('user');
+		expect(renderedText(result.rendered)).toContain(needle);
 	}
 
 	/**
@@ -168,16 +235,9 @@ describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 		});
 
 		it('mixed case ARCHITECT → normalized to lowercase → HF-1b fires', async () => {
-			await createSwarmFiles();
+			const result = await invokeRegisteredArchitect('ARCHITECT');
 
-			// Set active agent to mixed case 'ARCHITECT'
-			swarmState.activeAgent.set('test-session', 'ARCHITECT');
-
-			const systemOutput = await invokeHook('test-session');
-
-			// stripKnownSwarmPrefix normalizes to lowercase, so 'ARCHITECT' → 'architect'
-			expect(hasHF1Injection(systemOutput)).toBe(false);
-			expect(hasHF1bInjection(systemOutput)).toBe(true);
+			expectArchitectGuardCarrier(result);
 		});
 	});
 
@@ -196,16 +256,11 @@ describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 		});
 
 		it('triple prefix mega_mega_mega_architect → iterative stripping → architect → HF-1b fires', async () => {
-			await createSwarmFiles();
+			const result = await invokeRegisteredArchitect(
+				'mega_mega_mega_architect',
+			);
 
-			// Set active agent with triple prefix
-			swarmState.activeAgent.set('test-session', 'mega_mega_mega_architect');
-
-			const systemOutput = await invokeHook('test-session');
-
-			// stripKnownSwarmPrefix iteratively strips prefixes, so 'mega_mega_mega_architect' → 'architect'
-			expect(hasHF1Injection(systemOutput)).toBe(false);
-			expect(hasHF1bInjection(systemOutput)).toBe(true);
+			expectArchitectGuardCarrier(result);
 		});
 
 		it('mixed prefix cloud_mega_coder → iterative stripping → coder → HF-1 fires', async () => {
