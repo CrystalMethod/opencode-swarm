@@ -26,6 +26,7 @@ import {
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
 import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { withPrFeedbackQueueLease } from '../../../tests/helpers/pr-feedback-queue-lease';
 import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
@@ -63,13 +64,13 @@ afterAll(() => {
 	}
 });
 
-beforeEach(() => {
-	queueInternals.resetQueueCache();
+beforeEach(async () => {
+	await withPrFeedbackQueueLease(() => queueInternals.resetQueueCache());
 	gateInternals.resetTrackedStateCache();
 });
 
-afterEach(() => {
-	queueInternals.resetQueueCache();
+afterEach(async () => {
+	await withPrFeedbackQueueLease(() => queueInternals.resetQueueCache());
 	gateInternals.resetTrackedStateCache();
 	closeAllProjectDbs();
 	for (const dir of dirs.splice(1))

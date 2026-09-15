@@ -8,12 +8,16 @@ import {
 	readPrFeedbackMonitorQueue,
 } from '../../../src/background/pr-feedback-event-queue.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { acquirePrFeedbackQueueLease } from '../../../tests/helpers/pr-feedback-queue-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir.js';
 
 const SESSION_ID = 'feedback-queue-migration-session';
 let directory = '';
 const originalIsProcessAlive = _internals.isProcessAlive;
 const originalNowMs = _internals.nowMs;
+let releaseLoopInternals: (() => void) | null = null;
+let releaseQueue: (() => void) | null = null;
 
 function event(
 	overrides: Partial<Parameters<typeof enqueuePrFeedbackMonitorEvent>[2]> = {},
@@ -31,7 +35,9 @@ function event(
 	};
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseLoopInternals = await acquireLoopInternals();
+	releaseQueue = await acquirePrFeedbackQueueLease();
 	directory = canonicalMkdtemp('pr-feedback-queue-migration-');
 	_internals.resetQueueCache();
 	_internals.isProcessAlive = originalIsProcessAlive;
@@ -40,11 +46,18 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-	_internals.resetQueueCache();
-	_internals.isProcessAlive = originalIsProcessAlive;
-	_internals.nowMs = originalNowMs;
-	gateInternals.resetTrackedStateCache();
-	await fs.rm(directory, { recursive: true, force: true });
+	try {
+		_internals.resetQueueCache();
+		_internals.isProcessAlive = originalIsProcessAlive;
+		_internals.nowMs = originalNowMs;
+		gateInternals.resetTrackedStateCache();
+		await fs.rm(directory, { recursive: true, force: true });
+	} finally {
+		releaseQueue?.();
+		releaseQueue = null;
+		releaseLoopInternals?.();
+		releaseLoopInternals = null;
+	}
 });
 
 test('keeps new provenance and owner fencing out of the legacy queue record (FB-025)', async () => {

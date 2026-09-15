@@ -115,9 +115,9 @@ describe('issue #2745 production init boundary', () => {
 	const directories: Array<{ dir: string; cleanup: () => void }> = [];
 
 	beforeEach(async () => {
-		releaseBackground = await acquirePrFeedbackBackgroundLease();
 		releaseProcessEnv = await acquireProcessEnvLease();
 		releaseLoopInternals = await acquireLoopInternals();
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
 	});
 
 	afterEach(async () => {
@@ -137,12 +137,12 @@ describe('issue #2745 production init boundary', () => {
 			cleanupEnvironment = () => {};
 			for (const entry of directories.splice(0)) entry.cleanup();
 		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
 			releaseLoopInternals?.();
 			releaseLoopInternals = null;
 			releaseProcessEnv?.();
 			releaseProcessEnv = null;
-			releaseBackground?.();
-			releaseBackground = null;
 		}
 	});
 
@@ -346,6 +346,8 @@ describe('issue #2745 production init boundary', () => {
 				delete: async () => ({ data: {} }),
 			},
 		};
+		// The process-env lease from beforeEach stays held through this test's
+		// restore, preventing sibling tests from observing the fake gh binary.
 		const priorGh = process.env.OPENCODE_SWARM_GH_BINARY;
 		process.env.OPENCODE_SWARM_GH_BINARY = installFakeGh(directory);
 		resetGhExecutableCache();

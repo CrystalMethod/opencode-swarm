@@ -2281,6 +2281,10 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 					correlation = state.correlations[key] ?? correlation;
 				}
 			} catch (err) {
+				// finishHalfOpenProbe may fail while writing its terminal circuit
+				// transition. Retry cleanup through the exact admitted owner so a
+				// transient denial-recovery failure cannot strand the probe marker.
+				await releaseAdmittedProbe();
 				warn(
 					`[pr-feedback-loop] half-open denial recovery failed: ${
 						err instanceof Error ? err.message : String(err)

@@ -18,6 +18,7 @@ import {
 	registerPrEventSubscribers,
 } from '../../../src/background/pr-event-subscribers';
 import type { PrSubscriptionRecord } from '../../../src/background/pr-subscriptions';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
 
 // â”€â”€ Test Fixtures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -75,6 +76,7 @@ interface MockState {
 
 let mockState: MockState;
 let savedInternals: typeof _internals;
+let releaseBackground: (() => void) | null = null;
 
 function setupMocks(): void {
 	savedInternals = { ..._internals };
@@ -157,12 +159,18 @@ describe('PrEventSubscriberOptions â€” construction', () => {
 });
 
 describe('registerPrEventSubscribers', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
 		setupMocks();
 	});
 
 	afterEach(() => {
-		restoreInternals();
+		try {
+			restoreInternals();
+		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
+		}
 	});
 
 	test('registers subscribers for all enabled event types', () => {
@@ -288,12 +296,18 @@ describe('registerPrEventSubscribers', () => {
 });
 
 describe('formatAdvisory', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
 		setupMocks();
 	});
 
 	afterEach(() => {
-		restoreInternals();
+		try {
+			restoreInternals();
+		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
+		}
 	});
 
 	const ciFailedPayload = {

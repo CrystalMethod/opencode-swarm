@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { _internals } from '../../../src/background/pr-event-subscribers.js';
 import type { PrSubscriptionRecord } from '../../../src/background/pr-subscriptions.js';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
 
 const directory = path.join(os.tmpdir(), 'pr-event-auto-feedback');
 let savedInternals: typeof _internals;
@@ -11,6 +12,7 @@ let readGate: ReturnType<typeof mock>;
 let activate: ReturnType<typeof mock>;
 let enqueue: ReturnType<typeof mock>;
 let readCancellation: ReturnType<typeof mock>;
+let releaseBackground: (() => void) | null = null;
 
 function subscription(): PrSubscriptionRecord {
 	return {
@@ -52,7 +54,8 @@ function event(type = 'pr.ci.failed') {
 	};
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+	releaseBackground = await acquirePrFeedbackBackgroundLease();
 	savedInternals = { ..._internals };
 	session = { sessionID: 'sess1', pendingAdvisoryMessages: [] };
 	readGate = mock(async () => null);
@@ -78,7 +81,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	Object.assign(_internals, savedInternals);
+	try {
+		Object.assign(_internals, savedInternals);
+	} finally {
+		releaseBackground?.();
+		releaseBackground = null;
+	}
 });
 
 describe('PR event auto-feedback lifecycle ownership', () => {

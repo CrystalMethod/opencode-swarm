@@ -33,6 +33,7 @@ import {
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
 import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
+import { acquirePrFeedbackQueueLease } from '../../../tests/helpers/pr-feedback-queue-lease';
 import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
@@ -50,6 +51,7 @@ const originals = { ...loopInternals };
 const oldXdg = process.env.XDG_CONFIG_HOME;
 const dirs: string[] = [];
 let releaseLoopInternals: (() => void) | null = null;
+let releaseQueue: (() => void) | null = null;
 let releaseProcessEnv: (() => void) | null = null;
 
 beforeAll(async () => {
@@ -73,6 +75,7 @@ afterAll(() => {
 
 beforeEach(async () => {
 	releaseLoopInternals = await acquireLoopInternals();
+	releaseQueue = await acquirePrFeedbackQueueLease();
 	queueInternals.resetQueueCache();
 	gateInternals.resetTrackedStateCache();
 });
@@ -86,6 +89,8 @@ afterEach(() => {
 		for (const dir of dirs.splice(1))
 			fs.rmSync(dir, { recursive: true, force: true });
 	} finally {
+		releaseQueue?.();
+		releaseQueue = null;
 		releaseLoopInternals?.();
 		releaseLoopInternals = null;
 	}

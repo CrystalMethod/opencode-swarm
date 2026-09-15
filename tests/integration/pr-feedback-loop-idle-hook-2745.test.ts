@@ -81,9 +81,9 @@ describe('issue #2745 session.idle hook ownership', () => {
 	const directories: Array<{ dir: string; cleanup: () => void }> = [];
 
 	beforeEach(async () => {
-		releaseBackground = await acquirePrFeedbackBackgroundLease();
 		releaseProcessEnv = await acquireProcessEnvLease();
 		releaseLoopInternals = await acquireLoopInternals();
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
 		cleanupEnvironment = createIsolatedTestEnv().cleanup;
 		restoreIndexInternals = overrideIndexInternalsForTest({
 			schedulePostResolutionTasks: () => {},
@@ -98,12 +98,12 @@ describe('issue #2745 session.idle hook ownership', () => {
 			cleanupEnvironment = () => {};
 			for (const entry of directories.splice(0)) entry.cleanup();
 		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
 			releaseLoopInternals?.();
 			releaseLoopInternals = null;
 			releaseProcessEnv?.();
 			releaseProcessEnv = null;
-			releaseBackground?.();
-			releaseBackground = null;
 		}
 	});
 
