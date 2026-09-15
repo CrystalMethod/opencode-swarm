@@ -616,7 +616,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/background/pending-delegations.ts:5407 readDelegationFallback / :5419 listDelegationFallbacks / :5453 scanDelegationFallbacksForRecovery',
 			'src/background/pending-delegations.ts:6032 scanBackgroundCoderReservationsForAdmission',
 		],
-		schemaVersion: 'fallback schemaVersion 1 (:971)',
+		schemaVersion: 'fallback schemaVersion 1 (:1038)',
 		stateClass: 'authoritative',
 		privacyClass: 'metadata',
 		directFileExemption: {
@@ -624,12 +624,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			reviewedIssue: 2034,
 		},
 		writeLimits: {
-			bound: 'MAX_LIVE_BACKGROUND_FALLBACKS 256 (:82); per-file 1 MiB (:95); reservations ≤256 entries / 2 MiB store (:83, :4808)',
+			bound: 'MAX_LIVE_BACKGROUND_FALLBACKS 256 (:102); per-file 1 MiB (:118); reservations ≤256 entries / 2 MiB store (:103, :5772), enforced on write/scan (:5866, :5428)',
 			scope: 'global',
-			citation: 'src/background/pending-delegations.ts:82-95,4851',
+			citation: 'src/background/pending-delegations.ts:102-118,5866',
 		},
-		readBound: { pattern: 'directory-scan', bound: '≤256 files × 1 MiB', sync: false, citation: 'src/background/pending-delegations.ts:4508-4641' },
-		lockModel: 'separate lock tasks FALLBACK_LOCK_TASK / RESERVATION_LOCK_TASK (:147-148)',
+		readBound: { pattern: 'directory-scan', bound: '≤256 files × 1 MiB', sync: false, citation: 'src/background/pending-delegations.ts:5372-5470' },
+		lockModel: 'separate lock tasks FALLBACK_LOCK_TASK / RESERVATION_LOCK_TASK (:174-175)',
 		crashBehavior: 'bunWrite single-file artifacts; strict recovery scans fail closed',
 		closePolicy: 'untouched (cross-session recovery state)',
 		closeArrayMembership: {
@@ -640,7 +640,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		issue2487Legacy: { path: '.swarm/background-delegation-fallback/*.json + background-coder-reservations.json', sourceFile: 'src/background/pending-delegations.ts', tokens: ['BACKGROUND_DELEGATION_FALLBACK_DIR', 'BACKGROUND_CODER_RESERVATIONS_FILE', 'scanBackgroundCoderReservationsForAdmission', 'readFallbackDirectory'], readers: ['src/background/pending-delegations.ts:readFallbackDirectory', 'src/background/pending-delegations.ts:scanBackgroundCoderReservationsForAdmission'], writers: ['src/background/pending-delegations.ts:BACKGROUND_DELEGATION_FALLBACK_DIR', 'src/background/pending-delegations.ts:BACKGROUND_CODER_RESERVATIONS_FILE'] },
 		healthSignal: 'recovery scans report fallback promotion',
 		owner: '#2034 (merged)',
-		disposition: { kind: 'not-a-defect', proof: 'Hard capacity bounds: 256 fallback artifacts / 1 MiB each, 256 reservations / 2 MiB store, enforced on write and scan (src/background/pending-delegations.ts:82-95,4851).' },
+		disposition: { kind: 'not-a-defect', proof: 'Hard capacity bounds: 256 fallback artifacts / 1 MiB each, 256 reservations / 2 MiB store, enforced on write and scan (src/background/pending-delegations.ts:102-118,5866).' },
 	},
 	{
 		id: 'pr-monitor-subscriptions',

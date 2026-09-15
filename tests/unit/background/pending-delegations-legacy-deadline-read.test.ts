@@ -200,6 +200,63 @@ describe('legacy deadline workflowLaneFailureClass read compatibility', () => {
 		expect(detailed.status).toBe('uncertain');
 		const scan = scanDelegationsForRecovery(dir);
 		expect(scan.status).toBe('uncertain');
+
+		// PRR-004: the operator-visible signal is the durable health
+		// artifact, not just the in-memory read outcome. The schema-
+		// validation predicate must be identifiable there, with the row key
+		// and the coordination-read source.
+		const health = JSON.parse(
+			fs.readFileSync(
+				path.join(dir, '.swarm', 'background-delegations-health.json'),
+				'utf-8',
+			),
+		) as {
+			lastUncertainty?: { reason?: string; source?: string };
+		};
+		expect(health.lastUncertainty?.reason).toContain(
+			`failed schema validation for ${LEGACY}`,
+		);
+		expect(health.lastUncertainty?.source).toBe('coordination-read');
+	});
+
+	test('an authority-binding mismatch reports its own distinct predicate', async () => {
+		// PRR-005: the S1 message split must stay split — a binding
+		// mismatch (payload correlationId != entity key) is a different
+		// repair path than a schema rejection and must never re-conflate.
+		const dir = project();
+		await seedSqliteStore(dir, 'deadline');
+		const db = getProjectDb(dir);
+		const row = db
+			.query<{ payload: string }, [string]>(
+				`SELECT payload FROM coordination_state
+				 WHERE namespace = 'background.pending-delegation' AND entity_key = ?`,
+			)
+			.get(LEGACY);
+		const payload = JSON.parse(row.payload as string) as Record<
+			string,
+			unknown
+		>;
+		payload.correlationId = 'sess-forged-identity-mismatch';
+		db.run(
+			`UPDATE coordination_state SET payload = ?
+			 WHERE namespace = 'background.pending-delegation' AND entity_key = ?`,
+			[JSON.stringify(payload), LEGACY],
+		);
+
+		const detailed = readDelegationsDetailed(dir);
+		expect(detailed.status).toBe('uncertain');
+		const scan = scanDelegationsForRecovery(dir);
+		expect(scan.status).toBe('uncertain');
+		const health = JSON.parse(
+			fs.readFileSync(
+				path.join(dir, '.swarm', 'background-delegations-health.json'),
+				'utf-8',
+			),
+		) as { lastUncertainty?: { reason?: string } };
+		expect(health.lastUncertainty?.reason).toContain(
+			'authority binding mismatch',
+		);
+		expect(health.lastUncertainty?.reason).toContain(LEGACY);
 	});
 
 	test('the JSONL fold reads a legacy deadline tail line', () => {

@@ -121,8 +121,11 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 	it('the retired deadline class has no producer anywhere in src', () => {
 		// Read-side compatibility widened ResultSchema to accept durable
 		// pre-#2615 'deadline' rows; nothing may ever WRITE the retired
-		// member again. Same [:=] form as the live-producer anchor above so
-		// an assignment-form producer cannot slip past a colon-only regex.
+		// member again. Whole-text scan tolerant of whitespace INCLUDING
+		// newlines between the key, operator, and quoted value — the same
+		// [:=]-on-a-key contract as the live-producer anchor above, so
+		// multi-line producer formatting cannot slip past a line-scoped
+		// check. Pure string ops (no regex-escape transport hazards).
 		const srcRoot = path.join(REPO_ROOT, 'src');
 		const tsFiles: string[] = [];
 		const walk = (entry: string): void => {
@@ -137,34 +140,39 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		};
 		walk(srcRoot);
 		expect(tsFiles.length).toBeGreaterThan(0);
-		// Producer shapes: `workflowLaneFailureClass: 'deadline'` (object
-		// literal) and `workflowLaneFailureClass = 'deadline'` (assignment).
-		// Pure string scanning — same [:=] contract as the live-producer
-		// anchor above, without regex-escape transport hazards. Comparison
-		// forms (`=== 'deadline'`) are consumers, not producers, and are
-		// correctly ignored (the second `=` fails the quote check).
-		const isDeadlineProducerLine = (line: string): boolean => {
+		const isDeadlineProducerText = (text: string): boolean => {
 			const key = 'workflowLaneFailureClass';
-			const idx = line.indexOf(key);
-			if (idx < 0) return false;
-			let i = idx + key.length;
-			while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+			let searchFrom = 0;
+			while (true) {
+				const idx = text.indexOf(key, searchFrom);
+				if (idx < 0) return false;
+				searchFrom = idx + key.length;
+				let i = searchFrom;
+				const isSpace = (ch: string | undefined): boolean =>
+					ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+				while (i < text.length && isSpace(text[i])) {
+					i++;
+				}
+				const op = text[i];
+				if (op !== ':' && op !== '=') continue;
+				if (op === '=') {
+					const next: string | undefined = text[i + 1];
+					// '===', '!==', '=>' are consumers, not producers.
+					if (next === '=' || next === '>' || next === '!') continue;
+				}
 				i++;
-			}
-			const op = line[i];
-			if (op !== ':' && op !== '=') return false;
-			i++;
-			while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+				while (i < text.length && isSpace(text[i])) {
+					i++;
+				}
+				const quote = text[i];
+				if (quote !== "'" && quote !== '"') continue;
 				i++;
+				if (text.slice(i, i + 8) !== 'deadline') continue;
+				if (text[i + 8] === quote) return true;
 			}
-			const quote = line[i];
-			if (quote !== "'" && quote !== '"') return false;
-			i++;
-			if (line.slice(i, i + 8) !== 'deadline') return false;
-			return line[i + 8] === quote;
 		};
 		const producers = tsFiles.filter((file) =>
-			fs.readFileSync(file, 'utf8').split('\n').some(isDeadlineProducerLine),
+			isDeadlineProducerText(fs.readFileSync(file, 'utf8')),
 		);
 		expect(producers).toEqual([]);
 	});
