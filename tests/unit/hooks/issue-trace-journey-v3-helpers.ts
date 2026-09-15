@@ -202,4 +202,34 @@ export function createJourneyProject(): JourneyProject {
 	};
 }
 
+/** Writes the v3 receipt fixtures (issue #2564) into a project's .swarm dir. */
+export function writeV3ReceiptFiles(dir: string, number = 42): void {
+	const swarmDir = path.join(dir, '.swarm');
+	fs.mkdirSync(swarmDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(swarmDir, 'branch-freshness.json'),
+		JSON.stringify({ issueNumber: number, freshness: 'synced' }, null, 2),
+		'utf-8',
+	);
+	fs.writeFileSync(
+		path.join(swarmDir, 'trace-validation.json'),
+		JSON.stringify(
+			{
+				issueNumber: number,
+				validations: [
+					{
+						phase: '4.6',
+						outcome: 'pass',
+						reviewedCommit: PR_HEAD,
+						treeId: TREE_ID,
+					},
+				],
+			},
+			null,
+			2,
+		),
+		'utf-8',
+	);
+}
+
 export { handleIssueCommand, loadPlan };
