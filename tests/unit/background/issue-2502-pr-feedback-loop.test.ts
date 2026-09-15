@@ -2,18 +2,17 @@
  * Issue #2502 — PR feedback settling loop: claim → classify → authorize →
  * oversight → act → settle (the completion-fixture unit).
  *
- * Covers the PrFeedbackLoopConfigSchema shape, the disabled no-op, queue-empty,
- * the full settle (M4 completion-scope terminal reason), idempotent replay,
- * stale/foreign/unsupported/ambiguous refusals, the per-PR budget pause, the
- * transient-failure circuit (degraded) vs permanent failure (paused_for_human),
- * half-open probe recovery, and interrupted-settlement restoration.
+ * Covers the disabled no-op, queue-empty, full settle (M4 completion-scope
+ * terminal reason), idempotent replay, stale/foreign/unsupported/ambiguous
+ * refusals, corrupt-state cancellation, the per-PR budget pause, and
+ * interrupted-settlement restoration. Circuit failure and recovery cases are
+ * in issue-2502-pr-feedback-loop-circuit.test.ts.
  *
  * Isolation notes:
  * - NO mock.module: the loop's own `_internals` seam injects head evaluation,
  *   oversight dispatch, and the authorized-action performer. ALL overrides are
  *   restored in afterEach (originals captured at module top, Object.assign
- *   back). readState/writeState/now keep their real implementations except in
- *   the circuit tests, where `now` is pinned to a fixed T0.
+ *   back). readState/writeState/now keep their real implementations here.
  * - XDG_CONFIG_HOME is redirected to an empty temp dir for the whole file so
  *   loadPluginConfig's USER-config read cannot flip the triple gate on a
  *   machine whose ~/.config/opencode/opencode-swarm.json already sets
@@ -39,41 +38,33 @@ import {
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
-	enqueuePrFeedbackMonitorEvent,
 	_internals as queueInternals,
 	readPrFeedbackMonitorQueue,
 } from '../../../src/background/pr-feedback-event-queue.js';
 import {
 	cancelPrFeedbackLoop,
 	claimAndProcessPrFeedbackEvent,
-	_internals as loopInternals,
-	PR_FEEDBACK_LOOP_STATE_REL,
 } from '../../../src/background/pr-feedback-loop.js';
-import {
-	buildCorrelationId,
-	subscribe,
-	updateSnapshot,
-} from '../../../src/background/pr-subscriptions.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
+import {
+	CORRELATION,
+	makeProject as createProject,
+	ENABLED_CONFIG,
+	enqueueEvent,
+	HEAD,
+	installLoopSeams,
+	type LoopStateFile,
+	loopInternals,
+	PR_FEEDBACK_LOOP_STATE_REL,
+	primeSubscription,
+	readLoopStateFile,
+	SESSION,
+} from '../../../tests/helpers/issue-2502-pr-feedback-loop-fixtures';
 import { acquireLoopInternals } from '../../../tests/helpers/loop-internals-lease';
 import { acquirePrFeedbackQueueLease } from '../../../tests/helpers/pr-feedback-queue-lease';
 import { acquireProcessEnvLease } from '../../../tests/helpers/process-env-lease';
 import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
-
-const SESSION = 'sess-loop';
-const REPO = 'example/repo';
-const PR = 42;
-const PR_URL = 'https://github.com/example/repo/pull/42';
-const HEAD = 'h1';
-const CORRELATION = buildCorrelationId(SESSION, REPO, PR);
-/** Fixed clock base for circuit tests (static — no Date.now arithmetic). */
-const T0 = 1_757_000_000_000;
-
-const ENABLED_CONFIG = {
-	pr_monitor: { enabled: true, auto_pr_feedback: true },
-	pr_feedback_loop: { enabled: true },
-};
 
 // Captured at module top; restored into the seam in afterEach.
 const loopInternalsOriginals = { ...loopInternals };
@@ -84,15 +75,8 @@ let releaseLoopInternals: (() => void) | null = null;
 let releaseQueue: (() => void) | null = null;
 let releaseProcessEnv: (() => void) | null = null;
 
-interface LoopStateFile {
-	correlations?: Record<
-		string,
-		{
-			prActionsUsed?: number;
-			circuit?: { failures?: number; openUntil?: number };
-			terminal?: { state?: string; reason?: string } | null;
-		}
-	>;
+function makeProject(config: Record<string, unknown> | null = ENABLED_CONFIG) {
+	return createProject(createdDirs, config);
 }
 
 beforeAll(async () => {
@@ -139,82 +123,6 @@ afterEach(() => {
 		releaseLoopInternals = null;
 	}
 });
-
-function makeProject(
-	config: Record<string, unknown> | null = ENABLED_CONFIG,
-): string {
-	const dir = canonicalMkdtemp('issue-2502-loop-');
-	createdDirs.push(dir);
-	if (config) {
-		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
-		fs.writeFileSync(
-			path.join(dir, '.opencode', 'opencode-swarm.json'),
-			JSON.stringify(config, null, 2),
-			'utf-8',
-		);
-	}
-	return dir;
-}
-
-async function primeSubscription(dir: string): Promise<void> {
-	await subscribe(dir, {
-		sessionID: SESSION,
-		prNumber: PR,
-		repoFullName: REPO,
-		prUrl: PR_URL,
-	});
-	await updateSnapshot(dir, CORRELATION, { headRefOid: HEAD });
-}
-
-interface EventOverrides {
-	type?: string;
-	repoFullName?: string;
-	prNumber?: number;
-	prUrl?: string;
-	message?: string;
-	dedupToken?: string;
-}
-
-async function enqueueEvent(
-	dir: string,
-	overrides: EventOverrides = {},
-): Promise<void> {
-	await enqueuePrFeedbackMonitorEvent(dir, SESSION, {
-		type: 'pr.ci.failed',
-		repoFullName: REPO,
-		prNumber: PR,
-		prUrl: PR_URL,
-		headRefOid: HEAD,
-		message: 'ci check failed',
-		dedupToken: 'tok-1',
-		authorized: true,
-		queuedAt: '2026-09-01T00:00:00.000Z',
-		...overrides,
-	});
-}
-
-/** Install the happy-path seams; returns the performer mock for call counts. */
-function installLoopSeams(
-	opts: { head?: string | null; performer?: () => Promise<unknown> } = {},
-): ReturnType<typeof mock> {
-	loopInternals.evaluateCurrentHead = mock(async () =>
-		opts.head === undefined ? HEAD : opts.head,
-	) as unknown as typeof loopInternals.evaluateCurrentHead;
-	loopInternals.dispatchOversight = mock(async () => ({
-		dispatched: true,
-		decision: 'allow',
-	})) as unknown as typeof loopInternals.dispatchOversight;
-	const performer = mock(opts.performer ?? (async () => ({ performed: true })));
-	loopInternals.performAuthorizedAction =
-		performer as unknown as typeof loopInternals.performAuthorizedAction;
-	return performer;
-}
-
-function readLoopStateFile(dir: string): LoopStateFile {
-	return JSON.parse(
-		fs.readFileSync(path.join(dir, PR_FEEDBACK_LOOP_STATE_REL), 'utf-8'),
-	) as LoopStateFile;
-}
 
 describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 	test('disabled without a config file: no-op with authorization disabled', async () => {
@@ -405,73 +313,6 @@ describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 		expect(second.terminal?.reason).toMatch(/budget/);
 		expect(second.authorization?.budget?.exhausted).toBe(true);
 		expect(performer).toHaveBeenCalledTimes(1);
-	});
-
-	test('transient performer failure: degraded terminal + future circuit openUntil', async () => {
-		const dir = makeProject();
-		await primeSubscription(dir);
-		loopInternals.now = () => T0;
-		const flaky = installLoopSeams({
-			performer: async () => {
-				throw new Error('HTTP 503 Service Unavailable');
-			},
-		});
-		await enqueueEvent(dir);
-
-		const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
-
-		expect(result.terminal?.state).toBe('degraded');
-		expect(result.terminal?.reason).toMatch(/circuit open/i);
-		// 1 initial attempt + 2 bounded transient retries.
-		expect(flaky).toHaveBeenCalledTimes(3);
-		const circuit = readLoopStateFile(dir).correlations?.[CORRELATION]?.circuit;
-		expect(circuit?.openUntil ?? 0).toBeGreaterThan(T0);
-	});
-
-	test('permanent performer failure: paused_for_human, exactly one attempt', async () => {
-		const dir = makeProject();
-		await primeSubscription(dir);
-		const permanent = installLoopSeams({
-			performer: async () => {
-				throw new Error('ReferenceError: x is not defined');
-			},
-		});
-		await enqueueEvent(dir);
-
-		const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
-
-		expect(result.terminal?.state).toBe('paused_for_human');
-		expect(result.terminal?.reason).toMatch(/permanent action failure/);
-		expect(result.action?.performed).toBe(false);
-		expect(permanent).toHaveBeenCalledTimes(1);
-	});
-
-	test('half-open probe: post-cooldown event is admitted and closes the circuit', async () => {
-		const dir = makeProject();
-		await primeSubscription(dir);
-		loopInternals.now = () => T0;
-		installLoopSeams({
-			performer: async () => {
-				throw new Error('HTTP 503 Service Unavailable');
-			},
-		});
-		await enqueueEvent(dir, { dedupToken: 'tok-1' });
-		const degraded = await claimAndProcessPrFeedbackEvent(dir, SESSION);
-		expect(degraded.terminal?.state).toBe('degraded');
-
-		// Advance the injected clock past openUntil (+ cooldown margin).
-		loopInternals.now = () => T0 + 60_000 + 1_000;
-		const performer = installLoopSeams();
-		await enqueueEvent(dir, {
-			type: 'pr.merge.conflict',
-			dedupToken: 'tok-2',
-		});
-		const recovered = await claimAndProcessPrFeedbackEvent(dir, SESSION);
-
-		expect(performer).toHaveBeenCalledTimes(1);
-		expect(recovered.terminal?.state).toBe('completed');
-		const circuit = readLoopStateFile(dir).correlations?.[CORRELATION]?.circuit;
-		expect(circuit?.openUntil).toBe(0);
 	});
 
 	test('restoration: stripped terminal is re-recorded without re-performing', async () => {

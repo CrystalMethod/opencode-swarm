@@ -4,7 +4,7 @@
  * These tests use real bounded project state plus the loop's DI seam. They pin
  * restart recovery and cross-process interleavings that happy-path tests miss.
  */
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import {
 	claimAndProcessPrFeedbackEvent,
@@ -199,45 +199,50 @@ test.each([
 	expect(circuit.halfOpenProbeStartedAt).toBeUndefined();
 });
 
-test('M1 regression: releases the exact half-open probe after denial recovery write failure', async () => {
-	const dir = makeProject();
-	await createCorrelation(dir);
-	setExpiredProbe(dir, 'stale');
-	const seams = installHappySeams();
-	loopInternals.now = () => NOW;
-	loopInternals.dispatchOversight = mock(async () => ({
-		dispatched: true,
-		decision: 'deny',
-	})) as unknown as typeof loopInternals.dispatchOversight;
-	const productionWriteState = loopInternals.writeState;
-	let injectedFinishFailure = false;
-	loopInternals.writeState = async (directory, state) => {
-		const circuit = state.correlations[CORRELATION]?.circuit;
-		if (
-			!injectedFinishFailure &&
-			circuit !== undefined &&
-			circuit.openUntil > NOW &&
-			circuit.halfOpenProbes === 0
-		) {
-			injectedFinishFailure = true;
-			throw new Error('injected finishHalfOpenProbe write failure');
-		}
-		await productionWriteState(directory, state);
-	};
-	await enqueue(dir, {
-		dedupToken: 'denial-recovery-write-failure',
-		type: 'pr.merge.conflict',
+describe('issue #2745 denial recovery — regression (FB-041/M1)', () => {
+	test('releases the exact half-open probe after denial recovery write failure', async () => {
+		// Before the fix, a failed finishHalfOpenProbe(false) write skipped the
+		// release path, leaving the durable probe marker claimed and blocking
+		// subsequent half-open attempts after an oversight denial.
+		const dir = makeProject();
+		await createCorrelation(dir);
+		setExpiredProbe(dir, 'stale');
+		const seams = installHappySeams();
+		loopInternals.now = () => NOW;
+		loopInternals.dispatchOversight = mock(async () => ({
+			dispatched: true,
+			decision: 'deny',
+		})) as unknown as typeof loopInternals.dispatchOversight;
+		const productionWriteState = loopInternals.writeState;
+		let injectedFinishFailure = false;
+		loopInternals.writeState = async (directory, state) => {
+			const circuit = state.correlations[CORRELATION]?.circuit;
+			if (
+				!injectedFinishFailure &&
+				circuit !== undefined &&
+				circuit.openUntil > NOW &&
+				circuit.halfOpenProbes === 0
+			) {
+				injectedFinishFailure = true;
+				throw new Error('injected finishHalfOpenProbe write failure');
+			}
+			await productionWriteState(directory, state);
+		};
+		await enqueue(dir, {
+			dedupToken: 'denial-recovery-write-failure',
+			type: 'pr.merge.conflict',
+		});
+
+		const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
+		const circuit = readState(dir).correlations[CORRELATION].circuit;
+
+		expect(injectedFinishFailure).toBe(true);
+		expect(result.terminal?.state).toBe('paused_for_human');
+		expect(circuit.halfOpenProbes).toBe(0);
+		expect(circuit.halfOpenProbeOwnerToken).toBeUndefined();
+		expect(circuit.halfOpenProbeOwnerPid).toBeUndefined();
+		expect(seams.performer).not.toHaveBeenCalled();
 	});
-
-	const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
-	const circuit = readState(dir).correlations[CORRELATION].circuit;
-
-	expect(injectedFinishFailure).toBe(true);
-	expect(result.terminal?.state).toBe('paused_for_human');
-	expect(circuit.halfOpenProbes).toBe(0);
-	expect(circuit.halfOpenProbeOwnerToken).toBeUndefined();
-	expect(circuit.halfOpenProbeOwnerPid).toBeUndefined();
-	expect(seams.performer).not.toHaveBeenCalled();
 });
 
 test('a live state lock fails closed before head, oversight, or action', async () => {
