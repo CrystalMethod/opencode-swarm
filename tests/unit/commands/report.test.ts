@@ -202,9 +202,12 @@ ${JSON.stringify({
 		db.run('DELETE FROM observability_import');
 		const second = await handleReportCommand(dir, ['--json']);
 		// The timeline rows must be byte-identical after full rebuild; only the
-		// coverage.importedThisSync of the CURRENT sync differs (0 vs 1) — strip it.
+		// coverage.importedThisSync of the CURRENT sync (0 vs 1) and the cohort
+		// snapshot's wall-clock capturedAt (issue #2676) differ — strip both.
 		const strip = (s: string) =>
-			s.replace(/"importedThisSync":\d+/, '"importedThisSync":X');
+			s
+				.replace(/"importedThisSync":\d+/, '"importedThisSync":X')
+				.replace(/"capturedAt":"[^"]*"/, '"capturedAt":"X"');
 		expect(strip(second)).toBe(strip(first));
 		expect(second).toContain('"importedRows":1');
 	});
