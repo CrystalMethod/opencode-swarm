@@ -81,6 +81,11 @@ its receipt gates ARE the mechanical implementation for the parts it owns):
 
 - **Reproduction before localization→PLAN** — `record_issue_reproduction` evidence or a
   typed `--no-repro` waiver (else the engine emits a one-shot reproduction-required directive).
+- **Branch freshness before PLAN (issue-tracer v3 Phase 0, issue #2564)** — the trace records
+  the fetch outcome with `record_branch_freshness` (`synced`, `behind:<n>`, or
+  `fetch-failed:<reason>` plus the verbatim user override when the user accepted a stale base).
+  `behind` and a bare `fetch-failed` fail closed (else the engine emits a one-shot
+  freshness-required directive).
 - **Plan-critic gate before EXECUTE** — the reducer will not advance to EXECUTE until the
   plan-critic approval is observed.
 - **Authoritative plan state** — read through the ledger-aware loader, never the projection.
@@ -93,9 +98,22 @@ its receipt gates ARE the mechanical implementation for the parts it owns):
 - **Recurrence sweep before commit-pr handoff** — the defect class must be characterized,
   searched with explicit predicates, every hit dispositioned, and a guardrail installed
   with proof it catches the original defect (or the "no defect class" fast path recorded);
-  record it with `record_recurrence_sweep` (else the engine emits a one-shot sweep directive).
+  record it with `record_recurrence_sweep`, including `relatedProblems` — the Phase 1
+  related-problems sweep results (at least one entry) on BOTH paths (else the engine emits
+  a one-shot sweep directive).
+- **Per-phase validator receipts before commit-pr handoff (issue-tracer v3, issue #2564)** —
+  run the phase validator (`trace-check.sh phase <N>`) for every completed phase and record
+  each outcome with `record_trace_validation` (phase, pass/fail, the reviewedCommit and
+  treeId it reported); any fail entry fails closed until re-recorded as a pass (else the
+  engine emits a one-shot validator directive).
 - **Honest completion** — `publication_handoff` is NOT "resolved"; terminal `published` needs
   an issue-bound publication receipt.
+- **Merge approval recorded, never certified (issue-tracer v3 Phase 5.1, issue #2564)** —
+  after publication, the human merge approval is captured with `record_merge_approval`
+  (prHeadSha equal to finalCriticReviewedCommit, userApprovalVerbatim quoted verbatim);
+  the trace reaches its true terminal `merge_approval_recorded` status. The merge decision
+  stays human-enforced — the plugin records it for audit and never certifies, drives, or
+  green-lights the merge itself.
 - **Durable delivery** — a transition persists only after its directive is delivered.
 
 With these receipts the Full-Resolution Contract is mechanically composed into this trace
