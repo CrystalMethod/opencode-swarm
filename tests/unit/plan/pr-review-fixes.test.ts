@@ -23,6 +23,7 @@ import { join } from 'node:path';
 import type { Plan } from '../../../src/config/plan-schema';
 import * as realHookUtils from '../../../src/hooks/utils';
 import * as realLedger from '../../../src/plan/ledger';
+import * as realUtils from '../../../src/utils';
 
 // ---------------------------------------------------------------------------
 // Helper
@@ -171,17 +172,8 @@ describe('rebuildPlan — F-004 marker reset on failure', () => {
 		mock.restore();
 	});
 
-	/**
-	 * F-004 verification: rebuildPlan writes in_progress marker after plan.json rename,
-	 * then plan.md write, then always resets marker to in_progress: false in finally.
-	 * This test simulates plan.md bunWrite throwing and verifies the marker is still
-	 * reset to in_progress: false (not left at true).
-	 *
-	 * NOTE: rebuildPlan has no catch block — only try/finally.
-	 * So when bunWrite throws, the error propagates up and rebuildPlan rejects.
-	 * The finally block runs before the rejection propagates, resetting the marker.
-	 */
-	test('F-004: plan.md write failure — marker still reset to in_progress: false in finally', async () => {
+	/** Both projection errors are advisory; marker cleanup must not hide the Markdown warning. */
+	test('F-004: projection and final-marker failures remain advisory', async () => {
 		mock.module('../../../src/hooks/utils', () => ({
 			...realHookUtils,
 			readSwarmFileAsync: mock(async () => null),
@@ -191,6 +183,11 @@ describe('rebuildPlan — F-004 marker reset on failure', () => {
 
 		const writeLog: Array<{ path: string; content: string }> = [];
 		let planMdWriteAttempted = false;
+		let markerWriteAttempts = 0;
+		let finalMarkerWriteFailed = false;
+		const warnings: string[] = [];
+		const warnMock = mock((message: string) => warnings.push(message));
+		mock.module('../../../src/utils', () => ({ ...realUtils, warn: warnMock }));
 
 		const bunWriteMock = mock(
 			async (p: string, content: string | Uint8Array) => {
@@ -199,6 +196,13 @@ describe('rebuildPlan — F-004 marker reset on failure', () => {
 					planMdWriteAttempted = true;
 					// Throw AFTER the await so try/catch can process it
 					throw new Error('disk full during plan.md write');
+				}
+				if (
+					p.includes('.plan-write-marker.rebuild.') &&
+					++markerWriteAttempts === 2
+				) {
+					finalMarkerWriteFailed = true;
+					throw new Error('disk full during final marker write');
 				}
 			},
 		);
@@ -221,14 +225,22 @@ describe('rebuildPlan — F-004 marker reset on failure', () => {
 
 		const plan = createTestPlan();
 
-		// Expect rebuildPlan to reject (no catch block in rebuildPlan)
-		await expect(
-			rebuildPlan(tempDir, plan, { reason: 'test-f004' }),
-		).rejects.toBeDefined();
+		const rebuilt = await rebuildPlan(tempDir, plan, { reason: 'test-f004' });
 
+		expect(rebuilt).toBe(plan);
 		expect(planMdWriteAttempted).toBe(true);
+		expect(finalMarkerWriteFailed).toBe(true);
+		expect(
+			warnings.some((message) =>
+				message.includes('disk full during plan.md write'),
+			),
+		).toBe(true);
+		expect(
+			warnings.some((message) =>
+				message.includes('disk full during final marker write'),
+			),
+		).toBe(false);
 
-		// Verify the marker was reset to in_progress: false even though plan.md threw
 		const markerWrites = writeLog.filter(
 			(w) =>
 				typeof w.path === 'string' && w.path.includes('.plan-write-marker'),

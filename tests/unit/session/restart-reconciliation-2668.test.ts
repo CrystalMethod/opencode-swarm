@@ -7,7 +7,13 @@
  * so a superseded generation cannot publish a late result.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { resetStartupLedgerCheck } from '../../../src/plan/manager';
 import {
@@ -52,6 +58,7 @@ const originalStateRehydrateSessionFromDisk =
 
 function makeProject(prefix: string): string {
 	const directory = canonicalMkdtemp(`swarm-2668-${prefix}-`);
+	mkdirSync(path.join(directory, '.git'));
 	tempDirs.push(directory);
 	return directory;
 }

@@ -6,7 +6,7 @@
  * on durable SQLite/projection state and readiness, not on copied helpers.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Plan } from '../../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
@@ -65,6 +65,7 @@ function makeSnapshot(marker: string): SnapshotData {
 
 function makeProject(label: string): string {
 	const directory = canonicalMkdtemp(`swarm-2668-coordination-${label}-`);
+	mkdirSync(path.join(directory, '.git'));
 	temporaryDirectories.push(directory);
 	return directory;
 }
