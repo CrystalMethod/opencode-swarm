@@ -21,7 +21,7 @@
   `duplicate` — production `duplicate_result` routes stay fail-open drops
   because the seam holds no original record identity; the class is recordable
   when a caller supplies `duplicateOf`).
-- **Cohort machinery** (`src/observability/task-cohort.ts`): a DEEP-copied
+- **Cohort machinery** (`src/services/task-cohort.ts`): a DEEP-copied
   population snapshot with `capturedAt` (post-snapshot mutation cannot change
   a reported denominator), frozen provenance manifests for the trigger /
   WAL / event / host-status sources (bounded 64 KiB digests; missing sources

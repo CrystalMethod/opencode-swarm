@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { emitDelegationEventlessTerminalEnd } from '../../../src/background/delegation-lifecycle';
+import {
+	emitDelegationBegin,
+	emitDelegationEventlessTerminalEnd,
+} from '../../../src/background/delegation-lifecycle';
 import {
 	buildTaskAttemptCost,
 	TASK_ATTEMPT_COST_AXES,
-} from '../../../src/observability/execution-attempt';
+} from '../../../src/services/execution-attempt';
 import {
 	buildTaskCohortReport,
 	snapshotTaskAttemptCohort,
-} from '../../../src/observability/task-cohort';
+} from '../../../src/services/task-cohort';
 import {
 	addTelemetryListener,
 	initTelemetry,
@@ -122,6 +125,22 @@ describe('delegation terminal producer — latency and cost joins (AC2)', () => 
 		laneId: undefined,
 		subagentSessionId: 'child-sess',
 	};
+
+	test('the begin producer records the attempt class with all cost axes unknown', () => {
+		emitDelegationBegin({
+			parentSessionId: 'begin-sess',
+			swarmPrefixedAgent: 'local_coder',
+			planTaskId: '3.1',
+		});
+		const captured = attemptEvents();
+		expect(captured.length).toBe(1);
+		const data = captured[0].data;
+		expect(data.attemptClass).toBe('attempt');
+		expect(data.taskId).toBe('3.1');
+		const cost = data.cost as Record<string, unknown>;
+		expect(cost.latencyMs).toBeNull();
+		expect((cost.unavailable as string[]).length).toBe(6);
+	});
 
 	test('a terminal without cost evidence carries NO known token axis (never zero)', () => {
 		emitDelegationEventlessTerminalEnd(record, 'stale');

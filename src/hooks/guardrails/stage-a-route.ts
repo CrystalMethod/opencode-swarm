@@ -2,7 +2,7 @@ import { appendCoreEventSync } from '../../events/core-events.js';
 import {
 	type ExecutionAttemptClass,
 	recordExecutionAttempt,
-} from '../../observability/execution-attempt.js';
+} from '../../services/execution-attempt.js';
 import { warn } from '../../utils/logger.js';
 
 /**

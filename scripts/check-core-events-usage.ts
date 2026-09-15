@@ -58,7 +58,7 @@ export const CORE_EVENTS_MENTION_ALLOWLIST: Readonly<
 		reason: 'the bounded core event store and append seam itself (issue #2039)',
 		cls: 'seam',
 	},
-	'src/observability/task-cohort.ts': {
+	'src/services/task-cohort.ts': {
 		reason: 'cohort provenance manifest only (issue #2676): bounded 64 KiB stat+digest of events.jsonl for the frozen trigger-source manifest; never reads events semantically and never appends',
 		cls: 'provenance-digest',
 	},

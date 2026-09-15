@@ -30,10 +30,6 @@ import {
 	seedTrajectoryStepCounter,
 } from '../hooks/trajectory-step-state.js';
 import {
-	type ExecutionAttemptClass,
-	recordExecutionAttempt,
-} from '../observability/execution-attempt.js';
-import {
 	appendTrajectoryEntry,
 	getCurrentStep,
 } from '../prm/trajectory-store.js';
@@ -42,6 +38,10 @@ import {
 	buildDelegationCostFields,
 	type PricingConfig,
 } from '../services/cost-accounting.js';
+import {
+	type ExecutionAttemptClass,
+	recordExecutionAttempt,
+} from '../services/execution-attempt.js';
 import { telemetry } from '../telemetry.js';
 import * as logger from '../utils/logger.js';
 import { buildDelegationTerminalIdentityFields } from './delegation-cost-identity.js';

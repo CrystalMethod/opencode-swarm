@@ -3,7 +3,7 @@
 Companion to `docs/evidence-and-telemetry.md` (evidence bundles + the legacy
 telemetry stream from a user's point of view) and `docs/engineering-invariants.md`
 (the invariant this PR establishes). This document is the contract definition for
-`src/observability/`: the canonical event envelope, the 64-entry event catalog,
+`src/observability/`: the canonical event envelope, the 65-entry event catalog,
 the legacy adapter, sampling/cardinality rules, the OTel mapping pin, and the
 exhaustive producer/consumer matrix across all eighteen known observability
 stores in the repository.
@@ -235,7 +235,7 @@ not re-enumerated here) plus the two issue-#2482 kinds —
 `delegation_read_uncertain` (advisory delegation-store read stayed uncertain
 after its one bounded retry) plus the issue-#2678 kind `prm_hard_stop_terminal`
 (the TERMINAL/handoff transition of a PRM hard-stop episode) for the honest
-38 + 14 + 7 + 3 + 1 + 1 = 64 total.
+38 + 14 + 7 + 3 + 1 + 1 + 1 = 65 total (the final +1 is the issue-#2676 kind `execution_attempt_recorded`).
 
 Legend: **Owner** is `futureOwnerIssue` when `consumers` is empty (permitted
 only together with an owner — an empty consumer list with no owner is a CI
@@ -910,7 +910,7 @@ its own real producer and reader.
 
 #### execution_attempt_recorded
 Category `lifecycle`, severity `info`, privacy `pseudonymous`. Producer
-`src/observability/execution-attempt.ts:265` (`recordExecutionAttempt`, called
+`src/services/execution-attempt.ts:265` (`recordExecutionAttempt`, called
 by the delegation lifecycle begin/terminal observers and the Stage A gate
 route hook). Consumers: `/swarm report`'s task-attempts cohort fold
 (`src/commands/report.ts`). Retention: **#2676**. Required workflow ID:

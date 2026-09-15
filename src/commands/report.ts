@@ -2,7 +2,7 @@
  * `/swarm report` — bounded, deterministic observability report over the
  * SQLite-native query authority (issue #2482 / D3, absorbing #2048).
  *
- * - Read-only. Queries `.swarm/swarm.db` `observability_event` via the
+ * - Read-only over the stores it queries: queries `.swarm/swarm.db` `observability_event` via the
  *   bounded store queries (`src/db/observability-event-store.ts`); lazily
  *   syncs the rebuildable legacy import (`syncObservabilityImport`) FIRST so
  *   the report covers the bounded `telemetry.jsonl(.1)` window too.
@@ -13,8 +13,11 @@
  *   `--json` emits a versioned JSON block. Each value flag may appear at
  *   most once with a non-empty value; any subset is valid.
  * - Bounded: row cap + truncated flag (`MAX_REPORT_ROWS`), ordering is
- *   `occurred_at, rowid` (code-unit string compare — no locale collation),
- *   so the same query window yields byte-identical output (proven by test).
+ *   `occurred_at, rowid` (code-unit string compare — no locale collation).
+ *   Determinism: the markdown report is byte-identical for the same query
+ *   window (proven by test); the `--json` block additionally carries the
+ *   cohort snapshot's wall-clock `capturedAt`, which the determinism test
+ *   normalizes.
  * - Honest coverage: live vs imported row counts, quarantined rows (excluded
  *   from the timeline), the sink's own health counters, and the delegation
  *   begin/end pairing delta — unmatched begins are DISCLOSED, never
@@ -44,7 +47,7 @@ import {
 	buildTaskCohortReport,
 	snapshotTaskAttemptCohort,
 	type TaskAttemptPopulationRecord,
-} from '../observability/task-cohort.js';
+} from '../services/task-cohort.js';
 
 /**
  * v2 (issue #2676): additive `taskAttempts` cohort section — per-class counts,

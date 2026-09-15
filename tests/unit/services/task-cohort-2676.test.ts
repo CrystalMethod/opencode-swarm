@@ -6,7 +6,7 @@ import {
 	COHORT_MANIFEST_RETENTION,
 	COHORT_SAMPLE_SIZE_THRESHOLD,
 	snapshotTaskAttemptCohort,
-} from '../../../src/observability/task-cohort';
+} from '../../../src/services/task-cohort';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -86,6 +86,16 @@ describe('snapshotTaskAttemptCohort — stable cohort capture (AC3)', () => {
 			}
 			const files = fs.readdirSync(cohorts).filter((f) => f.endsWith('.json'));
 			expect(files.length).toBe(COHORT_MANIFEST_RETENTION);
+			// The survivors must be the NEWEST 20: evicted are exactly the 5
+			// oldest stamps, retained are stamps 5..24.
+			const stamps = files
+				.map((f) => Number.parseInt(f.split('-')[0], 10))
+				.sort((a, b) => a - b);
+			expect(stamps[0]).toBe(1_700_000_000_000 + 5 * 1000);
+			expect(stamps[stamps.length - 1]).toBe(
+				1_700_000_000_000 + (COHORT_MANIFEST_RETENTION + 4) * 1000,
+			);
+			expect(stamps).not.toContain(1_700_000_000_000);
 		} finally {
 			safeRmRecursive(directory);
 		}

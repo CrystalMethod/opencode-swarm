@@ -9,7 +9,7 @@ kind itself is catalogued in `docs/observability-event-contract.md`
 ## 1. Event vocabulary
 
 Every execution attempt is ONE `execution_attempt_recorded` telemetry event
-(producer `src/observability/execution-attempt.ts`), bound to the exact
+(producer `src/services/execution-attempt.ts`), bound to the exact
 identity the producer holds:
 
 | Payload field | Meaning |
@@ -78,7 +78,7 @@ was captured are never back-filled.
 
 ## 3. Frozen manifest schema
 
-`snapshotTaskAttemptCohort` (`src/observability/task-cohort.ts`) captures,
+`snapshotTaskAttemptCohort` (`src/services/task-cohort.ts`) captures,
 BEFORE the population snapshot is returned, one bounded provenance manifest
 per source:
 

@@ -4,11 +4,11 @@ import {
 	stageARouteAttemptClass,
 } from '../../../src/hooks/guardrails/stage-a-route';
 import { CATALOG_KINDS } from '../../../src/observability/catalog';
+import { extractWorkflowIds } from '../../../src/observability/legacy';
 import {
 	EXECUTION_ATTEMPT_CLASSES,
 	recordExecutionAttempt,
-} from '../../../src/observability/execution-attempt';
-import { extractWorkflowIds } from '../../../src/observability/legacy';
+} from '../../../src/services/execution-attempt';
 import {
 	addTelemetryListener,
 	initTelemetry,
@@ -133,6 +133,27 @@ describe('execution-attempt records — issue #2676 AC1', () => {
 		recordExecutionAttempt({
 			sessionId: 'sess-1',
 			attemptClass: 'duplicate',
+		});
+		expect(attemptEvents().length).toBe(0);
+	});
+
+	test('generation 0 is a legal cursor (boundary: accepted, not refused)', () => {
+		recordExecutionAttempt({
+			sessionId: 'sess-1',
+			callId: 'call-1',
+			generation: 0,
+			attemptClass: 'late',
+		});
+		const captured = attemptEvents();
+		expect(captured.length).toBe(1);
+		expect(captured[0].data.generation).toBe(0);
+	});
+
+	test("duplicateOf '' is refused fail-open (boundedId rejects empty)", () => {
+		recordExecutionAttempt({
+			sessionId: 'sess-1',
+			attemptClass: 'duplicate',
+			duplicateOf: '',
 		});
 		expect(attemptEvents().length).toBe(0);
 	});

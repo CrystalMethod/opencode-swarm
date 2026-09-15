@@ -194,7 +194,12 @@ function persistSnapshotManifest(
 			.sort();
 		const excess = files.length - COHORT_MANIFEST_RETENTION;
 		for (let i = 0; i < excess; i++) {
-			fs.unlinkSync(path.join(cohortDir, files[i]));
+			try {
+				fs.unlinkSync(path.join(cohortDir, files[i]));
+			} catch {
+				// A transiently locked file (Windows EBUSY/EPERM) must not abort
+				// the trim pass — the next snapshot re-reads and re-trims.
+			}
 		}
 	} catch (error) {
 		warn('Task cohort manifest persistence failed (warn-only)', {
