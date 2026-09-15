@@ -16,7 +16,7 @@ Issue: #2029. This is PR 01 of 23 in the observability sequence (#2029–#2051).
 
 **What this PR defines.** A single canonical `ObservabilityEvent` envelope
 (`src/observability/envelope.ts`), a discriminated catalog of every event kind
-the codebase emits today (`src/observability/catalog.ts`, 64 entries), a
+the codebase emits today (`src/observability/catalog.ts`, 65 entries), a
 relationship-validation function, a legacy-payload adapter, deterministic
 sampling and bounded-cardinality helpers, and a versioned OTel/OpenInference
 attribute-mapping table. It wires the envelope into the one live production
@@ -96,7 +96,7 @@ emit and would clone or reject `legacy.raw` (see §4).
 | `trace.spanId` | `string` (16 lowercase hex) | W3C-compatible span id, never all-zero. |
 | `trace.parentSpanId` | `string \| undefined` | Absent when this event has no parent. **No current producer supplies a parent span, so this is never synthesized** — every catalog entry declares `requiresParent: false` (§5), and that is a truthful statement about the system today, not a placeholder. |
 | `trace.links` | `SpanLink[]` | Typed non-parent relationships (`kind: resume \| lane \| cross-process \| retry \| parent-batch`), each carrying its own `traceId`/`spanId`. Empty for every event today. |
-| `workflow.*` | all optional `string` | The thirteen recognized correlation IDs — see the enumeration below. |
+| `workflow.*` | all optional `string` | The fifteen recognized correlation IDs — see the enumeration below. |
 | `lineage.projectRef` / `cohortRef` / `worktreeRef` | `string \| undefined` | Salted, truncated SHA-256 digests (`pseudonymousRef`, `src/observability/ids.ts`). Computed **once** at `initObservability` and reused for every event in the process — never per-emit. Never a path: the digest neither contains nor encodes one. But these are **pseudonyms, not anonymous values** — with the public default salt a holder of an export can CONFIRM a guessed path by re-hashing candidates, so "never reversible" would overclaim; setting `SWARM_OBSERVABILITY_LINEAGE_SALT` to a private per-install value restores guess-resistance and cross-install unlinkability. `cohortRef` and `worktreeRef` are computed **only** when a caller supplies `cohortLabel` / `worktreeId`; the sole production caller (`src/index.ts:732-744`) supplies neither, so both are `undefined` in every real run today and AC3 is asserted at unit level against the API rather than against a production emission path. |
 | `provenance.*` | all optional `string` | `pluginVersion`, `opencodeVersion`, `runtime`, `runtimeVersion`, `os`, `arch`, `model`, `provider`, `gitSha`, `configHash`. `gitSha` and `configHash` are **deliberately `undefined`** — see §3.1. |
 | `outcome.status` | `'success' \| 'failure' \| 'partial' \| 'unknown' \| undefined` | Absent means the producer said nothing about success/failure. `'unknown'` means the producer *did* report a result the adapter could not map — a different fact, kept distinct on purpose. |
@@ -110,12 +110,13 @@ emit and would clone or reject `legacy.raw` (see §4).
 
 ### 3.1 The workflow IDs
 
-`envelope.workflow` (`WorkflowIdsSchema`) declares exactly the thirteen IDs
-issue #2029 item 1 names, **all optional**:
+`envelope.workflow` (`WorkflowIdsSchema`) declares exactly the fifteen IDs —
+the thirteen issue #2029 item 1 names plus `callId` and `invocationId`
+(issue #2676, the exact-call and invocation join axes) — **all optional**:
 
-`rootConversationId`, `hostSessionId`, `swarmSessionId`, `taskId`, `phaseId`,
-`laneId`, `batchId`, `resultId`, `councilRoundId`, `backgroundInvocationId`,
-`knowledgeTraceId`, `knowledgeEntryId`, `prRunId`.
+`rootConversationId`, `hostSessionId`, `swarmSessionId`, `taskId`, `callId`,
+`invocationId`, `phaseId`, `laneId`, `batchId`, `resultId`, `councilRoundId`,
+`backgroundInvocationId`, `knowledgeTraceId`, `knowledgeEntryId`, `prRunId`.
 
 > **Extraction is payload-mirroring, not provenance-binding:**
 > `extractWorkflowIds` copies a recognized key from whatever payload it
@@ -198,9 +199,9 @@ those inputs before this change.
 
 ---
 
-## 5. The 64-entry catalog
+## 5. The 65-entry catalog
 
-Source: `src/observability/catalog.ts`. Exactly 64 entries = the 38 pre-existing members of
+Source: `src/observability/catalog.ts`. Exactly 65 entries = the 38 pre-existing members of
 `TelemetryEvent` (`src/telemetry.ts:16-172`) plus `agent_conflict_detected`
 (emitted in production via a force-cast past the type system before #2029)
 plus `close_archive_result` (issue #2030 — the structured close/archive
@@ -906,6 +907,28 @@ transitions and compact per-scope counters to
 `nonTransientCircuit` state (issue #2044 item 9). There is deliberately no
 `sink` health-source and no "sink loss" value: #2047 / PR 19 must register
 its own real producer and reader.
+
+#### execution_attempt_recorded
+Category `lifecycle`, severity `info`, privacy `pseudonymous`. Producer
+`src/observability/execution-attempt.ts:265` (`recordExecutionAttempt`, called
+by the delegation lifecycle begin/terminal observers and the Stage A gate
+route hook). Consumers: `/swarm report`'s task-attempts cohort fold
+(`src/commands/report.ts`). Retention: **#2676**. Required workflow ID:
+`hostSessionId` (the only axis both producers always hold); `councilRoundId`
+is forbidden. ONE event per execution attempt, bound to the exact task,
+call, invocation, and generation identity the producer holds, with:
+
+- `attemptClass` — the closed vocabulary `denial` / `attempt` / `result` /
+  `duplicate` / `late` / `cancelled` / `provider_failed` (see
+  `docs/execution-attempt-tracing.md` for the vocabulary semantics and the
+  production-producer map).
+- `captured` / `unknown` — explicit capture-coverage lists over the join and
+  cost fields; a missing capture is listed, never fabricated.
+- `cost` — the per-attempt cost block whose unknown axes are strictly `null`
+  plus an `unavailable` list entry, never `0` (unknown is not zero).
+- `duplicateOf` (class `duplicate` only) — the original record's identity,
+  never synthesized. A `late` record must carry its `generation` cursor; both
+  constraints are enforced fail-open by the recorder.
 
 ---
 

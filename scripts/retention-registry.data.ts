@@ -4441,6 +4441,32 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		owner: 'this-gate',
 		disposition: { kind: 'not-a-defect', proof: 'The program has no runtime writer. Its code-defined census is independently scanned against production symbols, and the compatibility checker fails if metadata, a row, or a retirement tag is omitted while the source remains reachable.' },
 	},
+	{
+		id: 'observability-cohorts',
+		category: 1,
+		pathGrammar: '.swarm/observability/cohorts/<epoch-ms>-<12-hex>.json',
+		canonicalRoot: 'project-swarm',
+		writerModules: ['src/observability/task-cohort.ts'],
+		writerCitations: [
+			'src/observability/task-cohort.ts:165 persistSnapshotManifest — writeFileSync after mkdirSync (:176), FIFO trim unlinkSync (:197)',
+		],
+		readerCitations: [
+			'operator inspection only — the report renders from the in-memory snapshot; persisted manifests are provenance evidence (docs/execution-attempt-tracing.md §3)',
+		],
+		schemaVersion: 'cohort manifest v1 (capturedAt, count, strata, manifests[], tasks[])',
+		stateClass: 'derived-rebuildable',
+		privacyClass: 'metadata',
+		writeLimits: { bound: 'FIFO 20 files (COHORT_MANIFEST_RETENTION); one write per snapshot with a directory; each file is one bounded JSON of the snapshot population', scope: 'global', citation: 'src/observability/task-cohort.ts:197' },
+		readBound: { pattern: 'indexed', bound: 'single-file reads by exact name; no directory scans beyond the FIFO trim', sync: true, citation: 'src/observability/task-cohort.ts:192' },
+		lockModel: 'none — file names are content-addressed (epoch + manifest digest suffix), concurrent snapshots write distinct files',
+		crashBehavior: 'a torn manifest write is orphaned garbage collected by the FIFO trim on a later snapshot; write failures are warn-only and never propagate into the report path',
+		closePolicy: 'not in the close/archive set — provenance evidence outlives the session it describes (bounded by FIFO)',
+		resetPolicy: 'reset-session does not touch it; FIFO retention is the only removal path',
+		legacyCompatibility: 'n/a (new tree)',
+		healthSignal: 'manifest persistence failures are warn-logged (warn-only, task-cohort.ts persistSnapshotManifest catch)',
+		owner: '#2676',
+		disposition: { kind: 'retain-by-design', issue: 2676, citation: 'src/observability/task-cohort.ts:165', note: 'Frozen cohort manifests delivered by #2676 (D16): snapshot-bound provenance (trigger/WAL/event/host-status digests) with FIFO-bounded retention; the report renders from the in-memory snapshot, so the store is evidence, not authority.' },
+	},
 ];
 
 /**

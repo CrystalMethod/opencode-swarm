@@ -1,4 +1,8 @@
 import { appendCoreEventSync } from '../../events/core-events.js';
+import {
+	type ExecutionAttemptClass,
+	recordExecutionAttempt,
+} from '../../observability/execution-attempt.js';
 import { warn } from '../../utils/logger.js';
 
 /**
@@ -69,6 +73,31 @@ function buildEvent(input: StageAGateRouteEventInput): Record<string, unknown> {
 }
 
 /**
+ * Route → execution-attempt class (issue #2676). Stage A route events fire at
+ * gate-tool-call COMPLETION (toolAfter), so `valid_pass` is the completed
+ * call's outcome record (`result`, success); the four refusal routes are
+ * `denial` (outcome unknown — the gate refused before a task outcome
+ * existed); `late_result` is `late`; `duplicate_result` is `duplicate`.
+ */
+export function stageARouteAttemptClass(
+	route: StageAGateRoute,
+): ExecutionAttemptClass {
+	switch (route) {
+		case 'valid_pass':
+			return 'result';
+		case 'pre_check_failed':
+		case 'invalid_result':
+		case 'no_task_correlation':
+		case 'attribution_ambiguous':
+			return 'denial';
+		case 'late_result':
+			return 'late';
+		case 'duplicate_result':
+			return 'duplicate';
+	}
+}
+
+/**
  * Record one Stage A route event. Fail-open for the hook: append failures
  * (typed CORE_EVENT_LOCKED / CORE_EVENT_LINE_TOO_LARGE) are logged warn-only
  * and never propagate into the lifecycle path. The exactly-one-event
@@ -93,6 +122,19 @@ export function recordStageAGateRoute(
 			route: input.route,
 		});
 	}
+	// Issue #2676: the same completed gate-tool call is also an
+	// execution-attempt record. The hook natively holds `sessionID`/`callID`
+	// (PascalCase) — normalized here to the recorder's lowercase join keys.
+	// A `late` record without a generation cursor and a `duplicate` without
+	// an original identity are refused inside the recorder (fail-open warn),
+	// which is the honest outcome: this seam holds neither today.
+	recordExecutionAttempt({
+		sessionId: input.sessionID ?? undefined,
+		callId: input.callID ?? undefined,
+		taskId: input.taskId ?? undefined,
+		attemptClass: stageARouteAttemptClass(input.route),
+		outcomeStatus: input.route === 'valid_pass' ? 'success' : 'unknown',
+	});
 }
 
 export const _internals = {

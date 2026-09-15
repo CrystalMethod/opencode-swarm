@@ -173,6 +173,11 @@ export type TelemetryEvent =
 	// compaction and corrupt/drop counters, byte figures. Counts only; no
 	// correlationIds, no paths, no repo identities.
 	| 'pr_subscription_health'
+	// Execution-attempt trace records (issue #2676 / D16): ONE event per
+	// task/call/invocation/generation attempt with a closed attempt-class
+	// vocabulary and an unknown-honest cost block. Produced by
+	// src/observability/execution-attempt.ts.
+	| 'execution_attempt_recorded'
 	// Council attempt / accepted-transition observations (issue #2046 item 9):
 	// every durably-appended task/phase/final council audit record and every
 	// accepted-projection move, joined to the lifecycle correlation system via

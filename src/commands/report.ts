@@ -19,6 +19,13 @@
  *   from the timeline), the sink's own health counters, and the delegation
  *   begin/end pairing delta — unmatched begins are DISCLOSED, never
  *   fabricated into ends.
+ * - Task-attempts cohort (issue #2676): `execution_attempt_recorded` rows are
+ *   folded through a SNAPSHOT (denominator cannot drift with the live
+ *   stores) with per-class counts, known/unavailable cost split, uncertainty,
+ *   and an explicit causal-rate qualification line. The report stays
+ *   read-only over the observability stores it queries; the snapshot
+ *   persists its own provenance manifest under
+ *   `.swarm/observability/cohorts/` (the report's evidentiary boundary).
  * - Fail-open: a missing/unopenable store yields an explicit empty report
  *   with `coverage.unavailable`, never an error.
  */
@@ -33,8 +40,87 @@ import {
 	syncObservabilityImport,
 } from '../db/observability-event-store.js';
 import { readOtlpExporterHealth } from '../observability/otlp-exporter.js';
+import {
+	buildTaskCohortReport,
+	snapshotTaskAttemptCohort,
+	type TaskAttemptPopulationRecord,
+} from '../observability/task-cohort.js';
 
-export const REPORT_JSON_SCHEMA_VERSION = 1;
+/**
+ * v2 (issue #2676): additive `taskAttempts` cohort section — per-class counts,
+ * known/unavailable cost split, uncertainty, and the qualification line, built
+ * from a population snapshot whose denominator cannot drift with the live
+ * stores.
+ */
+export const REPORT_JSON_SCHEMA_VERSION = 2;
+
+const EXECUTION_ATTEMPT_KIND = 'execution_attempt_recorded';
+
+function collectTaskAttemptPopulation(
+	rows: ObservabilityEventRow[],
+): TaskAttemptPopulationRecord[] {
+	const population: TaskAttemptPopulationRecord[] = [];
+	for (const row of rows) {
+		if (row.kind !== EXECUTION_ATTEMPT_KIND) continue;
+		try {
+			const payload = JSON.parse(row.payload_json) as {
+				taskId?: string;
+				attemptClass?: string;
+				outcomeStatus?: string;
+				cost?: unknown;
+			};
+			population.push({
+				taskId: payload.taskId,
+				attemptClass: payload.attemptClass,
+				outcomeStatus: payload.outcomeStatus,
+				cost: payload.cost,
+			});
+		} catch {
+			// Unparseable payload rows are already quarantined by the sink;
+			// skip rather than fabricate a partial record.
+		}
+	}
+	return population;
+}
+
+function renderTaskAttemptsCohort(report: {
+	denominator: number;
+	perClassCounts: Record<string, number>;
+	costTotalsKnown: Record<string, number>;
+	costUnavailableCounts: Record<string, number>;
+	uncertainty: string[];
+	qualification: { qualified: boolean; reasons: string[] };
+}): string[] {
+	const lines: string[] = [];
+	const classes = Object.entries(report.perClassCounts).sort((a, b) =>
+		a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0,
+	);
+	const classText =
+		classes.length > 0
+			? classes.map(([cls, n]) => `${cls}=${n}`).join(', ')
+			: 'none recorded';
+	const axes = Object.entries(report.costUnavailableCounts)
+		.filter(([, n]) => n > 0)
+		.map(([axis, n]) => `${axis} unknown on ${n}`)
+		.join('; ');
+	lines.push(
+		`**Task attempts (cohort)** — denominator ${report.denominator}; classes: ${classText}`,
+	);
+	lines.push(
+		`Causal-rate qualification: ${
+			report.qualification.qualified ? 'qualified' : 'UNQUALIFIED'
+		}${
+			report.qualification.reasons.length > 0
+				? ` (${report.qualification.reasons.join(', ')})`
+				: ''
+		}; cost axes unknown: ${axes.length > 0 ? axes : 'none'}`,
+	);
+	if (report.uncertainty.length > 0) {
+		lines.push(`Uncertainty: ${report.uncertainty.join('; ')}`);
+	}
+	lines.push('');
+	return lines;
+}
 
 interface ParsedReportArgs {
 	filter: ObservabilityEventFilter;
@@ -236,6 +322,16 @@ export async function handleReportCommand(
 	const query = queryObservabilityEvents(directory, parsed.filter);
 	const pairing = computePairing(query.rows);
 	const savings = computeSavings(query.rows);
+	// Issue #2676: fold execution-attempt rows into a SNAPSHOT-qualified cohort
+	// (the snapshot persists its own provenance manifest — the report itself
+	// stays read-only over the observability stores it queries).
+	const taskAttemptPopulation = collectTaskAttemptPopulation(query.rows);
+	const taskAttemptSnapshot = snapshotTaskAttemptCohort({
+		tasks: taskAttemptPopulation,
+		directory,
+		strata: { runtime: `bun ${process.versions.bun ?? ''}`.trim() },
+	});
+	const taskAttempts = buildTaskCohortReport(taskAttemptSnapshot);
 	const timeline: TimelineEntry[] = query.rows.map((row) => ({
 		occurredAt: row.occurred_at,
 		kind: row.kind,
@@ -270,6 +366,7 @@ export async function handleReportCommand(
 			note: 'unmatched begins are disclosed, never fabricated into ends',
 		},
 		savings: savings.map((s) => ({ ...s, estimate: true })),
+		taskAttempts,
 		health,
 		otlpExport: otlpHealth,
 		timeline,
@@ -315,6 +412,7 @@ export async function handleReportCommand(
 		}
 		lines.push('');
 	}
+	lines.push(...renderTaskAttemptsCohort(taskAttempts));
 	lines.push(
 		`**Sink health** — accepted ${health?.accepted ?? 0}, quarantined ${health?.quarantined ?? 0}, dropped ${health?.dropped ?? 0}`,
 	);

@@ -43,12 +43,24 @@ export const CORE_EVENTS_FILE = 'src/events/core-events.ts';
 export const CORE_EVENTS_MENTION_ALLOWLIST: Readonly<
 	Record<
 		string,
-		{ reason: string; cls: 'seam' | 'lifecycle' | 'archive-reader' | 'prompt-doc' }
+		{
+			reason: string;
+			cls:
+				| 'seam'
+				| 'lifecycle'
+				| 'archive-reader'
+				| 'prompt-doc'
+				| 'provenance-digest';
+		}
 	>
 > = Object.freeze({
 	'src/events/core-events.ts': {
 		reason: 'the bounded core event store and append seam itself (issue #2039)',
 		cls: 'seam',
+	},
+	'src/observability/task-cohort.ts': {
+		reason: 'cohort provenance manifest only (issue #2676): bounded 64 KiB stat+digest of events.jsonl for the frozen trigger-source manifest; never reads events semantically and never appends',
+		cls: 'provenance-digest',
 	},
 	'src/commands/close/constants.ts': {
 		reason: 'archive/clean lifecycle ownership of events.jsonl and events-authority-index.json',
