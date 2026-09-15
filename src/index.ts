@@ -5103,7 +5103,7 @@ async function initializeOpenCodeSwarm(
 				// would strand identity-bound state when a later policy gate throws.
 				if (autoReviewConfig.enabled) {
 					await beginApprovedReviewerScopeLifecycle({
-						directory: ctx.directory,
+						directory: bootstrapRoot,
 						tool: input.tool,
 						args: toolBeforeArgs,
 						parentSessionID: input.sessionID,
@@ -5395,7 +5395,7 @@ async function initializeOpenCodeSwarm(
 			}
 			if (autoReviewConfig.enabled && isTaskTool) {
 				await completeReviewerScopeLifecycle({
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					tool: input.tool,
 					args: afterCtx.args,
 					output,
