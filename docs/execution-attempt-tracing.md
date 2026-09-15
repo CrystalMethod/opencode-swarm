@@ -31,7 +31,7 @@ identity the producer holds:
 | `attempt` | a dispatch started; nothing about outcome is known yet | delegation begin (`emitDelegationBegin`) |
 | `result` | a completed call's outcome record | delegation terminal (`emitDelegationCostObservation`), Stage A `valid_pass` |
 | `denial` | a gate refused before a task outcome existed | Stage A `pre_check_failed`, `invalid_result`, `no_task_correlation`, `attribution_ambiguous` |
-| `duplicate` | an idempotent re-arrival of an already-committed record | Stage A `duplicate_result` (with `duplicateOf` = the call's record identity) |
+| `duplicate` | an idempotent re-arrival of an already-committed record | Stage A `duplicate_result` — the seam holds no original record identity today, so production duplicate_result routes stay fail-open drops (warn-logged, tested); the class is recordable when a caller supplies `duplicateOf` |
 | `late` | a record arriving after a later generation | Stage A `late_result` (with the correlation's `generation` cursor threaded from the guardrails pending-gate-task map; a `late_result` arriving with no cursor stays a fail-open drop) |
 | `cancelled` | the attempt was cancelled | delegation terminal `cancelled` |
 | `provider_failed` | a provider/transient failure classified at the failure boundary | fixture-only today — no production seam currently holds the classification at emit time; the class exists so a producer can never guess it |

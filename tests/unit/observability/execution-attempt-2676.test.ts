@@ -148,6 +148,31 @@ describe('execution-attempt records — issue #2676 AC1', () => {
 		expect(captured[0].data.duplicateOf).toBe('record-abc123');
 	});
 
+	test('provider_failed records its class with an unknown-honest cost block (fixture drive)', () => {
+		recordExecutionAttempt({
+			sessionId: 'sess-1',
+			taskId: 'task-1',
+			callId: 'call-1',
+			invocationId: 'inv-1',
+			attemptClass: 'provider_failed',
+			outcomeStatus: 'failure',
+		});
+		const captured = attemptEvents();
+		expect(captured.length).toBe(1);
+		const data = captured[0].data;
+		expect(data.attemptClass).toBe('provider_failed');
+		expect(data.outcomeStatus).toBe('failure');
+		expect(data.taskId).toBe('task-1');
+		expect(data.callId).toBe('call-1');
+		// The class is fixture-only today (no production seam holds the
+		// provider/transient classification at emit time) — but the recorder
+		// must still accept it with all cost axes unknown, never zero.
+		const cost = data.cost as Record<string, unknown>;
+		expect(cost.latencyMs).toBeNull();
+		expect(cost.inputTokens).toBeNull();
+		expect((cost.unavailable as string[]).length).toBe(6);
+	});
+
 	test('a record with no session identity is refused fail-open', () => {
 		recordExecutionAttempt({ attemptClass: 'result' });
 		expect(attemptEvents().length).toBe(0);

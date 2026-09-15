@@ -17,8 +17,10 @@
   (classes `attempt`, `result`, `cancelled`; latency from the dispatch start,
   tokens only when the cost-evidence chain held usage, estimated-vs-billed
   from `cost_source`) and the Stage A gate route hook (classes `denial`,
-  `result`, `late` with its generation cursor, `duplicate` with the original
-  record identity).
+  `result`, `late` with the correlation's threaded generation cursor, and
+  `duplicate` — production `duplicate_result` routes stay fail-open drops
+  because the seam holds no original record identity; the class is recordable
+  when a caller supplies `duplicateOf`).
 - **Cohort machinery** (`src/observability/task-cohort.ts`): a DEEP-copied
   population snapshot with `capturedAt` (post-snapshot mutation cannot change
   a reported denominator), frozen provenance manifests for the trigger /

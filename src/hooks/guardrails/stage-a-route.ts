@@ -133,8 +133,9 @@ export function recordStageAGateRoute(
 	// execution-attempt record. The hook natively holds `sessionID`/`callID`
 	// (PascalCase) — normalized here to the recorder's lowercase join keys.
 	// A `late` record without a generation cursor and a `duplicate` without
-	// an original identity are refused inside the recorder (fail-open warn),
-	// which is the honest outcome: this seam holds neither today.
+	// an original identity are refused inside the recorder (fail-open warn):
+	// the seam threads the generation when the pending-gate-task map holds
+	// it, and holds no original record identity for duplicates.
 	recordExecutionAttempt({
 		sessionId: input.sessionID ?? undefined,
 		callId: input.callID ?? undefined,
