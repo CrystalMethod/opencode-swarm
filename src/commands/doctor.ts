@@ -255,28 +255,47 @@ export async function handleDoctorCommand(
 		output += `${lines.join('\n')}\n`;
 	}
 
-	// Issue #2271 bug 4: validate configured agent model ids against the live
-	// provider catalog. Structural checks above cannot see a model that is
-	// syntactically fine but does not resolve ("Model not found"/"Forbidden").
-	// Fail-open: an unreachable catalog adds nothing to the report.
+	// Issue #2271 bug 4 / issue #2680: validate the FINAL effective model
+	// selection of every ENABLED role (legacy + prefixed, via the live
+	// generated-name registry) against the live provider catalog. Structural
+	// checks above cannot see a model that is syntactically fine but does not
+	// resolve ("Model not found"/"Forbidden"). Fail-open: an unreachable
+	// catalog adds nothing to the report.
 	try {
 		const { runModelPreflight } = await import('../services/model-preflight');
 		const preflight = await runModelPreflight(
 			config,
 			swarmState.opencodeClient,
+			{ generatedAgentNames: swarmState.generatedAgentNames },
 		);
 		if (preflight.catalogAvailable) {
-			const unresolved = preflight.resolutions.filter(
-				(resolution) => resolution.status === 'unresolved',
+			// Configured/enabled/resolved/fallback distinctions (issue #2680
+			// documentation contract): report non-ok classes with their source
+			// and the per-class operator action. Bounded: first 20 rows.
+			const flagged = preflight.resolutions.filter(
+				(resolution) =>
+					resolution.status === 'unresolved' ||
+					resolution.status === 'missing-selection',
 			);
-			if (unresolved.length > 0) {
+			if (flagged.length > 0) {
+				const shown = flagged.slice(0, 20);
+				const more = flagged.length - shown.length;
 				output += '\n---\n\n## Agent Model Resolution\n\n';
-				output += `${unresolved.length} configured agent model(s) do not resolve against the provider catalog:\n\n`;
-				for (const resolution of unresolved) {
-					output += `- \`${resolution.agent}\` → \`${resolution.model}\`: ${resolution.detail ?? 'does not resolve'}\n`;
+				output += `${flagged.length} enabled agent model selection(s) failed preflight:\n\n`;
+				for (const resolution of shown) {
+					const label =
+						resolution.source === 'fallback'
+							? `${resolution.agent} (fallback entry)`
+							: resolution.agent;
+					if (resolution.status === 'missing-selection') {
+						output += `- \`${label}\`: no final model selection — ${resolution.detail ?? ''}\n`;
+					} else {
+						output += `- \`${label}\` → \`${resolution.model}\` [${resolution.source}]: ${resolution.detail ?? 'does not resolve'}\n`;
+					}
 				}
+				if (more > 0) output += `- … and ${more} more\n`;
 				output +=
-					'\nDispatching these agents will fail permanently. Fix `agents.<role>.model` in opencode-swarm.json or remove the override.\n';
+					'\nDispatching these roles will fail permanently. Fix the effective model in opencode-swarm.json — the matching swarm override wins over top-level `agents.<role>.model`. `fallback_models` only serve transient runtime failures.\n';
 			}
 		}
 	} catch {

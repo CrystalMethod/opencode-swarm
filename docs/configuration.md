@@ -399,6 +399,52 @@ Empty or whitespace-only values are treated as omitted.
 }
 ```
 
+## Model preflight — configured, enabled, resolved, and fallback selections (issue #2680)
+
+The plugin validates the model configuration of every agent it would actually
+register before and during dispatch. Four distinct concepts:
+
+| Term | Meaning |
+|---|---|
+| **configured** | A model string explicitly written in your config — top-level `agents.<role>.model` or the matching `swarms.<id>.agents.<role>.model` (the swarm entry wins, object-level: a swarm entry replaces the top-level entry for that role). |
+| **enabled** | A generated agent the plugin actually registers for your configuration: every role unless `disabled: true`, plus the feature-gated roles only while their flag is on (`council.*` ← `council.general.enabled`, `docs_design` ← `design_docs.enabled`, `designer` ← `ui_review.enabled`). In multi-swarm configs every swarm contributes its prefixed names (`local_coder`, `mega_critic`, …); a swarm named `default` contributes unprefixed names. |
+| **resolved** | The final effective selection for an enabled role: the configured model, else `DEFAULT_MODELS[role]`, else `DEFAULT_MODELS.default`. This is what dispatch uses and what the preflight validates against the live provider catalog. |
+| **fallback** | Entries from an explicitly configured `fallback_models` array. They are validated as their own class and are recorded only when explicitly configured — never synthesized. |
+
+Preflight outcome classes and operator actions:
+
+| Class | Meaning | Operator action |
+|---|---|---|
+| `unresolved` (missing provider) | The resolved model's provider is absent from the host catalog. | Fix the `provider/...` prefix or configure a provider that exists. |
+| `unresolved` (missing model) | The provider exists but does not list the model. | Correct the model id on the matching swarm override (it wins over the top-level entry). |
+| `missing-selection` | An enabled role has no final selection at all (a blank `model: ""` override, or a registry name whose swarm is gone). | Set `agents.<role>.model` (or the matching swarm override) to a non-empty value. |
+| `host-controlled` | Primary agents (architects by default, or your `default_agent` target). OpenCode's UI owns their model; the registered model is intentionally not applied. | Select the model in the OpenCode UI; a config-vs-UI advisory surfaces mismatches at runtime. |
+
+Where the preflight acts:
+
+- **Startup (advisory, fail-open):** after `server()` resolves, a deferred task
+  validates every enabled role and warns for `unresolved`/`missing-selection`
+  classes only. Disabled, optional, and uninvoked-but-valid roles never produce
+  warnings, and a catalog outage produces no rejection.
+- **Dispatch admission (typed denials):** a Task dispatch whose target is a
+  registered agent is denied before it leaves the delegation gate when the
+  final selection is positively `unresolved`
+  (`SWARM_AGENT_MODEL_UNRESOLVED`; critics keep the
+  `PLAN_CRITIC_MODEL_UNRESOLVED` identity) or missing entirely
+  (`SWARM_AGENT_MODEL_MISSING_SELECTION`). Primary agents are exempt — the UI
+  owns their selection. An unreachable catalog never denies a dispatch
+  (fail-open).
+- **`/swarm doctor`:** the `Agent Model Resolution` section lists failing
+  selections with their source and class.
+
+`fallback_models` serve **transient** runtime failures (429/503/timeout) via
+the guardrails failover path. A permanent unresolved primary model is not
+covered by a fallback — configure a resolvable primary model for the affected
+role. The four curator roles (`curator_init`, `curator_phase`,
+`curator_postmortem`, `curator_consolidation`) inherit `explorer`'s fallback
+chain at runtime; the preflight validates only explicitly configured entries
+(`explorer`'s own), it does not synthesize the inherited chain.
+
 ## How to verify the resolved config
 
 Run:
