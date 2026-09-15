@@ -6025,6 +6025,21 @@ export function createDelegationGateHook(
 										const verdictEntry = attributionResult.verdicts.get(taskId);
 										const dispatchCtxForVerdict =
 											stageBDispatchContextByCallID.get(input.callID);
+										// A SKIPPED TESTED verdict means the tests were not run
+										// (e.g. prohibited scope, framework detection none) — a
+										// tool-argument outcome, not a code failure. Leave the
+										// task in its Stage B eligible state with the reviewer
+										// proof intact so the architect can re-dispatch the test
+										// gate instead of forcing a coder rework (issue #2756).
+										if (
+											dispatchCtxForVerdict?.expectedVerdictKind === 'TESTED' &&
+											verdictEntry?.verdict === 'SKIPPED'
+										) {
+											logger.warn(
+												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${state} for test-gate re-dispatch; reviewer proof preserved`,
+											);
+											continue;
+										}
 										const positiveVerdict =
 											dispatchCtxForVerdict?.expectedVerdictKind === 'TESTED'
 												? verdictEntry?.verdict === 'PASS'

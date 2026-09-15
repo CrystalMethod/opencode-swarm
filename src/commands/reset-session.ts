@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { resolveWorktreeRepoOwnership } from '../config/lane-context';
 import { closeProjectDb } from '../db/project-db';
+import { clearAllSessionOverrides } from '../db/qa-gate-session-override.js';
 import { appendCoreEventSync } from '../events/core-events';
 import { clearSessionActionCircuits } from '../failures/action-circuit.js';
 import { resolveWorktreeEnumerationBases } from '../hooks/init-orphan-recovery';
@@ -382,6 +383,21 @@ export async function handleResetSessionCommand(
 	swarmState.agentSessions.clear();
 	clearSnapshotSessionOwnerships();
 	results.push(`✅ Cleared ${sessionCount} in-memory agent session(s)`);
+
+	// #2668: the cleared sessions' durable QA override rows are session-keyed
+	// policy — sweep them in the same reset so a later rehydrate can never
+	// resurrect a reset session's tightening. Best-effort like every other
+	// reset step.
+	try {
+		const swept = clearAllSessionOverrides(directory);
+		if (swept > 0) {
+			results.push(`✅ Cleared ${swept} durable session QA override row(s)`);
+		}
+	} catch (err) {
+		results.push(
+			`⚠️ Durable session QA override sweep failed: ${errorMessage(err)}`,
+		);
+	}
 
 	// #2471 (absorbing #1896 row 4): release THIS session's guardrail action
 	// circuits with the state they key. The lifecycle handler clears these on

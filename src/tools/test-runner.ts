@@ -3164,9 +3164,9 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				framework: 'none',
 				scope,
 				error:
-					'scope "convention" and "graph" require explicit files or targets array - omitting both causes unsafe full-project discovery',
+					'scope "convention", "graph", and "impact" require explicit files or targets array - omitting both causes unsafe full-project discovery',
 				message:
-					'When using scope "convention" or "graph", you must provide a non-empty "files" or "targets" array. Use scope "all" for full project test suite without specifying files.',
+					'When using scope "convention", "graph", or "impact", you must provide a non-empty "files" array (or "targets" for framework-native test names). Example: { scope: "convention", files: ["tests/test_calc.py"] }',
 				outcome: 'error',
 				resolution: makeResolution(scope, scope, [], [], 'skip', workingDir),
 			};
