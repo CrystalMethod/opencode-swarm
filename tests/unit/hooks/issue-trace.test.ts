@@ -99,6 +99,28 @@ function writeSpecWithIssue(dir: string, number = 42): void {
 	);
 }
 
+/** Writes the v3 receipts (issue #2564): Phase 0 freshness + green validator. */
+function writeV3Receipts(dir: string, number = 42): void {
+	writeJson(dir, 'branch-freshness.json', {
+		issueNumber: number,
+		freshness: 'synced',
+		timestamp: '2026-01-01T00:00:00Z',
+	});
+	writeJson(dir, 'trace-validation.json', {
+		issueNumber: number,
+		timestamp: '2026-01-01T00:00:00Z',
+		validations: [
+			{
+				phase: '4.6',
+				outcome: 'pass',
+				reviewedCommit: '0123456789abcdef0123456789abcdef01234567',
+				treeId: 'fedcba9876543210fedcba9876543210fedcba98',
+				timestamp: '2026-01-01T00:00:00Z',
+			},
+		],
+	});
+}
+
 /** Creates a default trace-state.json. */
 function writeTraceState(dir: string, state?: Partial<TraceState>): void {
 	const defaults: TraceState = {
@@ -134,6 +156,9 @@ function writeResidualBReceipts(dir: string, number = 42): void {
 		issueNumber: number,
 		defectClass: 'no defect class',
 		justification: 'docs-only change corrects no behavior',
+		relatedProblems: [
+			{ ref: '#2131', note: 'residual-B gates this receipt feeds' },
+		],
 		timestamp: '2026-01-01T00:00:00Z',
 	});
 }
@@ -196,6 +221,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(1);
@@ -206,6 +232,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		await runHook(tmpDir);
 
@@ -222,6 +249,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const logErrorCalls: Array<[string, unknown]> = [];
 		_internals.logError = mock((msg: string, err: unknown) => {
@@ -246,6 +274,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir, { lastTransition: 'ISSUE_INGEST_TO_PLAN' });
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -264,6 +293,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 		// An authoritative plan exists with an incomplete phase (so planExists is
 		// true and row g — plan exists, critic pending — applies).
 		_internals.readPlanPhaseStatus = () =>
@@ -302,6 +332,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir, { status: 'published' });
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -311,6 +342,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 		_internals.isPlanCriticApproved = () => {
 			throw new Error('approval check crashed');
 		};
@@ -327,6 +359,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir);
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const hook = createIssueTraceHook({}, tmpDir, 100);
 		const output = {}; // no messages array — cannot durably deliver
@@ -349,6 +382,7 @@ describe('issue-trace hook', () => {
 		writeIssueRef(tmpDir);
 		writeTraceState(tmpDir, { lastTransition: 'PLAN_TO_EXECUTE' });
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 		writeJson(tmpDir, 'plan.json', {
 			title: 'test',
 			swarm_id: 'test',
@@ -379,6 +413,7 @@ describe('issue-trace hook', () => {
 			status: 'publication_handoff',
 		});
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 		writeJson(tmpDir, 'issue-publication.json', {
 			published: true,
 			issueNumber: 42,
@@ -406,6 +441,7 @@ describe('issue-trace hook', () => {
 			status: 'publication_handoff',
 		});
 		writeSpecWithIssue(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -417,6 +453,8 @@ describe('issue-trace hook', () => {
 			writeIssueRef(tmpDir, 42, { noRepro: false });
 			writeTraceState(tmpDir);
 			writeSpecWithIssue(tmpDir);
+			writeV3Receipts(tmpDir);
+			writeV3Receipts(tmpDir);
 
 			// First drive: one-shot directive + [MODE: ISSUE_INGEST], state → REPRO_GATE.
 			const messages = await runHook(tmpDir);
@@ -433,6 +471,8 @@ describe('issue-trace hook', () => {
 			writeIssueRef(tmpDir, 42, { noRepro: false });
 			writeTraceState(tmpDir);
 			writeSpecWithIssue(tmpDir);
+			writeV3Receipts(tmpDir);
+			writeV3Receipts(tmpDir);
 			writeReproReceipt(tmpDir, 42);
 
 			const messages = await runHook(tmpDir);
@@ -444,6 +484,8 @@ describe('issue-trace hook', () => {
 			writeIssueRef(tmpDir, 42, { noRepro: false });
 			writeTraceState(tmpDir);
 			writeSpecWithIssue(tmpDir);
+			writeV3Receipts(tmpDir);
+			writeV3Receipts(tmpDir);
 			writeReproReceipt(tmpDir, 999); // bound to a different issue
 
 			// The foreign receipt does not satisfy the gate, so the one-shot
@@ -470,6 +512,8 @@ describe('issue-trace hook', () => {
 			});
 			writeTraceState(tmpDir);
 			writeSpecWithIssue(tmpDir);
+			writeV3Receipts(tmpDir);
+			writeV3Receipts(tmpDir);
 
 			const messages = await runHook(tmpDir);
 			expect(messages).toHaveLength(1);

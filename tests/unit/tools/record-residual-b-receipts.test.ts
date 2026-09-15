@@ -83,6 +83,7 @@ describe('record_recurrence_sweep', () => {
 					description: 'repro-704 init deadline check',
 					proof: 'fails when an init-path await exceeds the deadline',
 				},
+				relatedProblems: [{ ref: '#704', note: 'original init hang' }],
 			},
 			dir,
 			{ sessionID: 's1' },
@@ -93,7 +94,11 @@ describe('record_recurrence_sweep', () => {
 
 	test('"no defect class" fast path requires a justification', async () => {
 		const bad = await executeRecordRecurrenceSweep(
-			{ issueNumber: 42, defectClass: 'no defect class' },
+			{
+				issueNumber: 42,
+				defectClass: 'no defect class',
+				relatedProblems: [{ ref: '#2131' }],
+			},
 			dir,
 		);
 		expect(JSON.parse(bad).success).toBe(false);
@@ -103,6 +108,7 @@ describe('record_recurrence_sweep', () => {
 				issueNumber: 42,
 				defectClass: 'no defect class',
 				justification: 'docs-only change corrects no behavior',
+				relatedProblems: [{ ref: '#2131' }],
 			},
 			dir,
 		);
@@ -112,11 +118,38 @@ describe('record_recurrence_sweep', () => {
 
 	test('a defect-class sweep without predicates/dispositions/guardrail is rejected', async () => {
 		const result = await executeRecordRecurrenceSweep(
-			{ issueNumber: 42, defectClass: 'some real defect class' },
+			{
+				issueNumber: 42,
+				defectClass: 'some real defect class',
+				relatedProblems: [{ ref: '#2131' }],
+			},
 			dir,
 		);
 		expect(JSON.parse(result).success).toBe(false);
 		expect(await recurrenceSweepReceiptExists(dir, 42)).toBe(false);
+	});
+
+	test('the widened relatedProblems field is required and non-vacuous (issue #2564)', async () => {
+		const missing = await executeRecordRecurrenceSweep(
+			{
+				issueNumber: 42,
+				defectClass: 'no defect class',
+				justification: 'docs-only change corrects no behavior',
+			},
+			dir,
+		);
+		expect(JSON.parse(missing).success).toBe(false);
+
+		const empty = await executeRecordRecurrenceSweep(
+			{
+				issueNumber: 42,
+				defectClass: 'no defect class',
+				justification: 'docs-only change corrects no behavior',
+				relatedProblems: [],
+			},
+			dir,
+		);
+		expect(JSON.parse(empty).success).toBe(false);
 	});
 
 	test('receipt is issue-bound', async () => {
@@ -209,6 +242,27 @@ describe('trace hook residual-B gates (issue #2131)', () => {
 		fs.writeFileSync(
 			path.join(dir, '.swarm', 'spec.md'),
 			'# Spec\n\n## Source Issue\n\n- Number: 42\n',
+		);
+		// v3 receipts (issue #2564): Phase 0 freshness + a green per-phase
+		// validator entry, so the hook's pre-plan and pre-handoff gates stay
+		// satisfied in these fixtures.
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'branch-freshness.json'),
+			JSON.stringify({ issueNumber: 42, freshness: 'synced' }),
+		);
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'trace-validation.json'),
+			JSON.stringify({
+				issueNumber: 42,
+				validations: [
+					{
+						phase: '4.6',
+						outcome: 'pass',
+						reviewedCommit: '0123456789abcdef0123456789abcdef01234567',
+						treeId: 'fedcba9876543210fedcba9876543210fedcba98',
+					},
+				],
+			}),
 		);
 	}
 
@@ -307,6 +361,7 @@ describe('trace hook residual-B gates (issue #2131)', () => {
 				issueNumber: 42,
 				defectClass: 'no defect class',
 				justification: 'docs-only change',
+				relatedProblems: [{ ref: '#2131' }],
 			}),
 		);
 
