@@ -329,11 +329,15 @@ export function computeNextMode(
 	// hand off to commit-pr (issue #2564). A missing receipt set, or any fail
 	// entry, parks the trace with a ONE-SHOT directive (sentinel
 	// TRACE_VALIDATION_GATE) naming the validator re-run. Explicit `=== false`
-	// (not falsy): same v2-shaped-literal transparency as row (f-0).
+	// (not falsy): same v2-shaped-literal transparency as row (f-0). The
+	// exclusion set excludes only THIS row's own sentinel plus the handoff
+	// sentinel — REVIEW_GATE/RECURRENCE_GATE must NOT be excluded, because this
+	// row is only reached once both prior gates are verified: when the
+	// recurrence receipt lands right after RECURRENCE_GATE fired, the ladder
+	// must chain into this directive rather than parking silently (final-critic
+	// round 1 finding; mirrors how row i-pre2 does not exclude REVIEW_GATE).
 	if (
 		workflowArtifacts.traceValidationVerified === false &&
-		traceState.lastTransition !== 'REVIEW_GATE' &&
-		traceState.lastTransition !== 'RECURRENCE_GATE' &&
 		traceState.lastTransition !== 'TRACE_VALIDATION_GATE' &&
 		traceState.lastTransition !== 'EXECUTE_TO_COMMIT'
 	) {

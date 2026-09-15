@@ -61,7 +61,12 @@ describe('issue-ingestion journey v3 — gates through merge approval', () => {
 		const sweep = await project.recordSweep();
 		expect(sweep.success).toBe(true);
 
-		await project.cycle(); // TRACE_VALIDATION_GATE one-shot
+		// The cycle after the sweep receipt lands must chain into the
+		// validation directive (final-critic round 1: no silent park at the
+		// gate the reducer itself just made blocking).
+		const validationGate = await project.cycle();
+		expect(validationGate.state.lastTransition).toBe('TRACE_VALIDATION_GATE');
+		expect(validationGate.text).toMatch(/trace-check|validator|validation/i);
 		const validation = await project.recordValidation();
 		expect(validation.success).toBe(true);
 

@@ -171,6 +171,25 @@ describe('row (i-pre3): TRACE_VALIDATION_GATE before the handoff', () => {
 		expect(r.directive).toBeNull();
 		expect(r.nextLastTransition).toBe('TRACE_VALIDATION_GATE');
 	});
+
+	test('fires after RECURRENCE_GATE/REVIEW_GATE landed their receipts (no silent park)', () => {
+		// Final-critic round 1: in the canonical ladder the reducer itself
+		// drives — RECURRENCE_GATE fires, the sweep receipt lands, and the very
+		// next cycle must chain into the validation directive, not park silently.
+		for (const sentinel of ['RECURRENCE_GATE', 'REVIEW_GATE']) {
+			const r = computeNextMode({
+				issueReference,
+				traceState: state({ lastTransition: sentinel }),
+				workflowArtifacts: {
+					...completeArtifacts,
+					traceValidationVerified: false,
+				},
+			});
+			expect(r.nextLastTransition).toBe('TRACE_VALIDATION_GATE');
+			expect(r.directive).toMatch(/trace-check|validator|validation/i);
+			expect(r.nextStatus).toBe('in_progress');
+		}
+	});
 });
 
 describe("row (b'): published → merge_approval_recorded (recorded, never certified)", () => {
