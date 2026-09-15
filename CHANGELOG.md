@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.181.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.3...v7.181.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **delegation-gate:** require explicit critic task attribution ([ee51180](https://github.com/ZaxbyHub/opencode-swarm/commit/ee51180c94209830814bec4fe6ab3a06fe3b2485))
+
 ## [7.181.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.2...v7.181.3) (2026-09-15)
 
 
