@@ -8,22 +8,20 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	branchFreshnessReceiptExists,
 	mergeApprovalReceiptExists,
 	traceValidationReceiptExists,
 } from '../../../src/hooks/issue-trace-state';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const HEX_A = '0123456789abcdef0123456789abcdef01234567';
 const HEX_B = 'fedcba9876543210fedcba9876543210fedcba98';
 
 const dirs: string[] = [];
 function makeDir(): string {
-	const dir = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'v3-readers-')),
-	);
+	const dir = canonicalMkdtemp('v3-readers-');
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	dirs.push(dir);
 	return dir;

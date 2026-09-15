@@ -7,20 +7,18 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { executeRecordBranchFreshness } from '../../../src/tools/record-branch-freshness';
 import { executeRecordMergeApproval } from '../../../src/tools/record-merge-approval';
 import { executeRecordTraceValidation } from '../../../src/tools/record-trace-validation';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const HEX_A = '0123456789abcdef0123456789abcdef01234567';
 const HEX_B = 'fedcba9876543210fedcba9876543210fedcba98';
 
 const dirs: string[] = [];
 function makeDir(): string {
-	const dir = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'v3-tools-')),
-	);
+	const dir = canonicalMkdtemp('v3-tools-');
 	fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	dirs.push(dir);
