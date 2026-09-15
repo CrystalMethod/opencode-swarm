@@ -17,6 +17,7 @@ import {
 	bootSwarmPluginHost,
 	createPluginHostProject,
 } from '../helpers/plugin-host';
+import { safeRmRecursive } from '../helpers/safe-test-dir';
 
 describe('SECURITY: Handoff Enhancer Adversarial Tests', () => {
 	let testDir: string;
@@ -28,6 +29,7 @@ describe('SECURITY: Handoff Enhancer Adversarial Tests', () => {
 		max_iterations: 5,
 		qa_retry_limit: 3,
 		inject_phase_reminders: true,
+		context_budget: { scoring: { enabled: false } },
 		hooks: {
 			system_enhancer: true,
 			compaction: true,
@@ -85,7 +87,11 @@ describe('SECURITY: Handoff Enhancer Adversarial Tests', () => {
 	afterEach(() => {
 		// Clean up
 		if (testDir && fs.existsSync(testDir)) {
-			fs.rmSync(testDir, { recursive: true, force: true });
+			try {
+				safeRmRecursive(testDir);
+			} catch {
+				// Best-effort cleanup; registered host workers can briefly hold handles.
+			}
 		}
 		resetSwarmState();
 	});
@@ -343,6 +349,7 @@ The path ../../../etc/shadow contains sensitive data.`;
 				...defaultConfig,
 				context_budget: {
 					max_injection_tokens: 1000, // Very low budget
+					scoring: { enabled: false },
 				},
 			} as PluginConfig;
 

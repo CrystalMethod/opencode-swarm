@@ -36,6 +36,7 @@ const SESSION_ID = 'm10-se-sanitize-session';
 const BASE_SYSTEM = 'Stable architect system prefix';
 const HOST_CONFIG = {
 	version_check: false,
+	context_budget: { scoring: { enabled: false } },
 	knowledge: { enabled: false, hive_enabled: false },
 	memory: { enabled: false },
 	hooks: { delegation_gate: false, system_enhancer: true },
@@ -178,6 +179,20 @@ describe('System Enhancer — M10 learned-content sanitization (#2759)', () => {
 		const host = await bootSwarmPluginHost(tempDir, {
 			...HOST_CONFIG,
 			...configOverrides,
+			context_budget: {
+				...HOST_CONFIG.context_budget,
+				...(configOverrides.context_budget as
+					| Record<string, unknown>
+					| undefined),
+				scoring: {
+					...HOST_CONFIG.context_budget.scoring,
+					...((
+						configOverrides.context_budget as
+							| { scoring?: Record<string, unknown> }
+							| undefined
+					)?.scoring ?? {}),
+				},
+			},
 		});
 		const messages: HostPartsMessage[] = [
 			{

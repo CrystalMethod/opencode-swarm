@@ -18,6 +18,7 @@ import {
 	bootSwarmPluginHost,
 	createPluginHostProject,
 } from '../helpers/plugin-host';
+import { safeRmRecursive } from '../helpers/safe-test-dir';
 
 describe('SECURITY: Additional Handoff Attack Vectors', () => {
 	let testDir: string;
@@ -28,6 +29,7 @@ describe('SECURITY: Additional Handoff Attack Vectors', () => {
 		max_iterations: 5,
 		qa_retry_limit: 3,
 		inject_phase_reminders: true,
+		context_budget: { scoring: { enabled: false } },
 		hooks: {
 			system_enhancer: true,
 			compaction: true,
@@ -47,12 +49,11 @@ describe('SECURITY: Additional Handoff Attack Vectors', () => {
 
 	afterEach(() => {
 		if (testDir && fs.existsSync(testDir)) {
-			fs.rmSync(testDir, {
-				recursive: true,
-				force: true,
-				maxRetries: 3,
-				retryDelay: 50,
-			});
+			try {
+				safeRmRecursive(testDir);
+			} catch {
+				// Best-effort cleanup; registered host workers can briefly hold handles.
+			}
 		}
 		resetSwarmState();
 	});

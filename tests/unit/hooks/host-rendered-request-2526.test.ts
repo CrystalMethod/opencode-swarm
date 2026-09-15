@@ -231,6 +231,7 @@ export async function deriveCapturedRequest(): Promise<CapturedRequest> {
 
 		const plugin = await bootKnowledgeHost(directory, {
 			execution_mode: 'balanced',
+			context_budget: { scoring: { enabled: false } },
 			memory: { enabled: true },
 			guardrails: { enabled: true },
 		});
