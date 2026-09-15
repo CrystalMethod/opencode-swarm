@@ -856,7 +856,13 @@ function hasRevisionIndependentDiscoverySemantics(
 }
 
 interface PrReviewLatestTypedFailure {
-	failureClass: BackgroundDelegationWorkflowLaneFailureClass;
+	/**
+	 * Persisted vocabulary: a legacy `'deadline'` record feeds this via
+	 * `latestTypedFailureForBaseDimension` (the record-side read type widens
+	 * for pre-#2615 durable rows), so this field uses the disclosure
+	 * vocabulary, which includes the retired member.
+	 */
+	failureClass: PrReviewDisclosureFailureClass;
 	terminalEventId: string;
 	recordedAt: number;
 	/** Contributing lane/batch identity, when available (issue #2383). */
