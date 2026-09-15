@@ -58,6 +58,13 @@ export interface StageAGateRouteEventInput {
 	/** Attributed task, or null when no single task is attributable. */
 	taskId: string | null;
 	guardrailsEnabled: boolean;
+	/**
+	 * The correlation's workflow generation cursor, when the caller holds one
+	 * (the guardrails pending-gate-task map carries it). Required for the
+	 * `late` attempt class to be recordable; absent leaves the recorder's
+	 * fail-open refusal in force.
+	 */
+	generation?: number;
 }
 
 function buildEvent(input: StageAGateRouteEventInput): Record<string, unknown> {
@@ -132,6 +139,9 @@ export function recordStageAGateRoute(
 		sessionId: input.sessionID ?? undefined,
 		callId: input.callID ?? undefined,
 		taskId: input.taskId ?? undefined,
+		...(typeof input.generation === 'number'
+			? { generation: input.generation }
+			: {}),
 		attemptClass: stageARouteAttemptClass(input.route),
 		outcomeStatus: input.route === 'valid_pass' ? 'success' : 'unknown',
 	});

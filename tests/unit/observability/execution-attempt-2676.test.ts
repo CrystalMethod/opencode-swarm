@@ -213,7 +213,7 @@ describe('execution-attempt records — real Stage A handler drive (AC1)', () =>
 		expect(data.taskId).toBe('1.1');
 	});
 
-	test('late_result without a generation cursor is honestly refused (this seam holds none)', () => {
+	test('late_result without a generation cursor is honestly refused', () => {
 		recordStageAGateRoute(directory, {
 			route: 'late_result',
 			sessionID: 'stage-a-sess',
@@ -222,6 +222,21 @@ describe('execution-attempt records — real Stage A handler drive (AC1)', () =>
 			guardrailsEnabled: true,
 		});
 		expect(attemptEvents().length).toBe(0);
+	});
+
+	test('late_result with the threaded generation records the late class', () => {
+		recordStageAGateRoute(directory, {
+			route: 'late_result',
+			sessionID: 'stage-a-sess',
+			callID: 'stage-a-call',
+			taskId: null,
+			guardrailsEnabled: true,
+			generation: 4,
+		});
+		const captured = attemptEvents();
+		expect(captured.length).toBe(1);
+		expect(captured[0].data.attemptClass).toBe('late');
+		expect(captured[0].data.generation).toBe(4);
 	});
 
 	test('the route-to-class mapping covers the closed route vocabulary', () => {
