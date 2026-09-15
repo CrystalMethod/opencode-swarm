@@ -129,9 +129,11 @@ import {
 	toTaskIdPlanContextOptions,
 } from './plan-task-id-context.js';
 import {
+	EXPLICIT_TASK_ID_FIELDS,
 	resolveDelegatedPlanTaskId,
 	resolveTaskId,
 	TASK_ID_RESOLUTION_LIMITS,
+	type TaskIdPolicy,
 } from './task-id-resolver.js';
 
 export { resolveDelegatedPlanTaskId } from './task-id-resolver.js';
@@ -2667,6 +2669,34 @@ const TASK_GATE_AGENTS = new Set([
 	'sme',
 ]);
 
+const EXPLICIT_TASK_EVIDENCE_AGENTS = new Set([
+	'critic',
+	'critic_sounding_board',
+	'critic_drift_verifier',
+	'critic_hallucination_verifier',
+	'critic_architecture_supervisor',
+]);
+
+function isExplicitTaskEvidenceAgent(targetAgent: string): boolean {
+	return EXPLICIT_TASK_EVIDENCE_AGENTS.has(stripKnownSwarmPrefix(targetAgent));
+}
+
+type EvidenceTaskResolutionOptions = {
+	policy?: TaskIdPolicy;
+	allowSessionFallback?: boolean;
+};
+
+function evidenceTaskResolutionOptions(
+	targetAgent: string,
+	allowSessionFallback?: boolean,
+): EvidenceTaskResolutionOptions | undefined {
+	if (isExplicitTaskEvidenceAgent(targetAgent)) {
+		return { policy: 'attribution', allowSessionFallback: false };
+	}
+	if (allowSessionFallback === false) return { allowSessionFallback: false };
+	return undefined;
+}
+
 export function canRunWhileTaskAwaitsCompletion(input: {
 	directory: string | undefined;
 	normalizedTool: string;
@@ -3027,10 +3057,10 @@ async function getEvidenceTaskId(
 }
 
 /**
- * Resolves the correct task ID for evidence recording by chaining:
- * 1. Explicit task_id in direct args (structured field)
- * 2. Prompt-text extraction via resolveDelegatedPlanTaskId (plan-aware)
- * 3. Session-state fallback via getEvidenceTaskId
+ * Resolves the correct task ID for evidence recording by chaining the selected
+ * resolver policy with an optional session-state fallback. Most roles retain
+ * plan-aware prompt resolution; task-gated critic roles select attribution
+ * policy and disable the fallback so only structured IDs or exact markers bind.
  *
  * This fixes parallel evidence recording where multiple reviewer/test_engineer
  * agents are dispatched for different tasks from the same architect session.
@@ -3040,7 +3070,7 @@ async function resolveEvidenceTaskId(
 	args: Record<string, unknown> | undefined,
 	session: AgentSessionState,
 	directory: string,
-	options: { allowSessionFallback?: boolean } = {},
+	options: EvidenceTaskResolutionOptions = {},
 ): Promise<string | null> {
 	// Shared bounded resolution first; session fallback is allowed only when the
 	// resolver had no safe plan context and therefore made no authoritative
@@ -3059,22 +3089,58 @@ async function resolveEvidenceTaskId(
 
 	if (args) {
 		try {
-			const resolution = resolveTaskId(args, {
-				policy: 'plan',
-				...(planTaskIdContext
-					? toTaskIdPlanContextOptions(planTaskIdContext)
-					: {}),
-			});
+			const policy = options.policy ?? 'plan';
+			// A plan over the shared bounded-ID limit can still authorize an
+			// explicitly attributed critic task. The full plan has already been
+			// loaded above, so defer numeric membership validation to the existing
+			// full-plan check below instead of handing the bounded resolver an
+			// over-limit context that intentionally rejects numeric markers.
+			const planContextOptions =
+				policy === 'attribution' && planTaskIdContext?.status === 'over_limit'
+					? {}
+					: planTaskIdContext
+						? toTaskIdPlanContextOptions(planTaskIdContext)
+						: {};
+			const resolutionOptions = {
+				policy,
+				...planContextOptions,
+				// Durable critic gates accept only structured IDs or a bare TASK
+				// marker; quoted and example text is not dispatch attribution.
+				standaloneTaskMarkerOnly: policy === 'attribution',
+			};
+			const resolution = resolveTaskId(args, resolutionOptions);
 			if (resolution.status === 'resolved') {
+				let resolvedTaskId = resolution.taskId;
+				if (policy === 'attribution' && !isStrictTaskId(resolvedTaskId)) {
+					// The generic attribution resolver intentionally accepts safe named
+					// IDs for non-gate consumers. Durable task-gate evidence is stricter:
+					// retry marker-only attribution so a named explicit value cannot
+					// shadow a valid numeric TASK marker, then fail closed otherwise.
+					const markerOnlyArgs = { ...args };
+					for (const field of EXPLICIT_TASK_ID_FIELDS) {
+						delete markerOnlyArgs[field];
+					}
+					const markerResolution = resolveTaskId(
+						markerOnlyArgs,
+						resolutionOptions,
+					);
+					if (
+						markerResolution.status !== 'resolved' ||
+						!isStrictTaskId(markerResolution.taskId)
+					) {
+						return null;
+					}
+					resolvedTaskId = markerResolution.taskId;
+				}
 				if (
 					planTaskIdContext?.status === 'over_limit' &&
 					!plan?.phases.some((phase) =>
-						phase?.tasks?.some((task) => task?.id === resolution.taskId),
+						phase?.tasks?.some((task) => task?.id === resolvedTaskId),
 					)
 				) {
 					return null;
 				}
-				return resolution.taskId;
+				return resolvedTaskId;
 			}
 			if (
 				resolution.status === 'invalid' ||
@@ -4410,12 +4476,15 @@ export function createDelegationGateHook(
 				args,
 				stageBSession,
 				directory,
-				activePrReviewBinding ? { allowSessionFallback: false } : undefined,
+				evidenceTaskResolutionOptions(
+					targetAgent,
+					activePrReviewBinding ? false : undefined,
+				),
 			);
 			const candidateTaskIds = new Set<string>();
 			if (resolvedTaskId) candidateTaskIds.add(resolvedTaskId);
 			const dispatchPlan = await loadPlanJsonOnly(directory);
-			if (dispatchPlan) {
+			if (dispatchPlan && !isExplicitTaskEvidenceAgent(targetAgent)) {
 				const knownIds = new Set(
 					dispatchPlan.phases.flatMap((phase) =>
 						phase.tasks.map((task) => task.id),
@@ -5453,10 +5522,13 @@ export function createDelegationGateHook(
 						}
 						if (subagentSessionId) {
 							const mergedArgs = { ...(storedArgs ?? {}), ...directArgs };
+							const normalizedSubagentType =
+								stripKnownSwarmPrefix(subagentType);
 							const evidenceTaskId = await resolveEvidenceTaskId(
 								mergedArgs,
 								session,
 								directory,
+								evidenceTaskResolutionOptions(normalizedSubagentType),
 							);
 							const scope =
 								session.declaredCoderScope &&
@@ -5492,9 +5564,7 @@ export function createDelegationGateHook(
 								evidenceTaskId,
 								workspace: fallbackWorkspace,
 								taskChangeContext,
-								workflowGeneration: TASK_GATE_AGENTS.has(
-									stripKnownSwarmPrefix(subagentType),
-								)
+								workflowGeneration: TASK_GATE_AGENTS.has(normalizedSubagentType)
 									? stageBDispatchGenerationsByCallID
 											.get(input.callID)
 											?.get(evidenceTaskId ?? '')
@@ -6312,10 +6382,12 @@ export function createDelegationGateHook(
 					let coderSettleTaskId: string | null = null;
 					try {
 						const mergedArgs = { ...(storedArgs ?? {}), ...directArgs };
+						const targetAgentForEvidence = stripKnownSwarmPrefix(subagentType);
 						let evidenceTaskId = await resolveEvidenceTaskId(
 							mergedArgs,
 							session,
 							directory,
+							evidenceTaskResolutionOptions(targetAgentForEvidence),
 						);
 						// Issue #2214 belt: the toolBefore scope preflight may have
 						// resolved the task via sources resolveEvidenceTaskId lacks
@@ -6343,8 +6415,6 @@ export function createDelegationGateHook(
 								'explorer',
 								'sme',
 							];
-							const targetAgentForEvidence =
-								stripKnownSwarmPrefix(subagentType);
 							if (gateAgents.includes(targetAgentForEvidence)) {
 								if (
 									targetAgentForEvidence === 'reviewer' ||
