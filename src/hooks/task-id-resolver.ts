@@ -32,6 +32,12 @@ export type TaskIdResolution =
 
 export interface ResolveTaskIdOptions {
 	policy: TaskIdPolicy;
+	/**
+	 * Restrict text-derived attribution to bare, standalone TASK lines. This is
+	 * used for durable critic evidence, where quoted/example text is not proof
+	 * that a critic was dispatched for a task. Structured ID fields still win.
+	 */
+	standaloneTaskMarkerOnly?: boolean;
 	knownPlanTaskIds?: ReadonlySet<string>;
 	/** The caller observed a valid plan whose task-ID cardinality exceeded the bound. */
 	planContextOverLimit?: boolean;
@@ -63,10 +69,58 @@ const ATTRIBUTION_ID_MARKER =
 // separately handles numeric IDs embedded in prose.
 const ATTRIBUTION_TASK_MARKER =
 	/\bTASK\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*(?=\r?$)/gim;
+const ATTRIBUTION_TASK_MARKER_STANDALONE =
+	/^TASK\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9._-]*)[ \t]*\r?$/gim;
 const ATTRIBUTION_ID_MARKER_RAW =
 	/\b(?:task_id|task-id|taskId)\s*[:=][ \t]*([^\s]*)/gi;
 const ATTRIBUTION_TASK_MARKER_RAW =
 	/\bTASK\s*[:=][ \t]*([^\s]+)[ \t]*(?=\r?$)/gim;
+const ATTRIBUTION_TASK_MARKER_RAW_STANDALONE =
+	/^TASK\s*[:=][ \t]*([^\s]+)[ \t]*\r?$/gim;
+
+/** Remove Markdown code/quote blocks before treating free text as evidence. */
+function stripUntrustedAttributionMarkdown(text: string): string {
+	const lines = text.split(/\r?\n/);
+	const kept: string[] = [];
+	let fence: { marker: '`' | '~'; length: number } | undefined;
+	let inBlockQuote = false;
+
+	for (const line of lines) {
+		if (fence) {
+			const close = line.match(/^[ \t]{0,3}(`+|~+)[ \t]*$/);
+			if (
+				close &&
+				close[1][0] === fence.marker &&
+				close[1].length >= fence.length
+			) {
+				fence = undefined;
+			}
+			continue;
+		}
+
+		const open = line.match(/^[ \t]{0,3}(`{3,}|~{3,})(.*)$/);
+		if (open && !(open[1][0] === '`' && open[2].includes('`'))) {
+			fence = { marker: open[1][0] as '`' | '~', length: open[1].length };
+			continue;
+		}
+
+		if (/^[ \t]{0,3}>/.test(line)) {
+			inBlockQuote = true;
+			continue;
+		}
+		if (inBlockQuote) {
+			if (line.trim() === '') {
+				inBlockQuote = false;
+			} else {
+				// Markdown allows lazy continuation lines within a block quote.
+				continue;
+			}
+		}
+		kept.push(line);
+	}
+
+	return kept.join('\n');
+}
 
 function isSafeAttributionId(value: string): boolean {
 	return (
@@ -270,12 +324,15 @@ export function resolveTaskId(
 			const textSelection = select(textCandidates, 'text');
 			if (textSelection) return textSelection;
 		} else {
+			const markerTextFields = options.standaloneTaskMarkerOnly
+				? textFields.map(stripUntrustedAttributionMarkdown)
+				: textFields;
 			let hasInvalidRawMarker = false;
-			for (const rawMarker of [
-				ATTRIBUTION_ID_MARKER_RAW,
-				ATTRIBUTION_TASK_MARKER_RAW,
-			]) {
-				for (const text of textFields) {
+			const rawMarkers = options.standaloneTaskMarkerOnly
+				? [ATTRIBUTION_TASK_MARKER_RAW_STANDALONE]
+				: [ATTRIBUTION_ID_MARKER_RAW, ATTRIBUTION_TASK_MARKER_RAW];
+			for (const rawMarker of rawMarkers) {
+				for (const text of markerTextFields) {
 					rawMarker.lastIndex = 0;
 					for (const match of text.matchAll(rawMarker)) {
 						const value = match[1];
@@ -296,8 +353,11 @@ export function resolveTaskId(
 			}
 			if (hasInvalidRawMarker) return { status: 'invalid', input: 'marker' };
 			const marked = new Set<string>();
-			for (const marker of [ATTRIBUTION_ID_MARKER, ATTRIBUTION_TASK_MARKER]) {
-				for (const text of textFields) {
+			const markers = options.standaloneTaskMarkerOnly
+				? [ATTRIBUTION_TASK_MARKER_STANDALONE]
+				: [ATTRIBUTION_ID_MARKER, ATTRIBUTION_TASK_MARKER];
+			for (const marker of markers) {
+				for (const text of markerTextFields) {
 					marker.lastIndex = 0;
 					for (const match of text.matchAll(marker)) {
 						const value = match[1];

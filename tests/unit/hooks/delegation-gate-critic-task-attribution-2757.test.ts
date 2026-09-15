@@ -236,6 +236,42 @@ describe('delegation-gate — regression: plan-level critic attribution (#2757)'
 		expect(evidence?.gates.critic).toBeDefined();
 	});
 
+	for (const [context, prompt] of [
+		['fenced code', `\`\`\`text\nTASK: ${TASK_ID}\n\`\`\``],
+		['Markdown blockquote', `> TASK: ${TASK_ID}`],
+		['quoted text', `"TASK: ${TASK_ID}"`],
+		['prose-suffixed marker', `Review this prompt: TASK: ${TASK_ID}`],
+		['free-text task_id marker', `task_id: ${TASK_ID}`],
+	] as const) {
+		it(`does not record critic evidence from ${context} TASK text (F7)`, async () => {
+			const sessionID = `critic-untrusted-${context.replaceAll(' ', '-')}`;
+			ensureAgentSession(sessionID, 'architect', tmpDir);
+			const hook = createDelegationGateHook(makeConfig(), tmpDir);
+
+			await settleCritic(hook, sessionID, sessionID, {
+				subagent_type: 'critic',
+				prompt,
+			});
+
+			expect(await readTaskEvidence(tmpDir, TASK_ID)).toBeNull();
+		});
+	}
+
+	it('records critic evidence from a bare standalone TASK marker (F7)', async () => {
+		const sessionID = 'critic-bare-task-marker';
+		ensureAgentSession(sessionID, 'architect', tmpDir);
+		const hook = createDelegationGateHook(makeConfig(), tmpDir);
+
+		await settleCritic(hook, sessionID, sessionID, {
+			subagent_type: 'critic',
+			prompt: `Review the exact task.\nTASK: ${TASK_ID}`,
+		});
+
+		const evidence = await readTaskEvidence(tmpDir, TASK_ID);
+		expect(evidence?.required_gates).toContain('critic');
+		expect(evidence?.gates.critic).toBeDefined();
+	});
+
 	it('re-satisfies explicit critic evidence after an accepted coder mutation (F14)', async () => {
 		const sessionID = 'critic-explicit-rerun';
 		ensureAgentSession(sessionID, 'architect', tmpDir);

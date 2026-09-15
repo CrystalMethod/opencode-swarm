@@ -3100,10 +3100,14 @@ async function resolveEvidenceTaskId(
 					: planTaskIdContext
 						? toTaskIdPlanContextOptions(planTaskIdContext)
 						: {};
-			const resolution = resolveTaskId(args, {
+			const resolutionOptions = {
 				policy,
 				...planContextOptions,
-			});
+				// Durable critic gates accept only structured IDs or a bare TASK
+				// marker; quoted and example text is not dispatch attribution.
+				standaloneTaskMarkerOnly: policy === 'attribution',
+			};
+			const resolution = resolveTaskId(args, resolutionOptions);
 			if (resolution.status === 'resolved') {
 				let resolvedTaskId = resolution.taskId;
 				if (policy === 'attribution' && !isStrictTaskId(resolvedTaskId)) {
@@ -3115,10 +3119,10 @@ async function resolveEvidenceTaskId(
 					for (const field of EXPLICIT_TASK_ID_FIELDS) {
 						delete markerOnlyArgs[field];
 					}
-					const markerResolution = resolveTaskId(markerOnlyArgs, {
-						policy,
-						...planContextOptions,
-					});
+					const markerResolution = resolveTaskId(
+						markerOnlyArgs,
+						resolutionOptions,
+					);
 					if (
 						markerResolution.status !== 'resolved' ||
 						!isStrictTaskId(markerResolution.taskId)
