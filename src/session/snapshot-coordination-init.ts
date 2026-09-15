@@ -49,6 +49,10 @@ interface ReadinessEntry {
 	error?: string;
 }
 
+function isReadinessEntryClosing(entry: ReadinessEntry | undefined): boolean {
+	return entry?.state === 'closing';
+}
+
 export interface SnapshotCoordinationStatus {
 	state: ReadinessState | 'idle';
 	attemptId?: number;
@@ -242,6 +246,10 @@ async function initializeSnapshotCoordination(
 			},
 		);
 	} catch (error) {
+		// A superseded recovery no longer owns the plan authority. Preserve the
+		// typed signal so the coordinator can mark readiness superseded and stop
+		// before applying the pre-resolution cache or publishing its projection.
+		if (error instanceof PlanRecoverySupersededError) throw error;
 		advisoryWarn(
 			`[opencode-swarm] Authoritative plan recovery failed; retaining pre-resolution cache: ${
 				error instanceof Error ? error.message : String(error)
@@ -326,8 +334,15 @@ export function startSnapshotCoordinationInitialization(
 			entry.state = 'succeeded';
 		})
 		.catch((error: unknown) => {
-			entry.state = 'failed';
-			entry.error = error instanceof Error ? error.message : String(error);
+			if (error instanceof PlanRecoverySupersededError) {
+				if (entry.state !== 'closing' && entries.get(root) === entry) {
+					entry.state = 'superseded';
+					entry.error = error.message;
+				}
+			} else {
+				entry.state = 'failed';
+				entry.error = error instanceof Error ? error.message : String(error);
+			}
 			throw error;
 		})
 		.finally(() => {
@@ -356,18 +371,37 @@ export async function ensureSnapshotCoordinationReady(
 ): Promise<void> {
 	const root = canonicalProjectKey(directory);
 	const entry = entries.get(root);
-	if (!entry) return startSnapshotCoordinationInitialization(root);
-	if (entry.state === 'closing') {
+	if (entry?.state === 'closing') {
 		throw new Error('coordination initialization is closing for reset-session');
 	}
-	if (entry.state === 'timed_out' && !entry.settled) {
+	if (entry?.state === 'timed_out' && !entry.settled) {
 		throw new Error(
 			'coordination initialization remains unsettled after timeout',
 		);
 	}
+	if (!entry || (entry.state === 'superseded' && entry.settled)) {
+		// Supersession is retryable only on a later readiness request. Starting
+		// exactly one attempt here coalesces concurrent callers and avoids an
+		// unbounded retry loop when hydration keeps superseding initialization.
+		await startSnapshotCoordinationInitialization(root);
+		const retried = entries.get(root);
+		if (retried?.state === 'closing') {
+			throw new Error(
+				'coordination initialization is closing for reset-session',
+			);
+		}
+		if (retried?.state !== 'succeeded') {
+			throw new Error(retried?.error ?? 'coordination initialization failed');
+		}
+		return;
+	}
 	await entry.underlying;
-	if (entry.state !== 'succeeded')
+	if (isReadinessEntryClosing(entry)) {
+		throw new Error('coordination initialization is closing for reset-session');
+	}
+	if (entry.state !== 'succeeded') {
 		throw new Error(entry.error ?? 'coordination initialization failed');
+	}
 }
 
 export function retrySnapshotCoordinationInitialization(

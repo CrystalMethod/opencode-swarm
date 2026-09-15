@@ -2359,21 +2359,29 @@ export async function rebuildPlan(
 		swarmDir,
 		`plan.json.rebuild.${Date.now()}.${Math.floor(Math.random() * 1e9)}`,
 	);
-	{
-		const fd = openSync(tempPlanPath, 'w');
+	try {
+		{
+			const fd = openSync(tempPlanPath, 'w');
+			try {
+				writeFileSync(fd, JSON.stringify(targetPlan, null, 2), 'utf8');
+				fsyncSync(fd);
+			} finally {
+				closeSync(fd);
+			}
+		}
+		// Keep this synchronous guard adjacent to the atomic rename. Unlike an
+		// async post-check, it prevents a superseded coordinator from swapping the
+		// canonical projection after recovery work has completed.
+		options?.preCommitCheck?.();
+		renameSync(tempPlanPath, planPath);
+		invalidateCachedArtifact(planPath);
+	} finally {
 		try {
-			writeFileSync(fd, JSON.stringify(targetPlan, null, 2), 'utf8');
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
+			unlinkSync(tempPlanPath);
+		} catch {
+			/* already renamed or never created */
 		}
 	}
-	// Keep this synchronous guard adjacent to the atomic rename.  Unlike an
-	// async post-check, it prevents a superseded coordinator from swapping the
-	// canonical projection after recovery work has completed.
-	options?.preCommitCheck?.();
-	renameSync(tempPlanPath, planPath);
-	invalidateCachedArtifact(planPath);
 
 	// Write in-progress marker right after plan.json rename.
 	try {
@@ -2413,10 +2421,18 @@ export async function rebuildPlan(
 			swarmDir,
 			`plan.md.rebuild.${Date.now()}.${Math.floor(Math.random() * 1e9)}`,
 		);
-		await bunWrite(tempMdPath, markdownWithHash);
-		options?.preCommitCheck?.();
-		renameSync(tempMdPath, mdPath);
-		invalidateCachedArtifact(mdPath);
+		try {
+			await bunWrite(tempMdPath, markdownWithHash);
+			options?.preCommitCheck?.();
+			renameSync(tempMdPath, mdPath);
+			invalidateCachedArtifact(mdPath);
+		} finally {
+			try {
+				unlinkSync(tempMdPath);
+			} catch {
+				/* already renamed or never created */
+			}
+		}
 	} catch (error) {
 		markdownWriteFailed = true;
 		markdownWriteError = error;

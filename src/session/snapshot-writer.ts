@@ -62,10 +62,11 @@ const SNAPSHOT_RENAME_RETRY_DELAY_MS = 50;
  * ENOENT would only delay the log.
  *
  * Production uses synchronous rename so the authority check and the atomic OS
- * operation happen in one event-loop turn.  The DI seam accepts an async
- * adapter for deterministic race tests; such an adapter must honor the
- * predicate immediately before its underlying atomic rename.  A post-await
- * check cannot undo a rename that has already committed.
+ * operation happen in one event-loop turn. The DI seam accepts an async
+ * adapter for deterministic race tests; a resolved adapter only counts as a
+ * commit when its unique temp source is gone and the target exists. This also
+ * handles Windows reporting a transient error after the OS completed the
+ * rename, before a later authority check can suppress cache invalidation.
  *
  * Throws the last rename error when the budget is exhausted; the caller owns
  * temp-file cleanup and error swallowing.
@@ -76,25 +77,29 @@ async function renameWithTransientRetry(
 	shouldCommit?: () => boolean,
 ): Promise<boolean> {
 	let lastError: unknown;
+	const renameCommitted = () => !existsSync(tempPath) && existsSync(targetPath);
 	for (let attempt = 0; attempt < SNAPSHOT_RENAME_MAX_ATTEMPTS; attempt++) {
 		if (shouldCommit && !shouldCommit()) return false;
 		try {
 			await _internals.rename(tempPath, targetPath, shouldCommit);
-			return true;
+			// An async adapter may finish after its authority predicate has gone
+			// false and decline the swap with a void return. Do not mistake that
+			// for a commit or invalidate a cache for a file that stayed unchanged.
+			return renameCommitted();
 		} catch (error) {
 			lastError = error;
 			const code = (error as NodeJS.ErrnoException).code;
 			// Windows can report a sharing violation for a rename that actually
-			// committed, so a retry then finds the source already gone. Treating
-			// that as a failure would skip the caller's cache invalidation for a
-			// file that really did change — the precise stale-read the #1729
-			// invalidation exists to prevent. Only a retry can observe this, so
-			// the check is scoped to attempt > 0.
+			// committed. Check immediately, before the next iteration's authority
+			// check can return false and skip cache invalidation. ENOENT is treated
+			// as this case only on a retry: on the first attempt it can also mean
+			// the temp source disappeared before rename was attempted.
 			if (
-				code === 'ENOENT' &&
-				attempt > 0 &&
-				!existsSync(tempPath) &&
-				existsSync(targetPath)
+				(code === 'EEXIST' ||
+					code === 'EBUSY' ||
+					code === 'EPERM' ||
+					(code === 'ENOENT' && attempt > 0)) &&
+				renameCommitted()
 			) {
 				return true;
 			}

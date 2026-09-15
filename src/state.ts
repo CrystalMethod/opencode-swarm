@@ -720,7 +720,8 @@ export interface AgentSessionState {
 	 * in-flight hydration); `rehydrateState` stamps its applying generation.
 	 * A hydration at authority `{ generation: g, epoch: e }` evicts owned
 	 * sessions from another epoch and same-epoch sessions with
-	 * `hydrationStamp <= g`, so live sessions created after `g` began survive.
+	 * `hydrationStamp <= g`, so sessions created after `g` began survive only
+	 * within the same authority incarnation.
 	 * `hydrationAuthorityEpoch` disambiguates a numerically reused generation
 	 * after bounded project-authority eviction or reset. Also never snapshotted.
 	 */

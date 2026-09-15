@@ -43,6 +43,7 @@ mock.module('../../../src/evidence/manager.js', () => ({
 mock.module('../../../src/plan/manager.js', () => ({
 	loadPlan: mockLoadPlan,
 	loadPlanJsonOnly: mockLoadPlanJsonOnly,
+	PlanRecoverySupersededError: class PlanRecoverySupersededError extends Error {},
 	isTaskSettled: mock(() => false),
 	derivePlanMarkdown: mock((plan: any) => '# Derived Plan\n'),
 	savePlan: mock(),

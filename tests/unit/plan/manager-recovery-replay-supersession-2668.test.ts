@@ -209,6 +209,60 @@ describe('manager recovery replay authority fences (#2668)', () => {
 		);
 	});
 
+	describe('rebuildPlan markdown temp cleanup (F-003)', () => {
+		test('removes the staged markdown temp when superseded before rename', async () => {
+			const swarmDir = path.join(directory, '.swarm');
+			let sawStagedMarkdown = false;
+			const preCommitCheck = () => {
+				const names = fs.readdirSync(swarmDir);
+				if (names.some((name) => name.startsWith('plan.md.rebuild.'))) {
+					// Before the cleanup fix, this fence rejected publication while
+					// leaving the already-written plan.md.rebuild.* file behind.
+					sawStagedMarkdown = true;
+					throw new PlanRecoverySupersededError('new authority');
+				}
+			};
+
+			await expectSuperseded(() =>
+				rebuildPlan(directory, makePlan(), { preCommitCheck }),
+			);
+
+			expect(sawStagedMarkdown).toBe(true);
+			expect(
+				fs
+					.readdirSync(swarmDir)
+					.filter((name) => name.startsWith('plan.md.rebuild.')),
+			).toEqual([]);
+		});
+
+		test('removes the staged JSON temp when superseded before rename (R1)', async () => {
+			const swarmDir = path.join(directory, '.swarm');
+			const planPath = path.join(swarmDir, 'plan.json');
+			let sawStagedPlan = false;
+			const preCommitCheck = () => {
+				const names = fs.readdirSync(swarmDir);
+				if (names.some((name) => name.startsWith('plan.json.rebuild.'))) {
+					// Before the cleanup fix, this authority fence rejected the rename
+					// but left the fsynced plan.json.rebuild.* file in .swarm/.
+					sawStagedPlan = true;
+					throw new PlanRecoverySupersededError('new authority');
+				}
+			};
+
+			await expectSuperseded(() =>
+				rebuildPlan(directory, makePlan(), { preCommitCheck }),
+			);
+
+			expect(sawStagedPlan).toBe(true);
+			expect(fs.existsSync(planPath)).toBe(false);
+			expect(
+				fs
+					.readdirSync(swarmDir)
+					.filter((name) => name.startsWith('plan.json.rebuild.')),
+			).toEqual([]);
+		});
+	});
+
 	test('spec-staleness temp preparation cannot publish after supersession', async () => {
 		const plan = { ...makePlan(), specHash: 'stale-hash' };
 		const planPath = path.join(directory, '.swarm', 'plan.json');

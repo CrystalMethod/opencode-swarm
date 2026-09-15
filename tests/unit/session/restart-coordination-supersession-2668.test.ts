@@ -16,9 +16,13 @@ import {
 	_internals as planManagerInternals,
 	resetStartupLedgerCheck,
 } from '../../../src/plan/manager';
-import { beginHydrationScope } from '../../../src/session/hydration-ownership';
+import {
+	beginHydrationScope,
+	hydrationProjectKey,
+} from '../../../src/session/hydration-ownership';
 import {
 	_snapshotCoordinationInternals,
+	ensureSnapshotCoordinationReady,
 	getSnapshotCoordinationStatus,
 	startSnapshotCoordinationInitialization,
 } from '../../../src/session/snapshot-coordination-init';
@@ -31,7 +35,11 @@ import {
 	type SnapshotData,
 	writeSnapshotProjection,
 } from '../../../src/session/snapshot-writer';
-import { resetSwarmState } from '../../../src/state';
+import {
+	buildRehydrationCache,
+	ensureAgentSession,
+	resetSwarmState,
+} from '../../../src/state';
 import { invalidateCachedArtifact } from '../../../src/utils/swarm-artifact-cache';
 import { writeApprovedPlan } from '../../../tests/helpers/approved-plan';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
@@ -151,7 +159,9 @@ describe('coordination supersession regression (#2668)', () => {
 		await waitFor(() => loadPlanStarted);
 		beginHydrationScope(directory);
 		releasePlan();
-		await initialization;
+		await expect(initialization).rejects.toBeInstanceOf(
+			PlanRecoverySupersededError,
+		);
 
 		expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
 			state: 'superseded',
@@ -190,7 +200,9 @@ describe('coordination supersession regression (#2668)', () => {
 		await waitFor(() => readStarted);
 		beginHydrationScope(directory);
 		releaseRead();
-		await initialization;
+		await expect(initialization).rejects.toBeInstanceOf(
+			PlanRecoverySupersededError,
+		);
 
 		expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
 			state: 'superseded',
@@ -241,7 +253,9 @@ describe('coordination supersession regression (#2668)', () => {
 		await waitFor(() => loadPlanCalls === 1);
 		beginHydrationScope(directory);
 		releaseFirstPlan();
-		await staleAttempt;
+		await expect(staleAttempt).rejects.toBeInstanceOf(
+			PlanRecoverySupersededError,
+		);
 		expect(getSnapshotCoordinationStatus(directory).state).toBe('superseded');
 
 		await startSnapshotCoordinationInitialization(directory);
@@ -300,5 +314,110 @@ describe('coordination supersession regression (#2668)', () => {
 			(JSON.parse(readFileSync(planPath, 'utf8')) as typeof expected).phases[0]
 				?.tasks[0]?.status,
 		).toBe('completed');
+	});
+});
+
+describe('PR #2777 coordination feedback regressions', () => {
+	describe('IA-001 — plan recovery supersession', () => {
+		test('preserves typed supersession before stale cache and projection publication', async () => {
+			const directory = makeProject('IA-001-plan-recovery');
+			const snapshot = makeSnapshot('authoritative');
+			writeSnapshotRows(directory, snapshot);
+			await writeSnapshotProjection(
+				directory,
+				makeSnapshot('pre-resolution-projection'),
+			);
+			const projectionPath = path.join(
+				directory,
+				'.swarm',
+				SNAPSHOT_PROJECTION_FILE,
+			);
+			const projectionBefore = readFileSync(projectionPath, 'utf8');
+			await writeApprovedPlan(directory, [
+				{
+					id: '1.1',
+					files: ['src/stale-cache-probe.ts'],
+					status: 'completed',
+				},
+			]);
+			const cacheBuild = await buildRehydrationCache(directory);
+			expect(cacheBuild.committed).toBe(true);
+
+			let releasePlan!: () => void;
+			let loadPlanStarted = false;
+			const planBarrier = new Promise<void>((resolve) => {
+				releasePlan = resolve;
+			});
+			_snapshotCoordinationInternals.loadPlan = async () => {
+				loadPlanStarted = true;
+				await planBarrier;
+				throw new PlanRecoverySupersededError(
+					'newer plan recovery authority won',
+				);
+			};
+
+			const initialization = startSnapshotCoordinationInitialization(directory);
+			await waitFor(() => loadPlanStarted);
+			const session = ensureAgentSession('ia-001-cache-probe', 'coder');
+			session.owningProjectKey = hydrationProjectKey(directory);
+			expect(session.taskWorkflowStates.get('1.1')).toBeUndefined();
+
+			// Before this fix, the generic catch consumed this typed supersession,
+			// then applied the pre-resolution completed task and rewrote the projection.
+			releasePlan();
+			await expect(initialization).rejects.toBeInstanceOf(
+				PlanRecoverySupersededError,
+			);
+			expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
+				state: 'superseded',
+				settled: true,
+			});
+			expect(session.taskWorkflowStates.get('1.1')).toBeUndefined();
+			expect(readFileSync(projectionPath, 'utf8')).toBe(projectionBefore);
+		});
+	});
+
+	describe('F-001 — readiness re-drive after supersession', () => {
+		test('redrives after real typed supersession from the plan pre-commit fence', async () => {
+			const directory = makeProject('F-001-readiness-redrive');
+			await writeApprovedPlan(directory, [
+				{
+					id: '1.1',
+					files: ['src/readiness-redrive-probe.ts'],
+					status: 'completed',
+				},
+			]);
+			let loadPlanCalls = 0;
+			_snapshotCoordinationInternals.loadPlan = async (
+				root,
+				cache,
+				options,
+			) => {
+				loadPlanCalls += 1;
+				if (loadPlanCalls === 1) beginHydrationScope(root);
+				return originalLoadPlan(root, cache, options);
+			};
+
+			await expect(
+				startSnapshotCoordinationInitialization(directory),
+			).rejects.toBeInstanceOf(PlanRecoverySupersededError);
+			expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
+				state: 'superseded',
+				settled: true,
+			});
+			expect(loadPlanCalls).toBe(1);
+
+			// The first loadPlan call used the real coordinator preCommitCheck, which
+			// observed the newer hydration generation. Readiness then starts one fresh
+			// attempt under the current generation and completes normally.
+			await expect(
+				ensureSnapshotCoordinationReady(directory),
+			).resolves.toBeUndefined();
+			expect(loadPlanCalls).toBe(2);
+			expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
+				state: 'succeeded',
+				settled: true,
+			});
+		});
 	});
 });

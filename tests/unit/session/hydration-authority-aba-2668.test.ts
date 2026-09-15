@@ -22,6 +22,8 @@ import { rehydrateState } from '../../../src/session/snapshot-reader';
 import type { SnapshotData } from '../../../src/session/snapshot-writer';
 import {
 	buildRehydrationCache,
+	ensureAgentSession,
+	rehydrateSessionFromDisk,
 	resetSwarmState,
 	startAgentSession,
 	_internals as stateInternals,
@@ -306,6 +308,53 @@ describe('process-monotonic hydration authority', () => {
 
 		expect(result).toEqual({ committed: false, reason: 'superseded' });
 		expect(replacement.authorityEpoch).not.toBe(0);
+	});
+
+	describe('rehydration cache committed-result contract (GAP-001)', () => {
+		test('public session rehydration does not apply a cache after authority supersedes its build', async () => {
+			const directory = makeProject('aba-cache-committed-result');
+			const session = ensureAgentSession('uncommitted-cache-session', 'coder');
+			const originalAuthority = beginHydrationScope(directory);
+			await writeApprovedPlan(directory, [
+				{ id: '1.1', files: ['src/cache.ts'], status: 'completed' },
+			]);
+			expect((await buildRehydrationCache(directory)).committed).toBe(true);
+			expect(session.taskWorkflowStates.has('1.1')).toBe(false);
+
+			// The real builder captures the old authority before its async plan read.
+			// Evict that authority before the post-read publication check; the public
+			// rehydration path must honor committed:false instead of applying the old cache.
+			const originalBuild = stateInternals.buildRehydrationCache;
+			let buildResult: Awaited<
+				ReturnType<typeof buildRehydrationCache>
+			> | null = null;
+			stateInternals.buildRehydrationCache = async (root, options) => {
+				buildResult = await originalBuild(root, options);
+				return buildResult;
+			};
+			try {
+				const pending = rehydrateSessionFromDisk(
+					directory,
+					session,
+					() => true,
+				);
+				floodProjectAuthorities();
+				const replacement = beginHydrationScope(directory);
+				expect(replacement.authorityEpoch).not.toBe(
+					originalAuthority.authorityEpoch,
+				);
+
+				await pending;
+
+				expect(buildResult).toEqual({
+					committed: false,
+					reason: 'superseded',
+				});
+				expect(session.taskWorkflowStates.has('1.1')).toBe(false);
+			} finally {
+				stateInternals.buildRehydrationCache = originalBuild;
+			}
+		});
 	});
 
 	test('aggregate ownership from an evicted epoch cannot delete new state', async () => {
