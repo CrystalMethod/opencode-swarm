@@ -153,14 +153,22 @@ describe('record_recurrence_sweep', () => {
 	});
 
 	test('receipt is issue-bound', async () => {
-		await executeRecordRecurrenceSweep(
-			{
-				issueNumber: 999,
-				defectClass: 'no defect class',
-				justification: 'n/a',
-			},
-			dir,
+		// The fixture itself is valid (v3 shape incl. relatedProblems) so the
+		// assertion exercises ISSUE binding, not schema rejection: a receipt
+		// written for issue 999 must never satisfy the gate for issue 42.
+		const written = JSON.parse(
+			await executeRecordRecurrenceSweep(
+				{
+					issueNumber: 999,
+					defectClass: 'no defect class',
+					justification: 'n/a',
+					relatedProblems: [{ ref: '#2131' }],
+				},
+				dir,
+			),
 		);
+		expect(written.success).toBe(true);
+		expect(await recurrenceSweepReceiptExists(dir, 999)).toBe(true);
 		expect(await recurrenceSweepReceiptExists(dir, 42)).toBe(false);
 	});
 });

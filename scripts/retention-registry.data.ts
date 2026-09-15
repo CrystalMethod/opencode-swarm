@@ -2221,7 +2221,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		],
 		writerCitations: [
 			'record-implementation-review.ts:87 / record-issue-publication.ts:74 / record-issue-reproduction.ts:85 / record-recurrence-sweep.ts:125 — atomic single JSONs with Zod-bounded fields',
-			'record-branch-freshness.ts:104 / record-trace-validation.ts:132 / record-merge-approval.ts:99 — issue #2564 v3 receipts: atomic single JSONs, unique per-process temp names, trace-validation upserts one bounded entry per phase',
+			'record-branch-freshness.ts:92 / record-trace-validation.ts:136 / record-merge-approval.ts:89 — issue #2564 v3 receipts: atomic single JSONs, unique per-process temp names, trace-validation upserts one bounded entry per phase',
 			'issue-trace-state.ts:435 writeTraceState + issue.ts:216-264 — transactional two-artifact write with rollback (:243-288)',
 		],
 		readerCitations: ['issue-trace-state.ts:396,414 — full-file reads with legacy completed→status normalization (:369-379); v3 readers branch-freshness/trace-validation/merge-approval co-located'],

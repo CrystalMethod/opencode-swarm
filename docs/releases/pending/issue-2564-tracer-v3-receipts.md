@@ -9,10 +9,10 @@
   fetch — and the reducer parks the trace with a one-shot `FRESHNESS_GATE` directive before
   the PLAN transition until the receipt permits.
 - **Per-phase validator receipts**: new `record_trace_validation` tool records each
-  `trace-check.sh phase <N>` outcome (phase enum 0..5, pass/fail, reviewedCommit + treeId,
-  both 40-hex) into `.swarm/trace-validation.json`, upserting per phase. The reducer's new
-  `TRACE_VALIDATION_GATE` blocks the commit-pr handoff while any recorded phase is failing
-  or none is recorded.
+  `trace-check.sh phase <N>` outcome (v3 phase enum 0..5 including 2.5/4.2/4.5/4.6, pass/fail,
+  reviewedCommit + treeId, both 40-hex) into `.swarm/trace-validation.json`, upserting per phase.
+  The reducer's new `TRACE_VALIDATION_GATE` blocks the commit-pr handoff while any recorded phase
+  is failing or none is recorded.
 - **Widened recurrence-sweep receipt**: `record_recurrence_sweep` now requires
   `relatedProblems` — the Phase 1 related-problems sweep results, at least one
   `{ref, note?}` entry — on both the real-defect-class and "no defect class" paths, and the
