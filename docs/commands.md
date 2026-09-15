@@ -894,10 +894,6 @@ Run golden Swarm memory recall evaluation fixtures
 
 **Args:** `--json, --instruction-pairing, --fixtures <directory>, --profiles <list>, --manifest <file>`
 
-With `--instruction-pairing`, runs the paired cached-vs-uncached
-instruction-selection control (issue #2672) and writes
-`.swarm/memory/instruction-pairing-report.json`.
-
 #### `/swarm memory audit-verify`
 
 Verify the memory audit-log hash chain (tamper detection)
