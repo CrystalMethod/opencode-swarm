@@ -18,6 +18,7 @@ import {
 	resolveMemoryStorageDir,
 	resolveSqliteDatabasePath,
 	resolveVettedMemoryRoot,
+	runInstructionSelectionPairing,
 	SQLiteMemoryProvider,
 	writeJsonlExport,
 } from '../memory';
@@ -519,6 +520,34 @@ export async function handleMemoryEvaluateCommand(
 ): Promise<string> {
 	const parsed = parseEvaluateArgs(directory, args);
 	if ('error' in parsed) return parsed.error;
+	if (parsed.instructionPairing) {
+		// #2672: paired cached-vs-uncached instruction-selection control. The
+		// durable report lands at .swarm/memory/instruction-pairing-report.json
+		// and the summary carries absolute measurements only (no percentages).
+		const pairingReport = await runInstructionSelectionPairing({
+			directory,
+			writeReport: true,
+		});
+		if (parsed.json)
+			return `${JSON.stringify(pairingReport, null, 2)}
+`;
+		const negativeCount = pairingReport.pairs.filter(
+			(pair) => pair.negative_result,
+		).length;
+		return [
+			'## Instruction Selection Pairing (#2672)',
+			'',
+			`- Paired tasks: \`${pairingReport.pairs.length}\``,
+			`- Negative results retained: \`${negativeCount}\``,
+			`- Cache invalidation verified: \`${pairingReport.cache_invalidation.verified}\``,
+			`- Instruction set digest: \`${pairingReport.identity.instruction_set_digest.slice(0, 16)}\``,
+			'- Report: `.swarm/memory/instruction-pairing-report.json`',
+			'',
+			'Per-pair latency, cache reads, uncached cost, and rendered prefix',
+			'lengths are in the report with their measurement denominators;',
+			'use `/swarm memory evaluate --instruction-pairing --json` for the full report.',
+		].join('\n');
+	}
 	const report = await evaluateMemoryRecallFixtures({
 		fixtureDirectory: parsed.fixtureDirectory,
 		...(parsed.profiles ? { profiles: parsed.profiles } : {}),
@@ -639,6 +668,7 @@ function parseEvaluateArgs(
 ):
 	| {
 			json: boolean;
+			instructionPairing: boolean;
 			fixtureDirectory: string;
 			profiles?: Array<'lexical' | 'hybrid' | 'hybrid+rerank'>;
 			manifestPath?: string;
@@ -652,15 +682,20 @@ function parseEvaluateArgs(
 		'fixtures',
 		'memory-recall',
 	);
+	let instructionPairing = false;
 	let profiles: Array<'lexical' | 'hybrid' | 'hybrid+rerank'> | undefined;
 	let manifestPath: string | undefined;
 	let heldoutCorpusDirectory: string | undefined;
 	const legacyUsage =
-		'Usage: /swarm memory evaluate [--json] [--fixtures <directory>]';
+		'Usage: /swarm memory evaluate [--json] [--instruction-pairing] [--fixtures <directory>]';
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
 		if (arg === '--json') {
 			json = true;
+			continue;
+		}
+		if (arg === '--instruction-pairing') {
+			instructionPairing = true;
 			continue;
 		}
 		if (arg === '--fixtures') {
@@ -668,7 +703,7 @@ function parseEvaluateArgs(
 			if (!next) {
 				return {
 					error:
-						'Usage: /swarm memory evaluate [--json] [--fixtures <directory>]',
+						'Usage: /swarm memory evaluate [--json] [--instruction-pairing] [--fixtures <directory>]',
 				};
 			}
 			const resolvedFixtures = path.resolve(directory, next);
@@ -740,7 +775,7 @@ function parseEvaluateArgs(
 			) {
 				return {
 					error:
-						'Usage: /swarm memory evaluate [--json] [--fixtures <directory>] [--profiles <lexical,hybrid,hybrid+rerank>] [--manifest <file>]',
+						'Usage: /swarm memory evaluate [--json] [--instruction-pairing] [--fixtures <directory>] [--profiles <lexical,hybrid,hybrid+rerank>] [--manifest <file>]',
 				};
 			}
 			profiles = requested as typeof profiles;
@@ -752,7 +787,7 @@ function parseEvaluateArgs(
 			if (!next) {
 				return {
 					error:
-						'Usage: /swarm memory evaluate [--json] [--fixtures <directory>] [--profiles <lexical,hybrid,hybrid+rerank>] [--manifest <file>]',
+						'Usage: /swarm memory evaluate [--json] [--instruction-pairing] [--fixtures <directory>] [--profiles <lexical,hybrid,hybrid+rerank>] [--manifest <file>]',
 				};
 			}
 			const resolvedManifest = path.resolve(directory, next);
@@ -825,6 +860,7 @@ function parseEvaluateArgs(
 	}
 	return {
 		json,
+		instructionPairing,
 		fixtureDirectory,
 		profiles,
 		manifestPath,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import {
 	BUNDLED_PROJECT_SKILL_ROOT,
 	BUNDLED_PROJECT_SKILLS,
@@ -162,6 +162,77 @@ describe('bundled skill runtime dependency closure', () => {
 				statSync(
 					join(ROOT, '.opencode', 'skills', dependency, 'SKILL.md'),
 				).isFile(),
+			).toBe(true);
+		}
+	});
+
+	test('runtime references to bundled skills in every consumer tree are dependency-closed (#2672)', () => {
+		// The bundled-skill scan above only visits .opencode/skills/<bundled-slug>/.
+		// Consumer directives also live in adapter trees (.claude, .agents) and
+		// elsewhere in src — the scan-root gap that hid the .claude consumers of
+		// merge-queue-readiness and skill-edit-validation. Every referenced slug
+		// must be bundled; a skill's own directory never counts as its consumer.
+		const consumerRoots = [
+			join(ROOT, '.opencode', 'skills'),
+			join(ROOT, '.claude', 'skills'),
+			join(ROOT, '.agents', 'skills'),
+			join(ROOT, 'src'),
+		];
+		const referencedBySlug = new Map<string, string[]>();
+		const collect = (directory: string, depth: number): void => {
+			if (depth > 12) return;
+			let entries;
+			try {
+				entries = readdirSync(directory, { withFileTypes: true });
+			} catch {
+				return;
+			}
+			for (const entry of entries) {
+				const candidate = join(directory, entry.name);
+				if (entry.isDirectory()) {
+					if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+					collect(candidate, depth + 1);
+				} else if (entry.isFile()) {
+					let source: string;
+					try {
+						if (statSync(candidate).size > 2 * 1024 * 1024) continue;
+						source = readFileSync(candidate, 'utf8');
+					} catch {
+						continue;
+					}
+					for (const match of source.matchAll(
+						/file:\.swarm\/bundled-skills\/([a-z0-9._/-]+)\/SKILL\.md/g,
+					)) {
+						const slug = match[1];
+						const normalized = candidate.split('\\').join('/');
+						if (normalized.includes(`/skills/${slug}/`)) continue;
+						const list = referencedBySlug.get(slug) ?? [];
+						list.push(relative(ROOT, candidate));
+						referencedBySlug.set(slug, list);
+					}
+				}
+			}
+		};
+		for (const root of consumerRoots) collect(root, 0);
+
+		// The #2672 six-case consumers must all be visible to this scan.
+		for (const slug of [
+			'ci-failure-batching',
+			'gate-attribution',
+			'merge-queue-readiness',
+			'skill-edit-validation',
+			'worktree-retry-cleanup',
+			'parallel-work-check',
+		]) {
+			expect(
+				(referencedBySlug.get(slug) ?? []).length,
+				`${slug} must have at least one consumer reference visible to the tree-wide scan`,
+			).toBeGreaterThan(0);
+		}
+		for (const [slug, consumers] of referencedBySlug) {
+			expect(
+				BUNDLED_SET.has(slug),
+				`${slug} is referenced at ${consumers.join(', ')} but is not bundled`,
 			).toBe(true);
 		}
 	});

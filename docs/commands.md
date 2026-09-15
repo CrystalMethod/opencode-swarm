@@ -892,7 +892,7 @@ Export current Swarm memory to JSONL files
 
 Run golden Swarm memory recall evaluation fixtures
 
-**Args:** `--json, --fixtures <directory>, --profiles <list>, --manifest <file>`
+**Args:** `--json, --instruction-pairing, --fixtures <directory>, --profiles <list>, --manifest <file>`
 
 #### `/swarm memory audit-verify`
 

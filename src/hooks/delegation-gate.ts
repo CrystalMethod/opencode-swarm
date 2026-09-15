@@ -22,6 +22,7 @@ import {
 } from '../background/workspace-snapshot.js';
 import type { PluginConfig } from '../config';
 import {
+	resolveEffectiveAgentOverride,
 	resolveRegisteredAgentModel,
 	resolveRuntimeAgentModel,
 } from '../config/agent-model.js';
@@ -128,9 +129,11 @@ import {
 	toTaskIdPlanContextOptions,
 } from './plan-task-id-context.js';
 import {
+	EXPLICIT_TASK_ID_FIELDS,
 	resolveDelegatedPlanTaskId,
 	resolveTaskId,
 	TASK_ID_RESOLUTION_LIMITS,
+	type TaskIdPolicy,
 } from './task-id-resolver.js';
 
 export { resolveDelegatedPlanTaskId } from './task-id-resolver.js';
@@ -2666,6 +2669,34 @@ const TASK_GATE_AGENTS = new Set([
 	'sme',
 ]);
 
+const EXPLICIT_TASK_EVIDENCE_AGENTS = new Set([
+	'critic',
+	'critic_sounding_board',
+	'critic_drift_verifier',
+	'critic_hallucination_verifier',
+	'critic_architecture_supervisor',
+]);
+
+function isExplicitTaskEvidenceAgent(targetAgent: string): boolean {
+	return EXPLICIT_TASK_EVIDENCE_AGENTS.has(stripKnownSwarmPrefix(targetAgent));
+}
+
+type EvidenceTaskResolutionOptions = {
+	policy?: TaskIdPolicy;
+	allowSessionFallback?: boolean;
+};
+
+function evidenceTaskResolutionOptions(
+	targetAgent: string,
+	allowSessionFallback?: boolean,
+): EvidenceTaskResolutionOptions | undefined {
+	if (isExplicitTaskEvidenceAgent(targetAgent)) {
+		return { policy: 'attribution', allowSessionFallback: false };
+	}
+	if (allowSessionFallback === false) return { allowSessionFallback: false };
+	return undefined;
+}
+
 export function canRunWhileTaskAwaitsCompletion(input: {
 	directory: string | undefined;
 	normalizedTool: string;
@@ -3026,10 +3057,10 @@ async function getEvidenceTaskId(
 }
 
 /**
- * Resolves the correct task ID for evidence recording by chaining:
- * 1. Explicit task_id in direct args (structured field)
- * 2. Prompt-text extraction via resolveDelegatedPlanTaskId (plan-aware)
- * 3. Session-state fallback via getEvidenceTaskId
+ * Resolves the correct task ID for evidence recording by chaining the selected
+ * resolver policy with an optional session-state fallback. Most roles retain
+ * plan-aware prompt resolution; task-gated critic roles select attribution
+ * policy and disable the fallback so only structured IDs or exact markers bind.
  *
  * This fixes parallel evidence recording where multiple reviewer/test_engineer
  * agents are dispatched for different tasks from the same architect session.
@@ -3039,7 +3070,7 @@ async function resolveEvidenceTaskId(
 	args: Record<string, unknown> | undefined,
 	session: AgentSessionState,
 	directory: string,
-	options: { allowSessionFallback?: boolean } = {},
+	options: EvidenceTaskResolutionOptions = {},
 ): Promise<string | null> {
 	// Shared bounded resolution first; session fallback is allowed only when the
 	// resolver had no safe plan context and therefore made no authoritative
@@ -3058,22 +3089,58 @@ async function resolveEvidenceTaskId(
 
 	if (args) {
 		try {
-			const resolution = resolveTaskId(args, {
-				policy: 'plan',
-				...(planTaskIdContext
-					? toTaskIdPlanContextOptions(planTaskIdContext)
-					: {}),
-			});
+			const policy = options.policy ?? 'plan';
+			// A plan over the shared bounded-ID limit can still authorize an
+			// explicitly attributed critic task. The full plan has already been
+			// loaded above, so defer numeric membership validation to the existing
+			// full-plan check below instead of handing the bounded resolver an
+			// over-limit context that intentionally rejects numeric markers.
+			const planContextOptions =
+				policy === 'attribution' && planTaskIdContext?.status === 'over_limit'
+					? {}
+					: planTaskIdContext
+						? toTaskIdPlanContextOptions(planTaskIdContext)
+						: {};
+			const resolutionOptions = {
+				policy,
+				...planContextOptions,
+				// Durable critic gates accept only structured IDs or a bare TASK
+				// marker; quoted and example text is not dispatch attribution.
+				standaloneTaskMarkerOnly: policy === 'attribution',
+			};
+			const resolution = resolveTaskId(args, resolutionOptions);
 			if (resolution.status === 'resolved') {
+				let resolvedTaskId = resolution.taskId;
+				if (policy === 'attribution' && !isStrictTaskId(resolvedTaskId)) {
+					// The generic attribution resolver intentionally accepts safe named
+					// IDs for non-gate consumers. Durable task-gate evidence is stricter:
+					// retry marker-only attribution so a named explicit value cannot
+					// shadow a valid numeric TASK marker, then fail closed otherwise.
+					const markerOnlyArgs = { ...args };
+					for (const field of EXPLICIT_TASK_ID_FIELDS) {
+						delete markerOnlyArgs[field];
+					}
+					const markerResolution = resolveTaskId(
+						markerOnlyArgs,
+						resolutionOptions,
+					);
+					if (
+						markerResolution.status !== 'resolved' ||
+						!isStrictTaskId(markerResolution.taskId)
+					) {
+						return null;
+					}
+					resolvedTaskId = markerResolution.taskId;
+				}
 				if (
 					planTaskIdContext?.status === 'over_limit' &&
 					!plan?.phases.some((phase) =>
-						phase?.tasks?.some((task) => task?.id === resolution.taskId),
+						phase?.tasks?.some((task) => task?.id === resolvedTaskId),
 					)
 				) {
 					return null;
 				}
-				return resolution.taskId;
+				return resolvedTaskId;
 			}
 			if (
 				resolution.status === 'invalid' ||
@@ -3236,6 +3303,18 @@ export const _internals = {
 		_wtiInternals.preserveBackgroundWorktreeOwnershipForCallId = v;
 	},
 };
+
+/**
+ * PR #2782 review PRR-001: strip control characters before interpolating
+ * host/config-sourced strings (subagent_type, model ids) into denial Error
+ * text. Newlines would forge multi-line plugin-looking output and ESC
+ * sequences drive the terminal; control runs collapse to a single space
+ * (same policy as model-preflight's sanitizePreflightText).
+ */
+function sanitizeDenialText(value: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars to strip them
+	return value.replace(/[\x00-\x1f\x7f]+/g, ' ');
+}
 
 /**
  * Creates the experimental.chat.messages.transform hook for delegation gating.
@@ -3803,6 +3882,16 @@ export function createDelegationGateHook(
 		// manual approve_plan_critic overrides. Deny fail-fast with an
 		// actionable message instead. Fail-open: any catalog/check error lets
 		// the dispatch proceed (existing retry classification still applies).
+		//
+		// Issue #2680: the same final-selection preflight covers EVERY
+		// registered swarm agent (legacy and prefixed), not just critics —
+		// an enabled role whose final model cannot resolve must not pass
+		// dispatch admission silently. Primary agents are EXEMPT (short-
+		// circuit before any catalog lookup): OpenCode's UI owns their model
+		// selection, so validating their registered fallback model would deny
+		// healthy dispatches on hosts whose catalog lacks DEFAULT_MODELS.default
+		// while the UI-selected model is fine. Unregistered names remain issue
+		// #2614's registry-refusal contract — untouched here.
 		const preflightArgs = output.args as Record<string, unknown> | undefined;
 		if (
 			isTaskToolId(input.tool) &&
@@ -3811,54 +3900,135 @@ export function createDelegationGateHook(
 		) {
 			const exactPreflightAgent = preflightArgs.subagent_type;
 			const preflightAgent = stripKnownSwarmPrefix(exactPreflightAgent);
-			if (preflightAgent.startsWith('critic')) {
-				const legacyCriticModel =
-					config.agents?.[preflightAgent]?.model ??
-					DEFAULT_MODELS[preflightAgent] ??
-					DEFAULT_MODELS.default;
-				const criticModel = registeredAgents
-					? (resolveRuntimeAgentModel(
-							config,
-							registeredAgents,
-							exactPreflightAgent,
-						) ??
-						resolveRegisteredAgentModel(config, exactPreflightAgent) ??
-						legacyCriticModel)
-					: legacyCriticModel;
-				try {
-					const { checkSingleModelResolution } = await import(
-						'../services/model-preflight'
-					);
-					const resolution = await checkSingleModelResolution(
-						criticModel,
-						swarmState.opencodeClient,
-					);
-					if (resolution === 'unresolved') {
-						telemetry.modelUnresolved(
-							preflightAgent,
-							criticModel,
-							'plan-critic dispatch preflight',
-						);
-						throw new Error(
-							`PLAN_CRITIC_MODEL_UNRESOLVED: the ${exactPreflightAgent} agent's effective model "${criticModel}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
-								`Fix the effective model configuration for "${exactPreflightAgent}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`,
-						);
-					}
-				} catch (error) {
-					if (
-						error instanceof Error &&
-						error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')
-					) {
-						// PR-review PRR-006: a denial invalidates the catalog
-						// cache so a user who fixes the model config is not
-						// re-denied from a stale catalog for up to the 30 s TTL.
-						const { invalidateProviderCatalogCache } = await import(
+			const registeredMode = registeredAgents
+				? Object.entries(registeredAgents).find(
+						([name]) =>
+							name.toLowerCase() === exactPreflightAgent.trim().toLowerCase(),
+					)?.[1]
+				: undefined;
+			const isCriticDispatch = preflightAgent.startsWith('critic');
+			const isRegistryMatchedDispatch = registeredMode !== undefined;
+			const isPrimaryDispatch =
+				(registeredMode as { mode?: unknown } | undefined)?.mode === 'primary';
+			if (
+				(isCriticDispatch || isRegistryMatchedDispatch) &&
+				!isPrimaryDispatch
+			) {
+				let denialError: string | undefined;
+				if (isCriticDispatch) {
+					const legacyCriticModel =
+						config.agents?.[preflightAgent]?.model ??
+						DEFAULT_MODELS[preflightAgent] ??
+						DEFAULT_MODELS.default;
+					const criticModel = registeredAgents
+						? (resolveRuntimeAgentModel(
+								config,
+								registeredAgents,
+								exactPreflightAgent,
+							) ??
+							resolveRegisteredAgentModel(config, exactPreflightAgent) ??
+							legacyCriticModel)
+						: legacyCriticModel;
+					try {
+						const { checkSingleModelResolution } = await import(
 							'../services/model-preflight'
 						);
-						invalidateProviderCatalogCache();
-						throw error;
+						const resolution = await checkSingleModelResolution(
+							criticModel,
+							swarmState.opencodeClient,
+						);
+						if (resolution === 'unresolved') {
+							telemetry.modelUnresolved(
+								preflightAgent,
+								criticModel,
+								'plan-critic dispatch preflight',
+							);
+							denialError =
+								`PLAN_CRITIC_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(criticModel)}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
+								`Fix the effective model configuration for "${sanitizeDenialText(exactPreflightAgent)}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`;
+						}
+					} catch (error) {
+						if (
+							error instanceof Error &&
+							error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')
+						) {
+							// PR-review PRR-006: a denial invalidates the catalog
+							// cache so a user who fixes the model config is not
+							// re-denied from a stale catalog for up to the 30 s TTL.
+							const { invalidateProviderCatalogCache } = await import(
+								'../services/model-preflight'
+							);
+							invalidateProviderCatalogCache();
+							throw error;
+						}
+						// Catalog unavailable / check failed — fail open.
 					}
-					// Catalog unavailable / check failed — fail open.
+				} else {
+					// Issue #2680 non-critic registered-role admission.
+					// PRR-003: a blank explicit override must classify
+					// missing-selection here too — the resolver chain below
+					// would silently fall back to DEFAULT_MODELS while the
+					// init/doctor surfaces flag the same role.
+					const overrideEntry = resolveEffectiveAgentOverride(
+						config,
+						exactPreflightAgent,
+					);
+					const finalModel =
+						overrideEntry &&
+						typeof overrideEntry.model === 'string' &&
+						overrideEntry.model.trim() === ''
+							? ''
+							: ((registeredAgents
+									? resolveRuntimeAgentModel(
+											config,
+											registeredAgents,
+											exactPreflightAgent,
+										)
+									: undefined) ??
+								resolveRegisteredAgentModel(config, exactPreflightAgent));
+					if (finalModel === undefined || finalModel.trim() === '') {
+						telemetry.modelUnresolved(
+							preflightAgent,
+							'(no final selection)',
+							'swarm-agent dispatch preflight',
+						);
+						denialError =
+							`SWARM_AGENT_MODEL_MISSING_SELECTION: the ${sanitizeDenialText(exactPreflightAgent)} agent is registered but has no final model selection (blank model override or a stale swarm registry entry) — dispatching it cannot succeed. ` +
+							`Fix agents.<role>.model in opencode-swarm.json (the matching swarm override wins over the top-level entry) or correct the swarm configuration, then retry.`;
+					} else {
+						try {
+							const { checkSingleModelResolution } = await import(
+								'../services/model-preflight'
+							);
+							const resolution = await checkSingleModelResolution(
+								finalModel,
+								swarmState.opencodeClient,
+							);
+							if (resolution === 'unresolved') {
+								telemetry.modelUnresolved(
+									preflightAgent,
+									finalModel,
+									'swarm-agent dispatch preflight',
+								);
+								denialError =
+									`SWARM_AGENT_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(finalModel)}" does not resolve against the provider catalog — dispatching this role will fail permanently ("Model not found"/"Forbidden"). ` +
+									`Fix the effective model configuration in opencode-swarm.json (the matching swarm override wins over top-level agents.<role>.model). ` +
+									`fallback_models entries only serve transient runtime failures; configure a resolvable primary model for this role.`;
+							}
+						} catch {
+							// Catalog unavailable / check failed — fail open.
+						}
+					}
+				}
+				if (denialError !== undefined) {
+					// PRR-006 (critic + #2680 non-critic): a denial invalidates
+					// the catalog cache so a fixed model config takes effect on
+					// the next attempt, not after the 30 s TTL.
+					const { invalidateProviderCatalogCache } = await import(
+						'../services/model-preflight'
+					);
+					invalidateProviderCatalogCache();
+					throw new Error(denialError);
 				}
 			}
 		}
@@ -4306,12 +4476,15 @@ export function createDelegationGateHook(
 				args,
 				stageBSession,
 				directory,
-				activePrReviewBinding ? { allowSessionFallback: false } : undefined,
+				evidenceTaskResolutionOptions(
+					targetAgent,
+					activePrReviewBinding ? false : undefined,
+				),
 			);
 			const candidateTaskIds = new Set<string>();
 			if (resolvedTaskId) candidateTaskIds.add(resolvedTaskId);
 			const dispatchPlan = await loadPlanJsonOnly(directory);
-			if (dispatchPlan) {
+			if (dispatchPlan && !isExplicitTaskEvidenceAgent(targetAgent)) {
 				const knownIds = new Set(
 					dispatchPlan.phases.flatMap((phase) =>
 						phase.tasks.map((task) => task.id),
@@ -5349,10 +5522,13 @@ export function createDelegationGateHook(
 						}
 						if (subagentSessionId) {
 							const mergedArgs = { ...(storedArgs ?? {}), ...directArgs };
+							const normalizedSubagentType =
+								stripKnownSwarmPrefix(subagentType);
 							const evidenceTaskId = await resolveEvidenceTaskId(
 								mergedArgs,
 								session,
 								directory,
+								evidenceTaskResolutionOptions(normalizedSubagentType),
 							);
 							const scope =
 								session.declaredCoderScope &&
@@ -5388,9 +5564,7 @@ export function createDelegationGateHook(
 								evidenceTaskId,
 								workspace: fallbackWorkspace,
 								taskChangeContext,
-								workflowGeneration: TASK_GATE_AGENTS.has(
-									stripKnownSwarmPrefix(subagentType),
-								)
+								workflowGeneration: TASK_GATE_AGENTS.has(normalizedSubagentType)
 									? stageBDispatchGenerationsByCallID
 											.get(input.callID)
 											?.get(evidenceTaskId ?? '')
@@ -6208,10 +6382,12 @@ export function createDelegationGateHook(
 					let coderSettleTaskId: string | null = null;
 					try {
 						const mergedArgs = { ...(storedArgs ?? {}), ...directArgs };
+						const targetAgentForEvidence = stripKnownSwarmPrefix(subagentType);
 						let evidenceTaskId = await resolveEvidenceTaskId(
 							mergedArgs,
 							session,
 							directory,
+							evidenceTaskResolutionOptions(targetAgentForEvidence),
 						);
 						// Issue #2214 belt: the toolBefore scope preflight may have
 						// resolved the task via sources resolveEvidenceTaskId lacks
@@ -6239,8 +6415,6 @@ export function createDelegationGateHook(
 								'explorer',
 								'sme',
 							];
-							const targetAgentForEvidence =
-								stripKnownSwarmPrefix(subagentType);
 							if (gateAgents.includes(targetAgentForEvidence)) {
 								if (
 									targetAgentForEvidence === 'reviewer' ||
