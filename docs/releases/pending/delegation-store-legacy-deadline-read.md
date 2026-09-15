@@ -1,0 +1,42 @@
+fix(background): read legacy 'deadline' lane-failure rows without wedging the delegation store
+
+## What changed
+
+- Durable delegation records written by pre-#2615 builds carry the retired
+  `workflowLaneFailureClass: 'deadline'` value. The strict readers
+  (`coordinationRowsToDelegations` for the SQLite coordination namespace and
+  `foldLedgerTail` for the legacy JSONL tail, both validated by the same
+  `RecordSchema`) treated that value as corruption: ONE such row made the
+  whole namespace read fail as `uncertain`, which blocked
+  `prepare_pr_workflow_checkout`, `abort_pr_workflow` (agent and human
+  force), `complete_pr_workflow`, `dispatch_lanes_async` batch uniqueness,
+  and `pr_workflow_status` in every affected project workspace.
+- `ResultSchema.workflowLaneFailureClass` and the record interface field now
+  use a persisted-read vocabulary that admits the retired `'deadline'`
+  member (mirroring the disclosure-side `PrReviewDisclosureFailureClass`
+  precedent). The live-producer union is unchanged; the parity test gains a
+  negative source anchor so no producer of `'deadline'` can reappear.
+- `PrReviewLatestTypedFailure.failureClass` (PR-review completion evidence)
+  widened to the disclosure vocabulary — the record-side read type feeds it
+  for eventless terminal lanes.
+- `coordinationRowsToDelegations` now reports WHICH predicate failed
+  (schema validation vs correlation/generation/status authority binding)
+  instead of one conflated message.
+- Affected workspaces recover without data repair: once this build loads, the
+  store reads ok (legacy rows included, verbatim) and a wedged PR_REVIEW
+  gate clears via `/swarm abort-pr-workflow`. The JSONL shadow projection
+  converges once from the now-readable records (designed reconciliation
+  path); authoritative SQLite rows are never rewritten.
+- Unknown failure-class values (anything outside the persisted vocabulary)
+  still fail the namespace read closed — the #2511 uncertainty contract is
+  preserved.
+
+## Verification
+
+- New suite `tests/unit/background/pending-delegations-legacy-deadline-read.test.ts`:
+  SQLite and JSONL readers accept a legacy `'deadline'` row (value verbatim,
+  SQLite payload bytes unchanged), unknown values keep both strict reads
+  `uncertain`, lenient JSONL skip behavior unchanged, shadow projection
+  converges once and stays byte-stable.
+- `tests/unit/pr-review/lane-failure-class-parity.test.ts` unchanged for
+  live members; adds the no-`'deadline'`-producer anchor.

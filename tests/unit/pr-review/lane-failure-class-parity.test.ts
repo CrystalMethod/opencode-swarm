@@ -118,6 +118,57 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		}
 	});
 
+	it('the retired deadline class has no producer anywhere in src', () => {
+		// Read-side compatibility widened ResultSchema to accept durable
+		// pre-#2615 'deadline' rows; nothing may ever WRITE the retired
+		// member again. Same [:=] form as the live-producer anchor above so
+		// an assignment-form producer cannot slip past a colon-only regex.
+		const srcRoot = path.join(REPO_ROOT, 'src');
+		const tsFiles: string[] = [];
+		const walk = (entry: string): void => {
+			for (const name of fs.readdirSync(entry)) {
+				const full = path.join(entry, name);
+				if (fs.statSync(full).isDirectory()) {
+					walk(full);
+					continue;
+				}
+				if (name.endsWith('.ts')) tsFiles.push(full);
+			}
+		};
+		walk(srcRoot);
+		expect(tsFiles.length).toBeGreaterThan(0);
+		// Producer shapes: `workflowLaneFailureClass: 'deadline'` (object
+		// literal) and `workflowLaneFailureClass = 'deadline'` (assignment).
+		// Pure string scanning — same [:=] contract as the live-producer
+		// anchor above, without regex-escape transport hazards. Comparison
+		// forms (`=== 'deadline'`) are consumers, not producers, and are
+		// correctly ignored (the second `=` fails the quote check).
+		const isDeadlineProducerLine = (line: string): boolean => {
+			const key = 'workflowLaneFailureClass';
+			const idx = line.indexOf(key);
+			if (idx < 0) return false;
+			let i = idx + key.length;
+			while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+				i++;
+			}
+			const op = line[i];
+			if (op !== ':' && op !== '=') return false;
+			i++;
+			while (i < line.length && (line[i] === ' ' || line[i] === '\t')) {
+				i++;
+			}
+			const quote = line[i];
+			if (quote !== "'" && quote !== '"') return false;
+			i++;
+			if (line.slice(i, i + 8) !== 'deadline') return false;
+			return line[i + 8] === quote;
+		};
+		const producers = tsFiles.filter((file) =>
+			fs.readFileSync(file, 'utf8').split('\n').some(isDeadlineProducerLine),
+		);
+		expect(producers).toEqual([]);
+	});
+
 	it('cancel_pending settles a typed liveness terminal', async () => {
 		_internals.getSessionOps = () => idleEmptyHost('sess-pc-1');
 		await seedPendingLane(dir, '1');
