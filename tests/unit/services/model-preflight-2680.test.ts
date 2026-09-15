@@ -19,7 +19,9 @@ import {
 	formatModelPreflightWarning,
 	invalidateProviderCatalogCache,
 	PROVIDER_LIST_TIMEOUT_MS,
+	resolveAgainstCatalog,
 	runModelPreflight,
+	sanitizePreflightText,
 } from '../../../src/services/model-preflight';
 
 interface FakeProvider {
@@ -114,6 +116,16 @@ describe('issue #2680 — final enabled-role model preflight', () => {
 					design_docs: { enabled: true },
 					ui_review: { enabled: true },
 					agents: { designer: { disabled: true } },
+				} as unknown as PluginConfig,
+			},
+			{
+				name: 'multi-underscore swarm id',
+				config: {
+					swarms: {
+						my_swarm: {
+							agents: { coder: { model: 'opencode/big-pickle' } },
+						},
+					},
 				} as unknown as PluginConfig,
 			},
 			{
@@ -284,5 +296,50 @@ describe('issue #2680 — final enabled-role model preflight', () => {
 					(entry.agent.includes('curator') || entry.agent.includes('explorer')),
 			),
 		).toHaveLength(0);
+	});
+
+	// PRR-004 disposition pin (PR review): a blank-model PRIMARY is classified
+	// missing-selection (a real config error worth surfacing) — dispatched
+	// primaries stay exempt regardless; this pins the classification ORDER.
+	test('[AC6] ordering pin: a blank-model primary classifies missing-selection, not host-controlled', async () => {
+		const blankPrimary = {
+			swarms: {
+				default: { agents: { architect: { model: '   ' } } },
+			},
+		} as unknown as PluginConfig;
+		const result = await runModelPreflight(blankPrimary, fakeClient(CATALOG));
+		const entry = result.resolutions.find((r) => r.agent === 'architect');
+		expect(entry?.mode).toBe('primary');
+		expect(entry?.status).toBe('missing-selection');
+	});
+
+	// PRR-001 (PR review): hostile config values must not structure the
+	// warning text — newlines/ANSI from the model string are neutralized.
+	test('[AC2] warning text neutralizes control characters from hostile model values', () => {
+		const esc = String.fromCharCode(27);
+		const hostile = [
+			{
+				agent: 'local_coder',
+				model: `ghost/x\nFAKE WARNING${esc}[31mRED`,
+				source: 'override' as const,
+			},
+		];
+		const catalog = new Map(
+			CATALOG.map((provider) => [
+				provider.id,
+				new Set(Object.keys(provider.models)),
+			]),
+		);
+		const result = resolveAgainstCatalog(hostile, catalog);
+		const warning = formatModelPreflightWarning(result);
+		expect(warning).not.toBeNull();
+		// Only the template's own structural newlines remain (3 lines:
+		// header, one entry row, footer).
+		expect(warning?.split('\n').length).toBe(3);
+		expect(warning).not.toContain('FAKE WARNING\n');
+		expect(warning).not.toContain(esc);
+		// ESC is stripped; the orphaned printable sequence remains (control
+		// chars are the injection vector, not printable text).
+		expect(sanitizePreflightText(`a\nb${esc}[31mc`)).toBe('a b [31mc');
 	});
 });

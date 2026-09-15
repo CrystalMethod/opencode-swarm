@@ -209,6 +209,9 @@ describe('issue #2680 — model preflight on a registered host', () => {
 			),
 		).resolves.toBeUndefined();
 		// The catalog WAS actually consulted through the booted host's client.
+		// (PRR-013 note: the count is intentionally not pinned to an exact
+		// number — the preflight call plus each dispatch's admission lookup
+		// re-consult a failing catalog because failures are never cached.)
 		expect(listCalls()).toBeGreaterThan(0);
 	});
 });

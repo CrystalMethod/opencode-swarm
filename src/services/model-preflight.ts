@@ -304,10 +304,29 @@ let catalogCacheByClient = new WeakMap<
 	OpencodeClient,
 	{ fetchedAt: number; catalog: ProviderCatalog }
 >();
+/**
+ * PR #2782 review PRR-005: bumped by invalidateProviderCatalogCache so an
+ * in-flight fetch that started BEFORE an invalidation cannot write its
+ * (pre-invalidation) catalog into the NEW WeakMap after it lands.
+ */
+let catalogCacheEpoch = 0;
 
 /** Test/gate seam: drop the cached catalogs (used after config changes and denials). */
 export function invalidateProviderCatalogCache(): void {
+	catalogCacheEpoch++;
 	catalogCacheByClient = new WeakMap();
+}
+
+/**
+ * PR #2782 review PRR-001: neutralize control characters before interpolating
+ * config- or host-sourced strings (model ids, agent names, provider detail)
+ * into console.warn / thrown-Error text. Newlines forge multi-line
+ * plugin-looking output and ESC sequences drive the terminal; control runs
+ * collapse to a single space (same policy as the doctor's stripControlChars).
+ */
+export function sanitizePreflightText(value: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars to strip them
+	return value.replace(/[\x00-\x1f\x7f]+/g, ' ');
 }
 
 /**
@@ -322,6 +341,7 @@ export async function fetchProviderCatalog(
 	if (cached && Date.now() - cached.fetchedAt < CATALOG_CACHE_TTL_MS) {
 		return cached.catalog;
 	}
+	const epochAtFetchStart = catalogCacheEpoch;
 	let response: Awaited<ReturnType<OpencodeClient['provider']['list']>>;
 	try {
 		response = await _internals.providerList(client);
@@ -334,14 +354,25 @@ export async function fetchProviderCatalog(
 	for (const provider of all) {
 		if (typeof provider?.id !== 'string') continue;
 		const models = new Set<string>();
-		if (provider.models && typeof provider.models === 'object') {
+		// PRR-002: an array-shaped `models` would pass typeof === 'object' and
+		// index its numeric keys into the Set, making every real lookup miss.
+		// The pinned SDK types models as a record; refuse arrays defensively.
+		if (
+			provider.models &&
+			typeof provider.models === 'object' &&
+			!Array.isArray(provider.models)
+		) {
 			for (const modelKey of Object.keys(provider.models)) {
 				models.add(modelKey);
 			}
 		}
 		catalog.set(provider.id, models);
 	}
-	catalogCacheByClient.set(client, { fetchedAt: Date.now(), catalog });
+	// PRR-005: a fetch that raced an invalidation is not cached — its data
+	// predates the invalidation, and the next call refetches fresh.
+	if (epochAtFetchStart === catalogCacheEpoch) {
+		catalogCacheByClient.set(client, { fetchedAt: Date.now(), catalog });
+	}
 	return catalog;
 }
 
@@ -440,14 +471,16 @@ export function formatModelPreflightWarning(
 	);
 	if (reportable.length === 0) return null;
 	const lines = reportable.map((resolution) => {
+		// PRR-001: agent/model/detail are config-sourced; control characters
+		// (newlines, ESC) must not structure the surrounding warning text.
 		const label =
 			resolution.source === 'fallback'
-				? `${resolution.agent} (fallback entry)`
-				: resolution.agent;
+				? `${sanitizePreflightText(resolution.agent)} (fallback entry)`
+				: sanitizePreflightText(resolution.agent);
 		if (resolution.status === 'missing-selection') {
-			return `  ${label}: no final model selection — ${resolution.detail ?? ''}`;
+			return `  ${label}: no final model selection — ${sanitizePreflightText(resolution.detail ?? '')}`;
 		}
-		return `  ${label}: ${resolution.model} (${resolution.detail ?? 'does not resolve'})`;
+		return `  ${label}: ${sanitizePreflightText(resolution.model)} (${sanitizePreflightText(resolution.detail ?? 'does not resolve')})`;
 	});
 	return (
 		`[opencode-swarm] WARNING: ${reportable.length} enabled agent model selection(s) failed preflight:\n` +

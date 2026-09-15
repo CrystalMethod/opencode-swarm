@@ -436,6 +436,10 @@ Where the preflight acts:
   (fail-open).
 - **`/swarm doctor`:** the `Agent Model Resolution` section lists failing
   selections with their source and class.
+- **Cost bounds:** the catalog fetch is bounded by a 2-second timeout
+  (`PROVIDER_LIST_TIMEOUT_MS`), and results are cached per host client for
+  30 seconds (`CATALOG_CACHE_TTL_MS`); a dispatch denial invalidates the
+  cache so a fixed config takes effect on the next attempt.
 
 `fallback_models` serve **transient** runtime failures (429/503/timeout) via
 the guardrails failover path. A permanent unresolved primary model is not

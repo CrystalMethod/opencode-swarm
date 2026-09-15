@@ -23,6 +23,12 @@ import type { PluginConfig } from '../../../src/config';
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { invalidateProviderCatalogCache } from '../../../src/services/model-preflight';
 import { resetSwarmState, swarmState } from '../../../src/state';
+import {
+	addTelemetryListener,
+	initTelemetry,
+	removeTelemetryListener,
+	resetTelemetryForTesting,
+} from '../../../src/telemetry';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function catalogClient(
@@ -215,6 +221,9 @@ describe('issue #2680 — registered-agent dispatch model preflight', () => {
 		await expect(outcome).rejects.toThrow('ghostswarm_coder');
 	});
 
+	// New-behavior pin (PRR-011 disclosure): the base tree had NO non-critic
+	// model preflight at all, so this test cannot discriminate base vs head —
+	// it pins the PR's new primary-exemption property against regressions.
 	test('primary agents are exempt: a catalog lacking their registered model never denies a Task dispatch', async () => {
 		// Catalog WITHOUT any opencode provider — the primary's registered
 		// fallback model (DEFAULT_MODELS.default) is unresolvable here, but the
@@ -234,5 +243,151 @@ describe('issue #2680 — registered-agent dispatch model preflight', () => {
 				{ args: { subagent_type: 'local_architect', prompt: 'lead' } },
 			),
 		).resolves.toBeUndefined();
+	});
+
+	// PRR-003 (PR review): a registered role whose override is EXPLICITLY
+	// blank must deny missing-selection here — before the fix the resolver
+	// chain silently fell back to DEFAULT_MODELS and the dispatch proceeded
+	// while init/doctor flagged the same role.
+	test('[AC6] a blank model override on a registered role denies missing-selection', async () => {
+		const blankConfig = {
+			...baseConfig,
+			swarms: {
+				local: {
+					name: 'Local',
+					agents: { explorer: { model: '   ' } },
+				},
+			},
+		} as unknown as PluginConfig;
+		swarmState.opencodeClient = OPENCODE_CATALOG;
+		const registeredAgents = getAgentConfigs(blankConfig, tempDir);
+		const hook = createDelegationGateHook(
+			blankConfig,
+			tempDir,
+			registeredAgents,
+		);
+		const outcome = hook.toolBefore(
+			{ tool: 'Task', sessionID: 'architect-1', callID: 'blank-call-1' },
+			{ args: { subagent_type: 'local_explorer', prompt: 'map the repo' } },
+		);
+		await expect(outcome).rejects.toThrow(
+			'SWARM_AGENT_MODEL_MISSING_SELECTION',
+		);
+	});
+
+	// PRR-009 (PR review): the denial emits model_unresolved telemetry with
+	// the role, the effective model, and the fixed detail string.
+	test('[AC2] denial emits model_unresolved telemetry with fixed-shape fields', async () => {
+		initTelemetry(tempDir);
+		swarmState.opencodeClient = OPENCODE_CATALOG;
+		const events: { event: string; data: Record<string, unknown> }[] = [];
+		const listener = (event: unknown, data: Record<string, unknown>): void => {
+			events.push({ event: String(event), data });
+		};
+		addTelemetryListener(listener);
+		try {
+			const registeredAgents = getAgentConfigs(multiSwarmConfig, tempDir);
+			const hook = createDelegationGateHook(
+				multiSwarmConfig,
+				tempDir,
+				registeredAgents,
+			);
+			await hook
+				.toolBefore(
+					{ tool: 'Task', sessionID: 'architect-1', callID: 'tel-call-1' },
+					{ args: { subagent_type: 'local_coder', prompt: 'map the repo' } },
+				)
+				.catch(() => {});
+		} finally {
+			removeTelemetryListener(listener);
+			resetTelemetryForTesting();
+		}
+		const emitted = events.find((e) => e.event === 'model_unresolved');
+		expect(emitted).toBeDefined();
+		expect(emitted?.data.agentName).toBe('coder');
+		expect(emitted?.data.model).toBe('ghost/broken-model');
+		expect(emitted?.data.detail).toBe('swarm-agent dispatch preflight');
+	});
+
+	// PRR-009 (PR review): a denial invalidates the catalog cache — a config
+	// fix takes effect on the NEXT dispatch, not after the 30 s TTL. Call 1
+	// omits the model (denial + invalidate); call 2 includes it (proceeds).
+	test('[AC2] a fixed model config takes effect on the next dispatch after denial', async () => {
+		let models: Record<string, { id: string }> = {};
+		const mutatingClient = {
+			provider: {
+				list: async () => ({
+					data: { all: [{ id: 'custom', name: 'custom', models }] },
+				}),
+			},
+		} as unknown as OpencodeClient;
+		swarmState.opencodeClient = mutatingClient;
+		const fixedConfig = {
+			...baseConfig,
+			swarms: {
+				local: {
+					name: 'Local',
+					agents: { explorer: { model: 'custom/explorer-model' } },
+				},
+			},
+		} as unknown as PluginConfig;
+		const registeredAgents = getAgentConfigs(fixedConfig, tempDir);
+		const hook = createDelegationGateHook(
+			fixedConfig,
+			tempDir,
+			registeredAgents,
+		);
+		// First dispatch: the catalog does not know the model -> denial.
+		await expect(
+			hook.toolBefore(
+				{ tool: 'Task', sessionID: 'architect-1', callID: 'fix-call-1' },
+				{ args: { subagent_type: 'local_explorer', prompt: 'map' } },
+			),
+		).rejects.toThrow('SWARM_AGENT_MODEL_UNRESOLVED');
+		// Simulate the operator fixing the provider catalog (not the cache TTL).
+		models = { 'explorer-model': { id: 'explorer-model' } };
+		// Second dispatch must refetch (cache was invalidated by the denial)
+		// and proceed.
+		await expect(
+			hook.toolBefore(
+				{ tool: 'Task', sessionID: 'architect-1', callID: 'fix-call-2' },
+				{ args: { subagent_type: 'local_explorer', prompt: 'map' } },
+			),
+		).resolves.toBeUndefined();
+	});
+
+	// PRR-001 (PR review): a hostile critic-prefixed subagent_type must not
+	// inject newlines into the denial message. The catalog deliberately lacks
+	// the `opencode` provider so the legacy default model is unresolved and
+	// the denial fires.
+	test('[AC2] denial message neutralizes control characters from hostile subagent_type', async () => {
+		const esc = String.fromCharCode(27);
+		const criticConfig = {
+			...baseConfig,
+			agents: { critic: { model: 'ghost/broken-critic' } },
+		} as unknown as PluginConfig;
+		swarmState.opencodeClient = catalogClient([
+			{ id: 'custom', models: ['unrelated-model'] },
+		]);
+		const registeredAgents = getAgentConfigs(criticConfig, tempDir);
+		const hook = createDelegationGateHook(
+			criticConfig,
+			tempDir,
+			registeredAgents,
+		);
+		const error = (await hook
+			.toolBefore(
+				{ tool: 'Task', sessionID: 'architect-1', callID: 'hostile-call-1' },
+				{
+					args: {
+						subagent_type: `critic\n${esc}[31mFORGED`,
+						prompt: 'review the plan',
+					},
+				},
+			)
+			.catch((caught: unknown) => caught)) as unknown as Error;
+		expect(error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')).toBe(true);
+		expect(error.message.split('\n').length).toBe(1);
+		expect(error.message).not.toContain(esc);
 	});
 });

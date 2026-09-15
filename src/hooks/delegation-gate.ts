@@ -22,6 +22,7 @@ import {
 } from '../background/workspace-snapshot.js';
 import type { PluginConfig } from '../config';
 import {
+	resolveEffectiveAgentOverride,
 	resolveRegisteredAgentModel,
 	resolveRuntimeAgentModel,
 } from '../config/agent-model.js';
@@ -3238,6 +3239,18 @@ export const _internals = {
 };
 
 /**
+ * PR #2782 review PRR-001: strip control characters before interpolating
+ * host/config-sourced strings (subagent_type, model ids) into denial Error
+ * text. Newlines would forge multi-line plugin-looking output and ESC
+ * sequences drive the terminal; control runs collapse to a single space
+ * (same policy as model-preflight's sanitizePreflightText).
+ */
+function sanitizeDenialText(value: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars to strip them
+	return value.replace(/[\x00-\x1f\x7f]+/g, ' ');
+}
+
+/**
  * Creates the experimental.chat.messages.transform hook for delegation gating.
  * Inspects coder delegations and warns when tasks are oversized or batched.
  */
@@ -3865,8 +3878,8 @@ export function createDelegationGateHook(
 								'plan-critic dispatch preflight',
 							);
 							denialError =
-								`PLAN_CRITIC_MODEL_UNRESOLVED: the ${exactPreflightAgent} agent's effective model "${criticModel}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
-								`Fix the effective model configuration for "${exactPreflightAgent}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`;
+								`PLAN_CRITIC_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(criticModel)}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
+								`Fix the effective model configuration for "${sanitizeDenialText(exactPreflightAgent)}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`;
 						}
 					} catch (error) {
 						if (
@@ -3886,15 +3899,27 @@ export function createDelegationGateHook(
 					}
 				} else {
 					// Issue #2680 non-critic registered-role admission.
+					// PRR-003: a blank explicit override must classify
+					// missing-selection here too — the resolver chain below
+					// would silently fall back to DEFAULT_MODELS while the
+					// init/doctor surfaces flag the same role.
+					const overrideEntry = resolveEffectiveAgentOverride(
+						config,
+						exactPreflightAgent,
+					);
 					const finalModel =
-						(registeredAgents
-							? resolveRuntimeAgentModel(
-									config,
-									registeredAgents,
-									exactPreflightAgent,
-								)
-							: undefined) ??
-						resolveRegisteredAgentModel(config, exactPreflightAgent);
+						overrideEntry &&
+						typeof overrideEntry.model === 'string' &&
+						overrideEntry.model.trim() === ''
+							? ''
+							: ((registeredAgents
+									? resolveRuntimeAgentModel(
+											config,
+											registeredAgents,
+											exactPreflightAgent,
+										)
+									: undefined) ??
+								resolveRegisteredAgentModel(config, exactPreflightAgent));
 					if (finalModel === undefined || finalModel.trim() === '') {
 						telemetry.modelUnresolved(
 							preflightAgent,
@@ -3902,7 +3927,7 @@ export function createDelegationGateHook(
 							'swarm-agent dispatch preflight',
 						);
 						denialError =
-							`SWARM_AGENT_MODEL_MISSING_SELECTION: the ${exactPreflightAgent} agent is registered but has no final model selection (blank model override or a stale swarm registry entry) — dispatching it cannot succeed. ` +
+							`SWARM_AGENT_MODEL_MISSING_SELECTION: the ${sanitizeDenialText(exactPreflightAgent)} agent is registered but has no final model selection (blank model override or a stale swarm registry entry) — dispatching it cannot succeed. ` +
 							`Fix agents.<role>.model in opencode-swarm.json (the matching swarm override wins over the top-level entry) or correct the swarm configuration, then retry.`;
 					} else {
 						try {
@@ -3920,7 +3945,7 @@ export function createDelegationGateHook(
 									'swarm-agent dispatch preflight',
 								);
 								denialError =
-									`SWARM_AGENT_MODEL_UNRESOLVED: the ${exactPreflightAgent} agent's effective model "${finalModel}" does not resolve against the provider catalog — dispatching this role will fail permanently ("Model not found"/"Forbidden"). ` +
+									`SWARM_AGENT_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(finalModel)}" does not resolve against the provider catalog — dispatching this role will fail permanently ("Model not found"/"Forbidden"). ` +
 									`Fix the effective model configuration in opencode-swarm.json (the matching swarm override wins over top-level agents.<role>.model). ` +
 									`fallback_models entries only serve transient runtime failures; configure a resolvable primary model for this role.`;
 							}
