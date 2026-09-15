@@ -46,6 +46,7 @@ function createTestConfigObj(
 ): PluginConfig {
 	return {
 		max_iterations: 5,
+		config_format_version: 3,
 		qa_retry_limit: 3,
 		inject_phase_reminders: true,
 		...overrides,
@@ -2923,8 +2924,7 @@ describe('Migration availability detection (availableMigrations)', () => {
 	});
 
 	it('should default to 1 when config_format_version is absent (SC-006)', () => {
-		// Omit config_format_version entirely; Zod .default(1) must apply.
-		const config = createTestConfigObj({});
+		const config = createTestConfigObj({ config_format_version: undefined });
 		const result = runConfigDoctor(config, tempDir);
 		expect(result.availableMigrations).toBeDefined();
 		expect(result.availableMigrations!.length).toBeGreaterThan(0);

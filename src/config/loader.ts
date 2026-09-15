@@ -7,6 +7,7 @@ import { advisoryWarn } from '../services/warning-buffer.js';
 import { GIT_BINARY_ENV_VAR } from '../utils/git-executable.js';
 import { sanitizeMalformedValues } from './sanitize-malformed-values';
 import {
+	CONSERVATIVE_PRESET_BASE,
 	ExternalSkillsConfigSchema,
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	type GateConfigOverrides,
@@ -194,8 +195,15 @@ function migratePresetsConfig(
 	// for issue #1663) does not misreport recognized legacy fields as typos —
 	// this is the ordinary upgrade path where a stale global v6.12 presets
 	// file merges with a project config that already uses `agents`.
+	// #2504: the top-level defaults-profile `preset` enum ("default" |
+	// "conservative") is NOT the v6.12 remote-preset name; keep it so the
+	// conservative base layer (step 3b) still sees it alongside an `agents`
+	// block — the config shape the installer itself writes.
 	const dormantLegacyKeys = ['preset', 'presets', 'swarm_mode'].filter(
-		(key) => key in raw,
+		(key) =>
+			key in raw &&
+			(key !== 'preset' ||
+				(raw.preset !== 'default' && raw.preset !== 'conservative')),
 	);
 	if (dormantLegacyKeys.length > 0 && raw.agents) {
 		const cleaned = { ...raw };
@@ -688,6 +696,25 @@ function buildConfigWithMeta(
 
 	// 3. Migrate v6.12 presets format to v6.13+ agents format.
 	mergedRaw = migratePresetsConfig(mergedRaw);
+
+	// 3b. Conservative preset base layer (#2504): when the merged config selects
+	//     `preset: "conservative"`, deep-merge CONSERVATIVE_PRESET_BASE as the
+	//     LOWEST-precedence layer (base is the FIRST argument; deepMerge's
+	//     second argument wins per-key, so every explicit user/project key —
+	//     including a partial `auto_review: { mode: "gate" }` — still wins over
+	//     the base). The base materializes the pre-flip v7 value (e.g.
+	//     `auto_review.enabled: false`) BEFORE Zod parsing so the schema-level
+	//     release-gate preprocess (which cannot see siblings) never fills a
+	//     release default under the conservative preset. Absent or "default"
+	//     preset: no base layer — behavior is byte-identical to before #2504.
+	//     The base injects only schema-known keys after the user's keys are
+	//     merged, so it cannot affect the unknown-top-level-key warning in 4b.
+	if (mergedRaw.preset === 'conservative') {
+		mergedRaw = deepMergeFn(CONSERVATIVE_PRESET_BASE, mergedRaw) as Record<
+			string,
+			unknown
+		>;
+	}
 
 	// 4. Pre-validate section-local configs so one invalid section doesn't
 	//    block plugin load.  Track which gates keys were stripped so we can

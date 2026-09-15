@@ -181,6 +181,25 @@ function formatDoctorMarkdown(result: ConfigDoctorResult): string {
 		);
 	}
 
+	// -- Defaults changes (v8) Section (#2504) --
+	const defaultsFlips = result.findings.filter(
+		(finding) => finding.id === 'defaults-flip',
+	);
+	if (defaultsFlips.length > 0) {
+		lines.push('---', '');
+		lines.push('### Defaults changes (v8)', '');
+		lines.push(
+			'\u2139\ufe0f Governed v8 default changes are pending for this config. Explicit values always win — these rows inform and provide the kill switch:',
+		);
+		for (const flip of defaultsFlips) {
+			lines.push(`  - ${flip.description}`);
+		}
+		lines.push('');
+		lines.push(
+			'Run `/swarm config doctor --fix` to acknowledge these changes (stamps config_format_version), or set `preset: "conservative"` to restore all v7 defaults. Evidence and rollback: docs/defaults-governance.md (#2504).',
+		);
+	}
+
 	if (result.hasAutoFixableIssues) {
 		lines.push('---');
 		lines.push('');

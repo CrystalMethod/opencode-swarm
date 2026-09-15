@@ -90,6 +90,53 @@ const DEPRECATED_FIELDS: ReadonlyMap<
 ]);
 
 /**
+ * Current config format version (issue #2504). Version 3 introduces the
+ * governed v8 defaults-flip rows below; a config stamped at this version has
+ * acknowledged those default changes.
+ */
+export const CURRENT_CONFIG_FORMAT_VERSION = 3;
+
+/**
+ * Governed v8 default flips (issue #2504). Unlike DEPRECATED_FIELDS (key
+ * renames surfaced through `availableMigrations`), these are default-value
+ * changes surfaced as info-severity `defaults-flip` findings — they never
+ * rewrite user keys (explicit user values always win), they inform the owner
+ * of the change, the one-line kill switch, and the conservative preset that
+ * restores the pre-flip (v7) default. Evidence for every entry is cited in
+ * docs/defaults-governance.md.
+ */
+export const DEFAULT_FLIPS: ReadonlyArray<{
+	field: string;
+	v7Default: string;
+	v8Default: string;
+	killSwitch: string;
+	preset: 'conservative';
+	sinceVersion: number;
+	evidence: string;
+}> = [
+	{
+		field: 'auto_review.enabled',
+		v7Default: 'false (opt-in)',
+		v8Default:
+			'release-gated true (advisory) — activates on the first 8.x release',
+		killSwitch: 'auto_review.enabled: false',
+		preset: 'conservative',
+		sinceVersion: 3,
+		evidence: 'docs/defaults-governance.md',
+	},
+	{
+		field: 'execution_profile.parallelization_enabled',
+		v7Default: 'false (serial)',
+		v8Default:
+			'true for new plans (since v7.132.0, gate-enforced serial fallback)',
+		killSwitch: 'execution_profile.parallelization_enabled: false (per plan)',
+		preset: 'conservative',
+		sinceVersion: 3,
+		evidence: 'docs/defaults-governance.md',
+	},
+];
+
+/**
  * Compute Levenshtein distance between two strings.
  * Callers must lowercase inputs for case-insensitive matching.
  */
@@ -1071,6 +1118,26 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 								: `${value} (non-integer)`
 							: typeof value
 					}`,
+					severity: 'error',
+					path,
+					currentValue: value,
+					autoFixable: false,
+				});
+			}
+			break;
+		}
+
+		// Defaults profile (#2504): enum-validated by the schema; surfaced here
+		// so the doctor can point conservative users at the inventory when a
+		// governed default changes under them.
+		case 'preset': {
+			if (value !== 'default' && value !== 'conservative') {
+				findings.push({
+					id: 'type-mismatch',
+					title: `Config field "${path}" has wrong type`,
+					description: `Expected "default" or "conservative", got ${JSON.stringify(
+						value,
+					)}`,
 					severity: 'error',
 					path,
 					currentValue: value,
@@ -2167,6 +2234,31 @@ export function runConfigDoctor(
 		}
 	}
 
+	// Governed v8 default flips (#2504): informational findings only — the
+	// emission guard is exactly `configVersion < entry.sinceVersion` (mirroring
+	// the DEPRECATED_FIELDS loop above), so a config stamped at
+	// CURRENT_CONFIG_FORMAT_VERSION emits nothing. These rows never carry a
+	// proposedFix: an explicit user value always wins over a flipped default,
+	// and acknowledging the change is the `--fix` stamp in
+	// runConfigDoctorWithFixes, not a key rewrite.
+	for (const flip of DEFAULT_FLIPS) {
+		if (configVersion < flip.sinceVersion) {
+			findings.push({
+				id: 'defaults-flip',
+				title: `v8 default change pending for "${flip.field}"`,
+				description:
+					`Default flips from ${flip.v7Default} to ${flip.v8Default}. ` +
+					`Kill switch: set ${flip.killSwitch}. ` +
+					`Restore all v7 defaults with preset: "${flip.preset}". ` +
+					`Evidence and rollback: ${flip.evidence} (#2504).`,
+				severity: 'info',
+				path: flip.field,
+				currentValue: 'v7 default',
+				autoFixable: false,
+			});
+		}
+	}
+
 	return {
 		findings,
 		summary,
@@ -2661,6 +2753,55 @@ export async function runConfigDoctorWithFixes(
 		result,
 		options,
 	);
+
+	// Acknowledgment stamp (#2504, GAP-A): an explicit `--fix` pass
+	// (applyLossy) that either applied fixes or surfaced governed default-flip
+	// rows stamps `config_format_version` to CURRENT_CONFIG_FORMAT_VERSION so
+	// acknowledged migrations (both the legacy renames and the v8 defaults-flip
+	// rows) stop re-advertising on every subsequent run. Idempotency guard:
+	// never stamp a config already at/above the current version. Passive runs,
+	// startup scans, and applyLossy:false never stamp — this write is the sole
+	// acknowledgment path and runs under the backup created above.
+	const hasDefaultsFlipFindings = result.findings.some(
+		(finding) => finding.id === 'defaults-flip',
+	);
+	if (
+		options.applyLossy === true &&
+		(appliedFixes.length > 0 || hasDefaultsFlipFindings)
+	) {
+		try {
+			const {
+				userConfigPath: stampUserPath,
+				projectConfigPath: stampProjectPath,
+			} = getConfigPaths(directory);
+			const stampPath = fs.existsSync(stampProjectPath)
+				? stampProjectPath
+				: fs.existsSync(stampUserPath)
+					? stampUserPath
+					: null;
+			if (stampPath) {
+				const stampContent = fs.readFileSync(stampPath, 'utf-8');
+				const stampConfig = JSON.parse(stampContent) as Record<string, unknown>;
+				const currentVersion = stampConfig.config_format_version;
+				const shouldStamp =
+					typeof currentVersion !== 'number' ||
+					!Number.isInteger(currentVersion) ||
+					currentVersion < 0 ||
+					currentVersion < CURRENT_CONFIG_FORMAT_VERSION;
+				if (shouldStamp) {
+					stampConfig.config_format_version = CURRENT_CONFIG_FORMAT_VERSION;
+					const stampDir = path.dirname(stampPath);
+					if (!fs.existsSync(stampDir)) {
+						fs.mkdirSync(stampDir, { recursive: true });
+					}
+					atomicWriteFileSync(stampPath, JSON.stringify(stampConfig, null, 2));
+				}
+			}
+		} catch {
+			// Fail-open: a failed acknowledgment stamp never fails the fix pass;
+			// the rows simply keep advertising until a later successful --fix.
+		}
+	}
 
 	// Re-run doctor after fixes to get post-fix result
 	// Must re-read config from file to see actual changes

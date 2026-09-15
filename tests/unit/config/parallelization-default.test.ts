@@ -14,12 +14,21 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { loadPlanJsonOnly } from '../../../src/plan/manager';
 import { executeSavePlan } from '../../../src/tools/save-plan';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let tempDir: string;
 let swarmDir: string;
+let xdgDir: string;
+let originalXDG: string | undefined;
 
 beforeEach(() => {
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
+	// #2504: save_plan now reads the plugin config (preset-aware new-plan
+	// default); isolate the USER config path so the developer's real
+	// user-level opencode-swarm.json cannot flip these assertions.
+	xdgDir = canonicalMkdtemp('v8-parallel-xdg-');
+	originalXDG = process.env.XDG_CONFIG_HOME;
+	process.env.XDG_CONFIG_HOME = xdgDir;
 	tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'v8-parallel-default-'));
 	swarmDir = path.join(tempDir, '.swarm');
 	fs.mkdirSync(swarmDir, { recursive: true });
@@ -39,6 +48,16 @@ beforeEach(() => {
 
 afterEach(() => {
 	delete process.env.SWARM_SKIP_GATE_SELECTION;
+	if (originalXDG === undefined) {
+		delete process.env.XDG_CONFIG_HOME;
+	} else {
+		process.env.XDG_CONFIG_HOME = originalXDG;
+	}
+	try {
+		fs.rmSync(xdgDir, { recursive: true, force: true });
+	} catch {
+		// Ignore cleanup errors
+	}
 	try {
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	} catch {
