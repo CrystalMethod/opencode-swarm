@@ -1,5 +1,19 @@
 # Changelog
 
+## [7.183.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.0...v7.183.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **background:** read legacy deadline lane-failure rows without wedging the delegation store ([0c11529](https://github.com/ZaxbyHub/opencode-swarm/commit/0c115292dba713ce6c8d5aa0c8adc7515af15ad4))
+
+## [7.183.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.182.0...v7.183.0) (2026-09-15)
+
+
+### Features
+
+* **observability:** bind execution traces and task-cost metrics to exact attempts ([#2676](https://github.com/ZaxbyHub/opencode-swarm/issues/2676)) ([114338f](https://github.com/ZaxbyHub/opencode-swarm/commit/114338fec4b5025944e05c0d77006262efbd9f92))
+
 ## [7.182.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.4...v7.182.0) (2026-09-15)
 
 

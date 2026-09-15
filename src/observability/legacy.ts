@@ -118,6 +118,22 @@ export const KNOWN_TELEMETRY_KEYS: Readonly<Record<string, readonly string[]>> =
 			'child_session_digest',
 		]),
 		delegation_cost_join: Object.freeze(['sessionId', 'reason']),
+		execution_attempt_recorded: Object.freeze([
+			'sessionId',
+			'taskId',
+			'callId',
+			'invocationId',
+			'attemptClass',
+			'generation',
+			'retryIndex',
+			'laneId',
+			'knowledgeTraceId',
+			'outcomeStatus',
+			'captured',
+			'unknown',
+			'cost',
+			'duplicateOf',
+		]),
 		task_state_changed: Object.freeze([
 			'sessionId',
 			'taskId',
@@ -635,6 +651,15 @@ export function extractWorkflowIds(data: unknown): WorkflowIds {
 
 		const taskId = nonEmptyString(record.taskId);
 		if (taskId !== undefined) ids.taskId = taskId;
+
+		// Issue #2676: exact-call and invocation join axes. Stage A callers
+		// natively hold `callID` (PascalCase); the recorder normalizes before
+		// emit, and this mapping only ever sees the payload the producer wrote.
+		const callId = nonEmptyString(record.callId);
+		if (callId !== undefined) ids.callId = callId;
+
+		const invocationId = nonEmptyString(record.invocationId);
+		if (invocationId !== undefined) ids.invocationId = invocationId;
 
 		const laneId = nonEmptyString(record.laneId);
 		if (laneId !== undefined) ids.laneId = laneId;

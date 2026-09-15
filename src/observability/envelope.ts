@@ -148,6 +148,19 @@ export const WorkflowIdsSchema = z.object({
 	/** The swarm's own session identity, when distinct from the host's. */
 	swarmSessionId: z.string().optional(),
 	taskId: z.string().optional(),
+	/**
+	 * The host tool-call identifier (`callId` in legacy payloads; Stage A callers
+	 * natively hold it as `callID` and must normalize casing before emit — issue
+	 * #2676: the exact-call join axis the delegation cost identity already
+	 * derives `record_id` from, promoted to a first-class correlation axis).
+	 */
+	callId: z.string().optional(),
+	/**
+	 * The invocation identifier of the plugin-side invocation that produced the
+	 * event, when the producer genuinely holds one (issue #2676). Absent means
+	 * the producer did not hold an invocation identity — never synthesized.
+	 */
+	invocationId: z.string().optional(),
 	/** Stringified phase number. Stringified because phases are labels, not math. */
 	phaseId: z.string().optional(),
 	laneId: z.string().optional(),

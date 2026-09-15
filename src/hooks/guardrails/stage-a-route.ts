@@ -1,4 +1,8 @@
 import { appendCoreEventSync } from '../../events/core-events.js';
+import {
+	type ExecutionAttemptClass,
+	recordExecutionAttempt,
+} from '../../services/execution-attempt.js';
 import { warn } from '../../utils/logger.js';
 
 /**
@@ -54,6 +58,13 @@ export interface StageAGateRouteEventInput {
 	/** Attributed task, or null when no single task is attributable. */
 	taskId: string | null;
 	guardrailsEnabled: boolean;
+	/**
+	 * The correlation's workflow generation cursor, when the caller holds one
+	 * (the guardrails pending-gate-task map carries it). Required for the
+	 * `late` attempt class to be recordable; absent leaves the recorder's
+	 * fail-open refusal in force.
+	 */
+	generation?: number;
 }
 
 function buildEvent(input: StageAGateRouteEventInput): Record<string, unknown> {
@@ -66,6 +77,31 @@ function buildEvent(input: StageAGateRouteEventInput): Record<string, unknown> {
 		guardrailsEnabled: input.guardrailsEnabled === true,
 		ts: new Date().toISOString(),
 	};
+}
+
+/**
+ * Route → execution-attempt class (issue #2676). Stage A route events fire at
+ * gate-tool-call COMPLETION (toolAfter), so `valid_pass` is the completed
+ * call's outcome record (`result`, success); the four refusal routes are
+ * `denial` (outcome unknown — the gate refused before a task outcome
+ * existed); `late_result` is `late`; `duplicate_result` is `duplicate`.
+ */
+export function stageARouteAttemptClass(
+	route: StageAGateRoute,
+): ExecutionAttemptClass {
+	switch (route) {
+		case 'valid_pass':
+			return 'result';
+		case 'pre_check_failed':
+		case 'invalid_result':
+		case 'no_task_correlation':
+		case 'attribution_ambiguous':
+			return 'denial';
+		case 'late_result':
+			return 'late';
+		case 'duplicate_result':
+			return 'duplicate';
+	}
 }
 
 /**
@@ -93,6 +129,23 @@ export function recordStageAGateRoute(
 			route: input.route,
 		});
 	}
+	// Issue #2676: the same completed gate-tool call is also an
+	// execution-attempt record. The hook natively holds `sessionID`/`callID`
+	// (PascalCase) — normalized here to the recorder's lowercase join keys.
+	// A `late` record without a generation cursor and a `duplicate` without
+	// an original identity are refused inside the recorder (fail-open warn):
+	// the seam threads the generation when the pending-gate-task map holds
+	// it, and holds no original record identity for duplicates.
+	recordExecutionAttempt({
+		sessionId: input.sessionID ?? undefined,
+		callId: input.callID ?? undefined,
+		taskId: input.taskId ?? undefined,
+		...(typeof input.generation === 'number'
+			? { generation: input.generation }
+			: {}),
+		attemptClass: stageARouteAttemptClass(input.route),
+		outcomeStatus: input.route === 'valid_pass' ? 'success' : 'unknown',
+	});
 }
 
 export const _internals = {
