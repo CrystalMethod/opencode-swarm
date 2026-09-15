@@ -1922,7 +1922,12 @@ Three modes control background-first rollout:
 
 ### Per-Capability Feature Flags
 
-All v6.7 automation features are gated behind explicit feature flags (all default `false`):
+Every automation capability is gated behind its own feature flag, individually
+defaulted: read-only capabilities (`plan_sync`, `evidence_auto_summaries`,
+`decision_drift_detection`) default on; anything that writes or auto-runs
+(`phase_preflight`, `config_doctor_on_startup`, `config_doctor_autofix`)
+defaults off. Governed default changes are inventoried with production
+evidence and per-flip kill switches in `docs/defaults-governance.md` (#2504).
 
 | Feature Flag | Description | Security |
 |--------------|-------------|----------|

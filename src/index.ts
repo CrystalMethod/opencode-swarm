@@ -1669,7 +1669,15 @@ async function initializeOpenCodeSwarm(
 
 	let autoReviewConfig: AutoReviewConfig;
 	try {
-		autoReviewConfig = resolveAutoReviewConfigForInit(config.auto_review ?? {});
+		// #2504: the resolved preset rides the release context so a conservative
+		// config keeps the pre-flip default even if the parsed section somehow
+		// reached here without the loader's base-layer materialization.
+		autoReviewConfig = resolveAutoReviewConfigForInit(
+			config.auto_review ?? {},
+			{
+				preset: config.preset,
+			},
+		);
 	} catch (error) {
 		addDeferredWarning(
 			`[swarm] Invalid auto_review configuration; auto-review is disabled until corrected: ${error instanceof Error ? error.message : String(error)}`,
