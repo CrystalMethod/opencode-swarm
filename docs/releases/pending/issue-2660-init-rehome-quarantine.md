@@ -11,7 +11,12 @@ ubuntu-latest coverage-shard invocation is skipped until a root fix lands.
 The entry carries the `# OWNER:` / `# EXPIRY:` metadata required by
 `scripts/check-invariants.ts` Check 7 (issue #2477). EXPIRY is
 `2026-10-15` — 30 days out, well inside the 14-day grace window so the
-gate warns rather than fails. No other ledger, test, or source file changed.
+gate warns rather than fails. A regression pinning test
+(`tests/unit/scripts/ci/ci-yml-quarantine-2660.test.ts`, modeled on the
+#2730 analogue) reads the real ledgers and asserts the entry is active
+in the general ledger, absent from the per-OS/integration ledgers,
+carries OWNER/EXPIRY, and that the on-disk path is discovered by the
+ci.yml find chain. No other ledger, test, or source file changed.
 
 ## Why
 
@@ -57,10 +62,21 @@ behavior changes.
 
 ## Known caveats
 
-- **Quarantine debt**: tracked under #1782 (test-stability sprint).
-  Sibling-issue #2730 (also naming `init-rehome`) is closed by the same
-  precedent commit `4199ba657` on a parallel auto-fix branch that has not
-  merged to `main`; this entry is the canonical home on this branch.
+- **Quarantine debt**: tracked under #1782 (test-stability sprint) and
+  #1737 (quarantine debt), the latter closed by #1729/#1908 and cited
+  here as a label for the debt class.
+- **Sibling issue #2730 (still OPEN)**: #2730 also names
+  `tests/unit/telemetry/init-rehome.test.ts` (its own detection run,
+  2026-09-12, coverage-shard 3 on ubuntu-latest) and its unmerged
+  auto-fix branch (commit `4199ba657`) adds a parallel general-ledger
+  entry for the same file. Both PRs will collide textually on
+  `scripts/ci/quarantined-tests.txt`; whichever merges second must
+  re-verify the entry's OWNER/EXPIRY block and preserve a single entry
+  (the flake-detection script Rule A drops already-quarantined
+  candidates, so duplicates are noise for detection). The
+  `ci-yml-quarantine-2660.test.ts` pinning test reads the real ledger
+  files, so the post-merge state (ledger content, metadata block, the
+  on-disk path) gets re-verified by the unit suite on every CI run.
 - **EXPIRY**: `2026-10-15`. Past that date the entry fails `check:invariants`
   Check 7 unless retired by a root fix or renewed with an updated criterion.
 - **Same-basename trap**: no `tests/{root}/init-rehome.test.ts` exists
