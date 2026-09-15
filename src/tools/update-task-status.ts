@@ -579,15 +579,16 @@ export function checkReviewerGate(
 					);
 				}
 				if (!evidence.workflow) {
+					const derivedGates = deriveApplicableGateSet(evidence);
 					return reviewerGateDecision(
 						taskId,
 						sessionID,
 						{
 							blocked: true,
 							reason: `Task ${taskId} has legacy QA evidence without an authoritative workflow generation. Run a fresh exact-task workflow transition before completion.`,
-							requiredGates: [...evidence.required_gates],
-							satisfiedGates: Object.keys(evidence.gates),
-							missingGates: [...evidence.required_gates],
+							requiredGates: derivedGates.requiredGates,
+							satisfiedGates: derivedGates.satisfiedGates,
+							missingGates: derivedGates.missingGates,
 							source: 'durable_exact_task',
 							generation: 0,
 							nextAction:

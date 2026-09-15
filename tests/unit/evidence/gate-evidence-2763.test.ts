@@ -48,7 +48,15 @@ describe('hasPassedAllGates applicability (#2763)', () => {
 			},
 		});
 
-		expect(await hasPassedAllGates(directory, '1.1')).toBe(true);
+		let filesTouched: string[] = [];
+		expect(await hasPassedAllGates(directory, '1.1', filesTouched)).toBe(true);
+
+		// The plan task's current scope is supplied from loadPlan's ledger-replayed
+		// task object by phase_complete. Expanding it after the old settlement must
+		// revoke the read-only exception even though generation-0 evidence remains.
+		filesTouched = ['src/expanded.ts'];
+		expect(await hasPassedAllGates(directory, '1.1', filesTouched)).toBe(false);
+		expect(await hasPassedAllGates(directory, '1.1')).toBe(false);
 	});
 
 	test('rejects ordinary and legacy empty required-gate evidence', async () => {
