@@ -35,11 +35,13 @@ import {
 	buildDriftInjectionText,
 	readPriorDriftReports,
 } from './curator-drift.js';
+import type { DriftReport } from './curator-types.js';
 import { extractCurrentPhaseFromPlan } from './extractors.js';
 import { resolveMessageTransformContext } from './host-boundary.js';
 import { recordKnowledgeShown } from './knowledge-application.js';
 import {
 	buildEscalationBriefing,
+	type RecentEscalation,
 	readRecentEscalations,
 } from './knowledge-escalator.js';
 import { recordKnowledgeEvent } from './knowledge-events.js';
@@ -57,6 +59,7 @@ import type {
 	KnowledgeConfig,
 	KnowledgeRetrievalContext,
 	MessageWithParts,
+	RejectedLesson,
 } from './knowledge-types.js';
 import { isActiveStatus } from './knowledge-types.js';
 import { extractModelInfo, resolveModelLimit } from './model-limits.js';
@@ -86,6 +89,120 @@ import {
  */
 const INJECTION_SENTINEL = `${String.fromCharCode(0x200c)}[[KNOWLEDGE-INJECTED]]`;
 const defaultSearchKnowledge = searchKnowledge;
+
+/**
+ * Key-sorted canonical JSON (mirrors the stableStringify pattern in
+ * src/memory/evaluation.ts) so object key order can never change a
+ * fingerprint: parse-order differences between two reads of the same
+ * drift report must not invalidate the injection cache (#2672).
+ */
+function stableInstructionJson(value: unknown): string {
+	if (Array.isArray(value))
+		return `[${value.map(stableInstructionJson).join(',')}]`;
+	if (value && typeof value === 'object') {
+		return `{${Object.entries(value as Record<string, unknown>)
+			.sort(([a], [b]) => a.localeCompare(b))
+			.map(
+				([key, item]) =>
+					`${JSON.stringify(key)}:${stableInstructionJson(item)}`,
+			)
+			.join('')}}`;
+	}
+	return JSON.stringify(value);
+}
+
+function sha256Short(value: string): string {
+	return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+/**
+ * #2672: every payload input of the cached instruction text, read ONCE per
+ * hook invocation and shared between the cache key (via the fingerprint
+ * below) and the miss-path assembly. Sharing is deliberate: reading twice
+ * would double the I/O on the miss path and consume side-effecting
+ * once-mocks in tests.
+ */
+interface InstructionInputs {
+	briefing: string | null;
+	rejected: RejectedLesson[];
+	runMemory: string | null;
+	escalations: RecentEscalation[];
+	latestDrift: DriftReport | null;
+}
+
+async function readInstructionInputs(
+	directory: string,
+): Promise<InstructionInputs> {
+	let briefing: string | null = null;
+	try {
+		briefing = await readSwarmFileAsync(directory, 'curator-briefing.md');
+	} catch {
+		briefing = null;
+	}
+
+	// Bounded tail; the miss path renders the last 3 entries.
+	let rejected: RejectedLesson[] = [];
+	try {
+		rejected = await readRejectedLessons(directory);
+	} catch {
+		rejected = [];
+	}
+
+	// Already ~1500-char capped by its reader.
+	let runMemory: string | null = null;
+	try {
+		runMemory = await getRunMemorySummary(directory);
+	} catch {
+		runMemory = null;
+	}
+
+	// Routed through the _internals seam exactly like the miss path.
+	let escalations: RecentEscalation[] = [];
+	try {
+		escalations = await _internals.readRecentEscalations(directory);
+	} catch {
+		escalations = [];
+	}
+
+	// Only the latest report is ever rendered by the miss path.
+	let latestDrift: DriftReport | null = null;
+	try {
+		const reports = await readPriorDriftReports(directory);
+		latestDrift = reports.length > 0 ? reports[reports.length - 1] : null;
+	} catch {
+		latestDrift = null;
+	}
+
+	return { briefing, rejected, runMemory, escalations, latestDrift };
+}
+
+/**
+ * #2672: fingerprint of the payload inputs. The context cache key describes
+ * the CONVERSATIONAL context; the cached text embeds the inputs below (plus
+ * the knowledge corpus, covered by its generation counter). Without this
+ * fingerprint in the key, a changed input is served stale while the context
+ * key holds (the defect reproduced by the #2672 red checkpoint).
+ *
+ * Pure function of InstructionInputs; every absent input digests as the
+ * literal "0" (fail-open, matching the miss path's try/catch posture).
+ */
+function fingerprintInstructionInputs(inputs: InstructionInputs): string {
+	return [
+		inputs.briefing ? sha256Short(inputs.briefing) : '0',
+		inputs.rejected.length > 0
+			? sha256Short(stableInstructionJson(inputs.rejected.slice(-20)))
+			: '0',
+		inputs.runMemory ? sha256Short(inputs.runMemory) : '0',
+		inputs.escalations.length > 0
+			? sha256Short(stableInstructionJson(inputs.escalations))
+			: '0',
+		inputs.latestDrift
+			? sha256Short(
+					`${String(inputs.latestDrift.phase)}:${stableInstructionJson(inputs.latestDrift)}`,
+				)
+			: '0',
+	].join('|');
+}
 
 /**
  * Result of building a knowledge block: the rendered text AND the ids of the
@@ -1060,6 +1177,7 @@ export function createKnowledgeInjectorHook(
 	function buildContextCacheKey(
 		phase: number,
 		ctx: KnowledgeRetrievalContext,
+		instructionFingerprint: string,
 	): string {
 		const parts = [
 			String(phase),
@@ -1067,6 +1185,11 @@ export function createKnowledgeInjectorHook(
 			// invalidate this memo, because none of the context fields below change
 			// when knowledge is added mid-phase.
 			String(getKnowledgeGeneration()),
+			// #2672: payload-input fingerprint. The cached text embeds drift,
+			// briefing, run-memory, escalations, and rejected-lesson content
+			// (plus the corpus above); any change to those inputs must change
+			// the key or the hit path re-serves a superseded instruction set.
+			instructionFingerprint,
 			ctx.currentTool ?? '',
 			ctx.currentAction ?? '',
 			ctx.targetAgent ?? '',
@@ -1294,7 +1417,16 @@ export function createKnowledgeInjectorHook(
 			};
 
 			// v2: cache key now includes action/task/agent/files signature, not just phase.
-			const cacheKey = buildContextCacheKey(currentPhase, retrievalCtx);
+			// #2672: payload inputs are read once here, fingerprinted into the key, and
+			// reused by the miss-path assembly below — an instruction-set change
+			// (drift/briefing/run-memory/escalations/rejected) misses the cache even
+			// when the conversational context is byte-identical, and no input is read twice.
+			const instructionInputs = await readInstructionInputs(directory);
+			const cacheKey = buildContextCacheKey(
+				currentPhase,
+				retrievalCtx,
+				fingerprintInstructionInputs(instructionInputs),
+			);
 			if (cacheKey === lastSeenCacheKey && cachedInjectionText !== null) {
 				// Same context, cached text available — re-inject (handles compaction).
 				let cacheVerifiable = cachedShownIds.length === 0;
@@ -1363,12 +1495,14 @@ export function createKnowledgeInjectorHook(
 			// on subsequent calls with only a partial drift-only cache.
 			let freshPreamble: string | null = null;
 
-			// Drift injection: prepend latest drift report summary
+			// Drift injection: prepend latest drift report summary. #2672: uses the
+			// shared pre-read input (read once above, fingerprinted into the key).
 			try {
-				const driftReports = await readPriorDriftReports(directory);
-				if (driftReports.length > 0) {
-					const latestReport = driftReports[driftReports.length - 1];
-					const driftText = buildDriftInjectionText(latestReport, 500);
+				if (instructionInputs.latestDrift) {
+					const driftText = buildDriftInjectionText(
+						instructionInputs.latestDrift,
+						500,
+					);
 					if (driftText) {
 						freshPreamble = sanitizeContextText(driftText);
 					}
@@ -1379,16 +1513,11 @@ export function createKnowledgeInjectorHook(
 
 			// Curator briefing injection: include session-start briefing from curator init
 			try {
-				const briefingContent = await readSwarmFileAsync(
-					directory,
-					'curator-briefing.md',
-				);
-				if (briefingContent) {
+				if (instructionInputs.briefing) {
 					// Sanitize and truncate to stay within token budget (same 500 char limit as drift)
-					const truncatedBriefing = sanitizeContextText(briefingContent).slice(
-						0,
-						500,
-					);
+					const truncatedBriefing = sanitizeContextText(
+						instructionInputs.briefing,
+					).slice(0, 500);
 					freshPreamble = freshPreamble
 						? `<curator_briefing>${truncatedBriefing}</curator_briefing>\n\n${freshPreamble}`
 						: `<curator_briefing>${truncatedBriefing}</curator_briefing>`;
@@ -1475,18 +1604,10 @@ export function createKnowledgeInjectorHook(
 				return;
 			}
 
-			// Get run memory summary. This is optional context; failures must not
-			// suppress the knowledge block retrieved above.
-			let runMemory: string | null = null;
-			try {
-				runMemory = await getRunMemorySummary(directory);
-			} catch (err) {
-				warn(
-					`[knowledge-injector] run memory summary unavailable: ${
-						err instanceof Error ? err.message : String(err)
-					}`,
-				);
-			}
+			// Run memory summary. This is optional context; failures must not
+			// suppress the knowledge block retrieved above. #2672: shared pre-read
+			// input (read once above, fingerprinted into the cache key).
+			const runMemory: string | null = instructionInputs.runMemory;
 
 			// Priority-ordered assembly respecting effectiveBudget
 			// Priority: 1. Lessons, 2. Run memory, 3. Drift preamble, 4. Rejected warnings
@@ -1552,10 +1673,12 @@ export function createKnowledgeInjectorHook(
 
 			// 1. Recently-escalated directives (Change 3) — prepended above the
 			// directive block so the architect sees auto-escalations first.
+			// #2672: shared pre-read input (read once above, fingerprinted into
+			// the cache key).
 			try {
-				const escalations = await _internals.readRecentEscalations(directory);
-				const escalationBriefing =
-					_internals.buildEscalationBriefing(escalations);
+				const escalationBriefing = _internals.buildEscalationBriefing(
+					instructionInputs.escalations,
+				);
 				if (escalationBriefing && escalationBriefing.length <= remaining) {
 					parts.push(escalationBriefing);
 					remaining -= escalationBriefing.length;
@@ -1612,9 +1735,10 @@ export function createKnowledgeInjectorHook(
 			}
 
 			// 4. Rejected warnings (lowest priority). Optional guardrail context must
-			// not suppress the primary knowledge block.
+			// not suppress the primary knowledge block. #2672: shared pre-read input
+			// (read once above, fingerprinted into the cache key).
 			try {
-				const rejected = await readRejectedLessons(directory);
+				const rejected = instructionInputs.rejected;
 				if (rejected.length > 0 && remaining > 150) {
 					const recentRejected = rejected.slice(-3);
 					const rejectedLines = recentRejected.map(

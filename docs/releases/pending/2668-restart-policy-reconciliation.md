@@ -3,10 +3,12 @@
 ## What changed
 
 - Restart hydration now has an explicit authority boundary: the plan ledger,
-  durable execution profile, persisted QA-gate profile, evidence, and recovery
-  WALs, and lease records are durable inputs; session overrides, active
-  ownership, live lease authority, child handles, timers, and retry/circuit
-  state are ephemeral and are not revived as execution authority.
+  durable execution profile, persisted QA-gate profile, ratchet-tighter
+  session QA-gate overrides stored in `.swarm/swarm.db`, evidence, recovery
+  WALs, and lease records are durable inputs. The session `/swarm auto-proceed`
+  override, active ownership, live lease authority, child handles, timers, and
+  retry/circuit state remain process-local and are not revived as execution
+  authority.
 - The post-resolution restart coordinator uses authoritative `loadPlan()` before
   projection/cache inspection. Missing or stale `plan.json`/`plan.md` files are
   regenerated from `.swarm/plan-ledger.jsonl`; invalid ledger suffixes remain

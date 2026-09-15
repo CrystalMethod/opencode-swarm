@@ -151,11 +151,10 @@ async function initializeSnapshotCoordination(
 	scope?: HydrationScope,
 ): Promise<SnapshotCoordinationInitializationOutcome> {
 	const isCurrent = () => scope === undefined || isHydrationScopeCurrent(scope);
-	if (!isCurrent()) return 'superseded';
-	let legacyArchiveAttempted = false;
 	// Source selection and the first authority read are also publication
 	// boundaries: a stale initializer must not even start a compatibility import.
 	if (!isCurrent()) return 'superseded';
+	let legacyArchiveAttempted = false;
 	let snapshot = readSnapshotRows(directory);
 	if (!snapshot) {
 		if (!isCurrent()) return 'superseded';
@@ -313,7 +312,7 @@ export function startSnapshotCoordinationInitialization(
 	// Issues #2667/#2668: fence token captured at INITIATION. Each fresh
 	// initializer mints a process-unique authority that cannot be reused after
 	// bounded-record eviction or reset.
-	const scope = beginHydrationScope(directory);
+	const scope = beginHydrationScope(root);
 	const entry: ReadinessEntry = {
 		attemptId,
 		generation,
@@ -322,7 +321,7 @@ export function startSnapshotCoordinationInitialization(
 		underlying: Promise.resolve(),
 	};
 	const underlying = _snapshotCoordinationInternals
-		.initialize(directory, scope)
+		.initialize(root, scope)
 		.then((outcome) => {
 			if (entries.get(root) !== entry || entry.state === 'closing') return;
 			if (outcome === 'superseded') {

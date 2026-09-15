@@ -42,6 +42,9 @@ mock.module('../../../src/evidence/manager.js', () => ({
 // Mock the plan/manager module
 mock.module('../../../src/plan/manager.js', () => ({
 	loadPlan: mockLoadPlan,
+	// #2672: knowledge-injector (reached transitively via the memory barrel)
+	// imports getCurrentTaskId; the binding must exist while manager is mocked.
+	getCurrentTaskId: () => null,
 	loadPlanJsonOnly: mockLoadPlanJsonOnly,
 	PlanRecoverySupersededError: class PlanRecoverySupersededError extends Error {},
 	isTaskSettled: mock(() => false),

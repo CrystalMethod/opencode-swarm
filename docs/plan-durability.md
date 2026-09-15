@@ -439,18 +439,19 @@ hash mismatch and rebuilds plan files from the authoritative ledger.
 Restart reconciliation must keep durable workflow policy separate from
 process-local execution authority. The following distinction is intentional:
 
-| Durable across restart | Ephemeral and never resurrected as authority |
+| Durable across restart | Process-local and never resurrected as authority |
 | --- | --- |
-| `.swarm/plan-ledger.jsonl` and its replayed plan identity | Session QA overrides and the session `auto-proceed` override |
+| `.swarm/plan-ledger.jsonl` and its replayed plan identity | The session `/swarm auto-proceed` override |
 | The plan execution profile and persisted QA-gate profile for that plan identity | In-memory session context, child handles, timers, and retry/circuit state |
+| Ratchet-tighter session QA-gate overrides stored in `.swarm/swarm.db` | |
 | Evidence/WAL records, reservation/lease records, and their owner-visible recovery classifications | Live ownership/lease authority from a prior process; it must be re-proven after restart |
 
 The plan ledger remains authoritative. `plan.json` and `plan.md` are derived
-projections, and `get_qa_gate_profile` reports the persisted profile for the
-exact plan identity; it does not turn a session override into durable policy.
-Similarly, a session-only override may affect the current process, but a new
-process must not infer execution authority from that override, an old lease
-record, or an in-memory child handle.
+projections, while ratchet-tighter session QA-gate overrides are durable policy
+stored in the project database and restored on restart. The session
+`/swarm auto-proceed` override remains process-local. Neither a restored QA
+override nor a durable lease record grants execution authority: ownership and
+live authority must be re-proven, and old child handles are never revived.
 
 The restart sequence is deliberately ordered:
 
@@ -819,3 +820,9 @@ chat.message path is a pure Map hit.
 | Lock execution profile | `save_plan` with `execution_profile.locked: true` |
 | View worktree lanes | `/swarm lanes [--json]` |
 | Recover orphaned worktrees | Automatic on session start (see [Recovery Runbook](troubleshooting/recovery-guide.md)) |
+
+## See also
+
+- [Restart reconciliation — durable policy vs ephemeral authority](restart-reconciliation.md)
+  (issue #2668): the restart-boundary field classification, owner-named
+  reconciliation for interrupted executions, and the restart/inspect runbook.

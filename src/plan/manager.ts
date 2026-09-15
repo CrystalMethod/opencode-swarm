@@ -188,6 +188,7 @@ export const _internals: {
 	readPlanJsonUtf8: typeof readPlanJsonUtf8;
 	readPlanFileUtf8: typeof readPlanFileUtf8;
 	verifyWrittenPlanJson: typeof verifyWrittenPlanJson;
+	writeRebuildPlanMarkdown: typeof writeRebuildPlanMarkdown;
 	ledgerExists: typeof ledgerExists;
 	replayFromLedger: typeof replayFromLedger;
 	loadLastApprovedPlan: typeof loadLastApprovedPlan;
@@ -204,6 +205,7 @@ export const _internals: {
 	readPlanJsonUtf8,
 	readPlanFileUtf8,
 	verifyWrittenPlanJson,
+	writeRebuildPlanMarkdown,
 	ledgerExists,
 	replayFromLedger,
 	loadLastApprovedPlan,
@@ -2315,6 +2317,13 @@ async function commitAsyncPreparedFile(
 	}
 }
 
+async function writeRebuildPlanMarkdown(
+	tempPath: string,
+	content: string,
+): Promise<void> {
+	await bunWrite(tempPath, content);
+}
+
 /**
  * Rebuild plan from ledger events.
  * Replays the ledger to reconstruct plan state, then writes the result.
@@ -2422,7 +2431,7 @@ export async function rebuildPlan(
 			`plan.md.rebuild.${Date.now()}.${Math.floor(Math.random() * 1e9)}`,
 		);
 		try {
-			await bunWrite(tempMdPath, markdownWithHash);
+			await _internals.writeRebuildPlanMarkdown(tempMdPath, markdownWithHash);
 			options?.preCommitCheck?.();
 			renameSync(tempMdPath, mdPath);
 			invalidateCachedArtifact(mdPath);
@@ -2471,7 +2480,20 @@ export async function rebuildPlan(
 		}
 	}
 	if (markerSupersededError) throw markerSupersededError;
-	if (markdownWriteFailed) throw markdownWriteError;
+	if (markdownWriteFailed) {
+		if (markdownWriteError instanceof PlanRecoverySupersededError)
+			throw markdownWriteError;
+		const message =
+			markdownWriteError instanceof Error
+				? markdownWriteError.message
+				: String(markdownWriteError);
+		warn(
+			`[rebuildPlan] plan.md projection write failed (non-fatal; plan.json is authoritative): ${message}`.slice(
+				0,
+				512,
+			),
+		);
+	}
 
 	// Append plan_rebuilt ledger event for audit trail (FR-003).
 	// This is NOT circular — rebuildPlan replays existing events to reconstruct state;

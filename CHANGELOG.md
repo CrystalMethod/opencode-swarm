@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.181.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.1...v7.181.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* **pr-review:** preserve controller-owned micro lane markers ([af54a41](https://github.com/ZaxbyHub/opencode-swarm/commit/af54a410783eab977caa59742534810952668341))
+* **session:** mirror the mutable-resetValue clone into the legacy global rehydrate path ([9ad3001](https://github.com/ZaxbyHub/opencode-swarm/commit/9ad300101b92244a4fb040231e6b3a0c45f39ad1))
+* **session:** preserve durable QA policy and owner-named reconciliation across restart ([744a241](https://github.com/ZaxbyHub/opencode-swarm/commit/744a241efdf0f7686d1bfad478bbd9029aad1d8c))
+* **session:** prune orphaned override rows and repair advisory dedupe ([#2668](https://github.com/ZaxbyHub/opencode-swarm/issues/2668) review) ([5330da1](https://github.com/ZaxbyHub/opencode-swarm/commit/5330da154f0c4dadb048479277b189a9d95df5cf))
+* **workflow:** retryable TESTED SKIPPED verdicts and non-dead-end test_runner scope advice ([#2756](https://github.com/ZaxbyHub/opencode-swarm/issues/2756)) ([9462f32](https://github.com/ZaxbyHub/opencode-swarm/commit/9462f323b54689add2ca785e131cfe1b8ad9a8aa))
+
 ## [7.181.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.0...v7.181.1) (2026-09-14)
 
 

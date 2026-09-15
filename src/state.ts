@@ -27,6 +27,7 @@ import {
 	getProfileLookupForIdentity,
 	type QaGates,
 } from './db/qa-gate-profile.js';
+import { clearOverrideForSession } from './db/qa-gate-session-override.js';
 import {
 	detectEnvironmentProfile,
 	type EnvironmentProfile,
@@ -667,9 +668,12 @@ export interface AgentSessionState {
 	// QA Gate Profile session overrides (ratchet-tighter only)
 	/** Session-level QA gate overrides layered on top of the spec-level profile.
 	 *  Overrides can only enable gates (true); false values are ignored by
-	 *  getEffectiveGates. Cleared on session reset. Optional for backwards
-	 *  compatibility with pre-existing session state fixtures; consumers
-	 *  should read via `session.qaGateSessionOverrides ?? {}`. */
+	 *  getEffectiveGates. Durable runtime policy (#2668): the authoritative copy
+	 *  lives in the project DB (qa_gate_session_override), written durable-first
+	 *  by `/swarm qa-gates override`, restored by rehydrateState, and deleted in
+	 *  lockstep with the session (end/stale-eviction/reset). Optional for
+	 *  backwards compatibility with pre-existing session state fixtures;
+	 *  consumers should read via `session.qaGateSessionOverrides ?? {}`. */
 	qaGateSessionOverrides?: Partial<QaGates>;
 
 	// Full Auto Mode (Phase 2)
@@ -2087,6 +2091,18 @@ export function sweepStaleSessions(
 					error instanceof Error ? error.message : String(error),
 				);
 			}
+			// #2668: the session's durable QA override row is session-keyed
+			// policy — it goes in lockstep with the evicted session so a
+			// dead session's tightening can never resurrect on a later
+			// rehydrate. Best-effort, same as the snapshot-row teardown.
+			try {
+				clearOverrideForSession(directory, id);
+			} catch (error) {
+				logger.warn(
+					'[state] durable stale-session override teardown failed:',
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 		}
 		releaseSnapshotSessionOwnership(id);
 		swarmState.agentSessions.delete(id);
@@ -2385,6 +2401,17 @@ export function endAgentSession(sessionId: string, directory?: string): void {
 		} catch (error) {
 			logger.warn(
 				'[state] durable snapshot session teardown failed:',
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+		// #2668: the session's durable QA override row is deleted in lockstep
+		// with the ended session ("cleared on session reset"). Best-effort:
+		// an override-row teardown failure must not abort session teardown.
+		try {
+			clearOverrideForSession(directory, sessionId);
+		} catch (error) {
+			logger.warn(
+				'[state] durable session override teardown failed:',
 				error instanceof Error ? error.message : String(error),
 			);
 		}

@@ -22,6 +22,7 @@ import {
 } from '../background/workspace-snapshot.js';
 import type { PluginConfig } from '../config';
 import {
+	resolveEffectiveAgentOverride,
 	resolveRegisteredAgentModel,
 	resolveRuntimeAgentModel,
 } from '../config/agent-model.js';
@@ -3238,6 +3239,18 @@ export const _internals = {
 };
 
 /**
+ * PR #2782 review PRR-001: strip control characters before interpolating
+ * host/config-sourced strings (subagent_type, model ids) into denial Error
+ * text. Newlines would forge multi-line plugin-looking output and ESC
+ * sequences drive the terminal; control runs collapse to a single space
+ * (same policy as model-preflight's sanitizePreflightText).
+ */
+function sanitizeDenialText(value: string): string {
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentionally matching control chars to strip them
+	return value.replace(/[\x00-\x1f\x7f]+/g, ' ');
+}
+
+/**
  * Creates the experimental.chat.messages.transform hook for delegation gating.
  * Inspects coder delegations and warns when tasks are oversized or batched.
  */
@@ -3803,6 +3816,16 @@ export function createDelegationGateHook(
 		// manual approve_plan_critic overrides. Deny fail-fast with an
 		// actionable message instead. Fail-open: any catalog/check error lets
 		// the dispatch proceed (existing retry classification still applies).
+		//
+		// Issue #2680: the same final-selection preflight covers EVERY
+		// registered swarm agent (legacy and prefixed), not just critics —
+		// an enabled role whose final model cannot resolve must not pass
+		// dispatch admission silently. Primary agents are EXEMPT (short-
+		// circuit before any catalog lookup): OpenCode's UI owns their model
+		// selection, so validating their registered fallback model would deny
+		// healthy dispatches on hosts whose catalog lacks DEFAULT_MODELS.default
+		// while the UI-selected model is fine. Unregistered names remain issue
+		// #2614's registry-refusal contract — untouched here.
 		const preflightArgs = output.args as Record<string, unknown> | undefined;
 		if (
 			isTaskToolId(input.tool) &&
@@ -3811,54 +3834,135 @@ export function createDelegationGateHook(
 		) {
 			const exactPreflightAgent = preflightArgs.subagent_type;
 			const preflightAgent = stripKnownSwarmPrefix(exactPreflightAgent);
-			if (preflightAgent.startsWith('critic')) {
-				const legacyCriticModel =
-					config.agents?.[preflightAgent]?.model ??
-					DEFAULT_MODELS[preflightAgent] ??
-					DEFAULT_MODELS.default;
-				const criticModel = registeredAgents
-					? (resolveRuntimeAgentModel(
-							config,
-							registeredAgents,
-							exactPreflightAgent,
-						) ??
-						resolveRegisteredAgentModel(config, exactPreflightAgent) ??
-						legacyCriticModel)
-					: legacyCriticModel;
-				try {
-					const { checkSingleModelResolution } = await import(
-						'../services/model-preflight'
-					);
-					const resolution = await checkSingleModelResolution(
-						criticModel,
-						swarmState.opencodeClient,
-					);
-					if (resolution === 'unresolved') {
-						telemetry.modelUnresolved(
-							preflightAgent,
-							criticModel,
-							'plan-critic dispatch preflight',
-						);
-						throw new Error(
-							`PLAN_CRITIC_MODEL_UNRESOLVED: the ${exactPreflightAgent} agent's effective model "${criticModel}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
-								`Fix the effective model configuration for "${exactPreflightAgent}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`,
-						);
-					}
-				} catch (error) {
-					if (
-						error instanceof Error &&
-						error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')
-					) {
-						// PR-review PRR-006: a denial invalidates the catalog
-						// cache so a user who fixes the model config is not
-						// re-denied from a stale catalog for up to the 30 s TTL.
-						const { invalidateProviderCatalogCache } = await import(
+			const registeredMode = registeredAgents
+				? Object.entries(registeredAgents).find(
+						([name]) =>
+							name.toLowerCase() === exactPreflightAgent.trim().toLowerCase(),
+					)?.[1]
+				: undefined;
+			const isCriticDispatch = preflightAgent.startsWith('critic');
+			const isRegistryMatchedDispatch = registeredMode !== undefined;
+			const isPrimaryDispatch =
+				(registeredMode as { mode?: unknown } | undefined)?.mode === 'primary';
+			if (
+				(isCriticDispatch || isRegistryMatchedDispatch) &&
+				!isPrimaryDispatch
+			) {
+				let denialError: string | undefined;
+				if (isCriticDispatch) {
+					const legacyCriticModel =
+						config.agents?.[preflightAgent]?.model ??
+						DEFAULT_MODELS[preflightAgent] ??
+						DEFAULT_MODELS.default;
+					const criticModel = registeredAgents
+						? (resolveRuntimeAgentModel(
+								config,
+								registeredAgents,
+								exactPreflightAgent,
+							) ??
+							resolveRegisteredAgentModel(config, exactPreflightAgent) ??
+							legacyCriticModel)
+						: legacyCriticModel;
+					try {
+						const { checkSingleModelResolution } = await import(
 							'../services/model-preflight'
 						);
-						invalidateProviderCatalogCache();
-						throw error;
+						const resolution = await checkSingleModelResolution(
+							criticModel,
+							swarmState.opencodeClient,
+						);
+						if (resolution === 'unresolved') {
+							telemetry.modelUnresolved(
+								preflightAgent,
+								criticModel,
+								'plan-critic dispatch preflight',
+							);
+							denialError =
+								`PLAN_CRITIC_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(criticModel)}" does not resolve against the provider catalog — the critic can never run, so the plan-critic gate cannot produce VERDICT: APPROVED. ` +
+								`Fix the effective model configuration for "${sanitizeDenialText(exactPreflightAgent)}" in opencode-swarm.json (including any matching swarm override or inherited critic model), then re-run MODE: CRITIC-GATE.`;
+						}
+					} catch (error) {
+						if (
+							error instanceof Error &&
+							error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')
+						) {
+							// PR-review PRR-006: a denial invalidates the catalog
+							// cache so a user who fixes the model config is not
+							// re-denied from a stale catalog for up to the 30 s TTL.
+							const { invalidateProviderCatalogCache } = await import(
+								'../services/model-preflight'
+							);
+							invalidateProviderCatalogCache();
+							throw error;
+						}
+						// Catalog unavailable / check failed — fail open.
 					}
-					// Catalog unavailable / check failed — fail open.
+				} else {
+					// Issue #2680 non-critic registered-role admission.
+					// PRR-003: a blank explicit override must classify
+					// missing-selection here too — the resolver chain below
+					// would silently fall back to DEFAULT_MODELS while the
+					// init/doctor surfaces flag the same role.
+					const overrideEntry = resolveEffectiveAgentOverride(
+						config,
+						exactPreflightAgent,
+					);
+					const finalModel =
+						overrideEntry &&
+						typeof overrideEntry.model === 'string' &&
+						overrideEntry.model.trim() === ''
+							? ''
+							: ((registeredAgents
+									? resolveRuntimeAgentModel(
+											config,
+											registeredAgents,
+											exactPreflightAgent,
+										)
+									: undefined) ??
+								resolveRegisteredAgentModel(config, exactPreflightAgent));
+					if (finalModel === undefined || finalModel.trim() === '') {
+						telemetry.modelUnresolved(
+							preflightAgent,
+							'(no final selection)',
+							'swarm-agent dispatch preflight',
+						);
+						denialError =
+							`SWARM_AGENT_MODEL_MISSING_SELECTION: the ${sanitizeDenialText(exactPreflightAgent)} agent is registered but has no final model selection (blank model override or a stale swarm registry entry) — dispatching it cannot succeed. ` +
+							`Fix agents.<role>.model in opencode-swarm.json (the matching swarm override wins over the top-level entry) or correct the swarm configuration, then retry.`;
+					} else {
+						try {
+							const { checkSingleModelResolution } = await import(
+								'../services/model-preflight'
+							);
+							const resolution = await checkSingleModelResolution(
+								finalModel,
+								swarmState.opencodeClient,
+							);
+							if (resolution === 'unresolved') {
+								telemetry.modelUnresolved(
+									preflightAgent,
+									finalModel,
+									'swarm-agent dispatch preflight',
+								);
+								denialError =
+									`SWARM_AGENT_MODEL_UNRESOLVED: the ${sanitizeDenialText(exactPreflightAgent)} agent's effective model "${sanitizeDenialText(finalModel)}" does not resolve against the provider catalog — dispatching this role will fail permanently ("Model not found"/"Forbidden"). ` +
+									`Fix the effective model configuration in opencode-swarm.json (the matching swarm override wins over top-level agents.<role>.model). ` +
+									`fallback_models entries only serve transient runtime failures; configure a resolvable primary model for this role.`;
+							}
+						} catch {
+							// Catalog unavailable / check failed — fail open.
+						}
+					}
+				}
+				if (denialError !== undefined) {
+					// PRR-006 (critic + #2680 non-critic): a denial invalidates
+					// the catalog cache so a fixed model config takes effect on
+					// the next attempt, not after the 30 s TTL.
+					const { invalidateProviderCatalogCache } = await import(
+						'../services/model-preflight'
+					);
+					invalidateProviderCatalogCache();
+					throw new Error(denialError);
 				}
 			}
 		}
@@ -5959,6 +6063,21 @@ export function createDelegationGateHook(
 										const verdictEntry = attributionResult.verdicts.get(taskId);
 										const dispatchCtxForVerdict =
 											stageBDispatchContextByCallID.get(input.callID);
+										// A SKIPPED TESTED verdict means the tests were not run
+										// (e.g. prohibited scope, framework detection none) — a
+										// tool-argument outcome, not a code failure. Leave the
+										// task in its Stage B eligible state with the reviewer
+										// proof intact so the architect can re-dispatch the test
+										// gate instead of forcing a coder rework (issue #2756).
+										if (
+											dispatchCtxForVerdict?.expectedVerdictKind === 'TESTED' &&
+											verdictEntry?.verdict === 'SKIPPED'
+										) {
+											logger.warn(
+												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${state} for test-gate re-dispatch; reviewer proof preserved`,
+											);
+											continue;
+										}
 										const positiveVerdict =
 											dispatchCtxForVerdict?.expectedVerdictKind === 'TESTED'
 												? verdictEntry?.verdict === 'PASS'

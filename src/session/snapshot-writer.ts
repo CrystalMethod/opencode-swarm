@@ -284,7 +284,7 @@ export const SESSION_TRANSIENT_FIELDS: Readonly<
 	reviewerScopeOwnershipHistory:
 		'Bounded recent background-ownership tombstones for in-process reviewer consumption only.',
 	qaGateSessionOverrides:
-		'Ratchet-tighter session overrides ride the live session; cleared on session reset and never persisted.',
+		'Durable runtime policy (#2668): persisted in the project DB (qa_gate_session_override), restored by rehydrateState, deleted at session end — but NEVER serialized into snapshot bytes (the snapshot is a projection; the DB row is the restart authority).',
 	loopDetectionWindow:
 		'Sliding window of recent delegation hashes; loop detection restarts empty in a fresh process.',
 	loopWarningPending:

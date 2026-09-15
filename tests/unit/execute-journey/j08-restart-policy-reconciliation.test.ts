@@ -1,10 +1,10 @@
 /**
  * j08 — restart policy reconciliation through the real registered host
- * (issue #2668).  Durable plan identity and QA policy are recovered on boot B;
- * session-only QA and auto-proceed authority is intentionally absent.  The
- * same journey inspects an interrupted task through the host, then directly
- * exercises the settlement classifier and proves that a late result from the
- * old workflow generation cannot clear the newly accepted one.
+ * (issue #2668). Durable plan identity and session-scoped QA policy are
+ * recovered on boot B; ephemeral auto-proceed authority is intentionally
+ * absent. The journey also inspects an interrupted task through the host,
+ * then directly exercises the settlement classifier and proves that a late
+ * result from the old workflow generation cannot clear the newly accepted one.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -102,7 +102,7 @@ describe('restart policy reconciliation through the registered host plus direct 
 		project = null;
 	});
 
-	test('durable policy and approved identity survive restart while old authority expires', async () => {
+	test('durable policy and approved identity survive restart while process-local authority expires', async () => {
 		project = createJourneyProject('swarm-j08-');
 		const bootA = await bootJourneyHost({ directory: project.directory });
 		const driverA = new JourneyDriver(bootA);
@@ -126,7 +126,8 @@ describe('restart policy reconciliation through the registered host plus direct 
 		);
 		expect(enable).toContain('Enabled gates persisted');
 
-		// These are intentionally process/session-only execution controls.
+		// The QA override is durable session-scoped policy; auto-proceed is a
+		// process-local execution control that must expire across restart.
 		const override = await handleQaGatesCommand(
 			project.directory,
 			['override', 'sast_enabled'],
@@ -199,14 +200,16 @@ describe('restart policy reconciliation through the registered host plus direct 
 		).toBeUndefined();
 		expect(
 			swarmState.agentSessions.get(driverB.sessionID)?.qaGateSessionOverrides,
-		).toEqual({});
+		).toEqual({ sast_enabled: true });
 		expect(
 			await handleQaGatesCommand(
 				project.directory,
 				['show'],
 				driverB.sessionID,
 			),
-		).toContain('Session overrides (ratchet-tighter only):\n  (none)');
+		).toContain(
+			'Session overrides (ratchet-tighter only):\n  - sast_enabled: on (override)',
+		);
 
 		const inspect = await driverB.inspectTask({ taskId: TASK_ID });
 		expect(inspect.workflow).toMatchObject({

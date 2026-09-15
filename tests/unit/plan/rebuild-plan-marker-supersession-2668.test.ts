@@ -9,14 +9,18 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Plan } from '../../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
+import { readLedgerEvents } from '../../../src/plan/ledger';
 import {
+	_internals,
 	PlanRecoverySupersededError,
 	rebuildPlan,
+	savePlan,
 } from '../../../src/plan/manager';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const temporaryDirectories: string[] = [];
+const originalWriteRebuildPlanMarkdown = _internals.writeRebuildPlanMarkdown;
 
 function makePlan(): Plan {
 	return {
@@ -46,6 +50,7 @@ function makePlan(): Plan {
 }
 
 afterEach(() => {
+	_internals.writeRebuildPlanMarkdown = originalWriteRebuildPlanMarkdown;
 	closeAllProjectDbs();
 	for (const directory of temporaryDirectories.splice(0)) {
 		safeRmRecursive(directory);
@@ -53,6 +58,30 @@ afterEach(() => {
 });
 
 describe('rebuildPlan write-marker supersession regression (F2)', () => {
+	test('keeps committed plan.json and records rebuild when plan.md fails', async () => {
+		const directory = canonicalMkdtemp('rebuild-plan-markdown-failure-2668-');
+		temporaryDirectories.push(directory);
+		mkdirSync(path.join(directory, '.opencode'));
+		const plan = makePlan();
+		await savePlan(directory, plan);
+		_internals.writeRebuildPlanMarkdown = async () => {
+			throw new Error('simulated plan.md projection failure');
+		};
+
+		await expect(rebuildPlan(directory, plan)).resolves.toEqual(plan);
+
+		expect(
+			JSON.parse(
+				readFileSync(path.join(directory, '.swarm', 'plan.json'), 'utf8'),
+			),
+		).toMatchObject({ title: plan.title, swarm: plan.swarm });
+		expect(
+			(await readLedgerEvents(directory)).some(
+				(event) => event.event_type === 'plan_rebuilt',
+			),
+		).toBe(true);
+	});
+
 	test('does not clear a newer writer marker from the cleanup path', async () => {
 		const directory = canonicalMkdtemp('rebuild-plan-marker-2668-');
 		temporaryDirectories.push(directory);

@@ -4,6 +4,10 @@
  */
 
 import { renameSync } from 'node:fs';
+import {
+	getOverrideForSession,
+	sweepOrphanOverrides,
+} from '../db/qa-gate-session-override.js';
 import { loadFullAutoRunState } from '../full-auto/state';
 import { validateSwarmPath } from '../hooks/utils';
 import type { AgentSessionState, TaskWorkflowState } from '../state';
@@ -13,6 +17,7 @@ import {
 	MAX_TRACKED_TASK_FILE_ATTRIBUTIONS,
 	swarmState,
 } from '../state';
+import { pushAdvisory } from '../utils/advisory-queue.js';
 import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';
 import {
@@ -25,12 +30,21 @@ import {
 	isHydrationScopeCurrent,
 	recordHydratedAggregateKeys,
 } from './hydration-ownership.js';
+import {
+	buildInterruptedAdvisoryDedupeKey,
+	buildInterruptedAdvisoryMessage,
+	recordInterruptedExecution,
+} from './restart-reconciliation.js';
 import type {
 	SerializedAgentSession,
 	SerializedInvocationWindow,
 	SnapshotData,
 } from './snapshot-writer';
 import { SNAPSHOT_PROJECTION_FILE } from './snapshot-writer';
+
+export const _internals = {
+	recordInterruptedExecution,
+};
 
 /**
  * Transient session fields that must be reset on rehydration.
@@ -484,6 +498,69 @@ export async function rehydrateState(
 		return { applied: false, reason: 'superseded' };
 	}
 
+	// Interrupted-execution reconciliation is durable-first, but its write may
+	// suspend while a newer hydration takes authority for this project. Prepare
+	// those bounded records before touching shared rehydrated state, then fence
+	// the one synchronous publication section below with the exact authority.
+	const isProtectedLiveSession = (sessionId: string): boolean => {
+		const live = swarmState.agentSessions.get(sessionId);
+		return (
+			live !== undefined &&
+			isCurrentAuthoritySession(live) &&
+			(live.hydrationStamp ?? 0) > generation
+		);
+	};
+	const interruptedReconciliations = new Map<
+		string,
+		{
+			entry: { sessionId: string; agentName: string; taskId: string };
+			guidance: string;
+		}
+	>();
+	if (directory && snapshot.agentSessions) {
+		for (const [sessionId, serializedSession] of Object.entries(
+			snapshot.agentSessions,
+		)) {
+			if (
+				isProtectedLiveSession(sessionId) ||
+				!serializedSession ||
+				typeof serializedSession !== 'object' ||
+				typeof serializedSession.agentName !== 'string' ||
+				typeof serializedSession.lastToolCallTime !== 'number' ||
+				serializedSession.delegationActive !== true
+			) {
+				continue;
+			}
+			const entry = {
+				sessionId,
+				agentName: serializedSession.agentName,
+				taskId: serializedSession.currentTaskId || '(unknown)',
+			};
+			try {
+				const recorded = await _internals.recordInterruptedExecution(
+					directory,
+					entry,
+				);
+				interruptedReconciliations.set(sessionId, {
+					entry,
+					guidance: recorded.guidance,
+				});
+			} catch (error) {
+				log(
+					`[snapshot-reader] restart reconciliation failed for session ${sessionId}: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		}
+	}
+	if (!isHydrationAuthorityCurrent(authority)) {
+		log(
+			`[snapshot-reader] Refusing superseded hydration generation ${generation} for ${projectKey} after restart reconciliation preflight`,
+		);
+		return { applied: false, reason: 'superseded' };
+	}
+
 	// Evict ONLY this project's own snapshot-derived sessions (stamp at or
 	// below this generation). Unowned sessions and foreign projects' sessions
 	// survive; the satellites go with the evicted session ids.
@@ -498,21 +575,6 @@ export async function rehydrateState(
 			swarmState.delegationChains.delete(sessionId);
 		}
 	}
-
-	// A live session created after this hydration began (stamp > generation)
-	// must survive population too, not just eviction: the snapshot can still
-	// carry its sessionId from a previous process (stable host session ids),
-	// and an unconditional set would replace the live object — discarding its
-	// unsnapshotted in-memory state and downgrading its stamp (PR #2742
-	// review PRR-001).
-	const isProtectedLiveSession = (sessionId: string): boolean => {
-		const live = swarmState.agentSessions.get(sessionId);
-		return (
-			live !== undefined &&
-			isCurrentAuthoritySession(live) &&
-			(live.hydrationStamp ?? 0) > generation
-		);
-	};
 
 	// toolAggregates: replace only the keys this project's previous hydration
 	// published. Keys owned by other projects' snapshots (or produced by
@@ -608,8 +670,62 @@ export async function rehydrateState(
 			//   - scopeViolationDetected: false scope violation warnings
 			//   - delegationActive: prevents clean delegation lifecycle on restart
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Clone mutable reset values (e.g. the [] for
+				// pendingAdvisoryMessages): resetValue is a module-level literal
+				// evaluated once, so assigning it directly would give EVERY
+				// reset session the same array instance — a push into one
+				// session's advisories would leak into all later resets
+				// (invariant 8).
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
+			}
+
+			// ── Durable QA policy restore (#2668) ────────────────────────
+			// Ratchet-tighter session overrides are durable runtime policy in
+			// the project DB (qa_gate_session_override), never snapshot bytes
+			// (see SESSION_TRANSIENT_FIELDS). Restore them here so restart
+			// preserves the EFFECTIVE tightened gates; fail-open — a DB error
+			// must degrade to profile-only, never break rehydration.
+			if (directory) {
+				try {
+					const durableOverrides = getOverrideForSession(directory, sessionId);
+					if (Object.keys(durableOverrides).length > 0) {
+						session.qaGateSessionOverrides = durableOverrides;
+					}
+				} catch (error) {
+					log(
+						`[snapshot-reader] override restore failed for session ${sessionId}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
+
+			// ── Owner-named reconciliation for interrupted executions (#2668)
+			// The SERIALIZED delegationActive (pre-deserialize) is the signal:
+			// the transient reset above has already cleared the live flag, and
+			// that expiry is correct — only its SILENCE was the defect. Record
+			// a bounded owner-named outcome (durable artifact + one-shot
+			// advisory pushed after the reset so it survives) so an
+			// interrupted execution can never read as a clean shutdown.
+			// Fail-open: the record must never fail the rehydrate.
+			const reconciliation = interruptedReconciliations.get(sessionId);
+			if (reconciliation) {
+				// pushAdvisory (not a bare push) per the advisory-injection
+				// ratchet: bounded queue + dedupe. The dedupe key is embedded
+				// literally in the message text by the builder below —
+				// pushAdvisory matches keys by substring against queued text.
+				pushAdvisory(
+					session,
+					buildInterruptedAdvisoryMessage({
+						...reconciliation.entry,
+						guidance: reconciliation.guidance,
+					}),
+					{
+						dedupeKey: buildInterruptedAdvisoryDedupeKey(reconciliation.entry),
+					},
+				);
 			}
 
 			// ── Full-auto run-state reconciliation ────────────────────────
@@ -660,6 +776,38 @@ export async function rehydrateState(
 			if (swarmState.agentSessions.has(key) && !isProtectedLiveSession(key)) {
 				swarmState.delegationChains.set(key, value);
 			}
+		}
+	}
+
+	// ── Durable QA override orphan-row reaper (#2668) ────────────────
+	// The hot-path stale sweep (ensureAgentSession → maybeSweepStaleSessions)
+	// runs with no directory, so it can evict a stale session in-memory while
+	// its durable qa_gate_session_override row survives — an orphaned policy
+	// row that a later session reusing the id would inherit. The rehydrate
+	// boundary knows the project, so prune rows whose session is neither in
+	// the restored snapshot nor live under this project's ownership. Fail-open
+	// like every rehydrate-side durable access.
+	if (directory) {
+		try {
+			const keep = new Set<string>();
+			for (const sessionId of Object.keys(snapshot.agentSessions ?? {})) {
+				keep.add(sessionId);
+			}
+			for (const [sessionId, live] of swarmState.agentSessions) {
+				if (live.owningProjectKey === projectKey) keep.add(sessionId);
+			}
+			const removed = sweepOrphanOverrides(directory, keep);
+			if (removed > 0) {
+				log(
+					`[snapshot-reader] pruned ${removed} orphaned QA override row(s) for ${projectKey}`,
+				);
+			}
+		} catch (error) {
+			log(
+				`[snapshot-reader] override orphan reaper failed for ${projectKey}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
 		}
 	}
 	return { applied: true };
@@ -726,8 +874,11 @@ async function rehydrateStateGlobal(snapshot: SnapshotData): Promise<void> {
 				}
 			}
 			for (const field of TRANSIENT_SESSION_FIELDS) {
+				// Same mutable-resetValue clone as the scoped path: the shared
+				// module-level [] must never be assigned by reference.
+				const reset = field.resetValue;
 				(session as unknown as Record<string, unknown>)[field.name] =
-					field.resetValue;
+					Array.isArray(reset) ? [...reset] : reset;
 			}
 			// Full-auto run-state reconciliation, same fail-closed rule as the
 			// scoped path: without a directory there is no durable run state to
