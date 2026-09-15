@@ -1871,6 +1871,58 @@ auto-activate skills.
 | `knowledge.receipt_close_grace_days` | integer | `7` | Retains resolved V2 receipt membership for this many days after durable phase closure before archival/compaction eligibility. Accepts `0`-`3650`; live or unresolved membership is never age-evicted. |
 | `knowledge.promotion_require_actionable` | boolean | `true` | Enforces the actionability floor on **every** hive-promotion path — automatic promotion, `/swarm promote <text>`, and `/swarm promote --from-swarm <id>`. A lesson is promotable only if it carries at least one predicate (`required_actions`, `forbidden_actions`, `verification_checks`) **and** at least one scope (`applies_to_tools`, `applies_to_agents`). See [the promote command](./commands.md#swarm-promote---category-cat---from-swarm-id-actionability-flags-text) for the flags that supply them. |
 
+### Instruction cache key and invalidation inputs (issue #2672)
+
+The architect knowledge-injector keeps a per-instance context cache so an
+identical conversational context (for example after compaction) re-injects the
+same instruction block instead of regenerating it. The cache key covers:
+
+- the current phase, active tool/action/target-agent/task id, recent file
+  paths, and the last user message;
+- the knowledge corpus generation counter (bumped on every store admission);
+- a payload-input fingerprint of every other input the cached text embeds:
+  the curator briefing (`.swarm/curator-briefing.md`), rejected lessons,
+  the run-memory summary, recent escalations, and the latest curator drift
+  report. Each input is read once per hook invocation, hashed canonically
+  (key-sorted), and fail-open — an unreadable input digests as `0`.
+
+Invalidation contract: any change to an embedded input changes the
+fingerprint, so the next injection regenerates with the fresh instruction
+set even when the conversational context is byte-identical. Unrelated
+event-file churn does not invalidate (the escalation input hashes content,
+not file stamps).
+
+### Paired instruction-selection evaluation (issue #2672)
+
+`/swarm memory evaluate --instruction-pairing` runs the paired
+cached-vs-uncached control: for each deterministic offline task, the same
+task/model/budget is measured once on a cold cache (regeneration reference)
+and once on a warm cache replaying identical context. The durable report is
+written to `.swarm/memory/instruction-pairing-report.json`.
+
+Measurement denominators (absolute values only — the report deliberately
+contains no percentage or savings fields):
+
+- `latency_denominator`: wall-clock milliseconds of the measured hook
+  invocation per arm.
+- `cost_denominator`: the uncached arm's regeneration latency in
+  milliseconds, reported on both arms as the paired avoided-regeneration
+  reference.
+- `prefix_denominator`: characters of the injected host-renderable guidance
+  carrier.
+
+Negative results are retained rows: a pair where caching did not improve the
+paired quality outcome carries `negative_result: true`. On the offline
+deterministic corpus both arms run the same selection, so identical quality
+is the expected, honestly-reported outcome. The report's
+`identity.instruction_set_digest` changes whenever the paired task corpus,
+budget, or cache-invalidation verdict changes and is the handle a HarnessOpt lineage record (issue
+#2503, the broad held-out comparison owner) can reference — this command
+feeds that harness evidence and does not duplicate it. (The injector's
+own payload inputs are fingerprinted separately in its cache key — see
+the invalidation contract above.) The flag is mutually exclusive with
+`--fixtures`, which applies to the recall evaluation.
+
 Receipt authority is stored only under the canonical project's `.swarm/`
 directory. It is not redirected by knowledge links, hive configuration, or a
 cohort label. `knowledge-events.jsonl` remains a bounded diagnostic projection;

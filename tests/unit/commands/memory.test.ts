@@ -153,7 +153,7 @@ describe('/swarm memory commands', () => {
 
 	test('evaluate reports usage for unknown flags and missing fixture values', async () => {
 		const usage =
-			'Usage: /swarm memory evaluate [--json] [--fixtures <directory>]';
+			'Usage: /swarm memory evaluate [--json] [--instruction-pairing] [--fixtures <directory>]';
 
 		await expect(
 			handleMemoryEvaluateCommand(tmpDir, ['--bogus']),
