@@ -2,7 +2,12 @@ import { ALL_AGENT_NAMES } from './agent-names';
 import { DEFAULT_MODELS } from './constants';
 import type { PluginConfig } from './schema';
 
-type AgentModelOverride = { model?: string };
+type AgentModelOverride = {
+	model?: string;
+	/** Present on real config entries; consumed by the #2680 preflight view. */
+	fallback_models?: string[];
+	disabled?: boolean;
+};
 
 interface ResolvedAgentTarget {
 	baseAgentName: string;
@@ -130,6 +135,35 @@ export function resolveRegisteredAgentModel(
 		DEFAULT_MODELS[target.baseAgentName] ??
 		DEFAULT_MODELS.default
 	);
+}
+
+/**
+ * Issue #2680: the merged override entry for an exact generated agent target,
+ * exposed for the enabled-role model preflight. Returns the canonical base
+ * role plus the merged `model` and `fallback_models` fields in one config
+ * walk (object-level merge identical to createAgents: swarm-specific entry
+ * replaces a top-level entry for the same role). Read-only view — callers
+ * must not mutate the returned arrays.
+ */
+export function resolveEffectiveAgentOverride(
+	config: PluginConfig,
+	exactAgentName: string,
+):
+	| {
+			baseAgentName: string;
+			model?: string;
+			fallbackModels?: string[];
+			disabled?: boolean;
+	  }
+	| undefined {
+	const target = resolveAgentTarget(config, exactAgentName);
+	if (!target) return undefined;
+	return {
+		baseAgentName: target.baseAgentName,
+		model: target.override?.model,
+		fallbackModels: target.override?.fallback_models,
+		disabled: target.override?.disabled,
+	};
 }
 
 /**
