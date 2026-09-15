@@ -30,7 +30,7 @@ the six skills named by issue #2672:
 | `merge-queue-readiness` | reachable | `swarm-ci-monitor` and the Claude-side `commit-pr` adapter read it for the pre-queue merge-group CI simulation |
 | `skill-edit-validation` | reachable | Claude-side `commit-pr` and `editing-skills` adapters read it for the content-assertion sweep on SKILL.md wording changes |
 | `worktree-retry-cleanup` | reachable | `execute` reads it before re-dispatching a coder for a task that already has a lane |
-| `parallel-work-check` | reachable | `swarm-implement` reads it before lane binding; `swarm-pr-review` reads it before dispatching review lanes |
+| `parallel-work-check` | reachable | `swarm-implement` reads it before lane binding; `swarm-pr-review` reads it before dispatching review lanes; also referenced by name in `swarm-pr-feedback` |
 
 Retiring a skill is a deliberate act: remove it from
 `BUNDLED_PROJECT_SKILLS`, `package.json#files`, and the package-smoke

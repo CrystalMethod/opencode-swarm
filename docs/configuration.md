@@ -1915,10 +1915,13 @@ Negative results are retained rows: a pair where caching did not improve the
 paired quality outcome carries `negative_result: true`. On the offline
 deterministic corpus both arms run the same selection, so identical quality
 is the expected, honestly-reported outcome. The report's
-`identity.instruction_set_digest` changes whenever the instruction set
-changes and is the handle a HarnessOpt lineage record (issue #2503, the
-broad held-out comparison owner) can reference — this command feeds that
-harness evidence and does not duplicate it.
+`identity.instruction_set_digest` changes whenever the paired task corpus,
+budget, or cache-invalidation verdict changes and is the handle a HarnessOpt lineage record (issue
+#2503, the broad held-out comparison owner) can reference — this command
+feeds that harness evidence and does not duplicate it. (The injector's
+own payload inputs are fingerprinted separately in its cache key — see
+the invalidation contract above.) The flag is mutually exclusive with
+`--fixtures`, which applies to the recall evaluation.
 
 Receipt authority is stored only under the canonical project's `.swarm/`
 directory. It is not redirected by knowledge links, hive configuration, or a

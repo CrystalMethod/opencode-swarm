@@ -55,6 +55,12 @@ export type InstructionPairingDirectivePriority =
 	| 'low';
 
 export interface InstructionPairingRecord {
+	/**
+	 * Stable identifier recovered from the rendered prefix. Constrained to
+	 * `[A-Za-z0-9-]` (PRR-012): other characters still reach the fixture
+	 * store verbatim but can never be matched back by the sentinel pattern,
+	 * silently undercounting `quality.expected_hit_count` for that record.
+	 */
 	label: string;
 	lesson: string;
 	directivePriority?: InstructionPairingDirectivePriority;
@@ -547,6 +553,14 @@ export async function runInstructionSelectionPairing(
 
 	if (options.reportPath) {
 		const dest = path.resolve(options.directory, options.reportPath);
+		// Containment: an absolute or ..-traversing reportPath must not write
+		// outside the caller's directory (PRR-001).
+		const normalizedDir = path.resolve(options.directory) + path.sep;
+		if (!dest.startsWith(normalizedDir)) {
+			throw new Error(
+				`reportPath must resolve inside the project directory: ${options.reportPath}`,
+			);
+		}
 		mkdirSync(path.dirname(dest), { recursive: true });
 		writeFileSync(dest, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 	} else if (options.writeReport) {

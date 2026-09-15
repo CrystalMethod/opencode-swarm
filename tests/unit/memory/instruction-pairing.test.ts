@@ -7,8 +7,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import {
 	DEFAULT_INSTRUCTION_PAIRING_TASKS,
