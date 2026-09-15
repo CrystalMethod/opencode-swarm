@@ -103,11 +103,14 @@ import { prepare_pr_feedback_scope } from './prepare-pr-feedback-scope';
 import { prepare_pr_workflow_checkout } from './prepare-pr-workflow-checkout';
 import { quality_budget } from './quality-budget';
 import { rebind_pr_feedback_head } from './rebind-pr-feedback-head';
+import { record_branch_freshness } from './record-branch-freshness';
 import { record_directive_override } from './record-directive-override';
 import { record_implementation_review } from './record-implementation-review';
 import { record_issue_publication } from './record-issue-publication';
 import { record_issue_reproduction } from './record-issue-reproduction';
+import { record_merge_approval } from './record-merge-approval';
 import { record_recurrence_sweep } from './record-recurrence-sweep';
+import { record_trace_validation } from './record-trace-validation';
 import { recover_rework_task } from './recover-rework-task';
 import { repair_gate_evidence } from './repair-gate-evidence';
 import { repair_knowledge_receipt_ledger } from './repair-knowledge-receipt-ledger';
@@ -205,6 +208,9 @@ export const TOOL_MANIFEST = defineHandlers({
 	record_issue_publication: () => record_issue_publication,
 	record_issue_reproduction: () => record_issue_reproduction,
 	record_recurrence_sweep: () => record_recurrence_sweep,
+	record_branch_freshness: () => record_branch_freshness,
+	record_trace_validation: () => record_trace_validation,
+	record_merge_approval: () => record_merge_approval,
 	invalidate_pr_feedback_publication: () => invalidate_pr_feedback_publication,
 	rebind_pr_feedback_head: () => rebind_pr_feedback_head,
 	run_pr_feedback_stage_a: () => run_pr_feedback_stage_a,

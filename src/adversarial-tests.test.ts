@@ -102,7 +102,7 @@ describe('ADVERSARIAL: constants.architect-whitelist', () => {
 			// This test in the original file checks > 40
 			// Let's verify it's still a reasonable bound
 			expect(AGENT_TOOL_MAP.architect.length).toBeGreaterThan(40);
-			expect(AGENT_TOOL_MAP.architect.length).toBeLessThan(100);
+			expect(AGENT_TOOL_MAP.architect.length).toBeLessThan(110);
 		});
 
 		it('all roles should have at least 1 tool (except overlay/synthesis-only roles)', () => {
