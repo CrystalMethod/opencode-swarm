@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.182.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.4...v7.182.0) (2026-09-15)
+
+
+### Features
+
+* **issue-tracer:** wire v3 receipts plugin-side and prove ingestion reaches a durable plan ([#2564](https://github.com/ZaxbyHub/opencode-swarm/issues/2564)) ([2b51abf](https://github.com/ZaxbyHub/opencode-swarm/commit/2b51abf50bb4a47e56ccc226ca7b20efdc45286b))
+
 ## [7.181.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.3...v7.181.4) (2026-09-15)
 
 
