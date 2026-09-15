@@ -126,14 +126,28 @@ function captureFileManifest(
 	}
 }
 
+/** Minimal shape of `process.versions` this module derives a label from. */
+export type RuntimeVersions = { bun?: string; node?: string };
+
+/**
+ * Derive the honest runtime label from the host's version table. Bun also
+ * defines `process.versions.node`, so the branch must test bun PRESENCE —
+ * never string truthiness (a `.trim()`-based `||` fallback yields the bare,
+ * version-less "bun" under Node, which sha256-hashes into a poisoned
+ * host-status digest).
+ */
+export function deriveRuntimeLabel(versions: RuntimeVersions): string {
+	if (versions.bun !== undefined) {
+		return `bun ${versions.bun}`;
+	}
+	return `node ${versions.node ?? ''}`;
+}
+
 function captureHostStatusManifest(
 	capturedAt: string,
 	strata: TaskAttemptCohortStrata,
 ): CohortManifestEntry {
-	const runtime =
-		strata.runtime ??
-		(`bun ${process.versions.bun ?? ''}`.trim() ||
-			`node ${process.versions.node ?? ''}`.trim());
+	const runtime = strata.runtime ?? deriveRuntimeLabel(process.versions);
 	if (runtime === '') {
 		return { source: 'host_status', status: 'unavailable', capturedAt };
 	}
@@ -225,6 +239,11 @@ export function snapshotTaskAttemptCohort(input: {
 }): TaskAttemptCohortSnapshot {
 	const capturedAt = (input.now ?? new Date()).toISOString();
 	const strata: TaskAttemptCohortStrata = input.strata ?? {};
+	// Write the derived runtime back so the serialized manifest body carries
+	// the same label the host-status digest was computed over.
+	if (strata.runtime === undefined) {
+		strata.runtime = deriveRuntimeLabel(process.versions);
+	}
 	const directory = input.directory;
 
 	const manifests: CohortManifestEntry[] = [
@@ -376,6 +395,7 @@ export function buildTaskCohortReport(
 export const _internals = {
 	captureFileManifest,
 	captureHostStatusManifest,
+	deriveRuntimeLabel,
 	manifestFileName,
 	persistSnapshotManifest,
 	deepCopyRecord,

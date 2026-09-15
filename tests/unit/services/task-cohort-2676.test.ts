@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
+	_internals,
 	buildTaskCohortReport,
 	COHORT_MANIFEST_RETENTION,
 	COHORT_SAMPLE_SIZE_THRESHOLD,
@@ -67,20 +69,35 @@ describe('snapshotTaskAttemptCohort — stable cohort capture (AC3)', () => {
 		}
 	});
 
-	test('snapshot without caller strata derives the runtime honestly (never a bare "bun" label)', () => {
+	test('deriveRuntimeLabel branches on bun PRESENCE (the node case is real, not dead code)', () => {
+		const { deriveRuntimeLabel } = _internals;
+		// Bun present wins even though bun also defines a node version.
+		expect(deriveRuntimeLabel({ bun: '1.3.14', node: '22.0.0' })).toBe(
+			'bun 1.3.14',
+		);
+		// THE regression case: bun absent (Node sidecar) must produce a
+		// versioned node label — never the bare literal 'bun'.
+		expect(deriveRuntimeLabel({ node: '24.16.0' })).toBe('node 24.16.0');
+		expect(deriveRuntimeLabel({ node: '24.16.0' })).not.toBe('bun');
+	});
+
+	test('snapshot without caller strata derives + persists the runtime and ties the host digest to it', () => {
 		const snap = snapshotTaskAttemptCohort({ tasks: [] });
+		// The derived label is written back into strata (serialized manifest
+		// honesty), not just consumed for the digest.
+		expect(typeof snap.strata.runtime).toBe('string');
+		expect(snap.strata.runtime?.length ?? 0).toBeGreaterThan(4);
 		const host = snap.manifests.find((m) => m.source === 'host_status');
 		expect(host?.status).toBe('captured');
-		// The derived runtime names its real engine with a version: under bun
-		// "bun <ver>", under node "node <ver>" — never a version-less label.
-		const derived = snap.strata.runtime ?? '';
-		expect(
-			derived === '' ||
-				/ (bun|node) /.test(` ${derived} `) ||
-				derived.startsWith('bun ') ||
-				derived.startsWith('node '),
-		).toBe(true);
-		expect(derived).not.toBe('bun');
+		// Digest-level tie: the host_status digest is sha256 over the exact
+		// persisted label — provably not a constant like sha256("bun").
+		const expected = createHash('sha256')
+			.update(snap.strata.runtime ?? '')
+			.digest('hex');
+		expect(host?.digest).toBe(expected);
+		expect(host?.digest).not.toBe(
+			createHash('sha256').update('bun').digest('hex'),
+		);
 	});
 
 	test('manifest FIFO retention keeps the latest bounded set', () => {
@@ -158,7 +175,22 @@ describe('buildTaskCohortReport — uncertainty and qualification (AC3)', () => 
 				},
 			}),
 		);
-		const snap = snapshotTaskAttemptCohort({ tasks });
+		// buildTaskCohortReport consumes snapshot objects (the report's input
+		// type); hand-build one with empty strata to pin the missing-strata
+		// unqualification reason independent of the auto-derived runtime.
+		const snap = {
+			tasks,
+			capturedAt: '2026-09-15T00:00:00.000Z',
+			count: tasks.length,
+			strata: {},
+			manifests: [
+				{
+					source: 'host_status' as const,
+					status: 'captured' as const,
+					capturedAt: '2026-09-15T00:00:00.000Z',
+				},
+			],
+		};
 		const report = buildTaskCohortReport(snap);
 		expect(report.qualification.qualified).toBe(false);
 		expect(report.qualification.reasons).toContain('missing_strata');
