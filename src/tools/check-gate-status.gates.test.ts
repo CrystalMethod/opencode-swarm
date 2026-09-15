@@ -420,11 +420,12 @@ describe('check_gate_status', () => {
 		const result = await executeTool({ task_id: '7.1' }, tmpDir);
 		const parsed = JSON.parse(result);
 
-		// An empty requirement set is not proof that the task passed.
+		// An empty requirement set is not proof that the task passed; legacy
+		// receiptless evidence retains the ordinary pre_check obligation.
 		expect(parsed.status).toBe('incomplete');
-		expect(parsed.required_gates).toEqual([]);
+		expect(parsed.required_gates).toEqual(['pre_check']);
 		expect(parsed.passed_gates).toEqual([]);
-		expect(parsed.missing_gates).toEqual([]);
+		expect(parsed.missing_gates).toEqual(['pre_check']);
 	});
 
 	it('handles extra gates in evidence that are not required', async () => {
