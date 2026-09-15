@@ -6,18 +6,18 @@
  * HF-1b: architect/null full test suite guard).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { PluginConfig } from '../../../src/config';
 import { createSystemEnhancerHook } from '../../../src/hooks/system-enhancer';
 import { resetSwarmState, swarmState } from '../../../src/state';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 describe('system-enhancer HF-1b - Adversarial Input Testing', () => {
 	let tempDir: string;
 
 	beforeEach(async () => {
-		tempDir = await mkdtemp(join(tmpdir(), 'swarm-hf1b-adversarial-'));
+		tempDir = canonicalMkdtemp('swarm-hf1b-adversarial-');
 		resetSwarmState();
 	});
 
