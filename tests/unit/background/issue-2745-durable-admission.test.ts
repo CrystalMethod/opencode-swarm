@@ -5,10 +5,13 @@
  * pin that a reservation owner is the workflow/PID pair, not a timestamp or a
  * stale whole-correlation snapshot.
  */
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { readPrFeedbackMonitorQueue } from '../../../src/background/pr-feedback-event-queue.js';
+import {
+	claimPrFeedbackMonitorEvents,
+	readPrFeedbackMonitorQueue,
+} from '../../../src/background/pr-feedback-event-queue.js';
 import {
 	cancelPrFeedbackLoop,
 	claimAndProcessPrFeedbackEvent,
@@ -25,6 +28,7 @@ import {
 	readState,
 	restoreProductionLoopInternals,
 	SESSION,
+	URL,
 	writeState,
 } from './issue-2745-state-safety-fixtures';
 
@@ -130,6 +134,80 @@ test('does not resurrect historical in-memory correlation when final admission l
 			(event) => event.dedupToken === 'missing-final-correlation',
 		)?.claimedWorkflowInstanceId,
 	).toBeUndefined();
+});
+
+describe('FB-013 regression: missing correlation on the action-start reread', () => {
+	test('does not resurrect it and releases only this worker’s exact queue claim', async () => {
+		// Before this fix, refusal settlement recreated the deleted record from its
+		// stale snapshot and stranded the exact queue claim despite reporting retryable.
+		const directory = makeProject();
+		await createCorrelation(directory);
+		await enqueue(directory, { dedupToken: 'other-owner-event' });
+		const competingWorkflow = 'competing-queue-owner';
+		const competingPid = 42_425;
+		const competingClaim = await claimPrFeedbackMonitorEvents(
+			directory,
+			SESSION,
+			competingWorkflow,
+			URL,
+			['other-owner-event'],
+			competingPid,
+		);
+		expect(competingClaim).toHaveLength(1);
+		await enqueue(directory, {
+			dedupToken: 'missing-action-start-correlation',
+			type: 'pr.merge.conflict',
+		});
+
+		const seams = installHappySeams();
+		const productionReadState = loopInternals.readState;
+		const productionWriteState = loopInternals.writeState;
+		let deletedAtActionStartRead = false;
+		let writesAfterDeletion = 0;
+		loopInternals.readState = async (stateDirectory) => {
+			const state = await productionReadState(stateDirectory);
+			const inFlight = state.correlations[CORRELATION]?.inFlight;
+			if (
+				!deletedAtActionStartRead &&
+				stateDirectory === directory &&
+				inFlight?.dedupToken === 'missing-action-start-correlation' &&
+				inFlight.actionStartedAt === undefined
+			) {
+				// Final admission just persisted this exact pre-start reservation; this
+				// is the next read, inside markExactReservationActionStarted.
+				deletedAtActionStartRead = true;
+				delete state.correlations[CORRELATION];
+				await productionWriteState(stateDirectory, state);
+			}
+			return state;
+		};
+		loopInternals.writeState = async (stateDirectory, state) => {
+			if (deletedAtActionStartRead && stateDirectory === directory)
+				writesAfterDeletion += 1;
+			await productionWriteState(stateDirectory, state);
+		};
+
+		const result = await claimAndProcessPrFeedbackEvent(directory, SESSION);
+
+		expect(deletedAtActionStartRead).toBe(true);
+		expect(writesAfterDeletion).toBe(0);
+		expect(readState(directory).correlations[CORRELATION]).toBeUndefined();
+		expect(result.ran).toBe(false);
+		expect(result.reason).toMatch(/correlation disappeared.*retryable/i);
+		expect(seams.performer).not.toHaveBeenCalled();
+		const queue = await readPrFeedbackMonitorQueue(directory, SESSION);
+		expect(
+			queue?.events.find(
+				(event) => event.dedupToken === 'missing-action-start-correlation',
+			)?.claimedWorkflowInstanceId,
+		).toBeUndefined();
+		expect(
+			queue?.events.find((event) => event.dedupToken === 'other-owner-event'),
+		).toMatchObject({
+			claimedWorkflowInstanceId: competingWorkflow,
+			claimedOwnerPid: competingPid,
+		});
+	});
 });
 
 test('final admission counts live reservations from every PR in the session budget', async () => {
@@ -251,6 +329,53 @@ test('F-BUDGET cancellation reclaims a started reservation whose owner is dead',
 
 	expect(stopped.terminalState).toBe('cancelled');
 	expect(readState(directory).correlations[CORRELATION].inFlight).toBeNull();
+});
+
+test('FB-018 regression: repeated cancel reclaims a started reservation after its owner exits', async () => {
+	// Before the fix, repeat cancellation skipped an already-cancelled correlation
+	// before checking owner liveness, leaving this started reservation busy forever.
+	const directory = makeProject();
+	await createCorrelation(directory);
+	putInFlight(
+		directory,
+		reservation({
+			workflowInstanceId: 'cancel-owner-exit',
+			ownerPid: 42_424,
+		}),
+	);
+	let ownerAlive = true;
+	loopInternals.isProcessAlive = mock(() => ownerAlive);
+
+	const firstStop = await cancelPrFeedbackLoop(
+		directory,
+		SESSION,
+		'first explicit stop',
+	);
+	const firstState = readState(directory);
+	expect(firstStop.terminalState).toBe('cancelled');
+	expect(firstState.correlations[CORRELATION].terminal).toEqual({
+		state: 'cancelled',
+		reason: 'first explicit stop',
+	});
+	expect(firstState.correlations[CORRELATION].inFlight).toMatchObject({
+		workflowInstanceId: 'cancel-owner-exit',
+		ownerPid: 42_424,
+		actionStartedAt: ACTION_STARTED_AT,
+	});
+
+	ownerAlive = false;
+	const secondStop = await cancelPrFeedbackLoop(
+		directory,
+		SESSION,
+		'retry cleanup after owner exit',
+	);
+	const finalState = readState(directory);
+	expect(secondStop.terminalState).toBe('cancelled');
+	expect(finalState.correlations[CORRELATION].terminal).toEqual({
+		state: 'cancelled',
+		reason: 'first explicit stop',
+	});
+	expect(finalState.correlations[CORRELATION].inFlight).toBeNull();
 });
 
 test('a late result cannot settle over a replacement reservation owner', async () => {

@@ -398,7 +398,9 @@ describe('issue #2745 production init boundary', () => {
 			expect(trace.prompts).toBe(1);
 			expect(gate?.mode).toBe('PR_FEEDBACK');
 			expect(terminal?.state).toBe('completed');
-			expect(terminal?.reason).toContain('publication: none');
+			expect(terminal?.reason).toContain(
+				'authorized PR workflow action performed and recorded; downstream delivery and publication outcomes remain owned by the PR workflow',
+			);
 			expect(
 				session?.pendingAdvisoryMessages.some((message) =>
 					message.includes('PR_FEEDBACK'),

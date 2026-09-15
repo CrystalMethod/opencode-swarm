@@ -155,28 +155,34 @@ describe('issue #2502 pr-feedback-loop settle pipeline', () => {
 		expect(result.terminal).toBeNull();
 	});
 
-	test('full settle: authorized action performed + recorded + single wake', async () => {
-		const dir = makeProject();
-		await primeSubscription(dir);
-		const performer = installLoopSeams();
-		await enqueueEvent(dir);
+	describe('FB-040 regression: truthful completion wording', () => {
+		test('full settle: authorized action performed + recorded + single wake', async () => {
+			const dir = makeProject();
+			await primeSubscription(dir);
+			const performer = installLoopSeams();
+			await enqueueEvent(dir);
 
-		const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
+			const result = await claimAndProcessPrFeedbackEvent(dir, SESSION);
 
-		expect(result.ran).toBe(true);
-		expect(result.authorization?.authorized).toBe(true);
-		expect(result.action).toMatchObject({ kind: 'fix_ci', performed: true });
-		expect(performer).toHaveBeenCalledTimes(1);
-		expect(result.terminal?.state).toBe('completed');
-		// M4 scope pin: the terminal reason always states the completion scope.
-		expect(result.terminal?.reason).toMatch(
-			/performed.*recorded.*accepted.*prompt\/advisory/i,
-		);
-		const state = readLoopStateFile(dir);
-		expect(state.correlations?.[CORRELATION]?.terminal?.state).toBe(
-			'completed',
-		);
-		expect(result.authorization?.budget?.prActionsUsed).toBe(1);
+			expect(result.ran).toBe(true);
+			expect(result.authorization?.authorized).toBe(true);
+			expect(result.action).toMatchObject({ kind: 'fix_ci', performed: true });
+			expect(performer).toHaveBeenCalledTimes(1);
+			expect(result.terminal?.state).toBe('completed');
+			// FB-040: completion records the authorized workflow action only; it must
+			// not claim acceptance by a prompt/advisory delivery channel.
+			expect(result.terminal?.reason).toMatch(
+				/authorized PR workflow action performed and recorded/i,
+			);
+			expect(result.terminal?.reason).not.toMatch(
+				/accepted by .*?(prompt|advisory).*channel/i,
+			);
+			const state = readLoopStateFile(dir);
+			expect(state.correlations?.[CORRELATION]?.terminal?.state).toBe(
+				'completed',
+			);
+			expect(result.authorization?.budget?.prActionsUsed).toBe(1);
+		});
 	});
 
 	test('idempotency: re-enqueued dedup token replays without re-performing', async () => {

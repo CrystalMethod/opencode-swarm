@@ -17,7 +17,8 @@
  * armed-publication path remains the only route to a push.
  *
  * Terminal semantics: `completed` is DEFINED as "authorized feedback action
- * performed + recorded + accepted by the configured prompt/advisory channel"
+ * performed and recorded; downstream delivery/publication outcomes remain
+ * owned by the PR workflow"
  * (the terminal reason string always states that scope); ladder/workflow
  * outcomes remain the PR workflow gate's business. `paused_for_human` covers budget exhaustion,
  * oversight denial, permanent performer failure, and ambiguous events.
@@ -508,6 +509,18 @@ function ownsReservation(
 		hasReservationIdentity(reservation) &&
 			reservation.workflowInstanceId === workflowInstanceId &&
 			reservation.ownerPid === ownerPid,
+	);
+}
+
+function ownsExactReservation(
+	reservation: InFlightClaim | null | undefined,
+	dedupToken: string,
+	workflowInstanceId: string,
+	ownerPid: number,
+): reservation is InFlightClaim {
+	return Boolean(
+		ownsReservation(reservation, workflowInstanceId, ownerPid) &&
+			reservation?.dedupToken === dedupToken,
 	);
 }
 
@@ -1074,6 +1087,202 @@ async function hasExactDurableClaim(
 				event.claimedOwnerPid === ownerPid,
 		),
 	);
+}
+
+/**
+ * Remove one exact pre-start reservation without disturbing a replacement
+ * owner or a reservation that has crossed the external-action boundary.
+ */
+async function clearExactPreStartReservation(
+	directory: string,
+	key: string,
+	dedupToken: string,
+	workflowInstanceId: string,
+	ownerPid: number,
+	expectedActionStartedAt: number | undefined,
+): Promise<boolean> {
+	return withLoopStateLock(directory, async () => {
+		const readResult = await _internals.readState(directory);
+		if (isCorruptState(readResult)) return false;
+		const state = normalizeLoopState(readResult);
+		const correlation = state.correlations[key];
+		const inFlight = correlation?.inFlight;
+		if (
+			!correlation ||
+			!ownsExactReservation(
+				inFlight,
+				dedupToken,
+				workflowInstanceId,
+				ownerPid,
+			) ||
+			inFlight.actionStartedAt !== expectedActionStartedAt
+		) {
+			return false;
+		}
+		correlation.inFlight = null;
+		bumpCorrelationRevision(correlation);
+		await _internals.writeState(directory, state);
+		return true;
+	});
+}
+
+interface ActionStartAdmission {
+	state: LoopStateV1;
+	correlation: CorrelationState;
+	started: boolean;
+	cancelReason?: string;
+	blockedReason?: string;
+	unavailable?: boolean;
+	missingCorrelation?: boolean;
+	actionStartedAt?: number;
+}
+
+/**
+ * Cross the durable action-start boundary for one exact queue/reservation owner.
+ * Cancellation is checked before the marker; a same-process cancellation that
+ * arrives while the marker write awaits clears the marker before this returns.
+ */
+async function markExactReservationActionStarted(
+	directory: string,
+	key: string,
+	sessionID: string,
+	dedupToken: string,
+	workflowInstanceId: string,
+	ownerPid: number,
+	fallbackState: LoopStateV1,
+	fallbackCorrelation: CorrelationState,
+): Promise<ActionStartAdmission> {
+	let actionStartedAt: number | undefined;
+	try {
+		return await withLoopStateLock(directory, async () => {
+			const freshRead = await _internals.readState(directory);
+			if (isCorruptState(freshRead))
+				return {
+					state: fallbackState,
+					correlation: fallbackCorrelation,
+					started: false,
+					unavailable: true,
+				};
+			const state = normalizeLoopState(freshRead);
+			const correlation = state.correlations[key];
+			if (!correlation)
+				return {
+					state,
+					correlation: fallbackCorrelation,
+					started: false,
+					missingCorrelation: true,
+					blockedReason:
+						'durable correlation disappeared before action start; event remains retryable',
+				};
+			const inFlight = correlation.inFlight;
+			if (
+				!ownsExactReservation(
+					inFlight,
+					dedupToken,
+					workflowInstanceId,
+					ownerPid,
+				) ||
+				inFlight.actionStartedAt !== undefined
+			)
+				return {
+					state,
+					correlation,
+					started: false,
+					blockedReason:
+						'exact no-action reservation was lost before action start; event remains retryable',
+				};
+			const durableCancellation = state.sessionTerminals[sessionID];
+			const cancelReason =
+				durableCancellation?.state === 'cancelled'
+					? durableCancellation.reason || 'operator cancellation'
+					: localCancellationReason(directory, sessionID);
+			if (cancelReason) {
+				correlation.inFlight = null;
+				bumpCorrelationRevision(correlation);
+				await _internals.writeState(directory, state);
+				return {
+					state,
+					correlation: state.correlations[key] ?? correlation,
+					started: false,
+					cancelReason,
+				};
+			}
+			const claimHeld = await hasExactDurableClaim(
+				directory,
+				sessionID,
+				dedupToken,
+				workflowInstanceId,
+				ownerPid,
+			);
+			if (!claimHeld) {
+				correlation.inFlight = null;
+				bumpCorrelationRevision(correlation);
+				await _internals.writeState(directory, state);
+				return {
+					state,
+					correlation: state.correlations[key] ?? correlation,
+					started: false,
+					blockedReason:
+						'durable claim was lost before action start; event remains retryable',
+				};
+			}
+
+			actionStartedAt = _internals.now();
+			inFlight.actionStartedAt = actionStartedAt;
+			bumpCorrelationRevision(correlation);
+			await _internals.writeState(directory, state);
+			// writeState normalizes the state in place and replaces correlation
+			// records, so the pre-await reference is stale after persistence.
+			const correlationAfterWrite = state.correlations[key];
+			const cancellationDuringWrite = localCancellationReason(
+				directory,
+				sessionID,
+			);
+			if (cancellationDuringWrite) {
+				if (
+					ownsExactReservation(
+						correlationAfterWrite?.inFlight,
+						dedupToken,
+						workflowInstanceId,
+						ownerPid,
+					) &&
+					correlationAfterWrite.inFlight.actionStartedAt === actionStartedAt
+				) {
+					correlationAfterWrite.inFlight = null;
+					bumpCorrelationRevision(correlationAfterWrite);
+					await _internals.writeState(directory, state);
+				}
+				return {
+					state,
+					correlation:
+						state.correlations[key] ?? correlationAfterWrite ?? correlation,
+					started: false,
+					cancelReason: cancellationDuringWrite,
+					actionStartedAt,
+				};
+			}
+			return {
+				state,
+				correlation: correlationAfterWrite ?? correlation,
+				started: true,
+				actionStartedAt,
+			};
+		});
+	} catch (err) {
+		// If the marker write succeeded but a following operation failed, no
+		// performer has run yet. Remove only this exact marker before propagating.
+		if (actionStartedAt !== undefined) {
+			await clearExactPreStartReservation(
+				directory,
+				key,
+				dedupToken,
+				workflowInstanceId,
+				ownerPid,
+				actionStartedAt,
+			).catch(() => false);
+		}
+		throw err;
+	}
 }
 
 interface SubscriptionSnapshotRead {
@@ -2465,7 +2674,6 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 				performed: false,
 				attempts: 0,
 				claimedAt: new Date().toISOString(),
-				actionStartedAt: _internals.now(),
 			};
 			bumpCorrelationRevision(freshCorrelation);
 			await _internals.writeState(directory, freshState);
@@ -2538,7 +2746,12 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	const admittedInFlight = correlation.inFlight;
 	if (
 		!admittedInFlight ||
-		!ownsReservation(admittedInFlight, workflowInstanceId, ownerPid)
+		!ownsExactReservation(
+			admittedInFlight,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+		)
 	) {
 		return await refuseAuthorization(
 			'in-flight admission was not persisted — no action performed',
@@ -2551,16 +2764,146 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	}
 	// Final admission awaits both the project lock and a fresh queue claim
 	// check. A same-process stop can land during those awaits, so perform one
-	// synchronous local check immediately before entering the performer loop.
+	// synchronous local check before the durable action-start transition.
 	const lateLocalCancellation = localCancellationReason(directory, sessionID);
 	if (lateLocalCancellation) {
+		await clearExactPreStartReservation(
+			directory,
+			key,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+			undefined,
+		).catch((err) => {
+			warn(
+				`[pr-feedback-loop] pre-start cancellation cleanup failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		});
 		await releaseAdmittedProbe();
 		return cancelledResult(lateLocalCancellation, base);
 	}
 
+	let actionStartAdmission: ActionStartAdmission;
+	try {
+		actionStartAdmission = await markExactReservationActionStarted(
+			directory,
+			key,
+			sessionID,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+			state,
+			correlation,
+		);
+	} catch (err) {
+		warn(
+			`[pr-feedback-loop] action-start transition failed (fail-closed): ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+		return await refuseAuthorization(
+			'action-start transition could not be durably verified — no action performed',
+			{},
+			{
+				state: 'paused_for_human',
+				reason: 'action-start transition failed — paused for a human',
+			},
+		);
+	}
+	state = actionStartAdmission.state;
+	correlation = actionStartAdmission.correlation;
+	if (actionStartAdmission.cancelReason) {
+		await releaseAdmittedProbe();
+		return cancelledResult(actionStartAdmission.cancelReason, base);
+	}
+	if (actionStartAdmission.unavailable) {
+		return await refuseAuthorization(
+			'action-start cancellation state unavailable — no action performed',
+			{},
+			{
+				state: 'paused_for_human',
+				reason: 'action-start state unavailable — paused for a human',
+			},
+		);
+	}
+	if (actionStartAdmission.missingCorrelation) {
+		await releaseAdmittedProbe();
+		const retryableReason =
+			actionStartAdmission.blockedReason ??
+			'durable correlation disappeared before action start; event remains retryable';
+		const released = await releasePrFeedbackMonitorEventClaim(
+			directory,
+			sessionID,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+		).catch(() => false);
+		return emptyResult(
+			released
+				? retryableReason
+				: `${retryableReason}; exact queue claim release failed — paused for a human`,
+		);
+	}
+	if (!actionStartAdmission.started) {
+		return await refuseAuthorization(
+			actionStartAdmission.blockedReason ??
+				'exact action-start admission failed — no action performed',
+			{},
+			{
+				state: 'paused_for_human',
+				reason: 'exact action-start admission failed — paused for a human',
+			},
+		);
+	}
+	const performerInFlight = correlation.inFlight;
+	if (
+		!ownsExactReservation(
+			performerInFlight,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+		) ||
+		performerInFlight.actionStartedAt !== actionStartAdmission.actionStartedAt
+	) {
+		return await refuseAuthorization(
+			'durable action-start marker was not retained by the exact owner — no action performed',
+			{},
+			{
+				state: 'paused_for_human',
+				reason: 'durable action-start marker was lost — paused for a human',
+			},
+		);
+	}
+	// Lock release also awaits I/O. Recheck the synchronous stop intent once
+	// more, then invoke the performer without another await/yield in between.
+	const cancellationBeforePerformer = localCancellationReason(
+		directory,
+		sessionID,
+	);
+	if (cancellationBeforePerformer) {
+		await clearExactPreStartReservation(
+			directory,
+			key,
+			dedupToken,
+			workflowInstanceId,
+			ownerPid,
+			actionStartAdmission.actionStartedAt,
+		).catch((err) => {
+			warn(
+				`[pr-feedback-loop] action-start cancellation cleanup failed: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		});
+		await releaseAdmittedProbe();
+		return cancelledResult(cancellationBeforePerformer, base);
+	}
+
 	let outcome: PerformAuthorizedActionOutcome = { performed: false };
 	for (let attempt = 0; attempt < MAX_PERFORM_ATTEMPTS; attempt++) {
-		admittedInFlight.attempts += 1;
+		performerInFlight.attempts += 1;
 		try {
 			outcome = await _internals.performAuthorizedAction({
 				directory,
@@ -2666,7 +3009,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 				freshCorrelation.terminal = {
 					state: 'completed',
 					reason:
-						'authorized feedback action performed, recorded, and accepted by the configured prompt/advisory channel (publication: none; ladder outcomes remain the PR workflow gate business)',
+						'authorized PR workflow action performed and recorded; downstream delivery and publication outcomes remain owned by the PR workflow',
 				};
 				freshCorrelation.inFlight = null;
 			}
@@ -2814,26 +3157,37 @@ async function cancelPrFeedbackLoopUnlocked(
 			const nextState: LoopStateV1 = readResult;
 			for (const correlation of Object.values(nextState.correlations)) {
 				if (correlation.sessionID !== sessionID) continue;
-				if (correlation.terminal?.state === 'cancelled') continue;
-				correlation.terminal = { state: 'cancelled', reason };
+				const alreadyCancelled = correlation.terminal?.state === 'cancelled';
+				if (!alreadyCancelled) {
+					correlation.terminal = { state: 'cancelled', reason };
+				}
 				// Keep an already-started reservation owned by a live performer so its
 				// post-action exact-owner settlement can record a performed digest. A
 				// dead owner cannot settle; cancellation is the explicit operator
 				// decision that makes that otherwise-permanent reservation reclaimable.
+				// Repeated operator cancellation rechecks liveness without replacing the
+				// original terminal reason, so a later retry can reclaim a dead owner.
 				const inFlight = correlation.inFlight;
 				const ownerAlive =
 					inFlight && hasReservationIdentity(inFlight)
 						? _internals.isProcessAlive(inFlight.ownerPid)
 						: false;
-				if (inFlight?.actionStartedAt === undefined || !ownerAlive) {
+				const reclaimedReservation = Boolean(
+					inFlight && (inFlight.actionStartedAt === undefined || !ownerAlive),
+				);
+				if (reclaimedReservation) {
 					correlation.inFlight = null;
 				}
-				bumpCorrelationRevision(correlation);
+				if (!alreadyCancelled || reclaimedReservation) {
+					bumpCorrelationRevision(correlation);
+				}
 			}
-			nextState.sessionTerminals[sessionID] = {
-				state: 'cancelled',
-				reason,
-			};
+			if (nextState.sessionTerminals[sessionID]?.state !== 'cancelled') {
+				nextState.sessionTerminals[sessionID] = {
+					state: 'cancelled',
+					reason,
+				};
+			}
 			await _internals.writeState(directory, nextState);
 			return nextState;
 		});
