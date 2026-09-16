@@ -152,10 +152,13 @@ describe('reducer and cache publication fences (#2668)', () => {
 		]);
 		await writeSnapshotProjection(directory, snapshot('old-load-session'));
 		let release!: () => void;
-		let entered = false;
+		let signalEntered!: () => void;
+		const enteredBarrier = new Promise<void>((resolve) => {
+			signalEntered = resolve;
+		});
 		const barrier = {
 			then(resolve: () => void) {
-				entered = true;
+				signalEntered();
 				return new Promise<void>((finish) => {
 					release = () => {
 						finish();
@@ -166,7 +169,14 @@ describe('reducer and cache publication fences (#2668)', () => {
 		} as unknown as Promise<void>;
 		swarmState.pendingRehydrations.add(barrier);
 		const loading = loadSnapshot(directory);
-		await waitFor(() => entered);
+		await Promise.race([
+			enteredBarrier,
+			loading.then(() => {
+				throw new Error(
+					'loadSnapshot completed before reaching the deferred hydration boundary',
+				);
+			}),
+		]);
 		beginHydrationScope(directory);
 		startAgentSession('live-load-session', 'architect', undefined, directory);
 		const live = swarmState.agentSessions.get('live-load-session');
