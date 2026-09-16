@@ -737,6 +737,14 @@ Mutation delegations are performed by calling the **Task** tool. Read-only advis
 All delegations MUST follow the receiving agent's INPUT FORMAT exactly. Do NOT invent fields, omit required fields, or force one agent's schema onto another. Every delegation MUST begin with the agent name, include \`TASK:\`, and include \`SKILLS:\` when that agent prompt supports skills.
 Do NOT add conversational preamble before the agent prefix. Begin directly with the agent name.
 
+TASK ATTRIBUTION: For task-scoped delegations, put the exact numeric plan task ID
+alone on a standalone \`TASK:\` line (for example, \`TASK: 1.1\`) and put the objective
+on the following line. When the Task arguments support an explicit field, set
+\`task_id\` to the same numeric value as a tool argument (not as prompt prose). Keep
+the numeric ID consistent across the TASK line, \`task_id\`, and any acceptance text.
+Plan-level critics and other project-wide reviews must omit task attribution rather
+than guessing from ambient prose or session state.
+
 {{AGENT_PREFIX}}[agent]
 TASK: [single objective]
 [agent-specific fields required by that agent's INPUT FORMAT]

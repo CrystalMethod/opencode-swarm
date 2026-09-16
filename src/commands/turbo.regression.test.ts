@@ -388,22 +388,18 @@ describe('Task 4: Turbo Mode Regression Tests', () => {
 		});
 
 		it('4.3 delivers the banner for an explicitly identified turbo session', async () => {
-			// Create a second session with turboMode: true
 			const secondSessionId = `turbo-regression-second-${Date.now()}`;
-			swarmState.agentSessions.set(secondSessionId, {
-				...getAgentSession(testSessionId)!,
-				turboMode: true,
-			});
-
-			const systemPrompt = guidanceText(
-				await registeredGuidanceMessages(secondSessionId),
-			);
-
-			// Banner should appear because SOME session has turboMode: true
-			expect(systemPrompt).toContain('## 🚀 TURBO MODE ACTIVE');
-
-			// Cleanup second session
-			swarmState.agentSessions.delete(secondSessionId);
+			const secondSession = structuredClone(getAgentSession(testSessionId)!);
+			secondSession.turboMode = true;
+			swarmState.agentSessions.set(secondSessionId, secondSession);
+			try {
+				const systemPrompt = guidanceText(
+					await registeredGuidanceMessages(secondSessionId),
+				);
+				expect(systemPrompt).toContain('## 🚀 TURBO MODE ACTIVE');
+			} finally {
+				swarmState.agentSessions.delete(secondSessionId);
+			}
 		});
 
 		it('4.4 system-enhancer hook does NOT show banner when no sessions exist', async () => {

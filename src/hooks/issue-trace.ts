@@ -23,7 +23,9 @@ import { error as _logErrorImpl } from '../utils/logger.js';
 import { isPlanCriticApproved } from './delegation-gate';
 import { computeNextMode } from './issue-trace-reducer';
 import {
+	branchFreshnessReceiptExists,
 	implementationReviewReceiptExists,
+	mergeApprovalReceiptExists,
 	publicationReceiptExists,
 	readIssueReference,
 	readPlanPhaseStatus,
@@ -32,6 +34,7 @@ import {
 	recurrenceSweepReceiptExists,
 	reproductionReceiptExists,
 	specExists,
+	traceValidationReceiptExists,
 	writeTraceState,
 } from './issue-trace-state';
 import type { MessageWithParts } from './knowledge-types.js';
@@ -50,6 +53,9 @@ export const _internals = {
 	publicationReceiptExists,
 	recurrenceSweepReceiptExists,
 	implementationReviewReceiptExists,
+	branchFreshnessReceiptExists,
+	traceValidationReceiptExists,
+	mergeApprovalReceiptExists,
 	isPlanCriticApproved,
 	getPlanLedgerState: getPlanLedgerStateReadOnly,
 	logError: _logErrorImpl,
@@ -248,6 +254,25 @@ export function createIssueTraceHook(
 						directory,
 						issueRef.number,
 					);
+				// v3 receipts (issue #2564): Phase 0 branch-freshness (pre-PLAN),
+				// per-phase trace-check.sh validator outcomes (pre-handoff), and
+				// the PR-head-bound merge approval (post-publication, recorded
+				// but never certified).
+				const _freshnessPermitted =
+					await _internals.branchFreshnessReceiptExists(
+						directory,
+						issueRef.number,
+					);
+				const _traceValidationVerified =
+					await _internals.traceValidationReceiptExists(
+						directory,
+						issueRef.number,
+					);
+				const _mergeApprovalObserved =
+					await _internals.mergeApprovalReceiptExists(
+						directory,
+						issueRef.number,
+					);
 
 				// 5. Call reducer
 				const result = computeNextMode({
@@ -260,9 +285,12 @@ export function createIssueTraceHook(
 						criticApproved: _criticApproved,
 						allPhasesComplete: phaseStatus.allComplete,
 						reproductionPermitted: _reproductionPermitted,
+						freshnessPermitted: _freshnessPermitted,
 						publicationObserved: _publicationObserved,
 						implementationReviewVerified: _implementationReviewVerified,
 						recurrenceSweepVerified: _recurrenceSweepVerified,
+						traceValidationVerified: _traceValidationVerified,
+						mergeApprovalObserved: _mergeApprovalObserved,
 					},
 				});
 

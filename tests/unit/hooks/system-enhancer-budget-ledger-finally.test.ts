@@ -144,7 +144,12 @@ describe('system-enhancer budget ledger — unconditional write on mid-turn thro
 		};
 
 		const createSystemEnhancerHook = getCreateSystemEnhancerHook();
-		const hook = createSystemEnhancerHook(config, tempDir);
+		// Architect guidance is staged on the messages surface and later wrapped
+		// in the registered user-role carrier. Exercise that production staging
+		// path rather than invoking the cold system surface directly.
+		const hook = createSystemEnhancerHook(config, tempDir, {
+			surface: 'messages',
+		});
 		const transform = hook['experimental.chat.system.transform'] as (
 			input: { sessionID?: string },
 			output: { system: string[] },

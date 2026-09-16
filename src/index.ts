@@ -283,7 +283,11 @@ import {
 } from './services/cost-accounting.js';
 import {
 	advanceTurnGeneration,
+	commitInjectionBudgetReceipt,
+	type InjectionBudgetReceipt,
 	recordProducerEmission,
+	recordProducerEmissionWithReceipt,
+	refundInjectionBudgetReceipt,
 } from './services/injection-budget';
 import {
 	formatModelPreflightWarning,
@@ -609,12 +613,19 @@ function createSwarmCommandSystemRuleHook(
 		}
 	>,
 	options: { surface?: 'system' | 'messages' } = {},
-): (input: unknown, output: { system?: string[] }) => Promise<void> {
+): (
+	input: unknown,
+	output: {
+		system?: string[];
+		deliveryBudgetReceipts?: InjectionBudgetReceipt[];
+	},
+) => Promise<void> {
 	const surface = options.surface ?? 'system';
 	return async (input, output) => {
-		const { sessionID, agent } = input as {
+		const { sessionID, agent, expectedGeneration } = input as {
 			sessionID?: string;
 			agent?: string;
+			expectedGeneration?: number;
 		};
 		const activeAgentName = sessionID
 			? surface === 'messages'
@@ -656,13 +667,25 @@ function createSwarmCommandSystemRuleHook(
 		// this emission to the total because output.system is invisible to the
 		// messages chain.
 		if (sessionID) {
-			recordProducerEmission(
-				sessionID,
-				'swarm-command-banner',
-				estimateTokens(banner),
-				0,
-				surface,
-			);
+			if (surface === 'messages' && output.deliveryBudgetReceipts) {
+				const receipt = recordProducerEmissionWithReceipt(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					surface,
+					{ expectedGeneration },
+				);
+				if (receipt) output.deliveryBudgetReceipts.push(receipt);
+			} else {
+				recordProducerEmission(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					0,
+					surface,
+					{ expectedGeneration },
+				);
+			}
 		}
 	};
 }
@@ -1700,7 +1723,15 @@ async function initializeOpenCodeSwarm(
 
 	let autoReviewConfig: AutoReviewConfig;
 	try {
-		autoReviewConfig = resolveAutoReviewConfigForInit(config.auto_review ?? {});
+		// #2504: the resolved preset rides the release context so a conservative
+		// config keeps the pre-flip default even if the parsed section somehow
+		// reached here without the loader's base-layer materialization.
+		autoReviewConfig = resolveAutoReviewConfigForInit(
+			config.auto_review ?? {},
+			{
+				preset: config.preset,
+			},
+		);
 	} catch (error) {
 		addDeferredWarning(
 			`[swarm] Invalid auto_review configuration; auto-review is disabled until corrected: ${error instanceof Error ? error.message : String(error)}`,
@@ -3133,11 +3164,24 @@ async function initializeOpenCodeSwarm(
 		agent: string;
 		system: string[];
 		deferredRealtimeLearningNudges: string[];
+		turnLedgerGeneration?: number;
+		systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+		fenceBudgetReceipt?: InjectionBudgetReceipt;
+		deliveryBudgetReceipts: InjectionBudgetReceipt[];
 	};
 	const stagedArchitectGuidanceByMessages = new WeakMap<
 		object,
 		StagedArchitectGuidance
 	>();
+	const settleDeliveryBudgetReceipts = (
+		receipts: readonly InjectionBudgetReceipt[],
+		action: 'commit' | 'refund',
+	): void => {
+		for (const receipt of receipts) {
+			if (action === 'commit') commitInjectionBudgetReceipt(receipt);
+			else refundInjectionBudgetReceipt(receipt);
+		}
+	};
 
 	/**
 	 * Early messages.transform stage for the session-bound architect path.
@@ -3173,8 +3217,16 @@ async function initializeOpenCodeSwarm(
 					limit: context === undefined ? undefined : { context },
 				}
 			: undefined;
-		const stagedOutput = {
+		const stagedOutput: {
+			deliveryBudgetReceipts: InjectionBudgetReceipt[];
+			system: string[];
+			deferredRealtimeLearningNudges: string[];
+			turnLedgerGeneration?: number;
+			systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+			fenceBudgetReceipt?: InjectionBudgetReceipt;
+		} = {
 			system: [] as string[],
+			deliveryBudgetReceipts: [],
 			deferredRealtimeLearningNudges: [] as string[],
 		};
 		const enhancer = architectMessagesEnhancerHook[
@@ -3185,6 +3237,9 @@ async function initializeOpenCodeSwarm(
 					output: {
 						system: string[];
 						deferredRealtimeLearningNudges?: string[];
+						turnLedgerGeneration?: number;
+						systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+						fenceBudgetReceipt?: InjectionBudgetReceipt;
 					},
 			  ) => Promise<void>)
 			| undefined;
@@ -3203,8 +3258,22 @@ async function initializeOpenCodeSwarm(
 				system: stagedOutput.system,
 				deferredRealtimeLearningNudges:
 					stagedOutput.deferredRealtimeLearningNudges ?? [],
+				turnLedgerGeneration: stagedOutput.turnLedgerGeneration,
+				systemEnhancerBudgetReceipt: stagedOutput.systemEnhancerBudgetReceipt,
+				fenceBudgetReceipt: stagedOutput.fenceBudgetReceipt,
+				deliveryBudgetReceipts: stagedOutput.deliveryBudgetReceipts,
 			});
 		} catch {
+			settleDeliveryBudgetReceipts(
+				stagedOutput.deliveryBudgetReceipts,
+				'refund',
+			);
+			if (stagedOutput.systemEnhancerBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.systemEnhancerBudgetReceipt);
+			}
+			if (stagedOutput.fenceBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.fenceBudgetReceipt);
+			}
 			// The enhancer is advisory; a failed staging pass must not block the
 			// host's message transform or alter the persisted conversation.
 		}
@@ -3228,14 +3297,26 @@ async function initializeOpenCodeSwarm(
 		if (!staged) return;
 		stagedArchitectGuidanceByMessages.delete(messages);
 
+		let deliveryConfirmed = false;
 		try {
-			const stagedOutput = { system: staged.system };
+			const stagedOutput = {
+				system: staged.system,
+				deliveryBudgetReceipts: staged.deliveryBudgetReceipts,
+			};
 			await roleFilterSystemHook['experimental.chat.system.transform'](
-				{ sessionID: staged.sessionID, agent: staged.agent },
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
 				stagedOutput,
 			);
 			await architectMessagesCommandRuleHook(
-				{ sessionID: staged.sessionID, agent: staged.agent },
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
 				stagedOutput,
 			);
 			const text = stagedOutput.system
@@ -3249,7 +3330,27 @@ async function initializeOpenCodeSwarm(
 			);
 			// Delivery is considered successful only after the final carrier has
 			// the exact host-renderable user-role shape.
-			if (!deliveredGuidanceDelta(carrier, text)) return;
+			if (!deliveredGuidanceDelta(carrier, text)) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+				return;
+			}
+			// Settle reservations immediately after the host-renderable carrier is
+			// confirmed. Later advisory bookkeeping errors must not roll back a
+			// carrier that is already visible to the model.
+			if (staged.systemEnhancerBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+			}
+			if (staged.fenceBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+			}
+			settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'commit');
+			deliveryConfirmed = true;
 			for (const sessionID of staged.deferredRealtimeLearningNudges) {
 				recordRealtimeLearningNudge(sessionID);
 			}
@@ -3257,17 +3358,27 @@ async function initializeOpenCodeSwarm(
 			const stagedTokens = estimateTokens(text);
 			const fenceOverheadTokens = Math.max(0, carrierTokens - stagedTokens);
 			if (fenceOverheadTokens > 0) {
-				if (staged.sessionID) {
+				if (staged.sessionID && staged.turnLedgerGeneration !== undefined) {
 					recordProducerEmission(
 						staged.sessionID,
 						'guidance-carrier-fence',
 						fenceOverheadTokens,
 						0,
 						'messages',
+						{ expectedGeneration: staged.turnLedgerGeneration },
 					);
 				}
 			}
 		} catch {
+			if (!deliveryConfirmed) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+			}
 			// Guidance is fail-open at this boundary; the host still receives the
 			// unmodified real message array.
 		}

@@ -76,6 +76,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | --- | ---- | ------- | ----------- |
 | `$schema` | string | — | JSON Schema URL for editor validation/autocomplete of this file (issue #1663). Ignored at runtime; malformed values are ignored too. |
 | `config_format_version` | integer | 1 | Config format version for the migration table. Increment when fields are deprecated. Distinct from knowledge.schema_version. |
+| `preset` | enum(default \| conservative) | — | Defaults profile: "default" applies the governed v8 defaults; "conservative" restores the pre-flip (v7) defaults for every flipped surface (#2504). |
 | `agents` | record<string, object> | — | Per-agent overrides keyed by agent name for the default swarm (e.g. "architect", "coder"). Multi-swarm setups configure agents under swarms.<id>.agents instead. |
 | `default_agent` | string | — | Agent set as the primary mode. Omitted: every generated *_architect is primary. Exact generated name (e.g. "local_architect"): only that agent. Base role name (e.g. "coder"): every generated agent with that base role. Unknown strings warn once and fall back to architect primaries. |
 | `auto_select_architect` | boolean \| string | — | Auto-select the swarm architect for new sessions instead of OpenCode built-ins. Omitted or false: manual selection (omitted behaves as false). true: enable auto-select and disable built-in build/plan agents. "<architect_name>" (e.g. "mega_architect"): enable targeting one architect in multi-swarm setups. |
@@ -368,6 +369,24 @@ smaller registered tool set are the only levers on per-turn tool cost.
 Empty or whitespace-only values are treated as omitted.
 
 > Why this matters: in v7.3.x the schema applied an implicit `.default("architect")`. In a multi-swarm config there is no agent literally named `architect` — they are all prefixed — so every architect was demoted to subagent and OpenCode showed only the native `build`/`plan` agents. The omitted-vs-explicit distinction is now load-bearing; do not re-introduce a schema default.
+
+## `preset` — defaults profile for the governed v8 flips (issue #2504)
+
+`preset` (top-level, optional `"default" | "conservative"`) selects the default
+posture for every surface whose default changed under the governed v8
+defaults-flip frame:
+
+| Value | Effect |
+|---|---|
+| _(omitted)_ or `"default"` | The governed v8 defaults apply. Today that means new plans default to parallel-first execution for provably file-disjoint work (since v7.132.0), and `auto_review` flips to advisory-on at the first 8.x release (burn-in pinned; see the `auto_review` section). |
+| `"conservative"` | Restores the pre-flip (v7) defaults for every flipped surface: `auto_review.enabled: false` and serial new plans. |
+
+The preset is applied as the lowest-precedence layer in config resolution, so
+an explicit value for any affected key always wins over it. Evidence
+citations, per-flip kill switches, and rollback for every governed default
+change live in `docs/defaults-governance.md`; `/swarm config doctor` surfaces
+pending default changes and `/swarm config doctor --fix` acknowledges them
+(stamps `config_format_version: 3`).
 
 ## `auto_select_architect` — auto-select swarm architect on launch
 

@@ -156,7 +156,7 @@ describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 	}
 
 	describe('ATTACK 1: Empty string agent name', () => {
-		it('empty string agent → falsy → baseRole = null → HF-1b fires', async () => {
+		it('empty session identity withholds architect-only HF-1b on the system surface (FB-031)', async () => {
 			await createSwarmFiles();
 
 			// Set active agent to empty string
@@ -164,13 +164,13 @@ describe('system-enhancer HF-1b - Adversarial Attack Vector Testing', () => {
 
 			const systemOutput = await invokeHook('test-session');
 
-			// Empty string doesn't match 'coder' or 'test_engineer'
+			// Before the cold-system identity guard, an empty agent fell through to
+			// the implicit architect/null path and emitted the architect-only guard.
+			// With no usable identity, this session-bound system surface must no-op;
+			// the registered-host architect cases below prove the guard still fires
+			// when the role is actually known.
 			expect(hasHF1Injection(systemOutput)).toBe(false);
-
-			// Empty string is falsy in JavaScript, so baseRole = null
-			// HF-1b only fires when baseRole === 'architect' || baseRole === null
-			// Since baseRole is null, HF-1b SHOULD fire
-			expect(hasHF1bInjection(systemOutput)).toBe(true);
+			expect(hasHF1bInjection(systemOutput)).toBe(false);
 		});
 	});
 

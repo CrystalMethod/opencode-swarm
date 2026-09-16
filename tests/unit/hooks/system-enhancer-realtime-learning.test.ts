@@ -98,7 +98,9 @@ describe('System Enhancer real-time learning nudge', () => {
 	): Promise<string[]> {
 		invokedTransform = true;
 		const hooks = createSystemEnhancerHook(config, tempDir, {
-			surface,
+			// Architect-owned guidance (including the learning nudge) is staged
+			// for messages.transform delivery, not emitted by system.transform.
+			surface: surface === 'system' ? 'messages' : surface,
 			...options,
 		});
 		const transform = hooks['experimental.chat.system.transform'] as (

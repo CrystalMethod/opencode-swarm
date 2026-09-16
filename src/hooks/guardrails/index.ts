@@ -1139,6 +1139,12 @@ export function createGuardrailsHooks(
 					callID: input.callID,
 					taskId,
 					guardrailsEnabled: enforcementEnabled,
+					// Issue #2676: the correlation's generation cursor, when
+					// held — it is what makes a `late_result` recordable as
+					// a `late` execution attempt instead of a fail-open drop.
+					...(pendingGateTask
+						? { generation: pendingGateTask.generation }
+						: {}),
 				});
 			};
 			const stageADuplicateOf = async (

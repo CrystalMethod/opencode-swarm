@@ -185,11 +185,15 @@ function readSpecStalenessSnapshot(directory: string): {
 }
 
 function maybeAppendSpecDriftAdvisory(
-	output: { system: string[] },
+	output: {
+		system: string[];
+		deliveryBudgetReceipts?: InjectionBudgetReceipt[];
+	},
 	directory: string,
 	plan: RuntimePlan | null,
 	sessionId?: string,
 	surface: SystemEnhancerSurface = 'system',
+	expectedGeneration?: number,
 ): void {
 	if (!plan?._specStale) return;
 	const snap = readSpecStalenessSnapshot(directory);
@@ -219,14 +223,42 @@ function maybeAppendSpecDriftAdvisory(
 	// producer (never also into system-enhancer's injectedTokens: that would
 	// double-count the surface in final accounting).
 	if (sessionId) {
-		recordProducerEmission(
+		recordDirectSurfaceEmission(
+			output,
 			sessionId,
 			'spec-drift-advisory',
-			estimateTokens(output.system[output.system.length - 1] ?? ''),
-			0,
+			output.system[output.system.length - 1] ?? '',
 			surface,
+			expectedGeneration,
 		);
 	}
+}
+
+function recordDirectSurfaceEmission(
+	output: {
+		deliveryBudgetReceipts?: InjectionBudgetReceipt[];
+	},
+	sessionID: string,
+	producer: 'spec-drift-advisory' | 'linked-cohort-advisory',
+	content: string,
+	surface: SystemEnhancerSurface,
+	expectedGeneration?: number,
+): void {
+	const emittedTokens = estimateTokens(content);
+	if (surface === 'messages' && output.deliveryBudgetReceipts) {
+		const receipt = recordProducerEmissionWithReceipt(
+			sessionID,
+			producer,
+			emittedTokens,
+			surface,
+			{ expectedGeneration },
+		);
+		if (receipt) output.deliveryBudgetReceipts.push(receipt);
+		return;
+	}
+	recordProducerEmission(sessionID, producer, emittedTokens, 0, surface, {
+		expectedGeneration,
+	});
 }
 
 import { buildReflectionInjection } from '../memory/reflection-injection';
@@ -240,9 +272,11 @@ import {
 import {
 	allocateInjectionBudget,
 	beginTurnLedger,
-	claimTurnBudget,
+	claimTurnBudgetWithReceipt,
+	type InjectionBudgetReceipt,
 	recordProducerEmission,
-	recordProducerGrant,
+	recordProducerEmissionWithReceipt,
+	recordProducerGrantWithReceipt,
 } from '../services/injection-budget.js';
 import { telemetry } from '../telemetry';
 import { _internals as coChangeInternals } from '../tools/co-change-analyzer.js';
@@ -299,6 +333,11 @@ export type SystemEnhancerSurface = 'system' | 'messages';
 
 interface SystemEnhancerTransformOutput {
 	system: string[];
+	/** Current ledger identity and reservations for deferred architect delivery. */
+	turnLedgerGeneration?: number;
+	systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+	fenceBudgetReceipt?: InjectionBudgetReceipt;
+	deliveryBudgetReceipts?: InjectionBudgetReceipt[];
 	/** Session ids whose nudge state may be committed after carrier delivery. */
 	deferredRealtimeLearningNudges?: string[];
 }
@@ -1111,6 +1150,7 @@ export function createSystemEnhancerHook(
 				let injectedTokens = 0;
 				let unifiedBudget: number | undefined;
 				let reservedEnvelopeTokens = 0;
+				let turnLedgerGeneration: number | undefined;
 				// The live context window for THIS turn's model. This hook is the
 				// only one the host hands a `Model` to, so it is also the only
 				// place the authoritative `limit.context` can be captured. Recorded
@@ -1144,15 +1184,33 @@ export function createSystemEnhancerHook(
 					// have no use for phase/task/knowledge injection and must not trigger
 					// scanDocIndex or the dark-matter scan unnecessarily.
 					//
-					// The host runs chat.message before messages.transform and
-					// system.transform, so the active-agent identity is normally warm
-					// here. The fallback remains fail-open for restored sessions whose
-					// first callback arrives without an identity.
+					// The SDK's system.transform payload has only {sessionID?, model};
+					// unlike messages.transform, it cannot recover info.agent from the
+					// request history. When both session identity stores are cold, there
+					// is no request-correlation key with which to bridge that identity.
+					// Keep this invocation state-free: its generic dynamic context is
+					// intentionally withheld and its maintenance scan is deferred one
+					// turn. The registered-host regression covers the pinned
+					// chat.message → messages.transform → system.transform order.
 					if (_input.sessionID) {
 						const sessionAgent = swarmState.activeAgent.get(_input.sessionID);
+						const storedAgent = swarmState.agentSessions.get(
+							_input.sessionID,
+						)?.agentName;
+						const activeIdentity =
+							typeof sessionAgent === 'string' && sessionAgent.trim()
+								? sessionAgent
+								: undefined;
+						const storedIdentity =
+							typeof storedAgent === 'string' && storedAgent.trim()
+								? storedAgent
+								: undefined;
+						const effectiveIdentity = activeIdentity ?? storedIdentity;
 						if (
-							sessionAgent &&
-							OPENCODE_NATIVE_AGENTS.has(sessionAgent.toLowerCase() as never)
+							effectiveIdentity &&
+							OPENCODE_NATIVE_AGENTS.has(
+								effectiveIdentity.toLowerCase() as never,
+							)
 						) {
 							return;
 						}
@@ -1163,8 +1221,16 @@ export function createSystemEnhancerHook(
 						// or recreate the dynamic system tail.
 						if (
 							surface === 'system' &&
-							isSessionBoundArchitect(_input.sessionID, sessionAgent)
+							isSessionBoundArchitect(_input.sessionID, effectiveIdentity)
 						) {
+							return;
+						}
+
+						// The messages surface can identify a first-turn architect from
+						// the last user message's info.agent. The system surface cannot;
+						// returning here avoids both a duplicate system tail and an
+						// orphaned second ledger without manufacturing session identity.
+						if (surface === 'system' && !effectiveIdentity) {
 							return;
 						}
 
@@ -1176,18 +1242,21 @@ export function createSystemEnhancerHook(
 						// later producer (capsule, banner — same chain; memory, advisory
 						// drain, knowledge — messages chain) claims against this ledger.
 						if (_input.sessionID) {
-							beginTurnLedger(
+							turnLedgerGeneration = beginTurnLedger(
 								_input.sessionID,
 								config.context_budget?.unified_injection_tokens ??
 									config.context_budget?.max_injection_tokens ??
 									4000,
 								config.context_budget?.unified_injection_tokens !== undefined,
 							);
+							if (surface === 'messages') {
+								output.turnLedgerGeneration = turnLedgerGeneration;
+							}
 							if (
 								surface === 'messages' &&
 								(options.reservedEnvelopeTokens ?? 0) > 0
 							) {
-								const envelopeClaim = claimTurnBudget(
+								const envelopeClaim = claimTurnBudgetWithReceipt(
 									_input.sessionID,
 									'guidance-carrier-fence',
 									options.reservedEnvelopeTokens ?? 0,
@@ -1199,6 +1268,7 @@ export function createSystemEnhancerHook(
 								if (envelopeClaim.ceilingActive) {
 									reservedEnvelopeTokens = envelopeClaim.granted;
 								}
+								output.fenceBudgetReceipt = envelopeClaim.receipt;
 							}
 						}
 
@@ -1225,21 +1295,19 @@ export function createSystemEnhancerHook(
 										const health = pointer?.degraded
 											? 'degraded (machine-local)'
 											: 'linked (portable)';
-										output.system.push(
-											`[linked-knowledge] cohort=${cohortId} ${health}. A shared knowledge store exists across this cohort's worktrees; retrieval and receipts flow through it.`,
-										);
+										const linkedCohortAdvisory = `[linked-knowledge] cohort=${cohortId} ${health}. A shared knowledge store exists across this cohort's worktrees; retrieval and receipts flow through it.`;
+										output.system.push(linkedCohortAdvisory);
 										// #2107 §2: this direct surface push bypasses
 										// tryInject; record its emission under its own producer so the
 										// final accounting attributes it (do NOT also count it in
 										// injectedTokens — that would double-count the surface).
-										recordProducerEmission(
+										recordDirectSurfaceEmission(
+											output,
 											_input.sessionID as string,
 											'linked-cohort-advisory',
-											estimateTokens(
-												`[linked-knowledge] cohort=${cohortId} ${health}. A shared knowledge store exists across this cohort's worktrees; retrieval and receipts flow through it.`,
-											),
-											0,
+											linkedCohortAdvisory,
 											surface,
+											turnLedgerGeneration,
 										);
 									} else {
 										// (#BOT-HIGH-1) Cohort line skipped: cache miss on turn 1
@@ -1259,19 +1327,13 @@ export function createSystemEnhancerHook(
 					}
 
 					// #2472 W4 (AC-5, frozen check C5) / PRR-010 (PR #2588): arm
-					// the deferred maintenance scans HERE — directly after the
-					// intentional native-agent skip guard above — so every
-					// later exit path (a throw at any awaited point, e.g. the
-					// context.md read below; Path A's early return; or normal
-					// completion) still schedules the deferred scan from the
-					// `finally` exactly once per invocation. Arming deeper in
-					// the body (next to the former synchronous scan block) let
-					// a throw before the arm silently skip the schedule. The
-					// native-agent early return above is the ONE intentional
-					// non-arming exit: those agents must not trigger
-					// scanDocIndex or the dark-matter scan (see the guard's
-					// comment). Arming is a boolean assignment only — no scan
-					// work runs here (check-c5 contract).
+					// deferred maintenance scans here so every later exit path
+					// (including throws, Path A's early return, or normal completion)
+					// schedules the scan from `finally` exactly once per invocation.
+					// Native-agent, known-architect system, and cold-identity system
+					// returns above are intentional non-arming exits. The latter also
+					// defers that unknown session's scan by one turn. Arming is a
+					// boolean assignment only; no scan work runs here (check-c5).
 					deferMaintenanceScans = true;
 
 					// Per-invocation closure cache: all plan-file reads within this
@@ -1395,6 +1457,7 @@ export function createSystemEnhancerHook(
 							plan,
 							_input.sessionID,
 							surface,
+							turnLedgerGeneration,
 						);
 						const mode = await detectArchitectMode(directory, planReadCache);
 						let planContent: string | null = null;
@@ -2288,6 +2351,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 						plan,
 						_input.sessionID,
 						surface,
+						turnLedgerGeneration,
 					);
 					let currentPhase: string | null = null;
 					let currentTask: string | null = null;
@@ -3109,13 +3173,13 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 					warn('System enhancer failed:', error);
 				} finally {
 					// FR-004 / #2107 §2: record the system-enhancer's actual emitted
-					// tokens into the turn ledger exactly once, on EVERY exit path
-					// (normal return, Path A's early return, or exception), so the
+					// tokens into the turn ledger exactly once on every path that began
+					// this invocation's ledger (normal return or exception), so the
 					// knowledge-injector and the final accounting step never read a
 					// stale/absent producer entry. The emitted amount includes the
 					// context-budget warning text when one was injected (it is
 					// counted into actualDemand at its push site).
-					if (_input.sessionID) {
+					if (_input.sessionID && turnLedgerGeneration !== undefined) {
 						// Book the SE's actual grant + emission into the shared
 						// ledger. EMISSION is `injectedTokens` — the bytes that
 						// actually reached output.system — NOT actualDemand, which
@@ -3124,19 +3188,28 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 						// the prompt total, so demand-inflation there would
 						// overstate what the model sees. The rejected difference
 						// is disclosed as the producer's own truncation.
-						recordProducerGrant(
+						const systemEnhancerBudgetReceipt = recordProducerGrantWithReceipt(
 							_input.sessionID,
 							'system-enhancer',
 							actualDemand,
 							injectedTokens,
 							surface,
+							{
+								expectedGeneration: turnLedgerGeneration,
+								retractEmissionOnRefund: surface === 'messages',
+								emittedTokensOnRefund: injectedTokens,
+							},
 						);
+						if (surface === 'messages') {
+							output.systemEnhancerBudgetReceipt = systemEnhancerBudgetReceipt;
+						}
 						recordProducerEmission(
 							_input.sessionID,
 							'system-enhancer',
 							injectedTokens,
 							Math.max(0, actualDemand - injectedTokens),
 							surface,
+							{ expectedGeneration: turnLedgerGeneration },
 						);
 					}
 

@@ -1,5 +1,48 @@
 # Changelog
 
+## [7.183.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.0...v7.183.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **background:** read legacy deadline lane-failure rows without wedging the delegation store ([0c11529](https://github.com/ZaxbyHub/opencode-swarm/commit/0c115292dba713ce6c8d5aa0c8adc7515af15ad4))
+
+## [7.183.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.182.0...v7.183.0) (2026-09-15)
+
+
+### Features
+
+* **observability:** bind execution traces and task-cost metrics to exact attempts ([#2676](https://github.com/ZaxbyHub/opencode-swarm/issues/2676)) ([114338f](https://github.com/ZaxbyHub/opencode-swarm/commit/114338fec4b5025944e05c0d77006262efbd9f92))
+
+## [7.182.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.4...v7.182.0) (2026-09-15)
+
+
+### Features
+
+* **issue-tracer:** wire v3 receipts plugin-side and prove ingestion reaches a durable plan ([#2564](https://github.com/ZaxbyHub/opencode-swarm/issues/2564)) ([2b51abf](https://github.com/ZaxbyHub/opencode-swarm/commit/2b51abf50bb4a47e56ccc226ca7b20efdc45286b))
+
+## [7.181.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.3...v7.181.4) (2026-09-15)
+
+
+### Bug Fixes
+
+* **delegation-gate:** require explicit critic task attribution ([ee51180](https://github.com/ZaxbyHub/opencode-swarm/commit/ee51180c94209830814bec4fe6ab3a06fe3b2485))
+
+## [7.181.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.2...v7.181.3) (2026-09-15)
+
+
+### Bug Fixes
+
+* **agents:** validate final enabled swarm model selections and fallbacks during preflight ([#2680](https://github.com/ZaxbyHub/opencode-swarm/issues/2680)) ([64a7f64](https://github.com/ZaxbyHub/opencode-swarm/commit/64a7f6452d6920951e050861f5c8259482b926b0))
+* **agents:** validate final enabled swarm model selections during preflight ([#2680](https://github.com/ZaxbyHub/opencode-swarm/issues/2680)) ([0f75c2d](https://github.com/ZaxbyHub/opencode-swarm/commit/0f75c2d1072bac62401f96801c0208c3b7bec115))
+* **ci:** register the pairing-report stream and canonicalize test tmpdirs ([#2672](https://github.com/ZaxbyHub/opencode-swarm/issues/2672)) ([4bea76b](https://github.com/ZaxbyHub/opencode-swarm/commit/4bea76bf883b67bcc78468880782c920fec720dd))
+* **knowledge:** pair instruction-selection evidence and close cache/consumer gaps ([#2672](https://github.com/ZaxbyHub/opencode-swarm/issues/2672)) ([8dbab19](https://github.com/ZaxbyHub/opencode-swarm/commit/8dbab19c4a6772d7ff66935e0a7e9bda5aa8d846))
+* **memory:** resolve PR [#2781](https://github.com/ZaxbyHub/opencode-swarm/issues/2781) review findings PRR-001..016 ([5039c3c](https://github.com/ZaxbyHub/opencode-swarm/commit/5039c3c1b9deb29137f6eb5b0d98224fbea894e2))
+* **memory:** satisfy G2 cache-invalidation scan and [#2526](https://github.com/ZaxbyHub/opencode-swarm/issues/2526) system-role ratchet ([#2672](https://github.com/ZaxbyHub/opencode-swarm/issues/2672)) ([40afb4f](https://github.com/ZaxbyHub/opencode-swarm/commit/40afb4fbf8a0123453ac13d8bfa9ecde17e53b6f))
+* **review:** close PR [#2782](https://github.com/ZaxbyHub/opencode-swarm/issues/2782) review findings (sanitize sinks, class alignment, cache epoch) ([616bd9a](https://github.com/ZaxbyHub/opencode-swarm/commit/616bd9a3cb722f43712b8f58e5c500f5a874b790))
+* **tests:** complete mocked bindings for the widened memory-barrel graph ([#2672](https://github.com/ZaxbyHub/opencode-swarm/issues/2672)) ([0c4d07d](https://github.com/ZaxbyHub/opencode-swarm/commit/0c4d07d558f62b7ab9269e560c8e2a1ea2640a31))
+* **tests:** make consumer-control path check POSIX-portable ([#2672](https://github.com/ZaxbyHub/opencode-swarm/issues/2672) final-critic F2) ([5bb5338](https://github.com/ZaxbyHub/opencode-swarm/commit/5bb53386dabd50d6e8f261b58fcd6f8fa7f2e652))
+
 ## [7.181.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.1...v7.181.2) (2026-09-14)
 
 

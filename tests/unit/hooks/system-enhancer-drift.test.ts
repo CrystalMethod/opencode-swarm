@@ -197,7 +197,7 @@ describe('v6.7 System Enhancer Decision Drift Detection', () => {
 		expect(renderedText(result.rendered)).toContain('DECISION DRIFT');
 	});
 
-	it('injects drift detection when no active agent (architect default)', async () => {
+	it('does not assume a cold system session is architect for drift injection', async () => {
 		await createSwarmFiles(
 			'# Plan\n\nPhase: 2\n\n## Phase 1: Setup [COMPLETE]\n- Task 1\n\n## Phase 2: Implementation [IN PROGRESS]\n- Task 2',
 			'# Context\n\n## Decisions\n- Use TypeScript Phase 1',
@@ -208,12 +208,15 @@ describe('v6.7 System Enhancer Decision Drift Detection', () => {
 			automation: withCapabilities(true),
 		};
 
-		// No active agent set - defaults to architect
+		// The system surface cannot recover the first-turn agent identity. It
+		// must not guess architect and inject dynamic guidance; the registered
+		// messages-surface architect path is covered above.
 		const systemOutput = await invokeHook(config, 'test-session');
 		const driftContent = systemOutput.filter((s) =>
 			s.includes('DECISION DRIFT'),
 		);
-		expect(driftContent.length).toBeGreaterThan(0);
+		expect(driftContent).toHaveLength(0);
+		expect(systemOutput).toEqual(['Initial system prompt']);
 	});
 
 	it('does not inject when no drift detected', async () => {

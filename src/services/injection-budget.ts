@@ -167,10 +167,37 @@ export interface ProducerAccounting {
 	granted: number;
 	/** Tokens actually emitted to the model-visible surface. */
 	emitted: number;
-	/** Tokens the producer wanted but did not emit (its own pruning). */
+	/** Tokens the producer wanted but did not reach the model-visible surface, whether pruned locally or rejected during downstream carrier delivery. */
 	truncated: number;
 	surface: InjectionSurface;
 }
+
+declare const injectionBudgetReceiptBrand: unique symbol;
+
+/** Opaque, one-shot handle for a turn-ledger reservation. */
+export interface InjectionBudgetReceipt {
+	readonly [injectionBudgetReceiptBrand]: true;
+}
+
+interface InjectionBudgetReceiptData {
+	sessionID: string;
+	generation: number;
+	producer: InjectionProducer;
+	surface: InjectionSurface;
+	accounting: ProducerAccounting;
+	requestedTokens: number;
+	grantedTokens: number;
+	chargedTokens: number;
+	emittedTokensOnRefund: number;
+	/** A producer-grant receipt may also retract its undelivered emission. */
+	retractEmissionOnRefund: boolean;
+	state: 'pending' | 'committed' | 'refunded' | 'stale';
+}
+
+const injectionBudgetReceipts = new WeakMap<
+	InjectionBudgetReceipt,
+	InjectionBudgetReceiptData
+>();
 
 export interface TurnLedgerSummary {
 	generation: number;
@@ -235,6 +262,63 @@ function getOrCreateAccounting(
 	return accounting;
 }
 
+function makeInjectionBudgetReceipt(
+	data: Omit<InjectionBudgetReceiptData, 'state'>,
+): InjectionBudgetReceipt {
+	const receipt = Object.freeze({}) as InjectionBudgetReceipt;
+	injectionBudgetReceipts.set(receipt, { ...data, state: 'pending' });
+	return receipt;
+}
+
+function settleInjectionBudgetReceipt(
+	receipt: InjectionBudgetReceipt,
+	action: 'commit' | 'refund',
+): boolean {
+	const data = injectionBudgetReceipts.get(receipt);
+	if (!data || data.state !== 'pending') return false;
+
+	const ledger = turnLedgers.get(data.sessionID);
+	if (!ledger || ledger.generation !== data.generation) {
+		data.state = 'stale';
+		return false;
+	}
+	const accounting = ledger.producers.get(data.producer);
+	if (
+		!accounting ||
+		accounting !== data.accounting ||
+		accounting.surface !== data.surface
+	) {
+		data.state = 'stale';
+		return false;
+	}
+
+	if (action === 'commit') {
+		data.state = 'committed';
+		return true;
+	}
+	accounting.requested = Math.max(
+		0,
+		accounting.requested - data.requestedTokens,
+	);
+	accounting.granted = Math.max(0, accounting.granted - data.grantedTokens);
+	if (data.retractEmissionOnRefund) {
+		const retracted = Math.min(accounting.emitted, data.emittedTokensOnRefund);
+		accounting.emitted -= retracted;
+		accounting.truncated += retracted;
+	}
+	if (
+		accounting.requested === 0 &&
+		accounting.granted === 0 &&
+		accounting.emitted === 0 &&
+		accounting.truncated === 0
+	) {
+		ledger.producers.delete(data.producer);
+	}
+	ledger.used = Math.max(0, ledger.used - data.chargedTokens);
+	data.state = 'refunded';
+	return true;
+}
+
 /**
  * Begin a new turn ledger for a session: reset exactly once at the start of
  * composing that request (the system-enhancer is the first producer and calls
@@ -270,12 +354,23 @@ export function beginTurnLedger(
  * preserving #1617's fail-open contract; the caller is expected to report that
  * the hard ceiling was unavailable.
  */
-export function claimTurnBudget(
+interface TurnBudgetClaimResult {
+	granted: number;
+	ledgerPresent: boolean;
+	ceilingActive: boolean;
+}
+
+interface TurnBudgetClaimMutation {
+	result: TurnBudgetClaimResult;
+	receiptData?: Omit<InjectionBudgetReceiptData, 'state'>;
+}
+
+function applyTurnBudgetClaim(
 	sessionID: string,
 	producer: InjectionProducer,
 	requestedTokens: number,
 	opts?: { localMaxTokens?: number; surface?: InjectionSurface },
-): { granted: number; ledgerPresent: boolean; ceilingActive: boolean } {
+): TurnBudgetClaimMutation {
 	const requested = Math.max(0, requestedTokens);
 	const localMax =
 		opts?.localMaxTokens === undefined
@@ -286,9 +381,11 @@ export function claimTurnBudget(
 	const ledger = turnLedgers.get(sessionID);
 	if (!ledger) {
 		return {
-			granted: Math.min(requested, localMax),
-			ledgerPresent: false,
-			ceilingActive: false,
+			result: {
+				granted: Math.min(requested, localMax),
+				ledgerPresent: false,
+				ceilingActive: false,
+			},
 		};
 	}
 
@@ -296,15 +393,70 @@ export function claimTurnBudget(
 	accounting.requested += requested;
 
 	let granted: number;
+	let charged = 0;
 	if (!ledger.ceilingActive) {
 		granted = Math.min(requested, localMax);
 	} else {
 		const remaining = Math.max(0, ledger.totalBudget - ledger.used);
 		granted = Math.min(requested, localMax, remaining);
-		ledger.used += granted;
+		charged = granted;
+		ledger.used += charged;
 	}
 	accounting.granted += granted;
-	return { granted, ledgerPresent: true, ceilingActive: ledger.ceilingActive };
+	return {
+		result: {
+			granted,
+			ledgerPresent: true,
+			ceilingActive: ledger.ceilingActive,
+		},
+		receiptData: {
+			sessionID,
+			generation: ledger.generation,
+			producer,
+			surface,
+			accounting,
+			requestedTokens: requested,
+			grantedTokens: granted,
+			chargedTokens: charged,
+			emittedTokensOnRefund: 0,
+			retractEmissionOnRefund: false,
+		},
+	};
+}
+
+export function claimTurnBudget(
+	sessionID: string,
+	producer: InjectionProducer,
+	requestedTokens: number,
+	opts?: { localMaxTokens?: number; surface?: InjectionSurface },
+): TurnBudgetClaimResult {
+	return applyTurnBudgetClaim(sessionID, producer, requestedTokens, opts)
+		.result;
+}
+
+/**
+ * Claim from the ledger and return an opaque receipt that can settle exactly
+ * this claim. A missing ledger keeps the normal fail-open grant and produces
+ * no receipt because there is no reservation to commit or refund.
+ */
+export function claimTurnBudgetWithReceipt(
+	sessionID: string,
+	producer: InjectionProducer,
+	requestedTokens: number,
+	opts?: { localMaxTokens?: number; surface?: InjectionSurface },
+): TurnBudgetClaimResult & { receipt?: InjectionBudgetReceipt } {
+	const mutation = applyTurnBudgetClaim(
+		sessionID,
+		producer,
+		requestedTokens,
+		opts,
+	);
+	return {
+		...mutation.result,
+		receipt: mutation.receiptData
+			? makeInjectionBudgetReceipt(mutation.receiptData)
+			: undefined,
+	};
 }
 
 /**
@@ -325,18 +477,92 @@ export function recordProducerGrant(
 	grantedTokens: number,
 	surface: InjectionSurface,
 ): void {
+	applyProducerGrant(
+		sessionID,
+		producer,
+		requestedTokens,
+		grantedTokens,
+		surface,
+	);
+}
+
+interface ProducerGrantMutation {
+	data: Omit<InjectionBudgetReceiptData, 'state'>;
+}
+
+function applyProducerGrant(
+	sessionID: string,
+	producer: InjectionProducer,
+	requestedTokens: number,
+	grantedTokens: number,
+	surface: InjectionSurface,
+	expectedGeneration?: number,
+): ProducerGrantMutation | undefined {
 	const ledger = turnLedgers.get(sessionID);
-	if (!ledger) return;
+	if (
+		!ledger ||
+		(expectedGeneration !== undefined &&
+			ledger.generation !== expectedGeneration)
+	) {
+		return undefined;
+	}
 	const accounting = getOrCreateAccounting(ledger, producer, surface);
-	accounting.requested += Math.max(0, requestedTokens);
+	const requested = Math.max(0, requestedTokens);
+	accounting.requested += requested;
 	const granted = Math.max(0, grantedTokens);
 	accounting.granted += granted;
+	let charged = 0;
 	if (ledger.ceilingActive) {
-		ledger.used += Math.min(
-			granted,
-			Math.max(0, ledger.totalBudget - ledger.used),
-		);
+		charged = Math.min(granted, Math.max(0, ledger.totalBudget - ledger.used));
+		ledger.used += charged;
 	}
+	return {
+		data: {
+			sessionID,
+			generation: ledger.generation,
+			producer,
+			surface,
+			accounting,
+			requestedTokens: requested,
+			grantedTokens: granted,
+			chargedTokens: charged,
+			emittedTokensOnRefund: 0,
+			retractEmissionOnRefund: false,
+		},
+	};
+}
+
+/**
+ * Record an allocator-derived producer grant and return a receipt tied to the
+ * exact ledger generation and charged amount. `expectedGeneration` prevents a
+ * delayed transform from booking into a newer request's replacement ledger.
+ */
+export function recordProducerGrantWithReceipt(
+	sessionID: string,
+	producer: InjectionProducer,
+	requestedTokens: number,
+	grantedTokens: number,
+	surface: InjectionSurface,
+	options: {
+		expectedGeneration?: number;
+		retractEmissionOnRefund?: boolean;
+		emittedTokensOnRefund?: number;
+	} = {},
+): InjectionBudgetReceipt | undefined {
+	const mutation = applyProducerGrant(
+		sessionID,
+		producer,
+		requestedTokens,
+		grantedTokens,
+		surface,
+		options.expectedGeneration,
+	);
+	if (!mutation) return undefined;
+	return makeInjectionBudgetReceipt({
+		...mutation.data,
+		retractEmissionOnRefund: options.retractEmissionOnRefund === true,
+		emittedTokensOnRefund: Math.max(0, options.emittedTokensOnRefund ?? 0),
+	});
 }
 
 /**
@@ -351,12 +577,73 @@ export function recordProducerEmission(
 	emittedTokens: number,
 	truncatedTokens: number,
 	surface: InjectionSurface,
+	options?: { expectedGeneration?: number },
 ): void {
+	applyProducerEmission(
+		sessionID,
+		producer,
+		emittedTokens,
+		truncatedTokens,
+		surface,
+		options?.expectedGeneration,
+	);
+}
+
+function applyProducerEmission(
+	sessionID: string,
+	producer: InjectionProducer,
+	emittedTokens: number,
+	truncatedTokens: number,
+	surface: InjectionSurface,
+	expectedGeneration?: number,
+): Omit<InjectionBudgetReceiptData, 'state'> | undefined {
 	const ledger = turnLedgers.get(sessionID);
-	if (!ledger) return;
+	if (
+		!ledger ||
+		(expectedGeneration !== undefined &&
+			ledger.generation !== expectedGeneration)
+	) {
+		return undefined;
+	}
 	const accounting = getOrCreateAccounting(ledger, producer, surface);
-	accounting.emitted += Math.max(0, emittedTokens);
+	const emitted = Math.max(0, emittedTokens);
+	accounting.emitted += emitted;
 	accounting.truncated += Math.max(0, truncatedTokens);
+	return {
+		sessionID,
+		generation: ledger.generation,
+		producer,
+		surface,
+		accounting,
+		requestedTokens: 0,
+		grantedTokens: 0,
+		chargedTokens: 0,
+		emittedTokensOnRefund: emitted,
+		retractEmissionOnRefund: true,
+	};
+}
+
+/**
+ * Record a direct producer emission and return a receipt that retracts exactly
+ * that emission if its carrier is not delivered. A generation mismatch is a
+ * no-op, so an old staged transform cannot write into a replacement ledger.
+ */
+export function recordProducerEmissionWithReceipt(
+	sessionID: string,
+	producer: InjectionProducer,
+	emittedTokens: number,
+	surface: InjectionSurface,
+	options?: { expectedGeneration?: number },
+): InjectionBudgetReceipt | undefined {
+	const receiptData = applyProducerEmission(
+		sessionID,
+		producer,
+		emittedTokens,
+		0,
+		surface,
+		options?.expectedGeneration,
+	);
+	return receiptData ? makeInjectionBudgetReceipt(receiptData) : undefined;
 }
 
 /**
@@ -372,9 +659,16 @@ export function deductProducerEmission(
 	sessionID: string,
 	producer: InjectionProducer,
 	removedTokens: number,
+	options?: { expectedGeneration?: number },
 ): void {
 	const ledger = turnLedgers.get(sessionID);
-	if (!ledger) return;
+	if (
+		!ledger ||
+		(options?.expectedGeneration !== undefined &&
+			ledger.generation !== options.expectedGeneration)
+	) {
+		return;
+	}
 	const accounting = ledger.producers.get(producer);
 	if (!accounting) return;
 	accounting.emitted = Math.max(
@@ -393,14 +687,16 @@ export function getTurnLedgerSummary(
 		totalBudget: ledger.totalBudget,
 		ceilingActive: ledger.ceilingActive,
 		used: ledger.used,
-		producers: Array.from(ledger.producers.entries()).map(([producer, a]) => ({
-			producer,
-			requested: a.requested,
-			granted: a.granted,
-			emitted: a.emitted,
-			truncated: a.truncated,
-			surface: a.surface,
-		})),
+		producers: Array.from(ledger.producers.entries()).map(
+			([producer, accounting]) => ({
+				producer,
+				requested: accounting.requested,
+				granted: accounting.granted,
+				emitted: accounting.emitted,
+				truncated: accounting.truncated,
+				surface: accounting.surface,
+			}),
+		),
 	};
 }
 
@@ -414,6 +710,24 @@ export function getProducerEmission(
 	producer: InjectionProducer,
 ): number {
 	return turnLedgers.get(sessionID)?.producers.get(producer)?.emitted ?? 0;
+}
+
+/** Commit exactly one live receipt. Repeated or stale commits are no-ops. */
+export function commitInjectionBudgetReceipt(
+	receipt: InjectionBudgetReceipt,
+): boolean {
+	return settleInjectionBudgetReceipt(receipt, 'commit');
+}
+
+/**
+ * Refund exactly one live receipt. Repeated, post-commit, or stale-generation
+ * refunds are no-ops. Grant receipts configured for emission retraction also
+ * move only their still-emitted amount into that producer's truncation count.
+ */
+export function refundInjectionBudgetReceipt(
+	receipt: InjectionBudgetReceipt,
+): boolean {
+	return settleInjectionBudgetReceipt(receipt, 'refund');
 }
 
 /**

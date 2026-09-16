@@ -64,7 +64,12 @@ export async function runFinalReviewGate(
 ): Promise<GateResult> {
 	let config: AutoReviewConfig;
 	try {
-		config = resolveAutoReviewConfig(ctx.pluginConfig.auto_review ?? {});
+		// #2504: preset rides the release context as defense-in-depth — the
+		// loader's conservative base layer normally materializes an explicit
+		// enabled value before this re-normalization ever sees the section.
+		config = resolveAutoReviewConfig(ctx.pluginConfig.auto_review ?? {}, {
+			preset: ctx.pluginConfig.preset,
+		});
 	} catch (error) {
 		return block(
 			ctx,

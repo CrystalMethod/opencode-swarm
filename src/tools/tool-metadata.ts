@@ -287,7 +287,22 @@ export const TOOL_METADATA = {
 	},
 	record_recurrence_sweep: {
 		description:
-			'record the recurrence sweep (defect class, predicates, hit dispositions, guardrail proof) so the /swarm issue --trace workflow can satisfy its recurrence gate before commit-pr handoff',
+			'record the recurrence sweep (defect class, predicates, hit dispositions, guardrail proof, related-problems results) so the /swarm issue --trace workflow can satisfy its recurrence gate before commit-pr handoff',
+		agents: ['architect'],
+	},
+	record_branch_freshness: {
+		description:
+			'record the Phase 0 branch-freshness outcome (synced / behind:<n> / fetch-failed:<reason> plus optional user override) so the /swarm issue --trace workflow can pass its freshness gate before transitioning to PLAN (issue #2564)',
+		agents: ['architect'],
+	},
+	record_trace_validation: {
+		description:
+			'record one per-phase trace-check.sh validator outcome (phase, pass/fail, reviewedCommit, treeId) so the /swarm issue --trace workflow can satisfy its validator-receipt gate before commit-pr handoff (issue #2564)',
+		agents: ['architect'],
+	},
+	record_merge_approval: {
+		description:
+			'record the human merge approval bound to the exact PR head SHA so the /swarm issue --trace workflow reaches its terminal merge_approval_recorded state — recorded for audit only, never certified or driven by the plugin (issue #2564)',
 		agents: ['architect'],
 	},
 	rebind_pr_feedback_head: {

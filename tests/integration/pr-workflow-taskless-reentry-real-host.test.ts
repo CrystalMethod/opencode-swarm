@@ -6,8 +6,11 @@ import { createDelegationGateHook } from '../../src/hooks/delegation-gate.js';
 import {
 	_test_exports,
 	activatePrWorkflow,
+	hasActivePrReviewReentryAuthorization,
+	readPrReviewReentryBindingContext,
 } from '../../src/hooks/pr-workflow-gate.js';
 import { issuePrReviewReentryAuthorization } from '../../src/pr-review/authorization.js';
+import { readReviewRouteReceipt } from '../../src/review/routing-enforcement.js';
 import {
 	ensureAgentSession,
 	resetSwarmState,
@@ -18,6 +21,7 @@ import {
 	bootKnowledgeHost,
 	createKnowledgeProject,
 } from '../helpers/knowledge-real-host.js';
+import { safeRmRecursive } from '../helpers/safe-test-dir.js';
 
 const SESSION_ID = 'pr-workflow-taskless-reentry';
 const HEAD_SHA = 'abc123';
@@ -154,6 +158,127 @@ describe('PR workflow taskless re-entry stays standalone-only', () => {
 		}
 	});
 
+	test('plan-free re-entry ignores stale session task IDs and consumes authorization', async () => {
+		const staleSessionID = 'pr-workflow-stale-task-reentry';
+		const staleTaskId = '1.1';
+		const planFreeDirectory = createKnowledgeProject();
+		try {
+			// This fixture deliberately does not boot the host or write an approved plan.
+			// Declare the temp directory as its own project root so an ancestor .swarm
+			// (for example, the developer profile) cannot block route-receipt writes.
+			mkdirSync(path.join(planFreeDirectory, '.git'), { recursive: true });
+			await activatePrWorkflow(planFreeDirectory, staleSessionID, 'PR_REVIEW', {
+				prHeadSha: HEAD_SHA,
+			});
+			expect(
+				await readPrReviewReentryBindingContext(
+					planFreeDirectory,
+					staleSessionID,
+				),
+			).toMatchObject({ prHeadSha: HEAD_SHA });
+			const issued = await issuePrReviewReentryAuthorization(
+				planFreeDirectory,
+				staleSessionID,
+				{ prHeadSha: HEAD_SHA, role: 'reviewer' },
+			);
+			expect(issued.role).toBe('reviewer');
+			expect(
+				await hasActivePrReviewReentryAuthorization(
+					planFreeDirectory,
+					staleSessionID,
+					{ role: 'reviewer' },
+				),
+			).toBe(true);
+
+			const session = ensureAgentSession(
+				staleSessionID,
+				'architect',
+				planFreeDirectory,
+			);
+			expect(session.taskWorkflowStates.size).toBe(0);
+			session.currentTaskId = staleTaskId;
+
+			const hook = createDelegationGateHook(
+				{ hooks: { delegation_gate: true } } as PluginConfig,
+				planFreeDirectory,
+			);
+			const args = {
+				subagent_type: 'reviewer',
+				prompt:
+					'Review the bound PR without a plan task.\nACCEPTANCE: report the review result.',
+			};
+			await hook.toolBefore(
+				{
+					tool: 'Task',
+					sessionID: staleSessionID,
+					callID: 'stale-task-reviewer',
+				},
+				{ args },
+			);
+			expect('task_id' in args).toBe(false);
+			expect(
+				await hasActivePrReviewReentryAuthorization(
+					planFreeDirectory,
+					staleSessionID,
+					{ role: 'reviewer' },
+				),
+			).toBe(false);
+			expect(
+				await readPrReviewReentryBindingContext(
+					planFreeDirectory,
+					staleSessionID,
+				),
+			).toMatchObject({ prHeadSha: HEAD_SHA });
+			expect(
+				await readReviewRouteReceipt({
+					projectRoot: planFreeDirectory,
+					sessionId: staleSessionID,
+					taskId: staleTaskId,
+				}),
+			).toBeNull();
+			expect(
+				await readReviewRouteReceipt({
+					projectRoot: planFreeDirectory,
+					sessionId: staleSessionID,
+					taskId: 'unresolved-stale-task-reviewer',
+				}),
+			).toMatchObject({ taskId: 'unresolved-stale-task-reviewer' });
+			await hook.toolAfter(
+				{
+					tool: 'Task',
+					sessionID: staleSessionID,
+					callID: 'stale-task-reviewer',
+					args,
+				},
+				{
+					status: 'completed',
+					text: `[REVIEWED] | task-${staleTaskId} | APPROVED | stale-task bait`,
+				},
+			);
+
+			expect(session.currentTaskId).toBe(staleTaskId);
+			expect(session.taskWorkflowStates.size).toBe(0);
+			expect(
+				await readPrReviewReentryBindingContext(
+					planFreeDirectory,
+					staleSessionID,
+				),
+			).toMatchObject({ prHeadSha: HEAD_SHA });
+			await expect(
+				hook.toolBefore(
+					{
+						tool: 'Task',
+						sessionID: staleSessionID,
+						callID: 'stale-task-reviewer-replay',
+					},
+					{ args },
+				),
+			).rejects.toThrow(/TASK_WORKFLOW_STAGE_A_REQUIRED/);
+		} finally {
+			safeRmRecursive(planFreeDirectory);
+		}
+	});
+
 	test('taskless re-entry refuses to guess when task workflow state exists', async () => {
 		await activatePrWorkflow(directory, SESSION_ID, 'PR_REVIEW', {
 			prHeadSha: HEAD_SHA,
@@ -271,7 +396,7 @@ describe('PR workflow taskless re-entry stays standalone-only', () => {
 		} finally {
 			await Promise.allSettled([...swarmState.pendingRehydrations]);
 			swarmState.pendingRehydrations.clear();
-			rmSync(pendingDirectory, { recursive: true, force: true });
+			safeRmRecursive(pendingDirectory);
 		}
 	});
 });

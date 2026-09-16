@@ -32,9 +32,34 @@ import {
 	createRetroBundle,
 	createSwarmFiles,
 	DEFAULT_PLUGIN_CONFIG,
-	invokeHook,
 	setupTempDir,
 } from '../../helpers/system-enhancer-test-helpers';
+
+/**
+ * Runs evidence-injection cases through the identified architect/messages
+ * surface. The default system surface intentionally no-ops when session
+ * identity is cold, so these tests must establish the role they exercise.
+ */
+async function invokeHook(
+	config: PluginConfig,
+	tempDir: string,
+	sessionId = 'test-session',
+	activeAgent = 'architect',
+): Promise<string[]> {
+	resetSwarmState();
+	const hooks = createSystemEnhancerHook(config, tempDir, {
+		surface: 'messages',
+	});
+	const transform = hooks['experimental.chat.system.transform'] as (
+		input: { sessionID?: string },
+		output: { system: string[] },
+	) => Promise<void>;
+
+	swarmState.activeAgent.set(sessionId, activeAgent);
+	const output = { system: [] as string[] };
+	await transform({ sessionID: sessionId }, output);
+	return output.system;
+}
 
 // =============================================================================
 // Shared Fixtures

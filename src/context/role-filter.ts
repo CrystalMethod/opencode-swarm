@@ -242,7 +242,11 @@ export function createRoleFilterSystemHook(
 	getActiveAgentName: (sessionID: string) => string | undefined,
 ): {
 	'experimental.chat.system.transform': (
-		input: { sessionID?: string; agent?: string },
+		input: {
+			sessionID?: string;
+			agent?: string;
+			expectedGeneration?: number;
+		},
 		output: { system?: string[] },
 	) => Promise<void>;
 } {
@@ -296,6 +300,7 @@ export function createRoleFilterSystemHook(
 					input.sessionID,
 					'system-enhancer',
 					removedTokens,
+					{ expectedGeneration: input.expectedGeneration },
 				);
 			}
 			output.system.length = 0;
