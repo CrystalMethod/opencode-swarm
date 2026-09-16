@@ -9,7 +9,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSystemEnhancerHook } from '../../../src/hooks/system-enhancer';
-import { resetSwarmState } from '../../../src/state';
+import { resetSwarmState, swarmState } from '../../../src/state';
 
 describe('v6.2 System Enhancer Hint Injection (lint + secretscan)', () => {
 	let tempDir: string;
@@ -56,6 +56,7 @@ describe('v6.2 System Enhancer Hint Injection (lint + secretscan)', () => {
 		const input = { sessionID: 'test-session' };
 		const output = { system: ['Initial system prompt'] };
 
+		swarmState.activeAgent.set('test-session', 'mega_coder');
 		await transform(input, output);
 
 		return output.system;

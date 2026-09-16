@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { PluginConfig } from '../../src/config';
 import type { EvidenceBundle } from '../../src/config/evidence-schema';
+import type { SystemEnhancerSurface } from '../../src/hooks/system-enhancer';
 
 // =============================================================================
 // Temp Directory Setup/Teardown
@@ -208,10 +209,11 @@ export async function invokeHook(
 	config: PluginConfig,
 	tempDir: string,
 	sessionId: string = 'test-session',
-	activeAgent: string | null = null,
+	activeAgent: string | null = 'mega_coder',
+	surface: SystemEnhancerSurface = 'system',
 ): Promise<string[]> {
 	resetSwarmState();
-	const hooks = createSystemEnhancerHook(config, tempDir);
+	const hooks = createSystemEnhancerHook(config, tempDir, { surface });
 	const transform = hooks['experimental.chat.system.transform'] as (
 		input: { sessionID?: string },
 		output: { system: string[] },

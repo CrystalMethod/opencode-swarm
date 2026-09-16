@@ -1020,7 +1020,13 @@ describe('Task 3.4 Adversarial Tests - User Directives', () => {
 		});
 		await createSwarmFiles(tempDir, 2);
 
-		const result = await invokeHook(DEFAULT_PLUGIN_CONFIG, tempDir);
+		const result = await invokeHook(
+			DEFAULT_PLUGIN_CONFIG,
+			tempDir,
+			'test-session',
+			'architect',
+			'messages',
+		);
 
 		const retroBlock = result.find((s) =>
 			s.includes('## Previous Phase Retrospective'),
