@@ -1508,16 +1508,17 @@ async function initializeOpenCodeSwarm(
 
 	const repoGraphConfig = RepoGraphConfigSchema.parse(config.repo_graph ?? {});
 	const repoGraphHookFactory = createRepoGraphBuilderHookForInit;
-	const repoGraphHook = repoGraphConfig.enabled
-		? repoGraphHookFactory(bootstrapRoot, undefined, {
-				enabled: true,
-				initRefresh: repoGraphConfig.init_refresh,
-				refreshCap: repoGraphConfig.refresh_cap,
-				walkBudgetMs: repoGraphConfig.walk_budget_ms,
-				maxFiles: repoGraphConfig.max_files,
-				excludeDirs: repoGraphConfig.exclude_dirs,
-			})
-		: null;
+	const repoGraphHook =
+		repoGraphConfig.enabled && bootstrapStateWritesEnabled
+			? repoGraphHookFactory(bootstrapRoot, undefined, {
+					enabled: true,
+					initRefresh: repoGraphConfig.init_refresh,
+					refreshCap: repoGraphConfig.refresh_cap,
+					walkBudgetMs: repoGraphConfig.walk_budget_ms,
+					maxFiles: repoGraphConfig.max_files,
+					excludeDirs: repoGraphConfig.exclude_dirs,
+				})
+			: null;
 	let repoGraphInitPromise: Promise<void> | undefined;
 	if (repoGraphHook) {
 		postResolutionTasks.push(() => {
@@ -1658,6 +1659,7 @@ async function initializeOpenCodeSwarm(
 	// server()-resolution path — Invariant 1) and fails open; the timeout
 	// bounds the scheduler's wait, not the sweep's per-family deletion caps.
 	postResolutionTasks.push(function retentionSweepPostInitTask() {
+		if (!bootstrapStateWritesEnabled) return Promise.resolve();
 		const retentionConfig = (config as Record<string, unknown> | undefined)
 			?.retention as { enabled?: unknown; dry_run?: unknown } | undefined;
 		const retentionSummaries = (config as Record<string, unknown> | undefined)
@@ -1705,6 +1707,7 @@ async function initializeOpenCodeSwarm(
 			?.background_subagents === true
 	) {
 		postResolutionTasks.push(function backgroundMaintenancePostInitTask() {
+			if (!bootstrapStateWritesEnabled) return Promise.resolve();
 			// Returned (not `void`ed) so the task is awaitable like
 			// regenerateMemoryReflectionTask — tests and any future awaiter of
 			// the post-resolution queue can observe completion. The scheduler
@@ -1764,6 +1767,7 @@ async function initializeOpenCodeSwarm(
 	// atomic-overwrite-with-rollback, symlink-guarded, byte/file-bounded. On timeout/error we
 	// fail open — the command-path sync remains as a backstop.
 	postResolutionTasks.push(() => {
+		if (!bootstrapStateWritesEnabled) return;
 		void withTimeout(
 			syncBundledProjectSkillsIfMissingAsync(
 				bootstrapRoot,
@@ -2732,7 +2736,9 @@ async function initializeOpenCodeSwarm(
 				)
 			: null;
 	// v6.18 Session persistence — write state snapshot after each tool call
-	const snapshotWriterHook = createSnapshotWriterHook(bootstrapRoot);
+	const snapshotWriterHook = bootstrapStateWritesEnabled
+		? createSnapshotWriterHook(bootstrapRoot)
+		: async () => {}; // fail-closed (#2679): per-tool-call snapshot writes disabled
 
 	// Parse automation config (v6.7 feature flags)
 	// Read flags without activating - scaffold only for now
@@ -2749,7 +2755,7 @@ async function initializeOpenCodeSwarm(
 
 	if (automationConfig.mode !== 'manual') {
 		automationManager = createAutomationManager(automationConfig);
-		automationManager.start();
+		if (bootstrapStateWritesEnabled) automationManager.start();
 
 		// v6.7 Task 5.5: Initialize trigger manager (plumbing only, no preflight logic yet)
 		const { PreflightTriggerManager: PTM } = await import(
@@ -2789,10 +2795,14 @@ async function initializeOpenCodeSwarm(
 				});
 			}
 		};
-		postResolutionTasks.push(automationStatusArtifactPostInitTask);
+		if (bootstrapStateWritesEnabled)
+			postResolutionTasks.push(automationStatusArtifactPostInitTask);
 
 		// v6.8 Task 1.1: Wire evidence summary integration
-		if (automationConfig.capabilities?.evidence_auto_summaries === true) {
+		if (
+			automationConfig.capabilities?.evidence_auto_summaries === true &&
+			bootstrapStateWritesEnabled
+		) {
 			const { createEvidenceSummaryIntegration } = await import(
 				'./background/evidence-summary-integration'
 			);
@@ -2808,7 +2818,10 @@ async function initializeOpenCodeSwarm(
 		}
 
 		// v6.8 Task 2.2: Wire preflight integration
-		if (automationConfig.capabilities?.phase_preflight === true) {
+		if (
+			automationConfig.capabilities?.phase_preflight === true &&
+			bootstrapStateWritesEnabled
+		) {
 			const { createPreflightIntegration } = await import(
 				'./services/preflight-integration'
 			);
@@ -2828,7 +2841,10 @@ async function initializeOpenCodeSwarm(
 		}
 
 		// v6.8 Task 3.2: Wire PlanSyncWorker for plan.json -> plan.md sync
-		if (automationConfig.capabilities?.plan_sync === true) {
+		if (
+			automationConfig.capabilities?.plan_sync === true &&
+			bootstrapStateWritesEnabled
+		) {
 			try {
 				planSyncWorker = new PlanSyncWorker({
 					directory: bootstrapRoot,
@@ -3897,7 +3913,9 @@ async function initializeOpenCodeSwarm(
 									'PR workflow checkout receipt reconciliation on session deletion failed or exceeded its event budget (non-fatal)',
 								);
 							}
-							deleteSnapshotSessionRows(bootstrapRoot, sessionID);
+							if (bootstrapStateWritesEnabled) {
+								deleteSnapshotSessionRows(bootstrapRoot, sessionID);
+							}
 							clearPendingTaskModelRoutesForSession(sessionID);
 							clearSessionActionCircuits(sessionID);
 							clearFullAutoSevereSession(sessionID);
@@ -3909,7 +3927,7 @@ async function initializeOpenCodeSwarm(
 						// maintenance service's own tight lock bound and
 						// fail-open — failures are recorded in the durable
 						// facts ring, never fatal to the event hook.
-						if (backgroundSubagentsEnabled) {
+						if (backgroundSubagentsEnabled && bootstrapStateWritesEnabled) {
 							try {
 								await maintainBackgroundDelegationsOnSessionEvent();
 							} catch {

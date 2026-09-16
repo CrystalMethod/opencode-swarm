@@ -8,7 +8,7 @@ describe('repo graph startup ordering', () => {
 		const sourceCode = readFileSync(indexPath, 'utf-8');
 
 		const initTelemetryLine = sourceCode.indexOf(
-			'initTelemetry(ctx.directory);',
+			'initTelemetry(bootstrapRoot);',
 		);
 		const registrationLine = sourceCode.indexOf(
 			'postResolutionTasks.push(() => {',

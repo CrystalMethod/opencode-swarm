@@ -103,8 +103,8 @@ describe('MCP project-root ownership (#2679)', () => {
 		fs.mkdirSync(child, { recursive: true });
 
 		const logged: string[] = [];
-		const originalLog = console.log;
-		console.log = (...args: unknown[]) => {
+		const originalLog = console.error;
+		console.error = (...args: unknown[]) => {
 			logged.push(
 				args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '),
 			);
@@ -113,7 +113,7 @@ describe('MCP project-root ownership (#2679)', () => {
 		try {
 			resolved = resolveMcpRoot(child);
 		} finally {
-			console.log = originalLog;
+			console.error = originalLog;
 		}
 
 		expect('error' in resolved).toBe(false);

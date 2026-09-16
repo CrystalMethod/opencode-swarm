@@ -121,8 +121,9 @@ export function resolveMcpRoot(
 		};
 	}
 	if (decision.kind === 'redirect') {
-		// biome-ignore lint/suspicious/noConsole: operator must see which project root the MCP server actually serves after the #2679 redirect
-		console.log(
+		// stderr, NOT stdout: StdioServerTransport owns stdout for JSON-RPC —
+		// a non-protocol line there corrupts strict stdio clients (review F2).
+		console.error(
 			`[opencode-swarm] mcp serve: --dir "${resolved}" is an ordinary subdirectory — serving the owning project root "${decision.owningRoot}" (state and config live there).`,
 		);
 		return { root: decision.owningRoot, redirectedFrom: resolved };
