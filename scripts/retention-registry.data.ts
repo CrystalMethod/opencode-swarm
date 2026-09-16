@@ -3067,16 +3067,16 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerModules: ['src/memory/run-log.ts', 'src/memory/injector.ts'],
 		writerCitations: [
 			'src/memory/run-log.ts:53 appendMemoryRunLog — appendCappedJsonl with MAX_RUN_LOG_ENTRIES 2000 FIFO per run file (:70-72)',
-			'src/memory/injector.ts:519 maybeWriteUnitIdProbe — env-gated diagnostic (OPENCODE_SWARM_MEMORY_UNITID_PROBE=1); MAX_UNITID_PROBE_ENTRIES 2000 FIFO (:517,:545-547)',
+			'src/memory/injector.ts:520 maybeWriteUnitIdProbe — env-gated diagnostic (OPENCODE_SWARM_MEMORY_UNITID_PROBE=1); MAX_UNITID_PROBE_ENTRIES 2000 FIFO (:518,:546-548)',
 		],
 		readerCitations: ['consumers read JSONL directly (injector/reflection paths); each file ≤2000 entries by the write-side cap'],
 		schemaVersion: 'run-log event shapes',
 		stateClass: 'operational',
 		privacyClass: 'metadata',
 		writeLimits: {
-			bound: 'per-run memory.jsonl capped at MAX_RUN_LOG_ENTRIES 2000 FIFO via appendCappedJsonl (src/memory/run-log.ts:51,70-72); unitid-probe.jsonl capped at MAX_UNITID_PROBE_ENTRIES 2000 (src/memory/injector.ts:517,545-547); runs/ dir archived+cleaned at close (src/commands/close/constants.ts:267) and age-pruned at 30 d by the retention sweep (src/retention/sweep.ts:99)',
+			bound: 'per-run memory.jsonl capped at MAX_RUN_LOG_ENTRIES 2000 FIFO via appendCappedJsonl (src/memory/run-log.ts:51,70-72); unitid-probe.jsonl capped at MAX_UNITID_PROBE_ENTRIES 2000 (src/memory/injector.ts:518,546-548); runs/ dir archived+cleaned at close (src/commands/close/constants.ts:267) and age-pruned at 30 d by the retention sweep (src/retention/sweep.ts:99)',
 			scope: 'global',
-			citation: 'src/memory/run-log.ts:51; src/memory/injector.ts:517; src/commands/close/constants.ts:267',
+			citation: 'src/memory/run-log.ts:51; src/memory/injector.ts:518; src/commands/close/constants.ts:267',
 		},
 		readBound: { pattern: 'full-file', bound: 'per-run reads bounded transitively by the 2000-entry cap', sync: true, citation: 'src/memory/run-log.ts:53' },
 		lockModel: 'none',
@@ -3089,7 +3089,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		disposition: {
 			kind: 'not-a-defect',
 			proof:
-				'Every run file is FIFO-capped at MAX_RUN_LOG_ENTRIES 2000 (src/memory/run-log.ts:51,70-72), the env-gated probe at MAX_UNITID_PROBE_ENTRIES 2000 (src/memory/injector.ts:517,545-547), and the runs/ directory now has a close lifecycle (ACTIVE_STATE_DIRS_TO_CLEAN, src/commands/close/constants.ts:267) plus the 30 d sweep family (src/retention/sweep.ts:99) — the #2309 accumulation gap is closed by #2483.',
+				'Every run file is FIFO-capped at MAX_RUN_LOG_ENTRIES 2000 (src/memory/run-log.ts:51,70-72), the env-gated probe at MAX_UNITID_PROBE_ENTRIES 2000 (src/memory/injector.ts:518,546-548), and the runs/ directory now has a close lifecycle (ACTIVE_STATE_DIRS_TO_CLEAN, src/commands/close/constants.ts:267) plus the 30 d sweep family (src/retention/sweep.ts:99) — the #2309 accumulation gap is closed by #2483.',
 		},
 	},
 	{

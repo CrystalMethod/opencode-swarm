@@ -163,6 +163,7 @@ import {
 } from './hooks/guardrails.js';
 import { createHivePromoterHook } from './hooks/hive-promoter.js';
 import {
+	isSessionBoundArchitect,
 	type MessageArrayLike,
 	resolveMessageTransformContext,
 	resolveToolAfterContext,
@@ -197,6 +198,7 @@ import {
 } from './hooks/pr-workflow-gate.js';
 import { createPrWorkflowResponseGate } from './hooks/pr-workflow-response-gate.js';
 import { createPrWorkflowSessionResolver } from './hooks/pr-workflow-session-resolver.js';
+import { recordRealtimeLearningNudge } from './hooks/realtime-learning-nudge.js';
 import { collectReviewerReceiptAfter } from './hooks/review-receipt-collector.js';
 import {
 	beginApprovedReviewerScopeLifecycle,
@@ -217,6 +219,14 @@ import { createSteeringConsumedHook } from './hooks/steering-consumed.js';
 // the hook factories; the dispose-fence helper is a lifecycle utility used
 // solely by this file's dispose block (PR #2588 bot finding 7).
 import { cancelDeferredMaintenanceScans } from './hooks/system-enhancer';
+import type { GuidanceMessage } from './hooks/system-guidance-carrier.js';
+import {
+	appendGuidanceCarrier,
+	deliveredGuidanceDelta,
+	guidanceCarrierEnvelopeTokens,
+	messageTextOf,
+	moveGuidanceCarriersToEnd,
+} from './hooks/system-guidance-carrier.js';
 import { createSystemRenderBoundaryHook } from './hooks/system-render-boundary.js';
 import {
 	createTrajectoryLoggerHook,
@@ -273,7 +283,11 @@ import {
 } from './services/cost-accounting.js';
 import {
 	advanceTurnGeneration,
+	commitInjectionBudgetReceipt,
+	type InjectionBudgetReceipt,
 	recordProducerEmission,
+	recordProducerEmissionWithReceipt,
+	refundInjectionBudgetReceipt,
 } from './services/injection-budget';
 import {
 	formatModelPreflightWarning,
@@ -294,7 +308,10 @@ import {
 	getActiveWindow,
 	getAgentSession,
 	getFinalPromptPressure,
+	getLiveContextModelIdentity,
+	getLiveContextWindow,
 	getSessionBudgetPct,
+	setLiveContextWindow,
 	swarmState,
 } from './state';
 import {
@@ -336,6 +353,9 @@ const _heartbeatTimers = new Map<string, number>();
 // Upper bound on distinct session keys tracked for heartbeat throttling. Values are
 // timestamps (not timer handles), so eviction needs no clearInterval/clearTimeout.
 const MAX_TRACKED_HEARTBEAT_SESSIONS = 500;
+/** One-shot bridge suppression for the messages transform immediately after compaction. */
+const _architectCompactionPending = new Map<string, true>();
+const MAX_TRACKED_ARCHITECT_COMPACTIONS = 500;
 // Session-deletion is a user-visible host event. Receipt reconciliation keeps
 // its own checkout lock and may outlive this budget; the short event-level
 // deadline prevents slow Git/stash inventory from delaying host delivery while
@@ -592,12 +612,36 @@ function createSwarmCommandSystemRuleHook(
 			permission?: Record<string, unknown>;
 		}
 	>,
-): (input: unknown, output: { system?: string[] }) => Promise<void> {
+	options: { surface?: 'system' | 'messages' } = {},
+): (
+	input: unknown,
+	output: {
+		system?: string[];
+		deliveryBudgetReceipts?: InjectionBudgetReceipt[];
+	},
+) => Promise<void> {
+	const surface = options.surface ?? 'system';
 	return async (input, output) => {
-		const { sessionID } = input as { sessionID?: string };
+		const { sessionID, agent, expectedGeneration } = input as {
+			sessionID?: string;
+			agent?: string;
+			expectedGeneration?: number;
+		};
 		const activeAgentName = sessionID
-			? swarmState.activeAgent.get(sessionID)
-			: undefined;
+			? surface === 'messages'
+				? (agent ??
+					swarmState.activeAgent.get(sessionID) ??
+					swarmState.agentSessions.get(sessionID)?.agentName)
+				: (swarmState.activeAgent.get(sessionID) ??
+					agent ??
+					swarmState.agentSessions.get(sessionID)?.agentName)
+			: agent;
+		if (
+			surface === 'system' &&
+			isSessionBoundArchitect(sessionID, activeAgentName)
+		) {
+			return;
+		}
 		if (
 			!agentHasSwarmCommandTool(
 				activeAgentName,
@@ -610,7 +654,6 @@ function createSwarmCommandSystemRuleHook(
 
 		const system = Array.isArray(output.system) ? output.system : [];
 		if (system.some((entry) => entry.includes(SWARM_COMMAND_SYSTEM_RULE_TAG))) {
-			output.system = system;
 			return;
 		}
 
@@ -619,19 +662,30 @@ function createSwarmCommandSystemRuleHook(
 			'When a user asks for a supported /swarm command and the message instructs you to call the `swarm_command` tool, call that tool exactly once with the provided JSON arguments. After the tool returns, show the tool output verbatim and do not add extra swarm state, summaries, or invented command output.',
 		].join('\n');
 		system.push(banner);
-		output.system = system;
 		// #2107 §2: fixed/base content — the banner is COUNTED against the turn
 		// ledger (never claimed). System-surface producer: final accounting adds
 		// this emission to the total because output.system is invisible to the
 		// messages chain.
 		if (sessionID) {
-			recordProducerEmission(
-				sessionID,
-				'swarm-command-banner',
-				estimateTokens(banner),
-				0,
-				'system',
-			);
+			if (surface === 'messages' && output.deliveryBudgetReceipts) {
+				const receipt = recordProducerEmissionWithReceipt(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					surface,
+					{ expectedGeneration },
+				);
+				if (receipt) output.deliveryBudgetReceipts.push(receipt);
+			} else {
+				recordProducerEmission(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					0,
+					surface,
+					{ expectedGeneration },
+				);
+			}
 		}
 	};
 }
@@ -1758,6 +1812,16 @@ async function initializeOpenCodeSwarm(
 
 	const pipelineHook = createPipelineTrackerHook(config, ctx.directory);
 	const systemEnhancerHook = createSystemEnhancerHook(config, ctx.directory);
+	const architectMessagesEnhancerHook = createSystemEnhancerHook(
+		config,
+		ctx.directory,
+		{
+			surface: 'messages',
+			deferRealtimeLearningNudgeState: true,
+			reservedEnvelopeTokens:
+				guidanceCarrierEnvelopeTokens('architect-session'),
+		},
+	);
 	const contextCapsuleInjectHook = createContextCapsuleInjectHook(
 		config,
 		ctx.directory,
@@ -2007,6 +2071,11 @@ async function initializeOpenCodeSwarm(
 	const swarmCommandSystemRuleHook = createSwarmCommandSystemRuleHook(
 		agentDefinitionMap,
 		agents,
+	);
+	const architectMessagesCommandRuleHook = createSwarmCommandSystemRuleHook(
+		agentDefinitionMap,
+		agents,
+		{ surface: 'messages' },
 	);
 	const activityHooks = createAgentActivityHooks(config, ctx.directory);
 	// #1821 Workstream B: real-time admission + PRM pattern persistence budgets.
@@ -3090,6 +3159,231 @@ async function initializeOpenCodeSwarm(
 		return Promise.resolve();
 	};
 
+	type StagedArchitectGuidance = {
+		sessionID: string;
+		agent: string;
+		system: string[];
+		deferredRealtimeLearningNudges: string[];
+		turnLedgerGeneration?: number;
+		systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+		fenceBudgetReceipt?: InjectionBudgetReceipt;
+		deliveryBudgetReceipts: InjectionBudgetReceipt[];
+	};
+	const stagedArchitectGuidanceByMessages = new WeakMap<
+		object,
+		StagedArchitectGuidance
+	>();
+	const settleDeliveryBudgetReceipts = (
+		receipts: readonly InjectionBudgetReceipt[],
+		action: 'commit' | 'refund',
+	): void => {
+		for (const receipt of receipts) {
+			if (action === 'commit') commitInjectionBudgetReceipt(receipt);
+			else refundInjectionBudgetReceipt(receipt);
+		}
+	};
+
+	/**
+	 * Early messages.transform stage for the session-bound architect path.
+	 * OpenCode invokes messages.transform before system.transform, so the full
+	 * enhancer runs here against a request-local array and is delivered only at
+	 * the tail after the other message consumers have finished.
+	 */
+	const messagesTransformArchitectEnhancerStage = async (
+		_input: unknown,
+		output: MessageArrayLike,
+	): Promise<void> => {
+		const messages = output?.messages;
+		if (!Array.isArray(messages)) return;
+		const mctx = resolveMessageTransformContext(output);
+		const sessionID = mctx.sessionID;
+		if (!sessionID) return;
+		// Compaction is correlated to the immediately following messages pass,
+		// regardless of which agent owns that pass. Consume it before the architect
+		// predicate so a non-architect summary cannot leave a stale suppression that
+		// unexpectedly affects a later architect turn in the same session.
+		const compactionPending = _architectCompactionPending.delete(sessionID);
+		if (!isSessionBoundArchitect(sessionID, mctx.agent) || compactionPending)
+			return;
+
+		const identity = getLiveContextModelIdentity(sessionID);
+		const context = identity
+			? getLiveContextWindow(sessionID, identity)
+			: undefined;
+		const model = identity
+			? {
+					id: identity.modelID,
+					providerID: identity.providerID,
+					limit: context === undefined ? undefined : { context },
+				}
+			: undefined;
+		const stagedOutput: {
+			deliveryBudgetReceipts: InjectionBudgetReceipt[];
+			system: string[];
+			deferredRealtimeLearningNudges: string[];
+			turnLedgerGeneration?: number;
+			systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+			fenceBudgetReceipt?: InjectionBudgetReceipt;
+		} = {
+			system: [] as string[],
+			deliveryBudgetReceipts: [],
+			deferredRealtimeLearningNudges: [] as string[],
+		};
+		const enhancer = architectMessagesEnhancerHook[
+			'experimental.chat.system.transform'
+		] as
+			| ((
+					input: unknown,
+					output: {
+						system: string[];
+						deferredRealtimeLearningNudges?: string[];
+						turnLedgerGeneration?: number;
+						systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+						fenceBudgetReceipt?: InjectionBudgetReceipt;
+					},
+			  ) => Promise<void>)
+			| undefined;
+		try {
+			if (typeof enhancer === 'function') {
+				await enhancer({ sessionID, model }, stagedOutput);
+			}
+			const stagedAgent =
+				mctx.agent ??
+				swarmState.activeAgent.get(sessionID) ??
+				swarmState.agentSessions.get(sessionID)?.agentName ??
+				'architect';
+			stagedArchitectGuidanceByMessages.set(messages, {
+				sessionID,
+				agent: stagedAgent,
+				system: stagedOutput.system,
+				deferredRealtimeLearningNudges:
+					stagedOutput.deferredRealtimeLearningNudges ?? [],
+				turnLedgerGeneration: stagedOutput.turnLedgerGeneration,
+				systemEnhancerBudgetReceipt: stagedOutput.systemEnhancerBudgetReceipt,
+				fenceBudgetReceipt: stagedOutput.fenceBudgetReceipt,
+				deliveryBudgetReceipts: stagedOutput.deliveryBudgetReceipts,
+			});
+		} catch {
+			settleDeliveryBudgetReceipts(
+				stagedOutput.deliveryBudgetReceipts,
+				'refund',
+			);
+			if (stagedOutput.systemEnhancerBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.systemEnhancerBudgetReceipt);
+			}
+			if (stagedOutput.fenceBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.fenceBudgetReceipt);
+			}
+			// The enhancer is advisory; a failed staging pass must not block the
+			// host's message transform or alter the persisted conversation.
+		}
+	};
+
+	/**
+	 * Late architect delivery stage. Role filtering and the conditional command
+	 * banner operate on the staged strings before one renderable user carrier is
+	 * appended, so downstream message consumers never mistake the staged payload
+	 * for user speech.
+	 */
+	const messagesTransformArchitectEnhancerDeliveryStep = async (
+		_input: unknown,
+		output: MessageArrayLike & {
+			messages?: import('./hooks/system-guidance-carrier.js').GuidanceMessage[];
+		},
+	): Promise<void> => {
+		const messages = output?.messages;
+		if (!Array.isArray(messages)) return;
+		const staged = stagedArchitectGuidanceByMessages.get(messages);
+		if (!staged) return;
+		stagedArchitectGuidanceByMessages.delete(messages);
+
+		let deliveryConfirmed = false;
+		try {
+			const stagedOutput = {
+				system: staged.system,
+				deliveryBudgetReceipts: staged.deliveryBudgetReceipts,
+			};
+			await roleFilterSystemHook['experimental.chat.system.transform'](
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
+				stagedOutput,
+			);
+			await architectMessagesCommandRuleHook(
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
+				stagedOutput,
+			);
+			const text = stagedOutput.system
+				.filter((entry) => entry.trim())
+				.join('\n\n');
+			const carrier = appendGuidanceCarrier(
+				messages,
+				'architect-session',
+				text,
+				{ sessionID: staged.sessionID },
+			);
+			// Delivery is considered successful only after the final carrier has
+			// the exact host-renderable user-role shape.
+			if (!deliveredGuidanceDelta(carrier, text)) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+				return;
+			}
+			// Settle reservations immediately after the host-renderable carrier is
+			// confirmed. Later advisory bookkeeping errors must not roll back a
+			// carrier that is already visible to the model.
+			if (staged.systemEnhancerBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+			}
+			if (staged.fenceBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+			}
+			settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'commit');
+			deliveryConfirmed = true;
+			for (const sessionID of staged.deferredRealtimeLearningNudges) {
+				recordRealtimeLearningNudge(sessionID);
+			}
+			const carrierTokens = estimateTokens(messageTextOf(carrier));
+			const stagedTokens = estimateTokens(text);
+			const fenceOverheadTokens = Math.max(0, carrierTokens - stagedTokens);
+			if (fenceOverheadTokens > 0) {
+				if (staged.sessionID && staged.turnLedgerGeneration !== undefined) {
+					recordProducerEmission(
+						staged.sessionID,
+						'guidance-carrier-fence',
+						fenceOverheadTokens,
+						0,
+						'messages',
+						{ expectedGeneration: staged.turnLedgerGeneration },
+					);
+				}
+			}
+		} catch {
+			if (!deliveryConfirmed) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+			}
+			// Guidance is fail-open at this boundary; the host still receives the
+			// unmodified real message array.
+		}
+	};
+
 	/**
 	 * messages.transform stage: scan latest architect-authored message for
 	 * KNOWLEDGE_APPLIED / KNOWLEDGE_IGNORED / KNOWLEDGE_CONTRADICTED /
@@ -3168,6 +3462,17 @@ async function initializeOpenCodeSwarm(
 		if (process.env.DEBUG_SWARM)
 			// biome-ignore lint/suspicious/noConsole: DEBUG_SWARM diagnostic output — only fires when explicitly enabled
 			console.error(`[DIAG] messagesTransform DONE`);
+		return Promise.resolve();
+	};
+
+	/** Final request-boundary partition: real conversation first, carriers last. */
+	const messagesTransformGuidanceCarrierOrderStep = (
+		_input: unknown,
+		output: { messages?: GuidanceMessage[] },
+	): Promise<void> => {
+		if (Array.isArray(output?.messages)) {
+			moveGuidanceCarriersToEnd(output.messages);
+		}
 		return Promise.resolve();
 	};
 
@@ -3464,6 +3769,9 @@ async function initializeOpenCodeSwarm(
 							lifecycleEvent.type === 'session.deleted' ||
 							lifecycleEvent.type === 'session.removed'
 						) {
+							// Exact-owner cleanup: a deleted session can never consume the
+							// one-shot bridge marker, so release it at the terminal event.
+							_architectCompactionPending.delete(sessionID);
 							// Session deletion is an exact-owner terminal boundary. Keep gate
 							// terminalization and receipt cleanup independent and fail-open so a
 							// foreign active gate or unavailable stash inventory cannot undo the
@@ -4235,6 +4543,9 @@ async function initializeOpenCodeSwarm(
 			undefined,
 			composeHandlers(
 				...[
+					// OpenCode runs messages.transform before system.transform. Stage
+					// session-bound architect guidance against this request's live array.
+					messagesTransformArchitectEnhancerStage,
 					// #2486 (D7): consent-gated training capture (read-only, fail-open).
 					messagesTransformTrainingCaptureStep,
 					// Delegation ledger: inject summary when architect session resumes
@@ -4257,6 +4568,9 @@ async function initializeOpenCodeSwarm(
 					messagesTransformKnowledgeApplicationScanStep,
 					// v2: scan for skill propagation warnings and compliance tracking
 					messagesTransformSkillPropagationScanStep,
+					// Deliver staged architect guidance only after all message consumers
+					// have completed their last-user/last-message scans.
+					messagesTransformArchitectEnhancerDeliveryStep,
 					// Final structure-mutating handler: materialize any remaining
 					// role:'system' entries into user-role guidance carriers (issue
 					// #2526). The pinned host's converter drops role:'system' entries
@@ -4272,8 +4586,11 @@ async function initializeOpenCodeSwarm(
 					// local message array — a rebind never reaches the model. See
 					// `materializeSystemGuidanceInPlace`.
 					messagesTransformSystemGuidanceMaterializeStep,
-					// #2107 §3: final context accounting. Runs AFTER consolidation
-					// (which remains the last STRUCTURE-mutating handler). Read-mostly:
+					// Terminal structure mutation: keep the persisted conversation prefix
+					// stable and move all plugin guidance carriers to the request tail.
+					messagesTransformGuidanceCarrierOrderStep,
+					// #2107 §3: final context accounting. Runs AFTER the terminal carrier
+					// partition (the last STRUCTURE-mutating handler). Read-mostly:
 					// measures the final model-visible surface once, resolves the real
 					// model limit through the same ladder physical pruning uses, records
 					// the snapshot in session state + telemetry, and may prepend ONE
@@ -4362,6 +4679,13 @@ async function initializeOpenCodeSwarm(
 		) => {
 			const { sessionID } = (input ?? {}) as { sessionID?: string };
 			if (sessionID) {
+				_architectCompactionPending.delete(sessionID);
+				_architectCompactionPending.set(sessionID, true);
+				capSessionMap(
+					_architectCompactionPending,
+					MAX_TRACKED_ARCHITECT_COMPACTIONS,
+					sessionID,
+				);
 				advanceTurnGeneration(sessionID);
 			}
 			const delegate = compactionHook['experimental.session.compacting'] as
@@ -5638,6 +5962,37 @@ async function initializeOpenCodeSwarm(
 									}
 								).message.model = resolution.model;
 							}
+						}
+					}
+					// Seed the model/provider identity before messages.transform. The
+					// system hook later supplies the authoritative context limit; this
+					// bounded identity relay lets the earlier architect adapter select
+					// the same model without inventing a durable prompt state.
+					if (input?.sessionID) {
+						const messageModel = (
+							output as {
+								message?: {
+									model?: {
+										id?: unknown;
+										modelID?: unknown;
+										providerID?: unknown;
+									};
+								};
+							}
+						).message?.model;
+						if (messageModel && typeof messageModel === 'object') {
+							setLiveContextWindow(String(input.sessionID), undefined, {
+								modelID:
+									typeof messageModel.modelID === 'string'
+										? messageModel.modelID
+										: typeof messageModel.id === 'string'
+											? messageModel.id
+											: undefined,
+								providerID:
+									typeof messageModel.providerID === 'string'
+										? messageModel.providerID
+										: undefined,
+							});
 						}
 					}
 					await delegationHandler(input, output);
