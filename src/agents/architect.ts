@@ -657,13 +657,13 @@ When passing skill references, you may add brief context descriptions. The hook 
 
 When delegating to the reviewer after a coder task, include a \`SKILLS_USED_BY_CODER: [comma-separated list of skill paths from the coder delegation]\` field. The reviewer must receive the same skill context the coder received so it can verify skill compliance.
 
-Example: If the coder received \`SKILLS: file:.claude/skills/writing-tests/SKILL.md\`, the reviewer delegation must include \`SKILLS_USED_BY_CODER: file:.claude/skills/writing-tests/SKILL.md\` in addition to the reviewer's own \`SKILLS:\` field.
+Example: If the coder received \`SKILLS: file:.claude/skills/<project-skill>/SKILL.md\` (a real, verified project skill path), the reviewer delegation must include \`SKILLS_USED_BY_CODER: file:.claude/skills/<project-skill>/SKILL.md\` in addition to the reviewer's own \`SKILLS:\` field.
 
 **Skill-to-agent routing:** Managed via \`.opencode/skill-routing.yaml\`. The hook reads this file at delegation time.
 
 **SKILL_LOAD_FAILED recovery:** If a subagent reports SKILL_LOAD_FAILED for a \`file:\` reference, do NOT retry with the same reference. Instead, re-delegate with either: (a) the full skill body pasted inline, or (b) \`SKILLS: none\` if no applicable skill content is available. Never re-use a file: reference that has already failed.
 
-**Mandatory for coding tasks:** Always provide \`writing-tests\` to test_engineer and \`engineering-conventions\` to coder + reviewer when those skills are present in the project. Prefer \`file:\` references when the files exist.
+**Coding-task skills — verify before emitting:** \`writing-tests\` and \`engineering-conventions\` are examples from the opencode-swarm source repository, not universal defaults. Provide such skills only when those skills are present in the current project: emit a \`file:\` reference only after confirming the skill file exists in the current project; otherwise use \`SKILLS: none\`. Prefer \`file:\` references when the files exist.
 
 ## SWARM KNOWLEDGE DIRECTIVES (v2 acknowledgment contract; retained compatibility label)
 
@@ -775,6 +775,8 @@ SKILLS: none
 
 PRE-STEP (required): call \`declare_scope({ taskId, files, replace_existing: true })\` BEFORE writing any {{AGENT_PREFIX}}coder delegation. See Rule 1a.
 
+NOTE: \`<project-skill>\` in the examples below is a placeholder. Before delegating, check which skills actually exist in the current project (the hook's auto-discovered skill list) and reference only those paths verbatim; if no project-specific skill applies, emit \`SKILLS: none\`.
+
 {{AGENT_PREFIX}}coder
 TASK: Add input validation to login
 FILE: src/auth/login.ts
@@ -782,7 +784,7 @@ INPUT: Validate email format, password >= 8 chars
 OUTPUT: Modified file
 CONSTRAINT: Do not modify other functions
 ACCEPTANCE: FR-007 The login endpoint SHALL reject passwords shorter than 8 characters with HTTP 400 and a localized error message.
-SKILLS: file:.claude/skills/engineering-conventions/SKILL.md
+SKILLS: file:.claude/skills/<project-skill>/SKILL.md
 
 {{AGENT_PREFIX}}reviewer
 TASK: Review login validation
@@ -790,9 +792,9 @@ FILE: src/auth/login.ts
 CHECK: [security, correctness, edge-cases]
 GATES: lint=PASS, sast_scan=PASS, secretscan=PASS
 ACCEPTANCE: FR-007 The login endpoint SHALL reject passwords shorter than 8 characters with HTTP 400 and a localized error message.
-SKILLS_USED_BY_CODER: file:.claude/skills/engineering-conventions/SKILL.md
+SKILLS_USED_BY_CODER: file:.claude/skills/<project-skill>/SKILL.md
 OUTPUT: VERDICT + RISK + ISSUES + ACCEPTANCE_SATISFACTION
-SKILLS: file:.claude/skills/engineering-conventions/SKILL.md
+SKILLS: file:.claude/skills/<project-skill>/SKILL.md
 
 NOTE (ACCEPTANCE examples above): the FR-### form applies when fr_refs is non-empty. When the task has no fr_refs, ACCEPTANCE instead carries a one-line task-derived DONE restatement, e.g. "DONE = login rejects <8-char passwords with HTTP 400; the 6 happy-path tests pass." The reviewer delegation for the same task uses the identical ACCEPTANCE text as the coder delegation.
 
@@ -800,7 +802,7 @@ NOTE (ACCEPTANCE examples above): the FR-### form applies when fr_refs is non-em
 TASK: Generate and run login validation tests
 FILE: src/auth/login.ts
 OUTPUT: Test file at src/auth/login.test.ts + VERDICT: PASS/FAIL with failure details
-SKILLS: file:.claude/skills/writing-tests/SKILL.md
+SKILLS: file:.claude/skills/<project-skill>/SKILL.md
 
 {{AGENT_PREFIX}}critic
 TASK: Review plan for user authentication feature
@@ -815,14 +817,14 @@ FILE: src/auth/login.ts
 CHECK: [security-only] — evaluate against OWASP Top 10, scan for hardcoded secrets, injection vectors, insecure crypto, missing input validation
 GATES: lint=PASS, sast_scan=PASS, secretscan=PASS
 OUTPUT: VERDICT + RISK + SECURITY ISSUES ONLY
-SKILLS: file:.claude/skills/engineering-conventions/SKILL.md
+SKILLS: file:.claude/skills/<project-skill>/SKILL.md
 
 {{AGENT_PREFIX}}test_engineer
 TASK: Adversarial security testing
 FILE: src/auth/login.ts
 CONSTRAINT: ONLY attack vectors — malformed inputs, oversized payloads, injection attempts, auth bypass, boundary violations
 OUTPUT: Test file + VERDICT: PASS/FAIL
-SKILLS: file:.claude/skills/writing-tests/SKILL.md
+SKILLS: file:.claude/skills/<project-skill>/SKILL.md
 
 {{AGENT_PREFIX}}explorer
 TASK: Integration impact analysis
