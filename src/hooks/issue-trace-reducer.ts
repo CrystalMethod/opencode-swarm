@@ -33,9 +33,18 @@ export interface IssueReference {
  * - `publication_handoff`: all phases complete; the engine has emitted the
  *   commit-pr directive and stopped driving. This is NOT "issue resolved" —
  *   publication is owned by commit-pr and has not yet been confirmed.
- * - `published`: a verifiable publication receipt was observed. Terminal.
+ * - `published`: a verifiable publication receipt was observed.
+ * - `merge_approval_recorded`: a PR-head-bound merge-approval receipt was
+ *   observed after publication (issue #2564). TERMINAL. The plugin RECORDS the
+ *   human approval for audit; it never certifies, drives, or green-lights the
+ *   merge itself — the merge is human-enforced (mirrors trace-check.sh's
+ *   merge gate posture).
  */
-export type TraceStatus = 'in_progress' | 'publication_handoff' | 'published';
+export type TraceStatus =
+	| 'in_progress'
+	| 'publication_handoff'
+	| 'published'
+	| 'merge_approval_recorded';
 
 export interface TraceState {
 	issueNumber: number;
@@ -51,12 +60,26 @@ export interface WorkflowArtifacts {
 	allPhasesComplete: boolean;
 	/** Reproduction evidence OR a typed waiver is present (issue #2131 2.6). */
 	reproductionPermitted: boolean;
+	/**
+	 * Phase 0 branch-freshness receipt permits the trace: `synced`, or a
+	 * fail-closed fetch failure carrying a recorded user override (issue #2564,
+	 * mirroring trace-check.sh phase0). A `behind` result never permits.
+	 */
+	freshnessPermitted: boolean;
 	/** A verifiable publication receipt has been observed (issue #2131 2.4). */
 	publicationObserved: boolean;
 	/** A valid recurrence-sweep receipt exists (issue #2131 residual B). */
 	recurrenceSweepVerified: boolean;
 	/** Fresh reviewer + critic APPROVE verdicts recorded (issue #2131 residual B). */
 	implementationReviewVerified: boolean;
+	/**
+	 * Every recorded per-phase `trace-check.sh` validation for this issue is a
+	 * pass bound to a 40-hex reviewed-commit + tree-id (issue #2564). A fail
+	 * entry fails closed until that phase is re-recorded as a pass.
+	 */
+	traceValidationVerified: boolean;
+	/** A PR-head-bound merge-approval receipt has been observed (issue #2564). */
+	mergeApprovalObserved: boolean;
 }
 
 export interface TransitionResult {
@@ -80,18 +103,22 @@ export interface ComputeNextModeParams {
  *
  * Decision table (top-to-bottom, first match wins):
  *   (a) No issue reference or trace not requested        → no-op
- *   (b) Trace already published (terminal)               → no-op
+ *   (b) merge_approval_recorded (truly terminal)         → no-op
+ *   (b') published + merge-approval receipt observed     → merge_approval_recorded (RECORDED, never certified)
  *   (c) publication_handoff: observe publication → PUBLISHED; else no-op
  *   (d) Cross-issue guard (spec issue ≠ current issue)   → no-op
  *   (e) Spec does not exist                              → no-op
- *   (f) Spec exists, no plan, reproduction permitted,
+ *   (f-0) Spec exists, no plan, branch-freshness NOT
+ *       permitted                                        → one-shot FRESHNESS_GATE directive
+ *   (f) Spec exists, no plan, freshness permitted, reproduction permitted,
  *       never transitioned (or re-entrant idempotency)   → PLAN
- *   (f-block) Spec exists, no plan, reproduction NOT permitted → no-op
+ *   (f-block) Spec exists, no plan, reproduction NOT permitted → one-shot REPRO_GATE directive
  *   (g) Plan exists but critic not approved              → no-op
  *   (h) Critic approved, phases incomplete, not yet PLAN_TO_EXECUTE → EXECUTE
  *   (i-pre1) Phases complete, impl-review receipt missing → one-shot REVIEW_GATE directive
  *   (i-pre2) Impl-review ok, recurrence-sweep receipt missing → one-shot RECURRENCE_GATE directive
- *   (i) All phases complete + both gates verified, not yet EXECUTE_TO_COMMIT → publication_handoff + COMMIT directive
+ *   (i-pre3) Both ok, trace-validation receipts missing/failing → one-shot TRACE_VALIDATION_GATE directive
+ *   (i) All phases complete + all gates verified, not yet EXECUTE_TO_COMMIT → publication_handoff + COMMIT directive
  *
  * Idempotency: rows (f), (h), (i) return no-op when
  * `traceState.lastTransition` already equals the target transition value.
@@ -112,8 +139,29 @@ export function computeNextMode(
 		return noop;
 	}
 
-	// Row (b): trace already published (truly terminal)
+	// Row (b): merge_approval_recorded — the only truly terminal status.
+	if (traceState.status === 'merge_approval_recorded') {
+		return noop;
+	}
+
+	// Row (b'): published + merge-approval receipt observed → RECORDED, never
+	// certified (issue #2564). nextMode stays null: the plugin never drives,
+	// certifies, or green-lights a merge — the merge decision is human-enforced,
+	// exactly the posture trace-check.sh's merge gate documents ("human-enforced
+	// gate; this validator checks presence and binding only").
 	if (traceState.status === 'published') {
+		if (
+			workflowArtifacts.mergeApprovalObserved &&
+			traceState.lastTransition !== 'MERGE_APPROVAL_RECORDED'
+		) {
+			return {
+				nextMode: null,
+				directive:
+					'Merge approval recorded for this trace, bound to the PR head SHA in .swarm/merge-approval.json. The merge decision is human-enforced: the human user owns and executes it through the host. This plugin records the approval verbatim for audit; it does not drive, gate, or green-light the merge itself.',
+				nextLastTransition: 'MERGE_APPROVAL_RECORDED',
+				nextStatus: 'merge_approval_recorded',
+			};
+		}
 		return noop;
 	}
 
@@ -148,15 +196,47 @@ export function computeNextMode(
 		return noop;
 	}
 
-	// Row (f): spec exists, no plan → ISSUE_INGEST_TO_PLAN (requires reproduction)
+	// Row (f): spec exists, no plan → ISSUE_INGEST_TO_PLAN (requires freshness
+	// AND reproduction evidence)
 	if (!workflowArtifacts.planExists) {
+		// Row (f-0): Phase 0 branch-freshness gate — fail-closed like
+		// trace-check.sh phase0 (issue #2564): a `behind` result or a bare
+		// `fetch-failed` (no recorded user override) must park the trace before
+		// PLAN. One-shot (sentinel FRESHNESS_GATE) so the engine is not
+		// silently idle — silence here is indistinguishable from a stuck engine.
+		// Explicit `=== false` (not falsy): the hook always supplies a real
+		// boolean, and a v2-shaped artifacts literal from a legacy direct caller
+		// stays transparent instead of silently parking (pinned by the frozen
+		// C6 preserving check).
+		if (workflowArtifacts.freshnessPermitted === false) {
+			if (
+				traceState.lastTransition === null ||
+				traceState.lastTransition === 'REPRO_GATE'
+			) {
+				return {
+					nextMode: 'ISSUE_INGEST',
+					directive:
+						'Branch freshness is not established for this trace (behind, or fetch failed without a recorded user override). Re-sync with the default branch (git fetch + rebase/merge), then call record_branch_freshness (issueNumber, freshness: "synced") — or, when the fetch genuinely failed and the user has accepted proceeding on the stale base, record freshness: "fetch-failed:<reason>" together with the verbatim override string the user provided. The trace will not transition to PLAN until this receipt permits.',
+					nextLastTransition: 'FRESHNESS_GATE',
+					nextStatus: 'in_progress',
+				};
+			}
+			// Already nudged once (FRESHNESS_GATE or later); wait quietly for
+			// the receipt.
+			return noop;
+		}
 		if (!workflowArtifacts.reproductionPermitted) {
 			// Reproduction evidence (or a typed waiver) is required before the
 			// trace can leave localization and transition to PLAN. Emit a ONE-SHOT
 			// directive (sentinel lastTransition REPRO_GATE) so the mode-driving
 			// engine is not silently idle while it waits for evidence — silence
-			// here is indistinguishable from a stuck engine.
-			if (traceState.lastTransition === null) {
+			// here is indistinguishable from a stuck engine. FRESHNESS_GATE also
+			// counts as "nothing has fired yet": a freshness receipt landing
+			// after the freshness nudge must still get the reproduction nudge.
+			if (
+				traceState.lastTransition === null ||
+				traceState.lastTransition === 'FRESHNESS_GATE'
+			) {
 				return {
 					nextMode: 'ISSUE_INGEST',
 					directive:
@@ -171,7 +251,8 @@ export function computeNextMode(
 		if (
 			traceState.lastTransition === null ||
 			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN' ||
-			traceState.lastTransition === 'REPRO_GATE'
+			traceState.lastTransition === 'REPRO_GATE' ||
+			traceState.lastTransition === 'FRESHNESS_GATE'
 		) {
 			if (traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN') {
 				return noop;
@@ -243,12 +324,49 @@ export function computeNextMode(
 		};
 	}
 
-	// Row (i): all phases complete + both residual-B gates verified →
-	// publication_handoff + COMMIT directive. While either gate receipt is
+	// Row (i-pre3): both residual-B gates verified — the per-phase trace-check.sh
+	// validator receipts must also be recorded and green before the trace may
+	// hand off to commit-pr (issue #2564). A missing receipt set, or any fail
+	// entry, parks the trace with a ONE-SHOT directive (sentinel
+	// TRACE_VALIDATION_GATE) naming the validator re-run. The precondition on
+	// both prior gates keeps the directive's text truthful (implementation
+	// review round 3: without it, a vanished review/sweep receipt after its
+	// sentinel fired made this row claim the prior gates were satisfied). The
+	// exclusion set excludes only THIS row's own sentinel plus the handoff
+	// sentinel — REVIEW_GATE/RECURRENCE_GATE must NOT be excluded, because when
+	// the recurrence receipt lands right after RECURRENCE_GATE fired, the ladder
+	// must chain into this directive rather than parking silently (final-critic
+	// round 1; mirrors how row i-pre2 does not exclude REVIEW_GATE). When a
+	// prior receipt VANISHES after its sentinel fired, this row declines and
+	// the final guard no-ops — the same exhausted-one-shot semantics every gate
+	// row already has (the silent-stall surfacing for those rows is #2600's
+	// DD-C002 scope, pinned by the frozen C8 preserving check).
+	if (
+		workflowArtifacts.implementationReviewVerified &&
+		workflowArtifacts.recurrenceSweepVerified &&
+		workflowArtifacts.traceValidationVerified === false &&
+		traceState.lastTransition !== 'TRACE_VALIDATION_GATE' &&
+		traceState.lastTransition !== 'EXECUTE_TO_COMMIT'
+	) {
+		return {
+			nextMode: 'EXECUTE',
+			directive:
+				'The review and recurrence gates are satisfied, but the trace-check.sh validator receipts are not yet green. Run the issue-tracer phase validator for every completed phase (trace-check.sh phase <N> --slug <slug>) and record each outcome with record_trace_validation (issueNumber, phase, outcome, the reviewedCommit, and the treeId the validator reported). Any fail entry must be fixed and re-recorded as a pass before the trace can hand off to commit-pr.',
+			nextLastTransition: 'TRACE_VALIDATION_GATE',
+			nextStatus: 'in_progress',
+		};
+	}
+
+	// Row (i): all phases complete + all gates verified →
+	// publication_handoff + COMMIT directive. While any gate receipt is
 	// still missing, wait quietly (the one-shot directive above already fired).
+	// The residual-B guards keep their original falsy form (they pair with the
+	// falsy fire rows above); only the new validator gate uses explicit
+	// `=== false` for v2-shaped-literal transparency.
 	if (
 		!workflowArtifacts.implementationReviewVerified ||
-		!workflowArtifacts.recurrenceSweepVerified
+		!workflowArtifacts.recurrenceSweepVerified ||
+		workflowArtifacts.traceValidationVerified === false
 	) {
 		return noop;
 	}

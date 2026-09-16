@@ -479,4 +479,23 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
 		reason: 'quota_records',
 		count: 2,
 	},
+	execution_attempt_recorded: {
+		sessionId: 'sess-1',
+		taskId: '1.1',
+		callId: 'call-1',
+		invocationId: 'inv-1',
+		attemptClass: 'result',
+		outcomeStatus: 'success',
+		captured: ['sessionId', 'taskId', 'callId', 'cost.latencyMs'],
+		unknown: ['generation', 'cost.outputTokens'],
+		cost: {
+			latencyMs: 1200,
+			inputTokens: 100,
+			outputTokens: null,
+			cacheReadTokens: null,
+			estimatedCostUsd: null,
+			billedCostUsd: 0.012,
+			unavailable: ['outputTokens', 'cacheReadTokens', 'estimatedCostUsd'],
+		},
+	},
 };

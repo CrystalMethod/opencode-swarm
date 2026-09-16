@@ -16,6 +16,14 @@
       "minimum": 0,
       "maximum": 9007199254740991
     },
+    "preset": {
+      "description": "Defaults profile: \"default\" applies the governed v8 defaults; \"conservative\" restores the pre-flip (v7) defaults for every flipped surface (#2504).",
+      "type": "string",
+      "enum": [
+        "default",
+        "conservative"
+      ]
+    },
     "agents": {
       "description": "Per-agent overrides keyed by agent name for the default swarm (e.g. \"architect\", \"coder\"). Multi-swarm setups configure agents under swarms.<id>.agents instead.",
       "type": "object",

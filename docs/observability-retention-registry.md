@@ -283,7 +283,7 @@ per row.
 
 ## The registry
 
-### Category 1 — Core telemetry and event streams (6 rows)
+### Category 1 — Core telemetry and event streams (7 rows)
 
 | Row id | Path grammar | State class | Write limit (scope) | Read bound | Close policy | Disposition → owner |
 |---|---|---|---|---|---|---|
@@ -293,6 +293,7 @@ per row.
 | `context-telemetry` | .swarm/context-telemetry.jsonl | operational | ACTIVE_MAX_BYTES=256KiB / ACTIVE_MAX_ENTRIES=10k / AGE_MAX_MS=30d on the retained raw window; lifetime folded aggregate in the manifest header (global) | manifest+retained-window: bounded — READ_MAX_BYTES=280KiB, independent of total history | archived as a validated cut — finalizeContextTelemetry before copy, ARCHIVE_ARTIFACTS (`src/commands/close/archive-stage.ts:155-184`); NOT cleaned (persists; compaction is retention) | retain by design — #2037 (shipped PR) |
 | `skill-usage` | .swarm/skill-usage.jsonl | derived-rebuildable | HARD GLOBAL: SKILL_USAGE_LIMITS maxEntries=5,000/maxBytes=1.5MiB/maxAgeMs=90d, floorPerSkill=20 (global) | mixed full-file + tail: full readers bounded at readMaxBytes=1,677,722 B (truncatedRead reported); tail 64 KiB | untouched — persists across sessions | retain by design — #2038 (implemented) |
 | `skill-usage-pending` | .swarm/skill-usage-pending.json | authoritative | queueMaxRecords=5,000/queueMaxBytes=512KiB/maxAgeMs=90d/maxAttempts=5 (global) | indexed: single JSON doc bounded at readMaxBytes=1,677,722 B; oversized reads quarantined | untouched — persists across sessions | retain by design — #2038 (implemented); direct-file exemption (#2038) |
+| `observability-cohorts` | .swarm/observability/cohorts/<epoch-ms>-<12-hex>.json | derived-rebuildable | FIFO 20 files (COHORT_MANIFEST_RETENTION, src/services/task-cohort.ts:209); one bounded JSON per snapshot (global) | indexed: single-file reads by exact content-addressed name (sync) | untouched — provenance evidence outlives the session; FIFO is the only removal path | retain by design — #2676 (frozen cohort manifests; report renders from the in-memory snapshot) |
 
 ### Category 2 — Background delegation, PR monitor/feedback, lane sidecars (17 rows)
 
@@ -367,11 +368,8 @@ per row.
 | `council-criteria` | .swarm/council/{safeId(taskId)}.json | governed-content | one criteria file per task; council/ dir close-scoped (per-key) | indexed: single JSON per task | cleaned — council/ dir lifecycle | not a defect — this-gate |
 | `council-evidence-files` | .swarm/evidence/{phase}/phase-council.json + .swarm/evidence/final-co… | governed-content | per-phase/per-final single artifacts; evidence/ close-scoped (session-scoped) | indexed: single JSON | cleaned — evidence/ dir lifecycle | not a defect — this-gate |
 | `record-receipt-artifacts` | .swarm/{implementation-review,issue-publication,reproduction,recurren… | governed-content | single rewritten receipt files; bounded fields (global) | indexed: single small JSONs | untouched (cross-run receipts by design — issue-tracer… | not a defect — this-gate |
-<<<<<<< HEAD
 | `pr-feedback-loop-state` | .swarm/pr-feedback-loop-state.json + pr-feedback-evidence/{seq}.json + pr-feedback-loop-cleanups/ | operational | one rewritten state (200-correlation FIFO) + one evidence JSON per oversight dispatch + one receipt per cancellation (per-trigger) | full-file: Zod-validated state read | retained — cross-run idempotency basis (digests/budgets); close: neither | not a defect — this-gate; direct-file exemption (#2502) |
-=======
 | `speckit-checkoff-ledger` | .swarm/speckit-checkoff-ledger.json | derived-rebuildable | single rewritten JSON, one entry per projected feature (MAX_SPEC_FILES 100) (none) | full-file: 512 KiB bounded read (speckit-checkoff.ts readBounded) | retained — derived state, rebuilt on next /swarm sdd project; close: neither | not a defect — this-gate; direct-file exemption (#2501) |
->>>>>>> origin/main
 | `spec-drift-artifacts` | .swarm/spec.md + .swarm/spec-staleness.json + .swarm/spec-snapshot.md… | authoritative | single-session drift state; spec-archive/ + spec.md + staleness + snapshot all in close c… (session-scoped) | full-file: bounded spec reads (effective-spec.ts:11-14) | archived+cleaned — unconditional removal so next sessi… | not a defect — this-gate; direct-file exemption (#2036) |
 | `workflow-wal-dirs` | .swarm/coder-settlements/{taskId}.json + .swarm/task-repairs/{taskId}… | authoritative | per-task WAL files; all four dirs in ACTIVE_STATE_DIRS_TO_CLEAN (session-scoped) | indexed: single JSON per task | cleaned — all four dirs archived+cleaned | not a defect — this-gate; direct-file exemption (#2036) |
 | `summaries` | .swarm/summaries/{S*}.json | governed-content | summaries.retention_days (default 7) enforced by the retention sweep via cleanupSummaries; listing capped MAX_SUMMARIES_LISTED 500 (global) | indexed: per-file reads; listing newest-first capped 500 | untouched — the sweep owns the retention_days horizon | not a defect — #2483 |
@@ -435,6 +433,7 @@ per row.
 | `curator-summary` | .swarm/curator-summary.json | operational | single rewritten summary; embedded recommendations deduped/capped (global) | indexed: single JSON | untouched | not a defect — this-gate |
 | `close-session-outputs` | .swarm/{close-summary.md, context.md, session-reflection.md, handoff.… | governed-content | single rewritten session documents (close-summary/handoff atomic; context.md sectioned) (session-scoped) | full-file: single documents | archived+cleaned (close-summary.md deliberately writte… | not a defect — this-gate |
 | `command-reports` | .swarm/simulate-report.{json,md} + .swarm/handoff-continuation.json | governed-content | single rewritten report files (global) | indexed: single files | untouched (operator artifacts / continuation pointers) | not a defect — this-gate |
+| `instruction-pairing-report` | .swarm/memory/instruction-pairing-report.json | derived-rebuildable | single file overwritten whole per command invocation — bounded by the paired task corpus (per-trigger) | write-only: n/a (operator-facing output; re-generated on demand) | untouched (disposable derived output) | not a defect — this-gate |
 | `project-init-configs` | .opencode/opencode-swarm.json + .swarm/config.example.json (+ CLI-man… | governed-content | wx-once init artifacts + operator-edited config (global) | indexed: single config files | unaffected (outside close scope by design) | not a defect — this-gate |
 | `bundled-skills` | .swarm/bundled-skills/{slug}/SKILL.md | governed-content | fixed slug set from BUNDLED_PROJECT_SKILLS (:6-50) — no growth dimension (global) | indexed: fixed set of small files | untouched (plugin-owned runtime root) | not a defect — this-gate |
 | `skills-proposals` | .swarm/skills/proposals/{slug}.md + .swarm/skills/evals/{slug}/auto-s… | governed-content | evals bounded (MAX_EVAL_FILES 50 / 64 KiB / 100 cases, skill-evaluator.ts:26-31); pending proposals 14 d sweep (per-key; keyspace finite by the 14 d reaper) | directory-scan: eval loads capped; proposal listing bounded by the 14 d sweep horizon | untouched by close — the 14 d sweep owns pending-review expiry | not a defect — #2483 |

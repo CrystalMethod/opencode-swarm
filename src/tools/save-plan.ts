@@ -7,6 +7,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
+import { loadPluginConfigWithMeta } from '../config';
 import {
 	type ExecutionProfile,
 	ExecutionProfileSchema,
@@ -38,6 +39,19 @@ import {
 } from '../plan/manager';
 import { resolvePlanningProfile } from '../plan/planning-profile';
 import { derivePlanId } from '../plan/utils.js';
+
+/**
+ * DI seam for hermetic config-load substitution in tests (AGENTS.md invariant 7).
+ * Mirrors `src/tools/apply-patch.ts`. Tests override
+ * `_internals.loadPluginConfigWithMeta` and restore it in `afterEach` instead of
+ * writing real config files or using `mock.module` (which leaks across test
+ * files in Bun's shared runner). Used by the #2504 conservative-preset
+ * new-plan default below.
+ */
+export const _internals = {
+	loadPluginConfigWithMeta,
+};
+
 import { formatLegacyQaBindingRecovery } from '../qa-gate/recovery.js';
 import { normalizeScopeFiles } from '../scope/scope-binding.js';
 import { readEffectiveSpecSync } from '../sdd/effective-spec';
@@ -928,16 +942,36 @@ export async function executeSavePlan(
 	// Precedence: incoming args.execution_profile > preserved existing profile > undefined.
 	// The locked-profile guard above rejected changes to locked profiles, but
 	// permits idempotent no-op profile repeats so recovery retries can proceed.
+
+	// #2504 conservative preset: a successfully loaded config with
+	// `preset: "conservative"` restores the pre-flip (v7) serial default for
+	// NEW plans. Any load failure (missing file, parse error, throw) is treated
+	// as `preset: undefined` and falls through to the v8 default — a loaded
+	// conservative config is authoritative. Read via the `_internals` DI seam so
+	// tests substitute hermetically.
+	let conservativePresetActive = false;
+	if (targetWorkspace) {
+		try {
+			const { config: presetConfig } =
+				_internals.loadPluginConfigWithMeta(targetWorkspace);
+			conservativePresetActive = presetConfig.preset === 'conservative';
+		} catch {
+			conservativePresetActive = false;
+		}
+	}
+	const newPlanParallelizationDefault = !conservativePresetActive;
+
 	let resolvedProfile: Plan['execution_profile'] = preservedExecutionProfile;
 	if (args.execution_profile !== undefined) {
 		// Merge incoming profile fields over the preserved base (if any).
 		// F-003: a partial profile on a new/effectively-new plan must inherit the
-		// v8 parallel-first default. Only an explicit false opts out; existing
-		// profiles retain their persisted value through the preserved base.
+		// v8 parallel-first default (serial under the #2504 conservative
+		// preset). Only an explicit false opts out; existing profiles retain
+		// their persisted value through the preserved base.
 		const base =
 			preservedExecutionProfile ??
 			(args.execution_profile.parallelization_enabled === undefined
-				? { parallelization_enabled: true }
+				? { parallelization_enabled: newPlanParallelizationDefault }
 				: {});
 		const merged = { ...base, ...args.execution_profile };
 		const parsed = ExecutionProfileSchema.safeParse(merged);
@@ -962,12 +996,13 @@ export async function executeSavePlan(
 	// Step 3.1 (v8 / #1674): new-plan-only parallelization default.
 	// When the resolved profile is still undefined at this point — i.e. this is
 	// a NEW plan (no existing profile preserved, no explicit incoming profile) —
-	// apply the v8 default: `parallelization_enabled: true`. This is the ONLY
-	// place the v8 default is injected. Existing plans are loaded via
-	// `PlanSchema.parse` (parsePlanJsonCached), whose schema default STAYS
-	// `false`, so upgrading opencode-swarm never flips an existing plan's
-	// behavior. A revision of a profile-less existing plan also reaches this
-	// branch (effectively-new; documented in the release fragment).
+	// apply the v8 default: `parallelization_enabled: true` (serial `false`
+	// under the #2504 conservative preset). This is the ONLY place the v8
+	// default is injected. Existing plans are loaded via `PlanSchema.parse`
+	// (parsePlanJsonCached), whose schema default STAYS `false`, so upgrading
+	// opencode-swarm never flips an existing plan's behavior. A revision of a
+	// profile-less existing plan also reaches this branch (effectively-new;
+	// documented in the release fragment).
 	//
 	// The default applies only to `parallelization_enabled`; the other profile
 	// fields keep their schema defaults (max_concurrent_tasks: 10, etc.). The
@@ -976,7 +1011,7 @@ export async function executeSavePlan(
 	if (resolvedProfile === undefined) {
 		resolvedProfile = {
 			...ExecutionProfileSchema.parse({}),
-			parallelization_enabled: true,
+			parallelization_enabled: newPlanParallelizationDefault,
 			...(persistedPlanningProfile !== undefined
 				? { planning_profile: persistedPlanningProfile }
 				: {}),

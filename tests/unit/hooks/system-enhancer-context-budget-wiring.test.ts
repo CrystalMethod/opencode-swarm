@@ -95,7 +95,12 @@ describe('System Enhancer Hook - Context Budget Wiring', () => {
 		systemPrompt: string,
 		sessionID = 'test-session',
 	): Promise<string[]> {
-		const hook = createSystemEnhancerHook(config, tempDir);
+		// The architect's enhancer output is staged by messages.transform and
+		// then delivered as a carrier; system.transform intentionally no-ops for
+		// a bound architect to avoid duplicate guidance.
+		const hook = createSystemEnhancerHook(config, tempDir, {
+			surface: 'messages',
+		});
 		const transform = hook['experimental.chat.system.transform'] as unknown as (
 			input: { sessionID: string },
 			output: { system: string[] },

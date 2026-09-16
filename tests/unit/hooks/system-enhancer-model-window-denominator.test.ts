@@ -123,12 +123,18 @@ describe('system-enhancer: budget denominator derives from model.limit.context',
 		systemPrompt = HEAVY_PROMPT,
 		sessionID = 'model-window-session',
 	): Promise<string[]> {
-		const hook = createSystemEnhancerHook(config, tempDir);
+		const hook = createSystemEnhancerHook(config, tempDir, {
+			surface: 'messages',
+		});
 		const transform = hook['experimental.chat.system.transform'] as unknown as (
 			input: { sessionID: string; model: unknown },
 			output: { system: string[] },
 		) => Promise<void>;
 		const output = { system: [systemPrompt] };
+		// The budget warning is architect-only and is produced by the staged
+		// messages surface. Model identity (id/providerID) remains independently
+		// variable below; registered-host tests cover cold system transforms.
+		swarmState.activeAgent.set(sessionID, 'architect');
 		await transform({ sessionID, model }, output);
 		return output.system;
 	}

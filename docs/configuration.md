@@ -76,6 +76,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | --- | ---- | ------- | ----------- |
 | `$schema` | string | — | JSON Schema URL for editor validation/autocomplete of this file (issue #1663). Ignored at runtime; malformed values are ignored too. |
 | `config_format_version` | integer | 1 | Config format version for the migration table. Increment when fields are deprecated. Distinct from knowledge.schema_version. |
+| `preset` | enum(default \| conservative) | — | Defaults profile: "default" applies the governed v8 defaults; "conservative" restores the pre-flip (v7) defaults for every flipped surface (#2504). |
 | `agents` | record<string, object> | — | Per-agent overrides keyed by agent name for the default swarm (e.g. "architect", "coder"). Multi-swarm setups configure agents under swarms.<id>.agents instead. |
 | `default_agent` | string | — | Agent set as the primary mode. Omitted: every generated *_architect is primary. Exact generated name (e.g. "local_architect"): only that agent. Base role name (e.g. "coder"): every generated agent with that base role. Unknown strings warn once and fall back to architect primaries. |
 | `auto_select_architect` | boolean \| string | — | Auto-select the swarm architect for new sessions instead of OpenCode built-ins. Omitted or false: manual selection (omitted behaves as false). true: enable auto-select and disable built-in build/plan agents. "<architect_name>" (e.g. "mega_architect"): enable targeting one architect in multi-swarm setups. |
@@ -369,6 +370,24 @@ Empty or whitespace-only values are treated as omitted.
 
 > Why this matters: in v7.3.x the schema applied an implicit `.default("architect")`. In a multi-swarm config there is no agent literally named `architect` — they are all prefixed — so every architect was demoted to subagent and OpenCode showed only the native `build`/`plan` agents. The omitted-vs-explicit distinction is now load-bearing; do not re-introduce a schema default.
 
+## `preset` — defaults profile for the governed v8 flips (issue #2504)
+
+`preset` (top-level, optional `"default" | "conservative"`) selects the default
+posture for every surface whose default changed under the governed v8
+defaults-flip frame:
+
+| Value | Effect |
+|---|---|
+| _(omitted)_ or `"default"` | The governed v8 defaults apply. Today that means new plans default to parallel-first execution for provably file-disjoint work (since v7.132.0), and `auto_review` flips to advisory-on at the first 8.x release (burn-in pinned; see the `auto_review` section). |
+| `"conservative"` | Restores the pre-flip (v7) defaults for every flipped surface: `auto_review.enabled: false` and serial new plans. |
+
+The preset is applied as the lowest-precedence layer in config resolution, so
+an explicit value for any affected key always wins over it. Evidence
+citations, per-flip kill switches, and rollback for every governed default
+change live in `docs/defaults-governance.md`; `/swarm config doctor` surfaces
+pending default changes and `/swarm config doctor --fix` acknowledges them
+(stamps `config_format_version: 3`).
+
 ## `auto_select_architect` — auto-select swarm architect on launch
 
 `auto_select_architect` (top-level, optional `boolean | string`) controls whether OpenCode's built-in `build` and `plan` agents are disabled so the swarm architect is automatically selected as the active agent on launch.
@@ -398,6 +417,56 @@ Empty or whitespace-only values are treated as omitted.
   "auto_select_architect": "mega_architect"
 }
 ```
+
+## Model preflight — configured, enabled, resolved, and fallback selections (issue #2680)
+
+The plugin validates the model configuration of every agent it would actually
+register before and during dispatch. Four distinct concepts:
+
+| Term | Meaning |
+|---|---|
+| **configured** | A model string explicitly written in your config — top-level `agents.<role>.model` or the matching `swarms.<id>.agents.<role>.model` (the swarm entry wins, object-level: a swarm entry replaces the top-level entry for that role). |
+| **enabled** | A generated agent the plugin actually registers for your configuration: every role unless `disabled: true`, plus the feature-gated roles only while their flag is on (`council.*` ← `council.general.enabled`, `docs_design` ← `design_docs.enabled`, `designer` ← `ui_review.enabled`). In multi-swarm configs every swarm contributes its prefixed names (`local_coder`, `mega_critic`, …); a swarm named `default` contributes unprefixed names. |
+| **resolved** | The final effective selection for an enabled role: the configured model, else `DEFAULT_MODELS[role]`, else `DEFAULT_MODELS.default`. This is what dispatch uses and what the preflight validates against the live provider catalog. |
+| **fallback** | Entries from an explicitly configured `fallback_models` array. They are validated as their own class and are recorded only when explicitly configured — never synthesized. |
+
+Preflight outcome classes and operator actions:
+
+| Class | Meaning | Operator action |
+|---|---|---|
+| `unresolved` (missing provider) | The resolved model's provider is absent from the host catalog. | Fix the `provider/...` prefix or configure a provider that exists. |
+| `unresolved` (missing model) | The provider exists but does not list the model. | Correct the model id on the matching swarm override (it wins over the top-level entry). |
+| `missing-selection` | An enabled role has no final selection at all (a blank `model: ""` override, or a registry name whose swarm is gone). | Set `agents.<role>.model` (or the matching swarm override) to a non-empty value. |
+| `host-controlled` | Primary agents (architects by default, or your `default_agent` target). OpenCode's UI owns their model; the registered model is intentionally not applied. | Select the model in the OpenCode UI; a config-vs-UI advisory surfaces mismatches at runtime. |
+
+Where the preflight acts:
+
+- **Startup (advisory, fail-open):** after `server()` resolves, a deferred task
+  validates every enabled role and warns for `unresolved`/`missing-selection`
+  classes only. Disabled, optional, and uninvoked-but-valid roles never produce
+  warnings, and a catalog outage produces no rejection.
+- **Dispatch admission (typed denials):** a Task dispatch whose target is a
+  registered agent is denied before it leaves the delegation gate when the
+  final selection is positively `unresolved`
+  (`SWARM_AGENT_MODEL_UNRESOLVED`; critics keep the
+  `PLAN_CRITIC_MODEL_UNRESOLVED` identity) or missing entirely
+  (`SWARM_AGENT_MODEL_MISSING_SELECTION`). Primary agents are exempt — the UI
+  owns their selection. An unreachable catalog never denies a dispatch
+  (fail-open).
+- **`/swarm doctor`:** the `Agent Model Resolution` section lists failing
+  selections with their source and class.
+- **Cost bounds:** the catalog fetch is bounded by a 2-second timeout
+  (`PROVIDER_LIST_TIMEOUT_MS`), and results are cached per host client for
+  30 seconds (`CATALOG_CACHE_TTL_MS`); a dispatch denial invalidates the
+  cache so a fixed config takes effect on the next attempt.
+
+`fallback_models` serve **transient** runtime failures (429/503/timeout) via
+the guardrails failover path. A permanent unresolved primary model is not
+covered by a fallback — configure a resolvable primary model for the affected
+role. The four curator roles (`curator_init`, `curator_phase`,
+`curator_postmortem`, `curator_consolidation`) inherit `explorer`'s fallback
+chain at runtime; the preflight validates only explicitly configured entries
+(`explorer`'s own), it does not synthesize the inherited chain.
 
 ## How to verify the resolved config
 
@@ -1870,6 +1939,58 @@ auto-activate skills.
 | `knowledge.realtime_learning_nudge.repeat_after_tool_calls` | number | `25` | Minimum additional tool calls before the same session can be nudged again. |
 | `knowledge.receipt_close_grace_days` | integer | `7` | Retains resolved V2 receipt membership for this many days after durable phase closure before archival/compaction eligibility. Accepts `0`-`3650`; live or unresolved membership is never age-evicted. |
 | `knowledge.promotion_require_actionable` | boolean | `true` | Enforces the actionability floor on **every** hive-promotion path — automatic promotion, `/swarm promote <text>`, and `/swarm promote --from-swarm <id>`. A lesson is promotable only if it carries at least one predicate (`required_actions`, `forbidden_actions`, `verification_checks`) **and** at least one scope (`applies_to_tools`, `applies_to_agents`). See [the promote command](./commands.md#swarm-promote---category-cat---from-swarm-id-actionability-flags-text) for the flags that supply them. |
+
+### Instruction cache key and invalidation inputs (issue #2672)
+
+The architect knowledge-injector keeps a per-instance context cache so an
+identical conversational context (for example after compaction) re-injects the
+same instruction block instead of regenerating it. The cache key covers:
+
+- the current phase, active tool/action/target-agent/task id, recent file
+  paths, and the last user message;
+- the knowledge corpus generation counter (bumped on every store admission);
+- a payload-input fingerprint of every other input the cached text embeds:
+  the curator briefing (`.swarm/curator-briefing.md`), rejected lessons,
+  the run-memory summary, recent escalations, and the latest curator drift
+  report. Each input is read once per hook invocation, hashed canonically
+  (key-sorted), and fail-open — an unreadable input digests as `0`.
+
+Invalidation contract: any change to an embedded input changes the
+fingerprint, so the next injection regenerates with the fresh instruction
+set even when the conversational context is byte-identical. Unrelated
+event-file churn does not invalidate (the escalation input hashes content,
+not file stamps).
+
+### Paired instruction-selection evaluation (issue #2672)
+
+`/swarm memory evaluate --instruction-pairing` runs the paired
+cached-vs-uncached control: for each deterministic offline task, the same
+task/model/budget is measured once on a cold cache (regeneration reference)
+and once on a warm cache replaying identical context. The durable report is
+written to `.swarm/memory/instruction-pairing-report.json`.
+
+Measurement denominators (absolute values only — the report deliberately
+contains no percentage or savings fields):
+
+- `latency_denominator`: wall-clock milliseconds of the measured hook
+  invocation per arm.
+- `cost_denominator`: the uncached arm's regeneration latency in
+  milliseconds, reported on both arms as the paired avoided-regeneration
+  reference.
+- `prefix_denominator`: characters of the injected host-renderable guidance
+  carrier.
+
+Negative results are retained rows: a pair where caching did not improve the
+paired quality outcome carries `negative_result: true`. On the offline
+deterministic corpus both arms run the same selection, so identical quality
+is the expected, honestly-reported outcome. The report's
+`identity.instruction_set_digest` changes whenever the paired task corpus,
+budget, or cache-invalidation verdict changes and is the handle a HarnessOpt lineage record (issue
+#2503, the broad held-out comparison owner) can reference — this command
+feeds that harness evidence and does not duplicate it. (The injector's
+own payload inputs are fingerprinted separately in its cache key — see
+the invalidation contract above.) The flag is mutually exclusive with
+`--fixtures`, which applies to the recall evaluation.
 
 Receipt authority is stored only under the canonical project's `.swarm/`
 directory. It is not redirected by knowledge links, hive configuration, or a

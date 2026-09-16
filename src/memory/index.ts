@@ -50,6 +50,17 @@ export {
 	type MemoryLifecycleHooks,
 } from './injector';
 export {
+	DEFAULT_INSTRUCTION_PAIRING_TASKS,
+	type InstructionPairingArmResult,
+	type InstructionPairingDirectivePriority,
+	type InstructionPairingOptions,
+	type InstructionPairingPair,
+	type InstructionPairingRecord,
+	type InstructionPairingReport,
+	type InstructionPairingTask,
+	runInstructionSelectionPairing,
+} from './instruction-pairing';
+export {
 	backupLegacyJsonl,
 	getLegacyJsonlFileStatus,
 	getLegacyOutcomeJsonlSignature,

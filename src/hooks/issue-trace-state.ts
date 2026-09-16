@@ -103,6 +103,25 @@ async function _defaultRecurrenceSweepReceiptExists(
 		) {
 			return false;
 		}
+		// Issue #2564 (issue-tracer v3 Phase 1): the sweep receipt must carry
+		// the related-problems sweep results that seed the defect class —
+		// non-vacuously, on BOTH the real-defect-class path and the "no defect
+		// class" fast path. A missing key, an empty array, or entries whose ref
+		// is blank/non-string no longer satisfy the gate.
+		const relatedProblems = o.relatedProblems;
+		const validRelatedProblems =
+			Array.isArray(relatedProblems) &&
+			relatedProblems.length > 0 &&
+			relatedProblems.every(
+				(rp) =>
+					typeof rp === 'object' &&
+					rp !== null &&
+					typeof (rp as Record<string, unknown>).ref === 'string' &&
+					((rp as Record<string, unknown>).ref as string).trim().length > 0,
+			);
+		if (!validRelatedProblems) {
+			return false;
+		}
 		const noDefectClass = o.defectClass === 'no defect class';
 		// Issue-tracer Phase 4.2 contract: a sweep over a real defect class must
 		// record its search predicates, a disposition for every hit, and a
@@ -175,6 +194,110 @@ async function _defaultImplementationReviewReceiptExists(
 	}
 }
 
+async function _defaultBranchFreshnessReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	try {
+		const filePath = path.join(directory, '.swarm', 'branch-freshness.json');
+		const raw = _internals.readFileSync(filePath, 'utf-8');
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return false;
+		const o = parsed as Record<string, unknown>;
+		if (o.issueNumber !== issueNumber) return false;
+		if (typeof o.freshness !== 'string') return false;
+		const freshness = o.freshness;
+		// Mirrors trace-check.sh phase0's freshness enum exactly: `synced`
+		// permits; `behind:<n>` NEVER permits (sync first — an override cannot
+		// rescue it); a bare `fetch-failed:<reason>` fails closed, and only a
+		// recorded non-empty user override rescues the fetch failure.
+		if (freshness === 'synced') return true;
+		if (/^behind:[1-9][0-9]*$/.test(freshness)) return false;
+		if (/^fetch-failed:\S+$/.test(freshness)) {
+			return typeof o.override === 'string' && o.override.trim().length > 0;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+const TRACE_VALIDATION_PHASES: readonly string[] = [
+	'0',
+	'1',
+	'2',
+	'2.5',
+	'3',
+	'4',
+	'4.2',
+	'4.5',
+	'4.6',
+	'5',
+];
+
+function isFortyHex(value: unknown): value is string {
+	return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
+}
+
+async function _defaultTraceValidationReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	try {
+		const filePath = path.join(directory, '.swarm', 'trace-validation.json');
+		const raw = _internals.readFileSync(filePath, 'utf-8');
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return false;
+		const o = parsed as Record<string, unknown>;
+		if (o.issueNumber !== issueNumber) return false;
+		const validations = o.validations;
+		if (!Array.isArray(validations) || validations.length === 0) return false;
+		// The writer upserts (one entry per phase, replaced in place), so
+		// "every entry is a pass bound to a 40-hex reviewed-commit + tree-id"
+		// IS "every phase's latest run passed" — any fail entry fails closed
+		// until that phase is re-recorded as a pass (issue #2564).
+		for (const entry of validations) {
+			if (typeof entry !== 'object' || entry === null) return false;
+			const e = entry as Record<string, unknown>;
+			if (
+				!TRACE_VALIDATION_PHASES.includes(String(e.phase)) ||
+				e.outcome !== 'pass' ||
+				!isFortyHex(e.reviewedCommit) ||
+				!isFortyHex(e.treeId)
+			) {
+				return false;
+			}
+		}
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function _defaultMergeApprovalReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	try {
+		const filePath = path.join(directory, '.swarm', 'merge-approval.json');
+		const raw = _internals.readFileSync(filePath, 'utf-8');
+		const parsed: unknown = JSON.parse(raw);
+		if (typeof parsed !== 'object' || parsed === null) return false;
+		const o = parsed as Record<string, unknown>;
+		// Mirrors trace-check.sh merge_check's binding: the PR head SHA must
+		// equal the final critic's reviewed commit, both 40-hex. The reader
+		// only verifies presence and binding — it never certifies the approval
+		// itself (human-enforced gate).
+		if (o.issueNumber !== issueNumber) return false;
+		if (!isFortyHex(o.prHeadSha) || !isFortyHex(o.finalCriticReviewedCommit)) {
+			return false;
+		}
+		return o.prHeadSha === o.finalCriticReviewedCommit;
+	} catch {
+		return false;
+	}
+}
+
 export const _internals = {
 	readFileSync,
 	writeFileSync,
@@ -187,6 +310,9 @@ export const _internals = {
 	publicationReceiptExists: _defaultPublicationReceiptExists,
 	recurrenceSweepReceiptExists: _defaultRecurrenceSweepReceiptExists,
 	implementationReviewReceiptExists: _defaultImplementationReviewReceiptExists,
+	branchFreshnessReceiptExists: _defaultBranchFreshnessReceiptExists,
+	traceValidationReceiptExists: _defaultTraceValidationReceiptExists,
+	mergeApprovalReceiptExists: _defaultMergeApprovalReceiptExists,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -195,6 +321,7 @@ const TRACE_STATUSES: readonly TraceStatus[] = [
 	'in_progress',
 	'publication_handoff',
 	'published',
+	'merge_approval_recorded',
 ];
 
 function isTraceStatus(value: unknown): value is TraceStatus {
@@ -473,4 +600,45 @@ export async function implementationReviewReceiptExists(
 	issueNumber: number,
 ): Promise<boolean> {
 	return _internals.implementationReviewReceiptExists(directory, issueNumber);
+}
+
+/**
+ * Returns whether a Phase 0 branch-freshness receipt permits the trace for the
+ * given issue (issue #2564, mirroring trace-check.sh phase0): `synced` permits;
+ * `behind:<n>` never permits; `fetch-failed:<reason>` permits only with a
+ * recorded non-empty user override.
+ */
+export async function branchFreshnessReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	return _internals.branchFreshnessReceiptExists(directory, issueNumber);
+}
+
+/**
+ * Returns whether the per-phase trace-check.sh validator receipts for the given
+ * issue are green (issue #2564): at least one recorded validation exists and
+ * every entry (one per phase, upserted by the writer) is a `pass` bound to a
+ * 40-hex reviewedCommit + treeId. Any `fail` entry fails closed until that
+ * phase is re-recorded as a pass.
+ */
+export async function traceValidationReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	return _internals.traceValidationReceiptExists(directory, issueNumber);
+}
+
+/**
+ * Returns whether a PR-head-bound merge-approval receipt exists for the given
+ * issue (issue #2564): both SHAs are 40-hex and prHeadSha equals
+ * finalCriticReviewedCommit, mirroring trace-check.sh merge_check's binding.
+ * Presence-and-binding only — the approval itself is human-enforced and is
+ * never certified by the plugin.
+ */
+export async function mergeApprovalReceiptExists(
+	directory: string,
+	issueNumber: number,
+): Promise<boolean> {
+	return _internals.mergeApprovalReceiptExists(directory, issueNumber);
 }

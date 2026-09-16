@@ -119,8 +119,9 @@ function sanitizeForMarkdownText(s: string): string {
 
 /**
  * Format config doctor result as markdown for command output.
+ * Exported for the #2504 "Defaults changes (v8)" section coverage test.
  */
-function formatDoctorMarkdown(result: ConfigDoctorResult): string {
+export function formatDoctorMarkdown(result: ConfigDoctorResult): string {
 	const lines = [
 		'## Config Doctor Report',
 		'',
@@ -178,6 +179,25 @@ function formatDoctorMarkdown(result: ConfigDoctorResult): string {
 		lines.push('');
 		lines.push(
 			'Run `/swarm config doctor --fix` to apply available migrations.',
+		);
+	}
+
+	// -- Defaults changes (v8) Section (#2504) --
+	const defaultsFlips = result.findings.filter(
+		(finding) => finding.id === 'defaults-flip',
+	);
+	if (defaultsFlips.length > 0) {
+		lines.push('---', '');
+		lines.push('### Defaults changes (v8)', '');
+		lines.push(
+			'\u2139\ufe0f Governed v8 default changes are pending for this config. Explicit values always win — these rows inform and provide the kill switch:',
+		);
+		for (const flip of defaultsFlips) {
+			lines.push(`  - ${flip.description}`);
+		}
+		lines.push('');
+		lines.push(
+			'Run `/swarm config doctor --fix` to acknowledge these changes (stamps config_format_version), or set `preset: "conservative"` to restore all v7 defaults. Evidence and rollback: docs/defaults-governance.md (#2504).',
 		);
 	}
 
@@ -255,29 +275,54 @@ export async function handleDoctorCommand(
 		output += `${lines.join('\n')}\n`;
 	}
 
-	// Issue #2271 bug 4: validate configured agent model ids against the live
-	// provider catalog. Structural checks above cannot see a model that is
-	// syntactically fine but does not resolve ("Model not found"/"Forbidden").
-	// Fail-open: an unreachable catalog adds nothing to the report.
+	// Issue #2271 bug 4 / issue #2680: validate the FINAL effective model
+	// selection of every ENABLED role (legacy + prefixed, via the live
+	// generated-name registry) against the live provider catalog. Structural
+	// checks above cannot see a model that is syntactically fine but does not
+	// resolve ("Model not found"/"Forbidden"). Fail-open: an unreachable
+	// catalog adds nothing about resolution — but catalog-independent
+	// `missing-selection` findings still surface (PRR-003: init warns about
+	// them with the catalog down, so the doctor must not hide them).
 	try {
 		const { runModelPreflight } = await import('../services/model-preflight');
 		const preflight = await runModelPreflight(
 			config,
 			swarmState.opencodeClient,
+			{ generatedAgentNames: swarmState.generatedAgentNames },
 		);
-		if (preflight.catalogAvailable) {
-			const unresolved = preflight.resolutions.filter(
-				(resolution) => resolution.status === 'unresolved',
-			);
-			if (unresolved.length > 0) {
-				output += '\n---\n\n## Agent Model Resolution\n\n';
-				output += `${unresolved.length} configured agent model(s) do not resolve against the provider catalog:\n\n`;
-				for (const resolution of unresolved) {
-					output += `- \`${resolution.agent}\` → \`${resolution.model}\`: ${resolution.detail ?? 'does not resolve'}\n`;
+		// Configured/enabled/resolved/fallback distinctions (issue #2680
+		// documentation contract): report non-ok classes with their source
+		// and the per-class operator action. Bounded: first 20 rows.
+		const missingSelection = preflight.resolutions.filter(
+			(resolution) => resolution.status === 'missing-selection',
+		);
+		const unresolved = preflight.catalogAvailable
+			? preflight.resolutions.filter(
+					(resolution) => resolution.status === 'unresolved',
+				)
+			: [];
+		const flagged = [...missingSelection, ...unresolved];
+		if (flagged.length > 0) {
+			const shown = flagged.slice(0, 20);
+			const more = flagged.length - shown.length;
+			output += '\n---\n\n## Agent Model Resolution\n\n';
+			output += `${flagged.length} enabled agent model selection(s) failed preflight:\n\n`;
+			for (const resolution of shown) {
+				// PRR-001: config-sourced values are neutralized with the same
+				// sanitizers the recovery section uses before markdown render.
+				const label =
+					resolution.source === 'fallback'
+						? `${sanitizeForMarkdownCodeSpan(resolution.agent)} (fallback entry)`
+						: sanitizeForMarkdownCodeSpan(resolution.agent);
+				if (resolution.status === 'missing-selection') {
+					output += `- \`${label}\`: no final model selection — ${sanitizeForMarkdownText(resolution.detail ?? '')}\n`;
+				} else {
+					output += `- \`${label}\` → \`${sanitizeForMarkdownCodeSpan(resolution.model)}\` [${resolution.source}]: ${sanitizeForMarkdownText(resolution.detail ?? 'does not resolve')}\n`;
 				}
-				output +=
-					'\nDispatching these agents will fail permanently. Fix `agents.<role>.model` in opencode-swarm.json or remove the override.\n';
 			}
+			if (more > 0) output += `- … and ${more} more\n`;
+			output +=
+				'\nDispatching these roles will fail permanently. Fix the effective model in opencode-swarm.json — the matching swarm override wins over top-level `agents.<role>.model`. `fallback_models` only serve transient runtime failures.\n';
 		}
 	} catch {
 		/* fail-open: the doctor must still produce its structural report */
