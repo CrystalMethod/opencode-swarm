@@ -1675,11 +1675,11 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/gate-evidence.ts', 'src/council/council-evidence-writer.ts'],
 		writerCitations: [
-			'src/gate-evidence.ts:984 transitionTaskWorkflowEvidence / :1094 recordGateEvidence / :1152 recordAgentDispatch — locked read-modify-write, atomic write',
+			'src/gate-evidence.ts:1236 transitionTaskWorkflowEvidence / :1351 recordGateEvidence / :1409 recordAgentDispatch — locked read-modify-write, atomic write',
 			'src/council/council-evidence-writer.ts:96 writeCouncilEvidence — gates.council section under withTaskEvidenceLock',
 		],
 		readerCitations: [
-			'src/gate-evidence.ts:1196 readTaskEvidence — FULL-FILE fail-open, async; :1272 readTaskEvidenceRaw — strict, sync',
+			'src/gate-evidence.ts:1453 readTaskEvidence — FULL-FILE fail-open, async; :1529 readTaskEvidenceRaw — strict, sync',
 			'src/council/council-evidence-writer.ts:207 hasCouncilEvidenceAttempt',
 		],
 		schemaVersion: 'workflow WAL states; unrecognized states degrade to null (documented :1183-1188)',
@@ -1693,7 +1693,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			bound: 'retryHistory ≤3 (schema :347); per-task file; evidence/ archived+cleaned at close',
 			scope: 'per-key',
 			keyspaceBound:
-				'FINITE BY REAPER, not by key domain: one key per taskId — a flat .swarm/evidence/{taskId}.json (src/gate-evidence.ts:832 getEvidencePath) whose taskId is only shape-validated (src/validation/task-id.ts:69-114), so the domain is open. The GLOBAL deleter is the same one the task-evidence-trajectory row cites: "evidence" is in ACTIVE_STATE_DIRS_TO_CLEAN (src/commands/close/constants.ts:253-269) and the close clean loop recursively removes the whole tree (src/commands/close/clean-stage.ts:176-190), taking every {taskId}.json with it. Note the per-file retryHistory ≤3 cap is NOT the keyspace bound — it caps one key\'s history and says nothing about how many keys exist. CAVEAT: archive-first-gated (src/commands/close/clean-stage.ts:176-185) and untouched by /swarm reset and /swarm reset-session, so an unclosed session holds one file per distinct taskId.',
+			'FINITE BY REAPER, not by key domain: one key per taskId — a flat .swarm/evidence/{taskId}.json (src/gate-evidence.ts:1033 getEvidencePath) whose taskId is only shape-validated (src/validation/task-id.ts:69-114), so the domain is open. The GLOBAL deleter is the same one the task-evidence-trajectory row cites: "evidence" is in ACTIVE_STATE_DIRS_TO_CLEAN (src/commands/close/constants.ts:253-269) and the close clean loop recursively removes the whole tree (src/commands/close/clean-stage.ts:176-190), taking every {taskId}.json with it. Note the per-file retryHistory ≤3 cap is NOT the keyspace bound — it caps one key\'s history and says nothing about how many keys exist. CAVEAT: archive-first-gated (src/commands/close/clean-stage.ts:176-185) and untouched by /swarm reset and /swarm reset-session, so an unclosed session holds one file per distinct taskId.',
 			citation: 'src/gate-evidence.ts:347; src/commands/close/constants.ts:253-269 ACTIVE_STATE_DIRS_TO_CLEAN',
 		},
 		readBound: { pattern: 'full-file', bound: 'single per-task JSON', sync: true, citation: 'src/gate-evidence.ts:1196-1224' },
@@ -2004,7 +2004,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/commands/rollback.ts — lifecycle-locked checkpoint projection publication with prior-byte compensation after authoritative re-root',
 			'src/commands/reset.ts — lifecycle-locked critical projection deletion with prior-byte compensation when authority cleanup aborts',
 		],
-		readerCitations: ['src/plan/manager.ts:658 loadPlan — full-file with auto-heal + ledger-replay fallback, async; :366 loadPlanJsonOnly'],
+		readerCitations: ['src/plan/manager.ts:715 loadPlan — full-file with auto-heal + ledger-replay fallback, async; :398 loadPlanJsonOnly'],
 		schemaVersion: 'plan schema (projections of the ledger)',
 		stateClass: 'derived-rebuildable',
 		privacyClass: 'content',
@@ -3487,7 +3487,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/session/snapshot-writer.ts', 'src/session/snapshot-store.ts', 'src/session/session-start-store.ts', 'src/services/context-budget-service.ts'],
 		writerCitations: [
-			'src/session/snapshot-writer.ts:519 writeSnapshot — per-key SQLite snapshot authority via snapshot-store with serialized post-commit projection',
+			'src/session/snapshot-writer.ts:534 writeSnapshot — per-key SQLite snapshot authority via snapshot-store with serialized post-commit projection',
 			'src/session/snapshot-store.ts writeSnapshotRows — FULL transaction with per-session tombstones and cross-process-safe disjoint updates',
 			'src/session/session-start-store.ts:6 recordSessionStart — append flag a, fail-open',
 			'src/services/context-budget-service.ts:196 writeBudgetState — bunWrite + cache invalidation',
@@ -4555,6 +4555,7 @@ export const EXEMPT_WRITER_MODULES: Readonly<Record<string, string>> = Object.fr
 	'src/memory/jsonl-migration.ts': 'legacy JSONL→SQLite migration executor — memory-sqlite row owns the destination',
 	'src/retention/jsonl-cap.ts': 'shared retention plumbing (appendCappedJsonl/readTailJsonl, issue #2483 §1) — callers own the streams; their rows carry the cap citations',
 	'src/evaluation/retrieval-quality.ts': 'temporary bounded evaluation artifacts under os.tmpdir — always removed in finally and never durable project state',
+	'src/index.ts': 'bootstrap-root redirect advisory record (#2679): one bounded best-effort .swarm/advisories/bootstrap-root-redirect.json per redirected boot, mirrored to console + /swarm diagnose — no durable stream, no reader, never enumerated',
 });
 
 /** Sequence window for fix-in-issue dispositions (issue #2036 amendment clause). */
