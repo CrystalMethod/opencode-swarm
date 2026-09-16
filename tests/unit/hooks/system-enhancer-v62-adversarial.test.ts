@@ -63,7 +63,6 @@ describe('ADVERSARIAL: v6.2 System Enhancer Config-Hint Security', () => {
 
 			const input = { sessionID: 'test-session' };
 			const output = { system: ['Initial system prompt'] };
-
 			swarmState.activeAgent.set('test-session', 'mega_coder');
 			await transform(input, output);
 

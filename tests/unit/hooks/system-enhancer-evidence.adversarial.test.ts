@@ -118,7 +118,6 @@ describe('Task 2.1 Adversarial Tests - Evidence Loading/Parsing', () => {
 	it('loadEvidence returns invalid_schema (not throws) when evidence.json is empty string', async () => {
 		const taskId = 'retro-1';
 		writeEvidenceFile(taskId, '');
-
 		const result = await loadEvidence(tempDir, taskId);
 
 		expect(result.status).toBe('invalid_schema');
@@ -127,7 +126,6 @@ describe('Task 2.1 Adversarial Tests - Evidence Loading/Parsing', () => {
 	it('loadEvidence returns invalid_schema (not throws) when evidence.json contains null', async () => {
 		const taskId = 'retro-2';
 		writeEvidenceFile(taskId, 'null');
-
 		const result = await loadEvidence(tempDir, taskId);
 
 		expect(result.status).toBe('invalid_schema');
@@ -903,7 +901,6 @@ describe('Task 3.4 Adversarial Tests - User Directives', () => {
 		};
 		await writeFile(join(retroDir, 'evidence.json'), JSON.stringify(bundle));
 		await createSwarmFiles(tempDir, 2);
-
 		const result = await invokeHook(DEFAULT_PLUGIN_CONFIG, tempDir);
 
 		expect(result).toBeDefined();
@@ -953,7 +950,6 @@ describe('Task 3.4 Adversarial Tests - User Directives', () => {
 		};
 		await writeFile(join(retroDir, 'evidence.json'), JSON.stringify(bundle));
 		await createSwarmFiles(tempDir, 2);
-
 		const result = await invokeHook(DEFAULT_PLUGIN_CONFIG, tempDir);
 
 		expect(result).toBeDefined();
@@ -1002,7 +998,6 @@ describe('Task 3.4 Adversarial Tests - User Directives', () => {
 		};
 		await writeFile(join(retroDir, 'evidence.json'), JSON.stringify(bundle));
 		await createSwarmFiles(tempDir, 2);
-
 		const result = await invokeHook(DEFAULT_PLUGIN_CONFIG, tempDir);
 
 		expect(result).toBeDefined();
@@ -1019,7 +1014,6 @@ describe('Task 3.4 Adversarial Tests - User Directives', () => {
 			user_directives: manyDirectives,
 		});
 		await createSwarmFiles(tempDir, 2);
-
 		const result = await invokeHook(
 			DEFAULT_PLUGIN_CONFIG,
 			tempDir,
