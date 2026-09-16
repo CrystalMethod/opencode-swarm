@@ -21,8 +21,16 @@
   block required by `scripts/check-invariants.ts` Check 7 (issue
   #2477), so the entries hard-fail the gate if the EXPIRY lapses
   beyond the 14-day grace window and is not renewed.
+- Added a consumer-side regression pinning test
+  (`tests/unit/scripts/ci/ci-yml-quarantine-2761.test.ts`, modeled on
+  the #2740/#2660 precedents): it reads the real ledger files and
+  asserts each new entry is active in its expected ledger, scoped to
+  that ledger only (no cross-ledger duplicate), carries OWNER/EXPIRY
+  metadata (Check 7, issue #2477), and that the on-disk path is
+  discovered by the ci.yml find chain.
 - No source, hook, or workflow code changed. The change is confined
-  to the two ledger files and this pending release fragment.
+  to the two ledger files, the regression pinning test, and this
+  pending release fragment.
 
 ## Why
 
