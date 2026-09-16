@@ -153,6 +153,7 @@ describe('retention sweep families: prune old, keep recent (issue #2483)', () =>
 			'skill-improver-proposals',
 		],
 		['recovery', 'recovery', 'recovery'],
+		['pr-feedback-evidence', 'pr-feedback-evidence', 'pr-feedback-evidence'],
 	])('%s: 40d-old entry pruned, recent entry kept', async (_label, relDir, prunedKey) => {
 		const root = makeRoot('family');
 		const oldEntryName =
