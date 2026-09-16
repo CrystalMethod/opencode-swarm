@@ -85,6 +85,11 @@ const SETTLE_TIMEOUT_MS = 10_000;
 const LOOP_STATE_LOCK_MAX_ATTEMPTS = 50;
 const LOOP_STATE_LOCK_RETRY_DELAY_MS = 10;
 const LOOP_STATE_LOCK_UNINITIALIZED_STALE_MS = 30_000;
+// A lock whose recorded PID is alive but that has been held far longer than
+// any legitimate mutation (bounded by SETTLE_TIMEOUT_MS) can only be explained
+// by PID reuse after a crash. Re-acquiring a mutex cannot duplicate an effect,
+// so a generous age ceiling reclaims it instead of wedging the loop forever.
+const LOOP_STATE_LOCK_ALIVE_OWNER_STALE_MS = 10 * 60_000;
 
 /** Supported monitor event types → feedback action classes (#2502 AC1). */
 const SUPPORTED_EVENT_ACTION: Record<string, string> = {
@@ -286,6 +291,11 @@ export const _internals: {
 	beforeLoopStateLockWrite?: () => Promise<void>;
 	resetLoopStateLock: () => void;
 	loopStateLockRelativePath: () => string;
+	reclaimAbandonedLoopStateLock: (lockPath: string) => Promise<boolean>;
+	removeLoopStateLockIfOwned: (
+		lockPath: string,
+		ownerToken: string,
+	) => Promise<boolean>;
 } = {
 	/** Default: fresh head via the authenticated gh poll snapshot. */
 	async evaluateCurrentHead(directory, repoFullName, prNumber) {
@@ -349,6 +359,8 @@ export const _internals: {
 		_internals.beforeLoopStateLockWrite = undefined;
 	},
 	loopStateLockRelativePath: () => PR_FEEDBACK_LOOP_STATE_LOCK_REL,
+	reclaimAbandonedLoopStateLock,
+	removeLoopStateLockIfOwned,
 };
 
 const defaultLoopInternals = { ..._internals };
@@ -541,6 +553,10 @@ function reservationIsLive(
 		Number.isFinite(reservation.actionStartedAt)
 	)
 		return true;
+	// PID reuse after a crash can make a dead owner look alive here; that is
+	// accepted (the wedge self-heals when the reused PID exits, and the
+	// operator's stop command is the recovery lever) because an age-based
+	// reclaim could duplicate an already-started external effect.
 	return _internals.isProcessAlive(reservation.ownerPid);
 }
 
@@ -700,9 +716,22 @@ async function releaseLoopStateLock(lock: LoopStateLockHandle): Promise<void> {
 async function reclaimAbandonedLoopStateLock(
 	lockPath: string,
 ): Promise<boolean> {
-	const lock = await readLoopStateLock(lockPath);
+	let lock: LoopStateLockRecord | null;
+	try {
+		lock = await readLoopStateLock(lockPath);
+	} catch {
+		// An unreadable lock cannot be verified against any owner; leave it to
+		// the age guard below instead of crashing the acquire loop (Windows
+		// EPERM from an external open handle must not escape as a raw error).
+		lock = null;
+	}
 	if (lock) {
-		if (_internals.isProcessAlive(lock.pid)) return false;
+		if (
+			_internals.isProcessAlive(lock.pid) &&
+			_internals.now() - lock.createdAtMs < LOOP_STATE_LOCK_ALIVE_OWNER_STALE_MS
+		) {
+			return false;
+		}
 		return removeLoopStateLockIfOwned(lockPath, lock.ownerToken);
 	}
 	try {
@@ -717,7 +746,9 @@ async function reclaimAbandonedLoopStateLock(
 		return true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-		throw error;
+		// Non-ENOENT removal failures (EPERM/EBUSY) are retried by the next
+		// acquire attempt; report "not reclaimed" rather than throwing.
+		return false;
 	}
 }
 
@@ -756,14 +787,22 @@ async function removeLoopStateLockIfOwned(
 	lockPath: string,
 	ownerToken: string,
 ): Promise<boolean> {
-	const lock = await readLoopStateLock(lockPath);
+	let lock: LoopStateLockRecord | null;
+	try {
+		lock = await readLoopStateLock(lockPath);
+	} catch {
+		// Cannot verify ownership of an unreadable lock; never remove it.
+		return false;
+	}
 	if (!lock || lock.ownerToken !== ownerToken) return false;
 	try {
 		await fs.rm(lockPath);
 		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-		throw error;
+	} catch {
+		// ENOENT: already gone. Other failures (Windows EPERM from an external
+		// open handle) leave the lock for the next bounded reclaim pass — a
+		// throw here would escape acquire/release as a raw error.
+		return false;
 	}
 }
 

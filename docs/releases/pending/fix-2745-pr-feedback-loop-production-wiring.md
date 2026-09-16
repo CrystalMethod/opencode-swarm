@@ -37,3 +37,18 @@ Live exact-owner reservations prevent duplicate actions; a dead owner can be
 recovered only before the side-effect start marker is durable. Once that marker
 exists, uncertainty fails closed and pauses for human inspection rather than
 replaying the action.
+
+## Hardening follow-ups in this change
+
+- Loop-state and queue mutexes now reclaim an owner whose PID looks alive only
+  because the OS reused it after a crash, once the lock age passes a generous
+  ceiling; a failed lock removal (for example a Windows EPERM from an external
+  file handle) is retried on the next pass instead of surfacing as a raw error.
+- Oversight evidence files are now age-pruned after 30 days by the retention
+  sweep; the loop-state lock's existence is documented in the retention
+  registry for audit, while the lock itself is reclaimed by the dead-PID and
+  alive-age pass on the next mutation.
+- Wake-prompt bodies collapse line breaks before delivery, closing a
+  fence-shaped prompt-injection lane in untrusted PR comment and CI-error text.
+- Queue event payloads carry the authenticated head revision on every variant,
+  and durable reads are pinned by focused crash-window tests.

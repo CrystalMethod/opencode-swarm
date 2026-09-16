@@ -544,10 +544,16 @@ function sanitizeModeSignal(value: string | undefined): string | null {
 }
 
 function sanitizeWakeBody(value: string): string {
-	return value
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/\[(MODE|SYSTEM|DEVELOPER|USER|ASSISTANT)\s*:/gi, '($1:');
+	return (
+		value
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/\[(MODE|SYSTEM|DEVELOPER|USER|ASSISTANT)\s*:/gi, '($1:')
+			// Collapse line breaks: an untrusted multi-line body must not be able
+			// to carry fence- or header-shaped lines into the wake prompt. LF-only
+			// bodies are the GitHub API norm, so match bare \n too.
+			.replace(/[\r\n]+/g, ' ')
+	);
 }
 
 /**

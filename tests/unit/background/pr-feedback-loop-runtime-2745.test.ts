@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import * as path from 'node:path';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import {
 	_internals,
@@ -7,9 +8,12 @@ import {
 	registerPrFeedbackLoopRuntime,
 } from '../../../src/background/pr-feedback-loop-runtime.js';
 import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
+import { canonicalTmpDir as canonicalTempRoot } from '../../../tests/helpers/tmpdir';
 
-const rootA = 'C:\\workspace\\pr-feedback-a';
-const rootB = 'C:\\workspace\\pr-feedback-b';
+// Platform-neutral fixture roots (canonical resolution is mocked below, but
+// the lexical strings still flow through map keys and cwd observations).
+const rootA = path.join(canonicalTempRoot(), 'pr-feedback-a');
+const rootB = path.join(canonicalTempRoot(), 'pr-feedback-b');
 const clientA = { name: 'client-a' } as unknown as OpencodeClient;
 const clientB = { name: 'client-b' } as unknown as OpencodeClient;
 
@@ -17,6 +21,7 @@ const originalSnapshot = _internals.getPRPollSnapshot;
 const originalDispatch = _internals.dispatchEphemeralAgent;
 const originalCanonical = _internals.canonicalRootKeyFresh;
 const originalCanonicalAsync = _internals.canonicalRootKeyFreshAsync;
+const originalLog = _internals.log;
 let releaseBackground: (() => void) | null = null;
 
 beforeEach(async () => {
@@ -29,6 +34,7 @@ afterEach(() => {
 		_internals.dispatchEphemeralAgent = originalDispatch;
 		_internals.canonicalRootKeyFresh = originalCanonical;
 		_internals.canonicalRootKeyFreshAsync = originalCanonicalAsync;
+		_internals.log = originalLog;
 		// The registry cleanup tests own their registrations. This extra cleanup is
 		// only a defensive reset for a failed assertion that could otherwise leak
 		// into the next test in Bun's shared process.
@@ -269,6 +275,33 @@ describe('issue #2745 production runtime boundary', () => {
 			decision: 'pending',
 		});
 		cleanup();
+	});
+
+	it('promote() failure keeps the lexical registration and resolves non-fatally', async () => {
+		const physicalRoot = 'never-promoted-physical-root';
+		_internals.canonicalRootKeyFresh = mock(() => physicalRoot);
+		_internals.canonicalRootKeyFreshAsync = mock(async () => {
+			throw new Error('canonical resolution unavailable');
+		});
+		const promotionFailures: string[] = [];
+		_internals.log = (message: string) => {
+			promotionFailures.push(message);
+		};
+
+		const registration = registerPrFeedbackLoopRuntime(options(rootA, clientA));
+		// promote() must resolve (log-and-continue), never reject into the
+		// post-resolution task queue.
+		await registration.promote();
+		expect(
+			promotionFailures.some((entry) =>
+				entry.includes('root promotion failed'),
+			),
+		).toBe(true);
+		// The lexical registration remains the fail-closed fallback.
+		expect(getPrFeedbackLoopRuntime(rootA)).not.toBeNull();
+		// The failed physical alias was never registered.
+		expect(getPrFeedbackLoopRuntime(physicalRoot)).toBeNull();
+		registration();
 	});
 
 	it('does not dispatch without a current session agent or matching critic', async () => {

@@ -18,6 +18,11 @@ const MAX_TRACKED_SESSIONS = 200;
 const LOCK_MAX_ATTEMPTS = 50;
 const LOCK_RETRY_DELAY_MS = 10;
 const LOCK_UNINITIALIZED_STALE_MS = 30_000;
+// A lock whose recorded PID is alive but that has been held far longer than
+// any legitimate queue mutation can only be explained by PID reuse after a
+// crash. Re-acquiring a mutex cannot duplicate an effect, so a generous age
+// ceiling reclaims it instead of wedging the queue forever.
+const LOCK_ALIVE_OWNER_STALE_MS = 10 * 60_000;
 
 export interface PrFeedbackMonitorEvent {
 	type: string;
@@ -286,6 +291,10 @@ function canReclaimDeadClaim(event: PrFeedbackMonitorEvent): boolean {
 		ownerPid <= 0
 	)
 		return false;
+	// PID reuse after a crash can make a dead owner look alive here; that is
+	// accepted (the wedge self-heals when the reused PID exits, and
+	// clearPrFeedbackMonitorEvents is the operator recovery lever) because an
+	// age-based reclaim of a CLAIM could duplicate the paired feedback action.
 	return !_internals.isProcessAlive(ownerPid);
 }
 
@@ -401,6 +410,8 @@ export const _internals = {
 	rename: fsp.rename,
 	nowMs: () => Date.now(),
 	isProcessAlive,
+	reclaimAbandonedQueueLock,
+	removeQueueLockIfOwned,
 	beforeQueueFileOpen: undefined as (() => Promise<void>) | undefined,
 	beforeQueueLockWrite: undefined as (() => Promise<void>) | undefined,
 };
@@ -601,9 +612,22 @@ async function releaseQueueLock(lock: {
 }
 
 async function reclaimAbandonedQueueLock(lockPath: string): Promise<boolean> {
-	const lock = await readQueueLock(lockPath);
+	let lock: QueueLockRecord | null;
+	try {
+		lock = await readQueueLock(lockPath);
+	} catch {
+		// An unreadable lock cannot be verified against any owner; leave it to
+		// the age guard below instead of crashing the acquire loop (Windows
+		// EPERM from an external open handle must not escape as a raw error).
+		lock = null;
+	}
 	if (lock) {
-		if (_internals.isProcessAlive(lock.pid)) return false;
+		if (
+			_internals.isProcessAlive(lock.pid) &&
+			_internals.nowMs() - lock.createdAtMs < LOCK_ALIVE_OWNER_STALE_MS
+		) {
+			return false;
+		}
 		return removeQueueLockIfOwned(lockPath, lock.ownerToken);
 	}
 	try {
@@ -615,7 +639,9 @@ async function reclaimAbandonedQueueLock(lockPath: string): Promise<boolean> {
 		return true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
-		throw error;
+		// Non-ENOENT removal failures (EPERM/EBUSY) are retried by the next
+		// acquire attempt; report "not reclaimed" rather than throwing.
+		return false;
 	}
 }
 
@@ -654,14 +680,22 @@ async function removeQueueLockIfOwned(
 	lockPath: string,
 	ownerToken: string,
 ): Promise<boolean> {
-	const lock = await readQueueLock(lockPath);
+	let lock: QueueLockRecord | null;
+	try {
+		lock = await readQueueLock(lockPath);
+	} catch {
+		// Cannot verify ownership of an unreadable lock; never remove it.
+		return false;
+	}
 	if (!lock || lock.ownerToken !== ownerToken) return false;
 	try {
 		await fsp.rm(lockPath);
 		return true;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-		throw error;
+	} catch {
+		// ENOENT: already gone. Other failures (Windows EPERM from an external
+		// open handle) leave the lock for the next bounded reclaim pass — a
+		// throw here would escape acquire/release as a raw error.
+		return false;
 	}
 }
 

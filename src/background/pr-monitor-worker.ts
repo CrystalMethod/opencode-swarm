@@ -773,6 +773,7 @@ export class PrMonitorWorker {
 						body: comment.body,
 						createdAt: comment.createdAt,
 						isReviewComment: comment.isReviewComment,
+						headRefOid: current.status.headRefOid,
 					},
 				});
 			}
@@ -874,6 +875,7 @@ export class PrMonitorWorker {
 					prNumber: sub.prNumber,
 					repoFullName: sub.repoFullName,
 					prUrl: sub.prUrl,
+					headRefOid: current.status.headRefOid,
 				},
 			});
 			snapshotUpdates.isWatching = false;
@@ -948,6 +950,7 @@ export class PrMonitorWorker {
 						repoFullName: sub.repoFullName,
 						prUrl: sub.prUrl,
 						checkCount: currentChecks.length,
+						headRefOid: currentHeadRefOid,
 					},
 				});
 			}

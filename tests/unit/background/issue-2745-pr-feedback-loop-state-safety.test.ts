@@ -251,6 +251,9 @@ test('a live state lock fails closed before head, oversight, or action', async (
 	await enqueue(dir);
 	writeLiveLock(dir);
 	loopInternals.isProcessAlive = () => true;
+	// The live lock must read as YOUNG: writeLiveLock stamps createdAtMs at
+	// NOW, and the reclaim age ceiling only fires against this pinned clock.
+	loopInternals.now = () => NOW;
 	const head = mock(async () => HEAD);
 	const oversight = mock(async () => ({ dispatched: true, decision: 'allow' }));
 	const action = mock(async () => ({ performed: true }));
