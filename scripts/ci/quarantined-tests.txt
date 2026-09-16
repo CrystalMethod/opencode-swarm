@@ -72,3 +72,49 @@ tests/unit/services/evidence-summary-adversarial.test.ts
 #   with an updated criterion. Check 7 is silent until EXPIRY passes,
 #   then warns for 14 days and hard-fails on day 15.
 tests/unit/telemetry/init-rehome.test.ts
+#
+# pr-workflow-gate-batch-gc.test.ts (issue #2761) — CORE-TREE
+# -----------------------------------------------------------------------------
+# CORE-TREE entry requiring human review per the #1782 rule C: tests under
+# tests/unit/hooks/** are deliberately not auto-suggested; this comment block
+# documents why quarantine is appropriate. Tests the PR-workflow gate batch
+# garbage collection introduced by issue #1968 P4 (MAX_WORKFLOW_BATCHES GC
+# reclaim that fails closed when the derived inventory cannot be proven
+# unchanged). Flaky by construction: the file header (lines 35-42 of the test
+# itself) declares "every test here builds a full cap's worth of batches, which
+# is inherently slow: ~4s against bun's 5000ms default, i.e. flaky by
+# construction, and a timeout mid-transaction poisons the *next* test (its
+# continuation writes into a temp directory teardown already replaced)" — the
+# tests deliberately set `CAP_TEST_TIMEOUT_MS = 60_000` per-test to give
+# themselves headroom against the same cold-FS pressure that has hit prior
+# merge-group runs. Merge-group run 34797415390 (pr-2753, head
+# 15dcd7f1731c9e380bf7fbddb95252bca095cf6d, 2026-09-14T01:54Z, flake-detection
+# run 34799399563 at 02:29:49Z filed #2761): the file's
+# flake-annotations-unit-shard-1 artifact (id 10331335105) carries the
+# ::error file=...::FAILED annotation, meaning all three in-job retries
+# (max_retries=2) timed out under merge-group pressure. The 6-test suite runs
+# to 24.7s locally with explicit 60s timeouts (longest cell:
+# "the validation batch cap is reclaimed in a reviewer retry loop" at
+# 10915.95ms) and 6/6 pass locally on a clean TMPDIR — so the failure is
+# timing / CPU-contention sensitive, not a logic bug. Per-OS attribution is
+# indirect: the artifact's originating job log is no longer queryable from
+# the actions API, but the cross-OS flake profile (no Windows or macOS-only
+# signal — multiple ubuntu-latest shards also fail under cold-FS latency in
+# the same merge-group matrix; see the historical #1729 / #1737 cross-OS
+# pattern) routes this to the general ledger rather than
+# quarantined-tests-{macos,windows}.txt. Pre-existing, unrelated to any
+# specific PR. Quarantined per issue #2761; tracked under #1737 (test
+# quarantine debt) pending a dedicated test-stability sprint (#1782).
+# OWNER: @zaxbysauce — issue #2761 (CORE-TREE entry: tests/unit/hooks/** per
+#   rule C of scripts/ci/detect-and-quarantine-flakes.sh; flaky-by-construction
+#   per the file's own header comment; cross-OS timing sensitivity routes to
+#   general ledger; see merge-group run 34797415390 + flake-annotations
+#   artifact 10331335105)
+# EXPIRY: 2026-10-16 — either (a) shorten the suite's per-test work
+#   (e.g. shrink MAX_WORKFLOW_BATCHES for these tests via test-only override,
+#   or pre-seed minimal fixtures so the full-cap loop is unnecessary), or
+#   (b) raise the per-test timeout floor used by merge_group windows-latest /
+#   ubuntu-latest cold-FS shards from 60s to 120s; root-fix the test's
+#   inherent slowness, or renew with an updated diagnosis under
+#   #1737/#2477
+tests/unit/hooks/pr-workflow-gate-batch-gc.test.ts
