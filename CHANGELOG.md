@@ -1,5 +1,24 @@
 # Changelog
 
+## [7.184.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.0...v7.184.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* **architect:** stop inducing dead SKILLS references in consumer projects ([#2802](https://github.com/ZaxbyHub/opencode-swarm/issues/2802)) ([4812135](https://github.com/ZaxbyHub/opencode-swarm/commit/481213529549f1fda9eb39e5d61f1d089bb4d427))
+* **architect:** stop inducing dead SKILLS references in consumer projects ([#2802](https://github.com/ZaxbyHub/opencode-swarm/issues/2802)) ([c19617b](https://github.com/ZaxbyHub/opencode-swarm/commit/c19617bf3bb2a50243b896f72e01a8ad177c0e43))
+* **background:** harden pr-feedback-loop durability and delivery ([#2745](https://github.com/ZaxbyHub/opencode-swarm/issues/2745) review round) ([2e88fff](https://github.com/ZaxbyHub/opencode-swarm/commit/2e88fff3894e6152d947182a9817e98148b6d902))
+* **background:** wire pr-feedback-loop production seams ([#2745](https://github.com/ZaxbyHub/opencode-swarm/issues/2745)) ([63cee0b](https://github.com/ZaxbyHub/opencode-swarm/commit/63cee0b7e071aecc267c4806b5cb736fd294eb3a))
+* **containment:** apply project-root ownership before bootstrap creates runtime state ([#2679](https://github.com/ZaxbyHub/opencode-swarm/issues/2679)) ([8b4feb2](https://github.com/ZaxbyHub/opencode-swarm/commit/8b4feb2cfcccb86bab79e392e75988c4bb25098c))
+* **containment:** apply project-root ownership before bootstrap creates runtime state ([#2679](https://github.com/ZaxbyHub/opencode-swarm/issues/2679)) ([43f1c06](https://github.com/ZaxbyHub/opencode-swarm/commit/43f1c067874beb3df2386791d474c8d5411e1c88))
+* **containment:** close fail-closed writer escapes + mcp stdout protocol fix ([#2679](https://github.com/ZaxbyHub/opencode-swarm/issues/2679) review) ([0f860c5](https://github.com/ZaxbyHub/opencode-swarm/commit/0f860c5591492241bb41c34217b177cf4d3175b8))
+* **containment:** thread reviewer-scope lifecycle at the owning bootstrap root ([#2679](https://github.com/ZaxbyHub/opencode-swarm/issues/2679) review) ([2eb5121](https://github.com/ZaxbyHub/opencode-swarm/commit/2eb5121f5babf880b439f7faf7b41f2e8a9fa711))
+* **gates:** preserve legacy advisory gate checks ([5195348](https://github.com/ZaxbyHub/opencode-swarm/commit/51953481e4f3e853cf7efd456b968c6322d73613))
+* **guardrails:** correct coder mutation guidance ([df0b0c9](https://github.com/ZaxbyHub/opencode-swarm/commit/df0b0c9e6356608ab92ed6a1b27931266252d4ba))
+* **guardrails:** correct coder mutation guidance ([643ede0](https://github.com/ZaxbyHub/opencode-swarm/commit/643ede072f68e45ecafa7c64940b5fe9ca246c7d))
+* **session:** reconcile restart policy authority ([4c2cbfa](https://github.com/ZaxbyHub/opencode-swarm/commit/4c2cbfa7f5652353eaf4b578b47091d9bc98d487))
+* **workflow:** complete trusted empty-scope tasks ([11eacc8](https://github.com/ZaxbyHub/opencode-swarm/commit/11eacc8d73b06a6f4fc26b9f7349b1d8885f51ee))
+
 ## [7.184.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.1...v7.184.0) (2026-09-16)
 
 
