@@ -1560,11 +1560,15 @@ export async function hasPassedAllGates(
 	const evidence = await readTaskEvidence(directory, taskId);
 	if (!evidence) return false;
 	if (!Array.isArray(evidence.required_gates)) return false;
+	if (currentDeclaredFiles === undefined) {
+		// Scope-free callers retain the legacy advisory-gate behavior, but a
+		// no-mutation marker is never proof without an explicit empty scope.
+		if (deriveApplicableGateSet(evidence).readOnlyNoMutation) return false;
+		return hasAllRequiredGatesPassed(evidence.required_gates, evidence.gates);
+	}
 	return (
-		deriveApplicableGateSet(evidence, {
-			// Missing caller scope is unknown, not proof of a still-empty plan.
-			currentDeclaredFiles: currentDeclaredFiles ?? null,
-		}).missingGates.length === 0
+		deriveApplicableGateSet(evidence, { currentDeclaredFiles }).missingGates
+			.length === 0
 	);
 }
 

@@ -90,4 +90,24 @@ describe('hasPassedAllGates applicability (#2763)', () => {
 
 		expect(await hasPassedAllGates(directory, '1.4')).toBe(true);
 	});
+
+	test('preserves legacy advisory gates but keeps no-mutation scope fail-closed', async () => {
+		writeEvidence('1.5', {
+			required_gates: ['critic'],
+			gates: {
+				critic: {
+					sessionId: 'session-1',
+					timestamp: '2026-09-14T00:00:00.000Z',
+					agent: 'critic',
+				},
+			},
+		});
+
+		// Legacy callers do not have scope authority and retain the historical
+		// advisory-gate result. Explicit scope input uses the strict derivation
+		// path, which requires pre_check for this non-marker evidence.
+		expect(await hasPassedAllGates(directory, '1.5')).toBe(true);
+		expect(await hasPassedAllGates(directory, '1.5', [])).toBe(false);
+		expect(await hasPassedAllGates(directory, '1.5', null)).toBe(false);
+	});
 });
