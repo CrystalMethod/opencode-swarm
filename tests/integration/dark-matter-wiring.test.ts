@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import { AGENT_TOOL_MAP } from '../../src/config/constants';
 import type { PluginConfig } from '../../src/config/schema';
 import { _internals as knowledgeStoreInternals } from '../../src/hooks/knowledge-store';
+import { swarmState } from '../../src/state';
 import {
 	type CoChangeEntry,
 	_internals as coChangeInternals,
@@ -186,6 +187,9 @@ describe('system-enhancer dark matter trigger', () => {
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'dark-matter-wiring-'));
+		// The system surface now defers cold-identity scans; model a known
+		// non-native direct-hook caller so these wiring tests exercise the scan.
+		swarmState.activeAgent.set('test-session', 'mega_coder');
 		detectDarkMatterCalls.length = 0;
 		formatDarkMatterOutputCalls.length = 0;
 		darkMatterToKnowledgeEntriesCalls.length = 0;
@@ -197,6 +201,7 @@ describe('system-enhancer dark matter trigger', () => {
 	});
 
 	afterEach(() => {
+		swarmState.activeAgent.delete('test-session');
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
@@ -333,11 +338,14 @@ describe('repos without git skip silently', () => {
 
 	beforeEach(() => {
 		tempDir = mkdtempSync(path.join(tmpdir(), 'dark-matter-no-git-'));
+		// Keep direct system-hook invocations identity-bound under the cold guard.
+		swarmState.activeAgent.set('test-session', 'mega_coder');
 		detectDarkMatterCalls.length = 0;
 		mockDetectDarkMatter.mockClear();
 	});
 
 	afterEach(() => {
+		swarmState.activeAgent.delete('test-session');
 		rmSync(tempDir, { recursive: true, force: true });
 	});
 
