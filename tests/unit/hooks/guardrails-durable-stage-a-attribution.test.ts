@@ -379,7 +379,7 @@ describe('durable Stage A attribution', () => {
 		).toBe(true);
 	});
 
-	test('rework_required pass identifies the required coder mutation without recovery advice', async () => {
+	test('rework_required pass identifies the required mutation and recovery guidance', async () => {
 		await transitionTaskWorkflowEvidence(directory, '9.10', {
 			type: 'accepted_mutation',
 			agentType: 'coder',
@@ -418,19 +418,18 @@ describe('durable Stage A attribution', () => {
 				message.includes('TASK_WORKFLOW_CODER_MUTATION_REQUIRED'),
 			);
 			expect(advisory).toBeDefined();
-			expect(advisory).toContain('accepted coder mutation');
-			expect(advisory).toContain('before Stage A');
+			expect(advisory).toMatch(/accepted coder mutation.*before Stage A/);
+			expect(advisory).toMatch(
+				/recover_rework_task.*dispatch a coder.*mark the task blocked/,
+			);
 			expect(advisory).not.toContain('NOT attributed');
 			expect(advisory).not.toContain('/swarm recover');
 			expect(criticalWarnSpy).toHaveBeenCalledTimes(1);
-			expect(criticalWarnSpy).toHaveBeenCalledWith(
-				expect.stringContaining('accepted coder mutation'),
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).toMatch(
+				/recover_rework_task.*mark the task blocked/,
 			);
-			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
-				'NOT attributed',
-			);
-			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toContain(
-				'/swarm recover',
+			expect(criticalWarnSpy.mock.calls[0]?.[0]).not.toMatch(
+				/NOT attributed|\/swarm recover/,
 			);
 		} finally {
 			criticalWarnSpy.mockRestore();

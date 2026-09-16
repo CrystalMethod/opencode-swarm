@@ -1270,11 +1270,11 @@ export function createGuardrailsHooks(
 									const code = stageAWriteErrorCode(err);
 									if (code && STAGE_A_CODER_MUTATION_REQUIRED_CODES.has(code)) {
 										logger.criticalWarn(
-											`[guardrails] Stage A failure write failed for task ${taskId}: ${code}. An accepted coder mutation is required before Stage A can be recorded again. Dispatch a coder for a real code change, or mark the task blocked if no valid change exists.`,
+											`[guardrails] Stage A failure write failed for task ${taskId}: ${code}. An accepted coder mutation is required before Stage A can be recorded again. If the task is rework_required because Stage B did not require a code change, the architect-only recover_rework_task path is valid after fresh green pre_check_batch proof; for a genuine defect, dispatch a coder for a real code change, and mark the task blocked only when neither path applies.`,
 										);
 										pushAdvisory(
 											session,
-											`STAGE A WRITE FAILED (${code}) for task ${taskId}: pre_check_batch failed but an accepted coder mutation is required before Stage A can be recorded again. Dispatch a coder for a real code change, or mark the task blocked if no valid change exists.`,
+											`STAGE A WRITE FAILED (${code}) for task ${taskId}: pre_check_batch failed but an accepted coder mutation is required before Stage A can be recorded again. If the task is rework_required because Stage B did not require a code change, the architect-only recover_rework_task path is valid after fresh green pre_check_batch proof; for a genuine defect, dispatch a coder for a real code change, and mark the task blocked only when neither path applies.`,
 										);
 									} else if (code && STAGE_A_ATTRIBUTION_MISS_CODES.has(code)) {
 										logger.criticalWarn(
@@ -1344,11 +1344,11 @@ export function createGuardrailsHooks(
 									}
 									if (code && STAGE_A_CODER_MUTATION_REQUIRED_CODES.has(code)) {
 										logger.criticalWarn(
-											`[guardrails] Stage A write failed for task ${taskId}: ${code} — an accepted coder mutation is required before Stage A can be recorded again. Dispatch a coder for a real code change, or mark the task blocked if no valid change exists.`,
+											`[guardrails] Stage A write failed for task ${taskId}: ${code} — an accepted coder mutation is required before Stage A can be recorded again. If the task is rework_required because Stage B did not require a code change, the architect-only recover_rework_task path is valid after fresh green pre_check_batch proof; for a genuine defect, dispatch a coder for a real code change, and mark the task blocked only when neither path applies.`,
 										);
 										pushAdvisory(
 											session,
-											`STAGE A WRITE FAILED (${code}) for task ${taskId}: pre_check_batch passed but an accepted coder mutation is required before Stage A can be recorded again. Dispatch a coder for a real code change, or mark the task blocked if no valid change exists.`,
+											`STAGE A WRITE FAILED (${code}) for task ${taskId}: pre_check_batch passed but an accepted coder mutation is required before Stage A can be recorded again. If the task is rework_required because Stage B did not require a code change, the architect-only recover_rework_task path is valid after fresh green pre_check_batch proof; for a genuine defect, dispatch a coder for a real code change, and mark the task blocked only when neither path applies.`,
 										);
 									} else if (code && STAGE_A_ATTRIBUTION_MISS_CODES.has(code)) {
 										logger.criticalWarn(
