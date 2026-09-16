@@ -1,5 +1,19 @@
 # Changelog
 
+## [7.184.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.1...v7.184.0) (2026-09-16)
+
+
+### Features
+
+* **config:** governed v8 defaults-flip frame — conservative preset, migration, rollback, inventory ([#2504](https://github.com/ZaxbyHub/opencode-swarm/issues/2504)) ([ae07d84](https://github.com/ZaxbyHub/opencode-swarm/commit/ae07d84c965d701d0c0277559277e9255ba282be))
+
+
+### Bug Fixes
+
+* **config:** review-round hardening for the [#2504](https://github.com/ZaxbyHub/opencode-swarm/issues/2504) governance frame ([ea1c3a8](https://github.com/ZaxbyHub/opencode-swarm/commit/ea1c3a862a3741b4896439738a42de82af7fc425))
+* **prompt-cache:** stabilize architect request prefixes ([7da47f9](https://github.com/ZaxbyHub/opencode-swarm/commit/7da47f93974b204eb6370fd4b1da188a3e4f9aa9))
+* **prompt-cache:** stabilize architect request prefixes ([54412be](https://github.com/ZaxbyHub/opencode-swarm/commit/54412bed27d3b661e52aecdbb5235f3f106f9797))
+
 ## [7.183.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.0...v7.183.1) (2026-09-15)
 
 
