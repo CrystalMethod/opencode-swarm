@@ -264,7 +264,7 @@ describe('repro-check.sh checkpoint manifest integrity', () => {
 		expect(verify.out).not.toContain('OK check-a.sh');
 
 		// `checkpoint` shares the validator, so it refuses the same file.
-		const amend = checkpoint(worktree, base, ['check-a.sh'], 'FORMAT_ONLY');
+		const amend = checkpoint(worktree, base, ['check-a.sh'], 'CHECK_WRONG');
 		expect(amend.code).toBe(2);
 		expect(amend.err).toContain('seq is not contiguous');
 	}, 30_000);

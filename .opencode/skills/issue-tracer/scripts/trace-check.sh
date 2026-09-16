@@ -14,13 +14,104 @@ to_shell_path() {
 
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "trace-check: not inside a git work tree" >&2; exit 2; }
 root="$(to_shell_path "$root")"
+root_real="$(cd "$root" && pwd -P)"
+issue_traces_base="$root_real/.agents/issue-traces"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 failed=0
 legacy=0
+trace_root_real=""
 
 usage() { echo "usage: trace-check.sh {tree-id|handshake|phase <phase> --slug <slug> [--trace-dir <dir>]|merge --slug <slug>}" >&2; exit 2; }
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
 trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+
+# Validate the caller-selected trace directory before opening state.md.  The
+# lexical prefix check rejects absolute escapes and dot components before any
+# canonicalization (which would otherwise turn an escaped path back into an
+# apparently safe one).  The deepest existing ancestor and each existing
+# component are then checked for symlinks/junctions so a path that looks inside
+# the root cannot redirect reads outside it.
+validate_trace_dir() {
+  local candidate="$1" check parent resolved
+  candidate="$(to_shell_path "$candidate")"
+  case "$candidate/" in
+    "$root_real/.agents/issue-traces/"*) ;;
+    *) echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2; exit 2;;
+  esac
+  case "$candidate/" in
+    */../*|*/./*) echo "trace-check: --trace-dir cannot contain . or .. components" >&2; exit 2;;
+  esac
+
+  check="$candidate"
+  while [ -L "$check" ]; do
+    echo "trace-check: refusing symlinked trace path: $candidate" >&2
+    exit 2
+  done
+  while [ ! -e "$check" ]; do
+    parent="$(dirname "$check")"
+    [ "$parent" != "$check" ] || break
+    check="$parent"
+    [ -L "$check" ] || continue
+    echo "trace-check: refusing symlinked trace ancestor: $check" >&2
+    exit 2
+  done
+  [ -e "$check" ] || { echo "trace-check: could not resolve trace path: $candidate" >&2; exit 2; }
+  resolved="$(cd "$check" 2>/dev/null && pwd -P)" || { echo "trace-check: could not resolve trace path: $candidate" >&2; exit 2; }
+  case "$resolved/" in
+    "$root_real/"*) ;;
+    *) echo "trace-check: --trace-dir resolves outside the project root" >&2; exit 2;;
+  esac
+
+  check="$candidate"
+  while [ "$check" != "$root_real" ] && [ "$check" != "/" ]; do
+    if [ -L "$check" ]; then
+      echo "trace-check: refusing symlinked trace component: $check" >&2
+      exit 2
+    fi
+    check="$(dirname "$check")"
+  done
+  [ "$check" = "$root_real" ] || { echo "trace-check: --trace-dir is not rooted at the project" >&2; exit 2; }
+}
+
+# Validate a path below the already-canonical trace root immediately before it
+# is read.  `[ -f ]` follows symlinks, so it cannot be used as the first check:
+# a leaf or an intermediate directory could redirect an otherwise in-root
+# artifact to an arbitrary outside file.  The ancestor walk catches both POSIX
+# symlinks and Windows junctions as reported by MSYS `test -L`; the canonical
+# parent check is defense in depth for filesystem races and unusual link forms.
+trace_path_safe() {
+  local path="$1" kind="${2:-file}" ancestor parent resolved
+  [ -n "$trace_root_real" ] || { echo "trace-check: trace root is not initialized" >&2; exit 2; }
+  case "$path/" in
+    "$trace_root_real/"*) ;;
+    *) echo "trace-check: refusing path outside canonical trace root: $path" >&2; exit 2;;
+  esac
+  case "$path/" in
+    */../*|*/./*) echo "trace-check: refusing ambiguous trace path: $path" >&2; exit 2;;
+  esac
+  ancestor="$path"
+  while [ "$ancestor" != "$trace_root_real" ] && [ "$ancestor" != "/" ]; do
+    if [ -L "$ancestor" ]; then
+      echo "trace-check: refusing symlinked trace component: $ancestor" >&2
+      exit 2
+    fi
+    ancestor="$(dirname "$ancestor")"
+  done
+  [ "$ancestor" = "$trace_root_real" ] || { echo "trace-check: trace path is not rooted at the canonical trace directory: $path" >&2; exit 2; }
+  [ "$path" = "$trace_root_real" ] && { [ "$kind" = dir ] && [ -d "$path" ]; return $?; }
+  parent="$(dirname "$path")"
+  [ -d "$parent" ] || return 1
+  resolved="$(cd "$parent" 2>/dev/null && pwd -P)" || { echo "trace-check: could not resolve trace artifact parent: $path" >&2; exit 2; }
+  case "$resolved/" in
+    "$trace_root_real/"*) ;;
+    *) echo "trace-check: trace artifact parent resolves outside canonical trace root: $path" >&2; exit 2;;
+  esac
+  case "$kind" in
+    file) [ -f "$path" ] || return 1;;
+    dir) [ -d "$path" ] || return 1;;
+    *) echo "trace-check: internal invalid trace path kind: $kind" >&2; exit 2;;
+  esac
+}
 
 tree_id() {
   # Trace artifacts under .agents/issue-traces/ must never affect this
@@ -72,12 +163,15 @@ rule_ok() { echo "OK $1"; }
 rule_bad() {
   if [ "$legacy" -eq 1 ]; then echo "WARN $1: $2"; else echo "FAIL $1: $2"; failed=1; fi
 }
-state_value() { awk -F ': ' -v key="$1" '$1 == key { print substr($0, length(key) + 3); exit }' "$state" 2>/dev/null || true; }
+state_value() {
+  trace_path_safe "$state" file || return 0
+  awk -F ': ' -v key="$1" '$1 == key { print substr($0, length(key) + 3); exit }' "$state" 2>/dev/null || true
+}
 is_hex() { case "$1" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0;; *) return 1;; esac; }
 
 check_headings() {
   local file="$1"; shift
-  if [ ! -f "$file" ]; then rule_bad "artifact-$(basename "$file")" "missing"; return; fi
+  if ! trace_path_safe "$file" file; then rule_bad "artifact-$(basename "$file")" "missing"; return; fi
   local heading count
   for heading in "$@"; do
     count="$(grep -Fx "$heading" "$file" 2>/dev/null | wc -l | tr -d ' ')"
@@ -97,6 +191,7 @@ check_headings() {
 # "DISAPPROVED"; matching is done cell-by-cell after trimming instead.
 gate_row_exists() {
   local gate="$1" verdict_want="$2" commit="$3" treeid="$4" line g v c t
+  trace_path_safe "$state" file || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in '|'*) ;; *) continue;; esac
     IFS='|' read -r _ g v c t _ <<EOF
@@ -127,7 +222,7 @@ state_gate() {
 # APPROVE.
 artifact_verdict_approved() {
   local file="$1"
-  [ -f "$file" ] || return 1
+  trace_path_safe "$file" file || return 1
   awk '
     /^## Verdict$/ { infield = 1; next }
     /^## / { infield = 0 }
@@ -158,6 +253,7 @@ artifact_verdict_approved() {
 # callers can distinguish "0 matches" from "duplicate matches").
 artifact_identity() {
   local file="$1" section
+  trace_path_safe "$file" file || return 1
   section="$(awk '
     /^## Reviewed SHA \/ diff hash$/ { infield = 1; next }
     /^## / { infield = 0 }
@@ -205,6 +301,7 @@ artifact_identity_matches_gate() {
 
 recurrence_justification_ok() {
   local file="$1"
+  trace_path_safe "$file" file || return 1
   awk '
     /^## Justification$/ { infield = 1; next }
     /^## / { infield = 0 }
@@ -227,6 +324,7 @@ clean_tree() {
 
 phase0() {
   local keys key expected actual previous=0 line fresh
+  trace_path_safe "$state" file || return
   keys='protocol phase tier classification base-ref base-sha freshness phase0-tree-id checkpoint-tree-id handshake tools merge next-action'
   for key in $keys; do
     line="$(grep -n "^$key: " "$state" 2>/dev/null | cut -d: -f1 | head -n1 || true)"
@@ -273,12 +371,16 @@ phase0() {
   [ "$(state_value handshake)" != "unset" ] && [ -n "$(state_value handshake)" ] && rule_ok handshake || rule_bad handshake "must be recorded"
 }
 
-acceptance_ids() { grep -E '^- \[[ x]\] AC[0-9]+:' "$trace/01-issue-summary.md" 2>/dev/null | sed -E 's/^- \[[ x]\] (AC[0-9]+):.*/\1/'; }
+acceptance_ids() {
+  local file="$trace/01-issue-summary.md"
+  grep -E '^- \[[ x]\] AC[0-9]+:' "$file" 2>/dev/null | sed -E 's/^- \[[ x]\] (AC[0-9]+):.*/\1/'
+}
 is_already_fixed() { [ "$(state_value classification)" = "ALREADY_FIXED" ]; }
 
 phase1() {
   local file="$trace/01-issue-summary.md" value
   check_headings "$file" '## Source' '## Observed Behavior' '## Expected Behavior' '## Acceptance Criteria' '## Classification' '## Related Issues'
+  trace_path_safe "$file" file || return
   acceptance_ids | grep -q . && rule_ok acceptance-criteria || rule_bad acceptance-criteria "missing AC checkbox"
   value="$(state_value classification)"
   case "$value" in VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE) ;; *) rule_bad classification "invalid state value"; return;; esac
@@ -289,6 +391,7 @@ phase1() {
 phase2() {
   local file="$trace/02-reproduction.md"
   check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
+  trace_path_safe "$file" file || return
   grep -q '^```text$' "$file" 2>/dev/null && rule_ok reproduction-text-block || rule_bad reproduction-text-block "missing"
   grep -Eq '^- Exit code: [0-9]+' "$file" 2>/dev/null && rule_ok reproduction-exit-code || rule_bad reproduction-exit-code "missing"
   if is_already_fixed; then check_headings "$file" '## Fixing Change'; fi
@@ -297,6 +400,8 @@ phase2() {
 phase25() {
   local file="$trace/02-reproduction.md" header ac row found class check pre notes reason checkpoint manifest_path diff_path cells ac_probe
   if is_already_fixed; then rule_ok obe-subset; return; fi
+  check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
+  trace_path_safe "$file" file || return
   header='| AC | class | check | argv | expect | pre-fix | post-fix | notes |'
   grep -Fx "$header" "$file" >/dev/null 2>&1 && rule_ok acceptance-table || { rule_bad acceptance-table "missing exact header"; return; }
   while IFS= read -r ac; do
@@ -317,9 +422,9 @@ $row
 EOF
     ac="$(trim "$ac")"; class="$(trim "$class")"; check="$(trim "$check")"; pre="$(trim "$pre")"; notes="$(trim "$notes")"
     case "$class" in
-      DISCRIMINATING) [ "$pre" = RED ] || rule_bad "pre-fix-$ac" "DISCRIMINATING must be RED"; [ -f "$trace/repro/$check.base.log" ] || rule_bad "base-log-$check" "missing" ;;
-      PRESERVING) [ "$pre" = GREEN ] || rule_bad "pre-fix-$ac" "PRESERVING must be GREEN"; [ -f "$trace/repro/$check.base.log" ] || rule_bad "base-log-$check" "missing" ;;
-      NEW-SURFACE) [ "$pre" = ERROR ] || rule_bad "pre-fix-$ac" "NEW-SURFACE must be ERROR"; [ -f "$trace/repro/$check.base.log" ] || rule_bad "base-log-$check" "missing" ;;
+      DISCRIMINATING) [ "$pre" = RED ] || rule_bad "pre-fix-$ac" "DISCRIMINATING must be RED"; trace_path_safe "$trace/repro/$check.base.log" file || rule_bad "base-log-$check" "missing or unsafe" ;;
+      PRESERVING) [ "$pre" = GREEN ] || rule_bad "pre-fix-$ac" "PRESERVING must be GREEN"; trace_path_safe "$trace/repro/$check.base.log" file || rule_bad "base-log-$check" "missing or unsafe" ;;
+      NEW-SURFACE) [ "$pre" = ERROR ] || rule_bad "pre-fix-$ac" "NEW-SURFACE must be ERROR"; trace_path_safe "$trace/repro/$check.base.log" file || rule_bad "base-log-$check" "missing or unsafe" ;;
       NON-EXECUTABLE) case "$check" in DOCS_ONLY|HOST_ONLY|PRODUCT_DECISION|EXTERNAL_SERVICE_UNAVAILABLE) ;; *) rule_bad "non-executable-$ac" "unknown reason";; esac; [ -n "$notes" ] && [ "$notes" != '-' ] || rule_bad "notes-$ac" "required" ;;
       *) rule_bad "class-$ac" "invalid" ;;
     esac
@@ -328,12 +433,42 @@ EOF
   checkpoint="$(grep '^checkpoint-tree-id: ' "$file" 2>/dev/null | head -n1 | sed 's/^checkpoint-tree-id: //')"
   is_hex "$checkpoint" && [ "$checkpoint" = "$(state_value checkpoint-tree-id)" ] && rule_ok red-checkpoint || rule_bad red-checkpoint "state binding missing or invalid"
   manifest_path="$trace/repro/checkpoint.manifest"
+  trace_path_safe "$trace/repro" dir || { rule_bad checkpoint-manifest "missing or unsafe repro directory"; return; }
   # Header shape only - repro-check.sh owns full validation (row count, seq
   # run, field count). The `rows=<N>` suffix is required, matching the fact
   # that repro-check refuses a header with no count; awk rather than a
   # `head | grep -q` pipeline so no SIGPIPE can decide the verdict, and the
   # END guard makes an empty manifest fail instead of vacuously passing.
-  [ -f "$manifest_path" ] && awk 'NR == 1 { if ($0 ~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) exit 0; exit 1 } END { if (NR == 0) exit 1 }' "$manifest_path" && rule_ok checkpoint-manifest || { rule_bad checkpoint-manifest "missing or invalid"; return; }
+  trace_path_safe "$manifest_path" file && awk 'NR == 1 { if ($0 ~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) exit 0; exit 1 } END { if (NR == 0) exit 1 }' "$manifest_path" && rule_ok checkpoint-manifest || { rule_bad checkpoint-manifest "missing or invalid"; return; }
+  # A checkpoint tree has one effective blob per path. Multiple acceptance
+  # checks may share a path when they captured identical bytes; those rows can
+  # be deduplicated while deriving the tree. Divergent effective blobs for one
+  # path are unsafe, however, and must fail before the tree/path comparison can
+  # accidentally treat the manifest as a path-only set.
+  if awk -F '\t' '
+    NR > 1 {
+      pair = length($3) ":" $3 ":" $6
+      latest_path[pair] = $3
+      latest_blob[pair] = $4
+    }
+    END {
+      for (pair in latest_path) {
+        path = latest_path[pair]
+        if (seen[path] && blob[path] != latest_blob[pair]) {
+          print "conflicting effective blobs for " path > "/dev/stderr"
+          bad = 1
+        }
+        seen[path] = 1
+        blob[path] = latest_blob[pair]
+      }
+      exit bad
+    }
+  ' "$manifest_path"; then
+    rule_ok manifest-effective-blobs
+  else
+    rule_bad manifest-effective-blobs "same path has divergent effective blobs"
+    return
+  fi
   diff_path="$(git diff-tree -r --name-only "$(state_value phase0-tree-id)" "$checkpoint" 2>/dev/null || true)"
   while IFS= read -r check; do
     [ -z "$check" ] && continue
@@ -347,9 +482,11 @@ phase3() {
   local head tid
   check_headings "$trace/05-fix-plan.md" '## Selected Fix' '## Candidate Fixes' '## Impact Analysis' '## Anticipated Defect-Class Sweep (Phase 4.2)'
   check_headings "$trace/06-critic-review.md" '## Reviewed SHA / diff hash' '## Verdict' '## Check replay'
+  trace_path_safe "$trace/05-fix-plan.md" file || return
+  trace_path_safe "$trace/06-critic-review.md" file || return
   grep -Eq '^## Round [0-9]+$' "$trace/06-critic-review.md" 2>/dev/null && rule_ok heading-round || rule_bad heading-round "missing ## Round N heading in $(basename "$trace/06-critic-review.md")"
   artifact_verdict_approved "$trace/06-critic-review.md" && rule_ok critic-verdict || rule_bad critic-verdict "06-critic-review.md Verdict section must be exactly APPROVE"
-  [ -f "$trace/07-approved-plan.md" ] && rule_ok approved-plan || rule_bad approved-plan "missing"
+  trace_path_safe "$trace/07-approved-plan.md" file && rule_ok approved-plan || rule_bad approved-plan "missing or unsafe"
   # The checkpoint tree may be dirty relative to HEAD at Phase 3 (the fix is
   # not implemented yet), so the plan-critic gate row is bound to the current
   # HEAD commit and the current working-tree identity (tree_id), not the
@@ -359,18 +496,36 @@ phase3() {
   artifact_identity_matches_gate "$trace/06-critic-review.md" plan-critic "$head" "$tid"
 }
 
-executable_ids() { grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' "$trace/02-reproduction.md" 2>/dev/null | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 != "NON-EXECUTABLE") print $4}'; }
+executable_ids() {
+  local file="$trace/02-reproduction.md"
+  grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' "$file" 2>/dev/null | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 != "NON-EXECUTABLE") print $4}'
+}
+manifest_has_check_id() {
+  local manifest="$1" want="$2"
+  trace_path_safe "$manifest" file || return 1
+  awk -F '\t' -v want="$want" '
+    NR > 1 { latest[length($3) ":" $3 ":" $6] = $6 }
+    END { for (pair in latest) if (latest[pair] == want) found = 1; exit !found }
+  ' "$manifest"
+}
 phase4() {
-  local file="$trace/08-test-results.md" id
+  local file="$trace/08-test-results.md" id manifest
   check_headings "$file" '## Regression Test' '## Acceptance check results' '## Quality Checks' '## Deferred-Work Scan' '## Verification Reasoning' '## Checkpoint verification'
+  manifest="$trace/repro/checkpoint.manifest"
+  trace_path_safe "$trace/02-reproduction.md" file || { rule_bad acceptance-source "missing or unsafe reproduction artifact"; return; }
+  trace_path_safe "$trace/repro" dir || { rule_bad recurrence-manifest "missing or unsafe repro directory"; return; }
+  trace_path_safe "$manifest" file || { rule_bad recurrence-manifest "missing or unsafe checkpoint manifest"; return; }
   while IFS= read -r id; do [ -z "$id" ] || { grep -Fx "### Check $id" "$file" >/dev/null 2>&1 && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"; }; done < <(executable_ids)
+  while IFS= read -r id; do
+    [ -z "$id" ] || { manifest_has_check_id "$manifest" "$id" && rule_ok "manifest-check-$id" || rule_bad "manifest-check-$id" "executable acceptance check is missing from the effective manifest"; }
+  done < <(executable_ids)
   if "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
   grep -A100 '^## Deferred-Work Scan$' "$file" 2>/dev/null | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
 }
 
 phase42() {
   local file="$trace/08a-recurrence-sweep.md" hits rows
-  [ -f "$file" ] || { rule_bad recurrence-sweep "missing"; return; }
+  trace_path_safe "$file" file || { rule_bad recurrence-sweep "missing"; return; }
   if grep -Eq '^no-defect-class: true$' "$file" 2>/dev/null; then
     if recurrence_justification_ok "$file"; then rule_ok recurrence-sweep; else rule_bad recurrence-sweep "fast-path Justification must have non-placeholder text"; fi
     return
@@ -387,6 +542,7 @@ phase45() {
   clean_tree
   local file="$trace/08b-implementation-review.md" head tid
   check_headings "$file" '## Reviewed SHA / diff hash' '## Verdict' '## Independently re-run' '## Check integrity' '## Deferred / Scoped-Out / Unwired'
+  trace_path_safe "$file" file || return
   artifact_verdict_approved "$file" && rule_ok artifact-verdict-implementation-review || rule_bad artifact-verdict-implementation-review "must contain APPROVE under ## Verdict"
   head="$(git rev-parse HEAD)"; tid="$(tree_id)"
   state_gate implementation-review APPROVE "$head" "$tid"
@@ -396,6 +552,8 @@ phase46() {
   local ac file="$trace/09-final-critic.md" head tid
   clean_tree
   check_headings "$file" '## Reviewed SHA / diff hash' '## Verdict' '## Review Freshness' '## Deferred / Scoped-Out / Unwired' '## Acceptance criteria evidence'
+  trace_path_safe "$file" file || return
+  trace_path_safe "$trace/01-issue-summary.md" file || { rule_bad acceptance-source "missing or unsafe issue summary"; return; }
   artifact_verdict_approved "$file" && rule_ok artifact-verdict-final-critic || rule_bad artifact-verdict-final-critic "must contain APPROVE under ## Verdict"
   head="$(git rev-parse HEAD)"; tid="$(tree_id)"
   state_gate final-critic APPROVE "$head" "$tid"
@@ -406,6 +564,7 @@ phase5() {
   if is_already_fixed; then rule_ok obe-subset; return; fi
   local file="$trace/10-pr-body.md" merge_value pr_head_line pr_head_sha
   check_headings "$file" '## Acceptance Criteria -> Evidence' '## Waivers (or none)'
+  trace_path_safe "$file" file || return
   pr_head_line="$(grep -E '^PR head: [0-9a-f]{40}$' "$file" 2>/dev/null | head -n1 || true)"
   if [ -z "$pr_head_line" ]; then
     rule_bad pr-head "missing PR head: <40-hex> line"
@@ -423,6 +582,7 @@ phase5() {
 merge_check() {
   local file="$trace/10b-merge-approval.md" pr final
   check_headings "$file" '## User approval (verbatim)' '## PR head SHA' '## Final critic reviewed-commit'
+  trace_path_safe "$file" file || return
   pr="$(grep -A3 '^## PR head SHA$' "$file" 2>/dev/null | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
   final="$(grep -A3 '^## Final critic reviewed-commit$' "$file" 2>/dev/null | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
   is_hex "$pr" && [ "$pr" = "$final" ] && rule_ok merge-sha-binding || rule_bad merge-sha-binding "PR and final critic SHA differ"
@@ -444,8 +604,26 @@ while [ "$#" -gt 0 ]; do
 done
 valid_slug "$slug" || { echo "trace-check: invalid slug" >&2; exit 2; }
 [ -n "$trace" ] || trace="$root/.agents/issue-traces/$slug"
+trace="$(to_shell_path "$trace")"
+validate_trace_dir "$trace"
 state="$trace/state.md"
-if [ ! -d "$trace" ] || [ ! -f "$state" ]; then
+if [ ! -d "$trace" ]; then
+  echo "FAIL state: missing or unsafe trace directory $trace"
+  exit 1
+fi
+trace_root_real="$(cd "$trace" 2>/dev/null && pwd -P)" || {
+  echo "FAIL state: could not resolve canonical trace root $trace" >&2
+  exit 2
+}
+case "$trace_root_real/" in
+  "$root_real/.agents/issue-traces/"*) ;;
+  *) echo "FAIL state: canonical trace root escapes .agents/issue-traces" >&2; exit 2;;
+esac
+if ! trace_path_safe "$trace" dir; then
+  echo "FAIL state: missing or unsafe trace directory $trace"
+  exit 1
+fi
+if ! trace_path_safe "$state" file; then
   echo "FAIL state: missing $state"
   exit 1
 fi

@@ -90,6 +90,39 @@ function segmentDepthBelowRoot(resolved: string): number {
 		.filter((s) => s.length > 0).length;
 }
 
+/**
+ * Normalize paths for exact containment comparisons. Windows filesystems are
+ * case-insensitive, while POSIX filesystems are not; path.normalize() handles
+ * separator and dot-segment normalization on both platforms.
+ */
+function normalizePathForComparison(value: string): string {
+	const normalized = path.normalize(path.resolve(value));
+	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+/**
+ * Require a canonical cleanup target's parent to be the configured config
+ * directory itself. The configured root may be a symlink (for example, an
+ * XDG_CONFIG_HOME link), so resolve both sides before comparing them.
+ */
+function isExactConfiguredConfigChild(
+	canonicalTarget: string,
+	configuredDir: string,
+): boolean {
+	const canonicalConfigDir = safeRealpathSync(configuredDir, configuredDir);
+	const canonicalParent = safeRealpathSync(
+		path.dirname(canonicalTarget),
+		path.dirname(canonicalTarget),
+	);
+	if (canonicalConfigDir === null || canonicalParent === null) {
+		return false;
+	}
+	return (
+		normalizePathForComparison(canonicalParent) ===
+		normalizePathForComparison(canonicalConfigDir)
+	);
+}
+
 // Issue #675 hardening — round 3 (depth-based guard replaces home-containment
 // after critic's cross-platform CI regression finding).
 export function isSafeCachePath(p: string): boolean {
@@ -198,9 +231,11 @@ export function isSafeLockFilePath(p: string): boolean {
  *      XDG_CONFIG_HOME='/' which yields '/opencode/opencode-swarm', 2 segments).
  *   4. Require basename === 'opencode-swarm' AND the parent directory's
  *      basename to equal the config dir's basename (canonical layout is
- *      `<CONFIG_DIR>/opencode-swarm`).
+ *      '<CONFIG_DIR>/opencode-swarm').
+ *   5. When a configured root is supplied by the cleanup caller, require the
+ *      canonical parent to equal that exact root, not merely share its name.
  */
-export function isSafePromptsDir(p: string): boolean {
+export function isSafePromptsDir(p: string, configuredDir?: string): boolean {
 	const canonical = safeRealpathSync(p, p);
 	if (canonical === null) {
 		return false;
@@ -219,6 +254,12 @@ export function isSafePromptsDir(p: string): boolean {
 	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
 		return false;
 	}
+	if (
+		configuredDir !== undefined &&
+		!isExactConfiguredConfigChild(resolved, configuredDir)
+	) {
+		return false;
+	}
 	return true;
 }
 
@@ -232,9 +273,13 @@ export function isSafePromptsDir(p: string): boolean {
  *
  * Defense in depth: canonicalize via safeRealpathSync; refuse root/home/
  * shorter-than-home; require basename === 'opencode-swarm.json' AND the
- * parent directory's basename to equal the config dir's basename.
+ * parent directory's basename to equal the config dir's basename. Cleanup
+ * callers also bind the canonical parent to their exact configured root.
  */
-export function isSafePluginConfigPath(p: string): boolean {
+export function isSafePluginConfigPath(
+	p: string,
+	configuredDir?: string,
+): boolean {
 	const canonical = safeRealpathSync(p, p);
 	if (canonical === null) {
 		return false;
@@ -256,7 +301,46 @@ export function isSafePluginConfigPath(p: string): boolean {
 	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
 		return false;
 	}
+	if (
+		configuredDir !== undefined &&
+		!isExactConfiguredConfigChild(resolved, configuredDir)
+	) {
+		return false;
+	}
 	return true;
+}
+
+/**
+ * Safety guard for the install-time backup removed by uninstall --clean.
+ * This keeps the same canonical-root binding as the plugin config and prompts
+ * guards while retaining the backup's distinct basename.
+ */
+export function isSafeInstallBackupPath(
+	p: string,
+	configuredDir?: string,
+): boolean {
+	const canonical = safeRealpathSync(p, p);
+	if (canonical === null) {
+		return false;
+	}
+	const resolved = path.resolve(canonical);
+	const home = path.resolve(os.homedir());
+	if (resolved === '/' || resolved === home || resolved.length <= home.length) {
+		return false;
+	}
+	if (segmentDepthBelowRoot(resolved) < 3) {
+		return false;
+	}
+	if (path.basename(resolved) !== 'opencode.swarm-install-backup.json') {
+		return false;
+	}
+	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
+		return false;
+	}
+	return (
+		configuredDir === undefined ||
+		isExactConfiguredConfigChild(resolved, configuredDir)
+	);
 }
 
 interface OpenCodeConfig {
@@ -271,17 +355,118 @@ function ensureDir(dir: string): void {
 	}
 }
 
+/**
+ * Normalize the small JSONC dialect accepted by OpenCode before parsing it as
+ * JSON. Comment and trailing-comma handling must be lexical: punctuation and
+ * comment markers are valid text inside quoted JSON values.
+ */
+function normalizeJsonc(content: string): string | null {
+	let normalized = '';
+	let inString = false;
+	let escaped = false;
+
+	const nextSignificantToken = (from: number): number | null => {
+		let index = from;
+		while (index < content.length) {
+			const current = content[index];
+			if (/\s/.test(current)) {
+				index += 1;
+				continue;
+			}
+			if (current === '/' && content[index + 1] === '/') {
+				index += 2;
+				while (
+					index < content.length &&
+					content[index] !== '\n' &&
+					content[index] !== '\r'
+				) {
+					index += 1;
+				}
+				continue;
+			}
+			if (current === '/' && content[index + 1] === '*') {
+				const close = content.indexOf('*/', index + 2);
+				if (close < 0) {
+					return null;
+				}
+				index = close + 2;
+				continue;
+			}
+			return index;
+		}
+		return content.length;
+	};
+
+	for (let index = 0; index < content.length; index += 1) {
+		const current = content[index];
+
+		if (inString) {
+			normalized += current;
+			if (escaped) {
+				escaped = false;
+			} else if (current === '\\') {
+				escaped = true;
+			} else if (current === '"') {
+				inString = false;
+			}
+			continue;
+		}
+
+		if (current === '"') {
+			inString = true;
+			normalized += current;
+			continue;
+		}
+
+		if (current === '/' && content[index + 1] === '/') {
+			index += 2;
+			while (
+				index < content.length &&
+				content[index] !== '\n' &&
+				content[index] !== '\r'
+			) {
+				index += 1;
+			}
+			if (index < content.length) {
+				normalized += content[index];
+			}
+			continue;
+		}
+
+		if (current === '/' && content[index + 1] === '*') {
+			const close = content.indexOf('*/', index + 2);
+			if (close < 0) {
+				return null;
+			}
+			index = close + 1;
+			normalized += ' ';
+			continue;
+		}
+
+		if (current === ',') {
+			const next = nextSignificantToken(index + 1);
+			if (next === null) {
+				return null;
+			}
+			if (content[next] === '}' || content[next] === ']') {
+				continue;
+			}
+		}
+
+		normalized += current;
+	}
+
+	return normalized;
+}
+
 function loadJson<T>(filepath: string): T | null {
 	try {
 		const content = fs.readFileSync(filepath, 'utf-8');
-		// Strip comments for JSONC support
-		const stripped = content
-			.replace(
-				/\\"|"(?:\\"|[^"])*"|(\/\/.*|\/\*[\s\S]*?\*\/)/g,
-				(match, comment) => (comment ? '' : match),
-			)
-			.replace(/,(\s*[}\]])/g, '$1');
-		return JSON.parse(stripped) as T;
+		const normalized = normalizeJsonc(content);
+		if (normalized === null) {
+			return null;
+		}
+		return JSON.parse(normalized) as T;
 	} catch {
 		return null;
 	}
@@ -721,9 +906,78 @@ export function evictLockFiles(): { cleared: string[]; failed: string[] } {
 	return { cleared, failed };
 }
 
+function cleanupPluginOwnedFiles(): { cleaned: boolean; hadTargets: boolean } {
+	let cleaned = false;
+	let hadTargets = false;
+
+	// If PLUGIN_CONFIG_PATH exists: canonicalize, safety-check, delete.
+	if (fs.existsSync(PLUGIN_CONFIG_PATH)) {
+		hadTargets = true;
+		const canonical = safeRealpathSync(PLUGIN_CONFIG_PATH, PLUGIN_CONFIG_PATH);
+		if (canonical === null || !isSafePluginConfigPath(canonical, CONFIG_DIR)) {
+			console.log(
+				`✗ Refused to remove plugin config (failed safety check): ${canonical ?? PLUGIN_CONFIG_PATH}`,
+			);
+		} else {
+			fs.unlinkSync(canonical);
+			console.log(`✓ Removed plugin config: ${canonical}`);
+			cleaned = true;
+		}
+	}
+
+	// If PROMPTS_DIR exists: canonicalize, safety-check, delete recursively.
+	if (fs.existsSync(PROMPTS_DIR)) {
+		hadTargets = true;
+		const canonical = safeRealpathSync(PROMPTS_DIR, PROMPTS_DIR);
+		if (canonical === null || !isSafePromptsDir(canonical, CONFIG_DIR)) {
+			console.log(
+				`✗ Refused to remove custom prompts (failed safety check): ${canonical ?? PROMPTS_DIR}`,
+			);
+		} else {
+			fs.rmSync(canonical, { recursive: true });
+			console.log(`✓ Removed custom prompts: ${canonical}`);
+			cleaned = true;
+		}
+	}
+
+	// #2493 review: remove the install-time config backup too. It is a
+	// byte copy of the user's opencode.json and may contain secrets
+	// (e.g. env blocks), so an uninstall that cleans the primary
+	// config must not leave an unmanaged copy behind.
+	const backupPath = path.join(
+		CONFIG_DIR,
+		'opencode.swarm-install-backup.json',
+	);
+	if (fs.existsSync(backupPath)) {
+		hadTargets = true;
+		const canonical = safeRealpathSync(backupPath, backupPath);
+		if (canonical === null || !isSafeInstallBackupPath(canonical, CONFIG_DIR)) {
+			console.log(
+				`✗ Refused to remove install backup (failed safety check): ${canonical ?? backupPath}`,
+			);
+		} else {
+			fs.unlinkSync(canonical);
+			console.log(`✓ Removed install backup: ${canonical}`);
+			cleaned = true;
+		}
+	}
+
+	if (!cleaned && !hadTargets) {
+		console.log('✓ No config files to clean up');
+	}
+	return { cleaned, hadTargets };
+}
+
 async function uninstall(): Promise<number> {
 	try {
 		console.log('🐝 Uninstalling OpenCode Swarm...\n');
+
+		// Explicit plugin-owned cleanup is independent of host-config parsing or
+		// mutation. Run it before every host-config decision, including malformed
+		// and no-op configurations. Ordinary uninstall never cleans these files.
+		const cleanupResult = process.argv.includes('--clean')
+			? cleanupPluginOwnedFiles()
+			: { cleaned: false, hadTargets: false };
 
 		// Load opencode config
 		const opencodeConfig = loadJson<OpenCodeConfig>(OPENCODE_CONFIG_PATH);
@@ -740,7 +994,9 @@ async function uninstall(): Promise<number> {
 			} else {
 				// File doesn't exist
 				console.log(`⚠ No opencode config found at: ${OPENCODE_CONFIG_PATH}`);
-				console.log('Nothing to uninstall.');
+				if (!cleanupResult.cleaned && !cleanupResult.hadTargets) {
+					console.log('Nothing to uninstall.');
+				}
 				return 0;
 			}
 		}
@@ -798,72 +1054,6 @@ async function uninstall(): Promise<number> {
 		saveJson(OPENCODE_CONFIG_PATH, opencodeConfig);
 		console.log('✓ Removed opencode-swarm from OpenCode plugins');
 		console.log('✓ Re-enabled default OpenCode agents (explore, general)');
-
-		// Check for --clean flag
-		if (process.argv.includes('--clean')) {
-			let cleaned = false;
-
-			// If PLUGIN_CONFIG_PATH exists: canonicalize, safety-check, delete.
-			if (fs.existsSync(PLUGIN_CONFIG_PATH)) {
-				const canonical = safeRealpathSync(
-					PLUGIN_CONFIG_PATH,
-					PLUGIN_CONFIG_PATH,
-				);
-				if (canonical === null || !isSafePluginConfigPath(canonical)) {
-					console.log(
-						`✗ Refused to remove plugin config (failed safety check): ${canonical ?? PLUGIN_CONFIG_PATH}`,
-					);
-				} else {
-					fs.unlinkSync(canonical);
-					console.log(`✓ Removed plugin config: ${canonical}`);
-					cleaned = true;
-				}
-			}
-
-			// If PROMPTS_DIR exists: canonicalize, safety-check, delete recursively.
-			if (fs.existsSync(PROMPTS_DIR)) {
-				const canonical = safeRealpathSync(PROMPTS_DIR, PROMPTS_DIR);
-				if (canonical === null || !isSafePromptsDir(canonical)) {
-					console.log(
-						`✗ Refused to remove custom prompts (failed safety check): ${canonical ?? PROMPTS_DIR}`,
-					);
-				} else {
-					fs.rmSync(canonical, { recursive: true });
-					console.log(`✓ Removed custom prompts: ${canonical}`);
-					cleaned = true;
-				}
-			}
-
-			// #2493 review: remove the install-time config backup too. It is a
-			// byte copy of the user's opencode.json and may contain secrets
-			// (e.g. env blocks), so an uninstall that cleans the primary
-			// config must not leave an unmanaged copy behind.
-			const backupPath = path.join(
-				CONFIG_DIR,
-				'opencode.swarm-install-backup.json',
-			);
-			if (fs.existsSync(backupPath)) {
-				const canonical = safeRealpathSync(backupPath, backupPath);
-				if (
-					canonical === null ||
-					path.basename(canonical) !== 'opencode.swarm-install-backup.json' ||
-					path.basename(path.dirname(canonical)) !== path.basename(CONFIG_DIR)
-				) {
-					console.log(
-						`✗ Refused to remove install backup (failed safety check): ${canonical ?? backupPath}`,
-					);
-				} else {
-					fs.unlinkSync(canonical);
-					console.log(`✓ Removed install backup: ${canonical}`);
-					cleaned = true;
-				}
-			}
-
-			// If neither exists
-			if (!cleaned) {
-				console.log('✓ No config files to clean up');
-			}
-		}
 
 		console.log('\n✅ Uninstall complete!');
 		return 0;

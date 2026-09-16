@@ -57,6 +57,36 @@ function runWithEnv(cwd: string, args: string[], env: Record<string, string>) {
 		err: p.stderr.toString(),
 	};
 }
+
+interface PollResult<T> {
+	value: T;
+	attempts: number;
+	elapsedMs: number;
+	deadlineExceeded: boolean;
+}
+
+function pollUntil<T>(
+	probe: () => T,
+	done: (value: T) => boolean,
+	deadlineMs: number,
+	intervalMs: number,
+): PollResult<T> {
+	const started = Date.now();
+	let attempts = 0;
+	let value = probe();
+	while (!done(value) && Date.now() - started < deadlineMs) {
+		Bun.sleepSync(intervalMs);
+		attempts += 1;
+		value = probe();
+	}
+	const elapsedMs = Date.now() - started;
+	return {
+		value,
+		attempts,
+		elapsedMs,
+		deadlineExceeded: !done(value),
+	};
+}
 function repo() {
 	const value = canonicalMkdtemp('repro-check-');
 	roots.push(value);
@@ -303,15 +333,18 @@ describe('repro-check.sh disposable checks', () => {
 		);
 		expect(result.code).toBe(6);
 
-		// Poll up to 3 times with 500ms sleeps to ensure process cleanup
-		let sleepAfter = countSleepProcesses();
-		for (let i = 0; i < 3 && sleepAfter > sleepBefore; i++) {
-			Bun.sleepSync(500);
-			sleepAfter = countSleepProcesses();
-		}
-
-		// Process-group kill terminates all children; single-pid kill would leave the sleep alive
-		expect(sleepAfter).toBeLessThanOrEqual(sleepBefore);
+		const cleanupPoll = pollUntil(
+			countSleepProcesses,
+			(count) => count <= sleepBefore,
+			5_000,
+			500,
+		);
+		// Process-group kill terminates all children; single-pid kill would leave the sleep alive.
+		expect(
+			cleanupPoll.deadlineExceeded,
+			`child cleanup exceeded ${cleanupPoll.elapsedMs}ms after ${cleanupPoll.attempts} polling attempts (count=${cleanupPoll.value}, baseline=${sleepBefore})`,
+		).toBe(false);
+		expect(cleanupPoll.value).toBeLessThanOrEqual(sleepBefore);
 	}, 20_000);
 
 	test('truncates oversized logs and tracks checkpoint amendments and changes', () => {
@@ -354,7 +387,7 @@ describe('repro-check.sh disposable checks', () => {
 			'--slug',
 			'issue-1',
 			'--reason',
-			'FORMAT_ONLY',
+			'CHECK_WRONG',
 			'--id',
 			'C1',
 			'--argv',

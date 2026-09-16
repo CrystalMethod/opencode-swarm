@@ -112,6 +112,16 @@ manifest: repro/checkpoint.manifest
 checkpoint-tree-id: <40-hex>
 ```
 
+## External checkpoint anchor
+
+After the final Phase-2.5 checkpoint and before production edits, the implementation owner runs `repro-check.sh anchor --slug <slug>` and publishes the exact one-line receipt in an external, reviewer-visible issue or PR conversation. The receipt has no secrets or source content:
+
+```text
+issue-tracer-checkpoint-v1 slug=<slug> manifest=<40-hex manifest blob> tree=<40-hex checkpoint-tree-id>
+```
+
+Record the publication URL or conversation identifier and a verbatim discovery copy in the trace, but never treat that local copy as authority. The owner must not regenerate the receipt after implementation begins. Independent reviewers verify the externally copied literal with `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; verification uses `git hash-object --no-filters` and the `checkpoint-tree-id` recorded in `state.md`, not the live working-tree tree. Any malformed, stale, in-place-edited, or delete-and-refrozen manifest fails closed. A byte-identical refreeze is intentionally accepted.
+
 ## `03-localization-log.md`
 
 ```markdown
@@ -361,7 +371,7 @@ Written when CI rounds occur after publication: one entry per round with the fai
 
 ## `repro/` layout
 
-Lives inside the trace directory (git-excluded, never committed): `checkpoint.manifest` (rows are appended, never edited - a frozen path is superseded only by a recorded `AMEND` row, and both the header's recorded row count and `seq` continuity are validated on every read and write; header `# issue-tracer checkpoint manifest v1 rows=<N>`, restamped with the row and seeded by `trace-init.sh` as `rows=0`, and see `references/acceptance-checks.md` for what that does and does not guarantee) plus `<check-id>.base.log` and `<check-id>.head.log` per executable check, written by `repro-check.sh run`.
+Lives inside the trace directory (git-excluded, never committed): `checkpoint.manifest` (rows are appended, never edited - a frozen `(path, check-id)` pair is superseded only by a recorded `AMEND` row, while distinct check ids may share a path only when they capture identical current bytes; divergent effective blobs for one path fail closed, and both the header's recorded row count and `seq` continuity are validated on every read and write; header `# issue-tracer checkpoint manifest v1 rows=<N>`, restamped with the row and seeded by `trace-init.sh` as `rows=0`, and see `references/acceptance-checks.md` for what that does and does not guarantee) plus `<check-id>.base.log` and `<check-id>.head.log` per executable check, written by `repro-check.sh run`.
 
 ## OBE subset
 

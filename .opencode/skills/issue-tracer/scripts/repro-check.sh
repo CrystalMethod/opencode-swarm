@@ -10,15 +10,33 @@ to_shell_path() {
   printf '%s\n' "$1"
 }
 
+to_native_path() {
+  case "$(uname -s 2>/dev/null || true)" in
+    MINGW* | MSYS* | CYGWIN*)
+      command -v cygpath >/dev/null 2>&1 || return 1
+      cygpath -w "$1"
+      ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 root="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "repro-check: not inside a git work tree" >&2; exit 2; }
 root="$(to_shell_path "$root")"
 root_real="$(cd "$root" && pwd -P)"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
+trace_root_real=""
 
-usage() { echo "usage: repro-check.sh {run|checkpoint|verify-checkpoint} --slug <slug> ..." >&2; exit 2; }
+usage() { echo "usage: repro-check.sh {run|checkpoint|verify-checkpoint|anchor|verify-anchor} --slug <slug> ..." >&2; exit 2; }
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
-valid_id() { case "$1" in C[0-9]* ) return 0;; *) return 1;; esac; }
+valid_id() {
+  local suffix
+  case "$1" in
+    C[0-9]*) suffix="${1#C}"; case "$suffix" in ''|*[!0-9]*) return 1;; esac; return 0;;
+    *) return 1;;
+  esac
+}
 has_bad_field() { case "$1" in *$'\t'*|*$'\n'*|*$'\r'*) return 0;; *) return 1;; esac; }
+is_sha1() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{40}$'; }
 is_inside_root() {
   case "$1" in /*|[A-Za-z]:*|*\\*) return 1;; esac
   case "/$1/" in */../*|*/./*) return 1;; esac
@@ -82,6 +100,52 @@ require_contained() {
   esac
 }
 
+# Validate a trace artifact immediately before reading or hashing it.  Shell
+# tests such as `[ -f ]` and `git hash-object` follow symlinks, so walk every
+# component first and require the canonical parent to remain beneath the
+# canonical trace root.  This rejects both POSIX symlinks and Windows
+# junctions surfaced by MSYS as `test -L`, including dangling leaf links.
+trace_path_safe() {
+  local path="$1" kind="${2:-file}" ancestor parent resolved
+  [ -n "$trace_root_real" ] || { echo "repro-check: trace root is not initialized" >&2; exit 2; }
+  case "$path/" in
+    "$trace_root_real/"*) ;;
+    *) echo "repro-check: refusing path outside canonical trace root: $path" >&2; exit 2;;
+  esac
+  case "$path/" in
+    */../*|*/./*) echo "repro-check: refusing ambiguous trace path: $path" >&2; exit 2;;
+  esac
+  ancestor="$path"
+  while [ "$ancestor" != "$trace_root_real" ] && [ "$ancestor" != "/" ]; do
+    if [ -L "$ancestor" ]; then
+      echo "repro-check: refusing symlinked trace component: $ancestor" >&2
+      exit 2
+    fi
+    ancestor="$(dirname "$ancestor")"
+  done
+  [ "$ancestor" = "$trace_root_real" ] || { echo "repro-check: trace path is not rooted at canonical trace directory: $path" >&2; exit 2; }
+  [ "$path" = "$trace_root_real" ] && { [ "$kind" = dir ] && [ -d "$path" ]; return $?; }
+  parent="$(dirname "$path")"
+  [ -d "$parent" ] || return 1
+  resolved="$(cd "$parent" 2>/dev/null && pwd -P)" || { echo "repro-check: could not resolve trace artifact parent: $path" >&2; exit 2; }
+  case "$resolved/" in
+    "$trace_root_real/"*) ;;
+    *) echo "repro-check: trace artifact parent resolves outside canonical trace root: $path" >&2; exit 2;;
+  esac
+  case "$kind" in
+    file) [ -f "$path" ] || return 1;;
+    dir) [ -d "$path" ] || return 1;;
+    *) echo "repro-check: internal invalid trace path kind: $kind" >&2; exit 2;;
+  esac
+}
+
+set_trace_root() {
+  require_contained "$trace_dir"
+  [ -d "$trace_dir" ] || { echo "repro-check: trace directory is missing: $trace_dir" >&2; exit 2; }
+  trace_root_real="$(cd "$trace_dir" 2>/dev/null && pwd -P)" || { echo "repro-check: could not resolve trace directory: $trace_dir" >&2; exit 2; }
+  trace_path_safe "$trace_root_real" dir >/dev/null
+}
+
 trace_for() {
   [ -n "$trace_dir" ] || trace_dir="$root/.agents/issue-traces/$slug"
   validate_trace_dir_prefix
@@ -117,8 +181,9 @@ manifest_for() { trace_for; printf '%s\n' "$trace_dir/repro/checkpoint.manifest"
 # existence or completeness to anything outside it). What it stops is a
 # partial write or a hand edit that leaves the file internally inconsistent.
 validate_manifest() {
-  local file="$1" problem counts
-  problem="$(awk -F '\t' '
+  local file="$1" allow_conflicts="${2:-}" problem counts
+  trace_path_safe "$file" file || { echo "repro-check: checkpoint manifest missing or unsafe" >&2; exit 2; }
+  problem="$(awk -F '\t' -v allow_conflicts="$allow_conflicts" '
     NR == 1 {
       if ($0 !~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) { bad = "header"; exit }
       declared = $0
@@ -130,18 +195,36 @@ validate_manifest() {
       rows += 1
       if (NF != 10) { bad = "fields " NR; exit }
       if ($1 "" != rows "") { bad = "seq " NR; exit }
-      # A path is frozen by its first row; every later row for it must be a
-      # reasoned AMEND. do_checkpoint refuses a duplicate CHECKPOINT at write
-      # time, but do_verify is last-writer-wins per path, so without this a
-      # forged CHECKPOINT row appended by hand (plus a bumped header count)
-      # would silently re-baseline a frozen blob. Checking it here makes the
-      # rule hold in both commands.
-      if (seen[$3] && $2 != "AMEND") { bad = "supersede " NR; exit }
-      seen[$3] = 1
+      if ($2 != "CHECKPOINT" && $2 != "AMEND") { bad = "kind " NR; exit }
+      if (($2 == "CHECKPOINT" && $10 != "-") || ($2 == "AMEND" && $10 != "CHECK_WRONG" && $10 != "AC_CHANGED_BY_USER")) { bad = "reason " NR; exit }
+      # A pair is frozen by its first row; every later row for that exact
+      # (path, check-id) pair must be a reasoned AMEND. A path may legitimately
+      # carry multiple checks, so path alone is not an identity key here.
+      # Length-prefix the path so the composite key remains injective even if
+      # a legal path contains the awk SUBSEP byte.
+      pair = length($3) ":" $3 ":" $6
+      if ($2 == "CHECKPOINT" && seen_pair[pair]) { bad = "duplicate " NR; exit }
+      if ($2 == "AMEND" && !seen_pair[pair]) { bad = "orphan " NR; exit }
+      seen_pair[pair] = 1
+      latest_path[pair] = $3
+      latest_blob[pair] = $4
     }
     END {
       if (bad != "") { print bad; exit }
       if (NR == 0) { print "header"; exit }
+      # The effective manifest is one latest row per pair. A checkpoint tree
+      # has one blob per path, so identical blobs for multiple checks are
+      # safely deduplicable but divergent effective blobs are invalid rather
+      # than silently becoming last-writer-wins by path.
+      for (pair in latest_path) {
+        path = latest_path[pair]
+        if (effective_seen[path] && effective_blob[path] != latest_blob[pair] && allow_conflicts != "allow-conflicts") {
+          print "conflict " path
+          exit
+        }
+        effective_seen[path] = 1
+        effective_blob[path] = latest_blob[pair]
+      }
       if (declared != rows + 0) { print "count " declared " " rows + 0 }
     }
   ' "$file")"
@@ -149,7 +232,11 @@ validate_manifest() {
     '') return 0 ;;
     'fields '*) echo "repro-check: checkpoint manifest line ${problem#fields } does not have 10 tab-separated fields" >&2 ;;
     'seq '*) echo "repro-check: checkpoint manifest seq is not contiguous (row deleted or reordered) at line ${problem#seq }" >&2 ;;
-    'supersede '*) echo "repro-check: checkpoint manifest line ${problem#supersede } re-freezes an already-recorded path without an AMEND reason" >&2 ;;
+    'duplicate '*) echo "repro-check: checkpoint manifest line ${problem#duplicate } duplicates an existing CHECKPOINT pair (re-freezes without an AMEND reason)" >&2 ;;
+    'orphan '*) echo "repro-check: checkpoint manifest line ${problem#orphan } AMENDs an unknown path/check-id pair" >&2 ;;
+    'conflict '*) echo "repro-check: checkpoint manifest has conflicting effective blobs for path ${problem#conflict }" >&2 ;;
+    'kind '*) echo "repro-check: checkpoint manifest line ${problem#kind } has an invalid kind (use CHECKPOINT or AMEND)" >&2 ;;
+    'reason '*) echo "repro-check: checkpoint manifest line ${problem#reason } has an invalid reason for its kind" >&2 ;;
     'count '*)
       counts="${problem#count }"
       echo "repro-check: checkpoint manifest header records ${counts%% *} rows, found ${counts#* } (rows deleted or truncated)" >&2
@@ -159,10 +246,13 @@ validate_manifest() {
   exit 2
 }
 
-# True when field 3 (the path column) of any data row already names this path.
-# A recorded path is frozen: only a reasoned AMEND may supersede it.
-manifest_has_path() {
-  awk -F '\t' -v want="$2" 'NR > 1 && $3 == want { found = 1; exit } END { exit !found }' "$1"
+# True when an exact (path, check-id) pair already appears in the manifest.
+# Multiple checks may share a path, but a pair can only be introduced once and
+# then superseded by an AMEND row.
+manifest_has_pair() {
+  trace_path_safe "$1" file || return 1
+  awk -F '\t' -v want_path="$2" -v want_check="$3" \
+    'NR > 1 && $3 == want_path && $6 == want_check { found = 1; exit } END { exit !found }' "$1"
 }
 
 # Append one data row and restamp the header's recorded count in a single
@@ -175,6 +265,8 @@ manifest_has_path() {
 append_manifest_row() {
   local file="$1" count="$2" row="$3" temp
   temp="$file.append.tmp"
+  trace_path_safe "$(dirname "$file")" dir || { echo "repro-check: manifest directory is missing or unsafe" >&2; exit 2; }
+  trace_path_safe "$file" file || true
   refuse_nonregular_target "$file"
   refuse_nonregular_target "$temp"
   {
@@ -262,11 +354,41 @@ copy_path() {
 link_deps() {
   [ "$deps" = link ] || return 0
   [ -e "$root/node_modules" ] || return 0
-  [ ! -e "$worktree/node_modules" ] || return 0
+  local source_real linked_real
+  source_real="$(cd "$root/node_modules" 2>/dev/null && pwd -P)" || { echo "repro-check: dependency source cannot be resolved" >&2; return 1; }
+  # An existing directory, junction, or symlink is not silently accepted: it
+  # must resolve to the exact dependency source this run would have linked.
+  # This also rejects dangling links, which otherwise look absent to `-e`.
+  if [ -e "$worktree/node_modules" ] || [ -L "$worktree/node_modules" ]; then
+    linked_real="$(cd "$worktree/node_modules" 2>/dev/null && pwd -P)" || {
+      echo "repro-check: existing dependency target cannot be resolved" >&2
+      return 1
+    }
+    if [ "$source_real" = "$linked_real" ]; then
+      return 0
+    fi
+    echo "repro-check: existing dependency target resolves to '$linked_real', expected '$source_real'" >&2
+    return 1
+  fi
   case "$(uname -s 2>/dev/null || true)" in
-    MINGW* | MSYS* | CYGWIN*) cmd //c mklink //J "$(to_shell_path "$worktree/node_modules")" "$(to_shell_path "$root/node_modules")" >/dev/null 2>&1 || true ;;
-    *) ln -s "$root/node_modules" "$worktree/node_modules" ;;
+    MINGW* | MSYS* | CYGWIN*)
+      local destination source
+      destination="$(to_native_path "$worktree/node_modules")" || { echo "repro-check: cygpath is required to create a Windows dependency junction" >&2; return 1; }
+      source="$(to_native_path "$root/node_modules")" || { echo "repro-check: cygpath is required to create a Windows dependency junction" >&2; return 1; }
+      if ! command -v cmd >/dev/null 2>&1 || ! cmd //c mklink //J "$destination" "$source" >/dev/null 2>&1; then
+        echo "repro-check: could not create dependency junction: $destination -> $source" >&2
+        return 1
+      fi
+      ;;
+    *)
+      ln -s "$root/node_modules" "$worktree/node_modules" || { echo "repro-check: could not link dependency directory" >&2; return 1; }
+      ;;
   esac
+  linked_real="$(cd "$worktree/node_modules" 2>/dev/null && pwd -P)" || { echo "repro-check: dependency link cannot be resolved" >&2; return 1; }
+  if [ "$source_real" != "$linked_real" ]; then
+    echo "repro-check: dependency link resolved to '$linked_real', expected '$source_real'" >&2
+    return 1
+  fi
 }
 
 quoted_argv() { local arg; for arg in "$@"; do printf '%q ' "$arg"; done; }
@@ -304,6 +426,8 @@ do_run() {
   require_contained "$trace_dir/repro"
   mkdir -p "$trace_dir/repro"
   require_contained "$trace_dir/repro"
+  set_trace_root
+  trace_path_safe "$trace_dir/repro" dir || { echo "repro-check: repro directory is missing or unsafe" >&2; exit 2; }
   worktree="$(mktemp -d "${TMPDIR:-/tmp}/issue-tracer-repro.XXXXXX")"
   cleanup() { git worktree remove --force "$worktree" >/dev/null 2>&1 || true; rm -rf "$worktree"; }
   trap cleanup EXIT HUP INT TERM
@@ -311,12 +435,14 @@ do_run() {
   for arg in ${copies[@]+"${copies[@]}"}; do copy_path "$arg"; done
   link_deps
   base_status="$(run_one "$worktree" "$trace_dir/repro/$check_id.base.log" "$timeout_seconds" "$@")"
+  trace_path_safe "$trace_dir/repro/$check_id.base.log" file || { echo "repro-check: base log was not created safely" >&2; exit 2; }
   head_status="$(run_one "$root" "$trace_dir/repro/$check_id.head.log" "$timeout_seconds" "$@")"
+  trace_path_safe "$trace_dir/repro/$check_id.head.log" file || { echo "repro-check: head log was not created safely" >&2; exit 2; }
   if [ "$base_status" -eq 124 ] || [ "$head_status" -eq 124 ]; then
     base_result="TIMEOUT"; head_result="TIMEOUT"; verdict="FAIL"; exit_code=6
   elif [ "$class" = DISCRIMINATING ]; then
     if [ "$base_status" -eq 0 ]; then base_result="VACUOUS"; verdict="VACUOUS"; exit_code=4
-    elif grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
+    elif trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
       base_result="RED"
       if [ "$head_status" -eq 0 ]; then head_result="GREEN"; verdict="PASS"; else head_result="FAIL"; verdict="FAIL"; exit_code=5; fi
     else base_result="ERROR"; verdict="ERROR"; exit_code=3; fi
@@ -325,7 +451,7 @@ do_run() {
     head_result="$( [ "$head_status" -eq 0 ] && echo GREEN || echo FAIL )"
     if [ "$base_status" -eq 0 ] && [ "$head_status" -eq 0 ]; then verdict=PASS; else verdict=FAIL; exit_code=5; fi
   else
-    if [ "$base_status" -ne 0 ] && grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
+    if [ "$base_status" -ne 0 ] && trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
       base_result="ERROR"
       if [ "$head_status" -eq 0 ]; then head_result="GREEN"; verdict=PASS; else head_result="FAIL"; verdict=FAIL; exit_code=5; fi
     else base_result="FAIL"; head_result="$( [ "$head_status" -eq 0 ] && echo GREEN || echo FAIL )"; verdict=FAIL; exit_code=5; fi
@@ -348,39 +474,56 @@ do_checkpoint() {
   done
   [ "$#" -gt 0 ] || usage
   valid_slug "$slug" && valid_id "$check_id" || { echo "repro-check: invalid slug or check id" >&2; exit 2; }
-  case "$reason" in -) kind=CHECKPOINT;; CHECK_WRONG|FORMAT_ONLY|AC_CHANGED_BY_USER) kind=AMEND;; *) echo "repro-check: invalid amendment reason" >&2; exit 2;; esac
+  case "$reason" in -) kind=CHECKPOINT;; CHECK_WRONG|AC_CHANGED_BY_USER) kind=AMEND;; *) echo "repro-check: invalid amendment reason (use CHECK_WRONG or AC_CHANGED_BY_USER)" >&2; exit 2;; esac
   case "$base" in ''|-*) echo "repro-check: --base must name a commit" >&2; exit 2;; esac
   git rev-parse --verify --quiet "$base^{commit}" >/dev/null || { echo "repro-check: --base does not resolve to a commit" >&2; exit 2; }
   if has_bad_field "$argv" || has_bad_field "$expect"; then
     echo "repro-check: manifest fields cannot contain tabs or newlines" >&2
     exit 2
   fi
-  manifest="$(manifest_for)"
+  trace_for
   require_contained "$trace_dir"
-  require_contained "$(dirname "$manifest")"
-  mkdir -p "$(dirname "$manifest")"
-  require_contained "$(dirname "$manifest")"
+  require_contained "$trace_dir/repro"
+  mkdir -p "$trace_dir/repro"
+  require_contained "$trace_dir/repro"
+  set_trace_root
+  manifest="$trace_dir/repro/checkpoint.manifest"
+  trace_path_safe "$trace_dir/repro" dir || { echo "repro-check: repro directory is missing or unsafe" >&2; exit 2; }
+  trace_path_safe "$manifest" file || true
   refuse_nonregular_target "$manifest"
   [ -f "$manifest" ] || printf '# issue-tracer checkpoint manifest v1 rows=0\n' > "$manifest"
   # validate_manifest owns the header check: it is strictly stronger than the
   # old `grep -Fx` (which matched the string on ANY line) and additionally
   # proves the recorded count, the seq run, and the field count.
-  validate_manifest "$manifest"
+  if [ "$kind" = AMEND ]; then
+    # An amendment may be the next step in reconciling two same-path checks
+    # that captured different bytes. Strict verification still rejects the
+    # intermediate manifest; permit only this targeted append to proceed.
+    validate_manifest "$manifest" allow-conflicts
+  else
+    validate_manifest "$manifest"
+  fi
   seq="$(awk 'END {print NR - 1}' "$manifest")"
   for path in "$@"; do
     is_inside_root "$path" || { echo "repro-check: checkpoint path must be repo-relative without ..: $path" >&2; exit 2; }
     has_bad_field "$path" && { echo "repro-check: checkpoint path cannot contain tabs or newlines" >&2; exit 2; }
     [ -f "$root/$path" ] || { echo "repro-check: checkpoint path must be a file: $path" >&2; exit 2; }
-    # Re-running the sanctioned `checkpoint` command on an already-frozen path
+    # Re-running the sanctioned `checkpoint` command on an already-frozen pair
     # would append a fresh CHECKPOINT row that last-writer-wins re-baselines a
     # weakened check to green in do_verify. Refuse it: superseding a frozen
-    # blob requires an AMEND row that names a reason and stays in the file.
-    # The manifest is re-read per path, so a path frozen by an earlier
+    # pair requires an AMEND row that names a reason and stays in the file.
+    # The manifest is re-read per path, so a pair frozen by an earlier
     # iteration of this same invocation is already recorded and also refused.
-    if [ "$kind" = CHECKPOINT ] && manifest_has_path "$manifest" "$path"; then
-      echo "repro-check: $path is already frozen; supersede it with --reason CHECK_WRONG|FORMAT_ONLY|AC_CHANGED_BY_USER" >&2
+    if [ "$kind" = CHECKPOINT ] && manifest_has_pair "$manifest" "$path" "$check_id"; then
+      echo "repro-check: $path ($check_id) is already frozen; supersede it with --reason CHECK_WRONG|AC_CHANGED_BY_USER" >&2
       exit 2
     fi
+    if [ "$kind" = AMEND ] && ! manifest_has_pair "$manifest" "$path" "$check_id"; then
+      echo "repro-check: $path ($check_id) cannot be amended before it is checkpointed" >&2
+      exit 2
+    fi
+    # Always capture the current bytes for a new pair. Do not inherit the blob
+    # from another check that happens to use the same path.
     blob="$(git hash-object "$root/$path")"
     mode="$(git ls-files -s -- "$path" | awk 'NR==1 {print $1}')"
     [ -n "$mode" ] || { [ -x "$root/$path" ] && mode=100755 || mode=100644; }
@@ -394,23 +537,116 @@ do_checkpoint() {
 }
 
 do_verify() {
-  local manifest line path old new changed=0
+  local manifest line path old check_id new changed=0
   trace_dir=""; slug=""
   while [ "$#" -gt 0 ]; do case "$1" in --slug) [ "$#" -ge 2 ] || usage; slug="$2"; shift 2;; --trace-dir) [ "$#" -ge 2 ] || usage; trace_dir="$2"; shift 2;; *) usage;; esac; done
   valid_slug "$slug" || { echo "repro-check: invalid slug" >&2; exit 2; }
-  manifest="$(manifest_for)"
-  [ -f "$manifest" ] || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
+  trace_for
+  set_trace_root
+  manifest="$trace_dir/repro/checkpoint.manifest"
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
   # Iterating only the surviving rows would silently drop a frozen check when a
   # row is deleted OR the tail is truncated, so structure - header count, seq
   # run, field count - is proven before any row is replayed.
   validate_manifest "$manifest"
-  while IFS=$'\t' read -r path old; do
+  while IFS=$'\t' read -r path old check_id; do
+    if [ -z "$path" ] || ! is_inside_root "$path" || ! valid_id "$check_id"; then
+      echo "repro-check: checkpoint manifest contains an unsafe path or invalid check id" >&2
+      exit 2
+    fi
     [ -f "$root/$path" ] || { echo "CHANGED $path $old MISSING"; changed=1; continue; }
     new="$(git hash-object "$root/$path")"
-    if [ "$old" = "$new" ]; then echo "OK $path"; else echo "CHANGED $path $old $new"; changed=1; fi
-  done < <(awk -F '\t' 'NR > 1 {blob[$3]=$4} END {for (path in blob) print path "\t" blob[path]}' "$manifest")
+    if [ "$old" = "$new" ]; then echo "OK $path ($check_id)"; else echo "CHANGED $path $old $new ($check_id)"; changed=1; fi
+  done < <(awk -F '\t' '
+    NR > 1 {
+      pair = length($3) ":" $3 ":" $6
+      latest_seq[pair] = $1
+      latest_path[pair] = $3
+      latest_blob[pair] = $4
+      latest_check[pair] = $6
+    }
+    END {
+      for (pair in latest_path) print latest_seq[pair] "\t" latest_path[pair] "\t" latest_blob[pair] "\t" latest_check[pair]
+    }
+  ' "$manifest" | sort -n -k1,1 | cut -f2-)
   [ "$changed" -eq 0 ] || exit 1
 }
 
+state_value() {
+  local key="$1" state_file="$trace_dir/state.md"
+  [ -n "$trace_dir" ] || state_file="$root/.agents/issue-traces/$slug/state.md"
+  state_file="$(to_shell_path "$state_file")"
+  trace_path_safe "$state_file" file || return 0
+  awk -F ': ' -v key="$key" '$1 == key { print substr($0, length(key) + 3); exit }' "$state_file" 2>/dev/null || true
+}
+
+receipt_for() {
+  local manifest="$1" digest tree
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or unsafe" >&2; exit 2; }
+  digest="$(git hash-object --no-filters "$manifest")"
+  tree="$(state_value checkpoint-tree-id)"
+  is_sha1 "$tree" || { echo "repro-check: state.md has no valid checkpoint-tree-id" >&2; exit 2; }
+  printf 'issue-tracer-checkpoint-v1 slug=%s manifest=%s tree=%s\n' "$slug" "$digest" "$tree"
+}
+
+do_anchor() {
+  local manifest
+  trace_dir=""; slug=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --slug) [ "$#" -ge 2 ] || usage; slug="$2"; shift 2;;
+      --trace-dir) [ "$#" -ge 2 ] || usage; trace_dir="$2"; shift 2;;
+      *) usage;;
+    esac
+  done
+  valid_slug "$slug" || { echo "repro-check: invalid slug" >&2; exit 2; }
+  trace_for
+  set_trace_root
+  manifest="$trace_dir/repro/checkpoint.manifest"
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
+  do_verify --slug "$slug" --trace-dir "$trace_dir"
+  receipt_for "$manifest"
+}
+
+do_verify_anchor() {
+  local receipt="" manifest expected_digest expected_tree parsed_slug parsed_manifest parsed_tree
+  trace_dir=""; slug=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --slug) [ "$#" -ge 2 ] || usage; slug="$2"; shift 2;;
+      --trace-dir) [ "$#" -ge 2 ] || usage; trace_dir="$2"; shift 2;;
+      --receipt) [ "$#" -ge 2 ] || usage; receipt="$2"; shift 2;;
+      *) usage;;
+    esac
+  done
+  valid_slug "$slug" || { echo "repro-check: invalid slug" >&2; exit 2; }
+  case "$receipt" in *$'\n'*|*$'\r'*|*$'\t'*) echo "repro-check: anchor receipt must be one single line" >&2; exit 2;; esac
+  if ! printf '%s\n' "$receipt" | grep -Eq '^issue-tracer-checkpoint-v1 slug=[a-z0-9-]+ manifest=[0-9a-f]{40} tree=[0-9a-f]{40}$'; then
+    echo "repro-check: malformed anchor receipt" >&2
+    exit 2
+  fi
+  parsed_slug="${receipt#*slug=}"; parsed_slug="${parsed_slug%% manifest=*}"
+  parsed_manifest="${receipt#*manifest=}"; parsed_manifest="${parsed_manifest%% tree=*}"
+  parsed_tree="${receipt##* tree=}"
+  [ "$parsed_slug" = "$slug" ] || { echo "repro-check: anchor receipt slug does not match --slug" >&2; exit 2; }
+  trace_for
+  set_trace_root
+  manifest="$trace_dir/repro/checkpoint.manifest"
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
+  do_verify --slug "$slug" --trace-dir "$trace_dir"
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest became unsafe" >&2; exit 2; }
+  expected_digest="$(git hash-object --no-filters "$manifest")"
+  expected_tree="$(state_value checkpoint-tree-id)"
+  [ "$expected_digest" = "$parsed_manifest" ] || { echo "repro-check: anchor manifest digest does not match checkpoint manifest" >&2; exit 1; }
+  [ "$expected_tree" = "$parsed_tree" ] || { echo "repro-check: anchor tree does not match state.md checkpoint-tree-id" >&2; exit 1; }
+}
+
 command="${1:-}"; shift || true
-case "$command" in run) do_run "$@";; checkpoint) do_checkpoint "$@";; verify-checkpoint) do_verify "$@";; *) usage;; esac
+case "$command" in
+  run) do_run "$@";;
+  checkpoint) do_checkpoint "$@";;
+  verify-checkpoint) do_verify "$@";;
+  anchor) do_anchor "$@";;
+  verify-anchor) do_verify_anchor "$@";;
+  *) usage;;
+esac
