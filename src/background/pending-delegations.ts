@@ -415,6 +415,26 @@ export type BackgroundDelegationWorkflowLaneFailureClass =
 	| 'liveness';
 
 /**
+ * Legacy failure class retired from lane results by #2615 (its last producer
+ * was deleted in #2381) but still present in durable records written by
+ * pre-#2615 builds. Read-side only: mirrors the disclosure-side vocabulary
+ * (`PrReviewDisclosureFailureClass`), which kept the member legible for the
+ * same reason — durable rows outlive the producer that wrote them.
+ */
+export type BackgroundDelegationLegacyWorkflowLaneFailureClass = 'deadline';
+
+/**
+ * The failure-class vocabulary a PERSISTED delegation record may carry: the
+ * live producer union plus the retired `'deadline'` member. Writers only emit
+ * the live union (the parity test forbids a `'deadline'` producer); this type
+ * exists so the strict readers accept historical rows instead of classifying
+ * them as corruption and failing the whole namespace.
+ */
+export type BackgroundDelegationPersistedWorkflowLaneFailureClass =
+	| BackgroundDelegationWorkflowLaneFailureClass
+	| BackgroundDelegationLegacyWorkflowLaneFailureClass;
+
+/**
  * Issue #2382: structured, bounded classification of the terminal error that
  * settled a lane, captured from `classifyLaneTerminalError` at settle time so
  * downstream consumers (the PR-review resilience circuit) can derive a typed
@@ -456,8 +476,12 @@ export interface BackgroundDelegationResult {
 	/**
 	 * Durable failure provenance for a lane-atomic PR-workflow terminalization.
 	 * Optional because successful lanes and legacy terminal results have none.
+	 * Typed as the PERSISTED vocabulary: live writers only emit the producer
+	 * union, but strict readers must also accept the retired `'deadline'`
+	 * member carried by durable pre-#2615 rows (see the persisted-vocabulary
+	 * type above — rejecting it wedges the whole delegation namespace).
 	 */
-	workflowLaneFailureClass?: BackgroundDelegationWorkflowLaneFailureClass;
+	workflowLaneFailureClass?: BackgroundDelegationPersistedWorkflowLaneFailureClass;
 	/**
 	 * Issue #2382: typed terminal-error classification captured at settle time
 	 * (see {@link BackgroundDelegationTerminalErrorClass}). Optional because only
@@ -608,8 +632,12 @@ const ResultSchema = z
 		transcriptIncomplete: z.boolean().optional(),
 		messageCount: z.number().optional(),
 		prReviewResultReceipt: PrReviewResultReceiptSchema.optional(),
+		// The enum is the PERSISTED vocabulary: 'deadline' is retired from live
+		// producers (#2615, parity-tested) but durable pre-#2615 rows carry it;
+		// rejecting it here made the whole namespace read fail as uncertain.
+		// Mirrors PrReviewDisclosureFailureClass on the disclosure side.
 		workflowLaneFailureClass: z
-			.enum(['contract', 'resource', 'liveness'])
+			.enum(['contract', 'resource', 'liveness', 'deadline'])
 			.optional(),
 		// Issue #2382: must be declared here (schema is .strict()) — see the
 		// interface comment and the parity guard below this schema.
@@ -1110,14 +1138,29 @@ function coordinationRowsToDelegations(
 				const parsed = RecordSchema.safeParse(
 					JSON.parse(row.payload) as unknown,
 				);
-				if (
-					!parsed.success ||
-					parsed.data.correlationId !== row.entityKey ||
-					Math.max(parsed.data.generation ?? 1, 1) !== row.generation ||
-					parsed.data.status !== row.status
-				) {
+				// Distinct bounded diagnostics: a schema rejection (retired
+				// vocabulary member, corrupt field) has a different repair
+				// path than an authority-binding mismatch (row columns vs
+				// payload identity), and the conflated message hid which one
+				// fired.
+				if (!parsed.success) {
 					throw new Error(
-						`delegation coordination row failed schema or authority binding validation for ${row.entityKey}`,
+						`delegation coordination row failed schema validation for ${row.entityKey}`,
+					);
+				}
+				if (parsed.data.correlationId !== row.entityKey) {
+					throw new Error(
+						`delegation coordination row authority binding mismatch: payload correlationId does not equal entity key ${row.entityKey}`,
+					);
+				}
+				if (Math.max(parsed.data.generation ?? 1, 1) !== row.generation) {
+					throw new Error(
+						`delegation coordination row authority binding mismatch: payload generation does not equal row generation for ${row.entityKey}`,
+					);
+				}
+				if (parsed.data.status !== row.status) {
+					throw new Error(
+						`delegation coordination row authority binding mismatch: payload status does not equal row status for ${row.entityKey}`,
 					);
 				}
 				return parsed.data as BackgroundDelegationRecord;

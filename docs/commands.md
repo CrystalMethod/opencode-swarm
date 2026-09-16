@@ -353,7 +353,7 @@ Report swarm observability events from the SQLite query authority [--task <id>] 
 
 **Args:** `--task <id>, --session <id>, --trace <id>, --run <batchId>, --since <ISO-8601>, --json`
 
-Bounded, deterministic query over the observability events store in .swarm/swarm.db (the first run performs a bounded, idempotent legacy-import into the local sink). --run filters the lane/dispatch batch axis (workflow.batchId). Unmatched delegation begins are disclosed, never fabricated into ends. --json emits a schemaVersion-tagged block.
+Bounded, deterministic query over the observability events store in .swarm/swarm.db (the first run performs a bounded, idempotent legacy-import into the local sink). --run filters the lane/dispatch batch axis (workflow.batchId). Unmatched delegation begins are disclosed, never fabricated into ends. Includes a Task attempts (cohort) section (issue #2676): execution-attempt records folded through a snapshot-qualified cohort with per-class counts, known/unavailable cost split, uncertainty, and an explicit causal-rate qualification line. --json emits a schemaVersion-tagged block (schema v2 adds the taskAttempts cohort field).
 
 ### `/swarm dashboard`
 

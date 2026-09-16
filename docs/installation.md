@@ -795,10 +795,10 @@ Pick auto once you've tested the individual capabilities and want full throughpu
 
 ### Feature Flag Safety
 
-Every automation capability is default-off:
+Every automation capability has its own feature flag, individually defaulted
+(read-only capabilities on; write/auto-run capabilities off):
 
-- Start with `mode: "manual"` and all capabilities `false`
-- Enable features as you test them
+- Start with `mode: "manual"` and enable capabilities as you test them
 - Never enable everything at once
 - Revert to manual mode if something goes wrong
 
@@ -808,6 +808,23 @@ Every automation capability is default-off:
 - Only runs auto-fix when explicitly enabled via `config_doctor_autofix: true`
 - Creates encrypted backups in `.swarm/` before applying fixes
 - Supports restore via `/swarm config doctor --restore <backup-id>`
+
+### Compatibility Matrix
+
+Governed default posture by config vintage and preset (#2504; full inventory
+with evidence citations at `docs/defaults-governance.md`):
+
+| Config | `auto_review` default | New plans | Kill switch / restore |
+|---|---|---|---|
+| v7 config, no preset (7.x releases) | `false` (opt-in) | Parallel-first for provably file-disjoint groups (since v7.132.0), gate-enforced serial fallback | `auto_review.enabled: false`; per-plan `execution_profile.parallelization_enabled: false` |
+| v7 config, no preset (first 8.x release) | `true` (advisory) — flips automatically | Same as above | Same kill switches; `/swarm config doctor --fix` acknowledges and stamps `config_format_version: 3` |
+| `preset: "conservative"` | `false` (v7 posture restored) | Serial (v7 posture restored) | Explicit keys always win over the preset |
+| `preset: "default"` | Same as the no-preset rows | Same as the no-preset rows | Same kill switches |
+| Fresh install | Installer writes `auto_select_architect: true` (first-run activation, #2493); `auto_review` follows the release rows above | Same as no-preset | The schema default for `auto_select_architect` stays off — no silent change for existing users |
+
+Explicit user values always win over both the preset and any flipped default.
+Existing plans are never rewritten on upgrade; only NEW plans pick up the
+parallel-first default.
 
 ### GUI Visibility
 

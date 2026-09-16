@@ -1,0 +1,80 @@
+# Governed v8 defaults-flip frame: conservative preset, migration, rollback, and inventory (#2504)
+
+## What
+
+Ships the governance frame required by issue #2504 (Workstream F PR 12 of 21,
+consolidating EPIC #1677) around the already-armed v8 defaults flips. No new
+default flip is introduced and no version number changes.
+
+- **`preset` config key** (`"default" | "conservative"`, optional): the
+  conservative preset restores the pre-flip (v7) defaults for every flipped
+  surface — `auto_review.enabled: false` and serial new plans — applied as the
+  lowest-precedence layer in config resolution so explicit user values always
+  win (including partial sections like `auto_review: { mode: "gate" }`).
+- **Migration + warnings**: `/swarm config doctor` now surfaces governed
+  default changes as `defaults-flip` info findings (naming the change, the
+  kill switch, and the preset) while `config_format_version < 3`, with a
+  "Defaults changes (v8)" report section. `/swarm config doctor --fix`
+  acknowledges the changes by stamping `config_format_version: 3` —
+  idempotently; passive runs never write. This also fixes the long-standing
+  gap where applied migrations re-advertised forever because the version was
+  never written back.
+- **Preset-aware new plans**: `save_plan` consults the resolved preset — under
+  `conservative`, new plans default to serial (`parallelization_enabled:
+  false`); without it the v8 parallel-first default (v7.132.0, #1674)
+  applies. Explicit profile keys always win; config-load failures fail open
+  to the v8 default.
+- **Inventory + trust-posture docs**: new `docs/defaults-governance.md`
+  inventories every governed default change with production-evidence
+  citations (#2585 live host proof, #2586 partial supported-host evidence,
+  #2490/#2491/#2503 quality decisions, the pinned auto-review cost baseline),
+  per-flip kill switches and rollback, the three K3 UX dispositions (UX-3
+  `auto_select_architect` stays install-layer; UX-6 startup banner deferred —
+  no exit evidence; UX-7 free-tier model resolution already ships via
+  live-catalog preflight), and the non-goals (experimental resilience,
+  autonomy, remote export, training capture, sandbox — not flipped).
+  Stale overgeneralized "all default false" claims in `architecture.md`,
+  `installation.md`, and `design-rationale.md` are amended to describe the
+  actual posture, and `installation.md` gains a Compatibility Matrix.
+
+## Why
+
+The auto_review v8 flip is armed in code (approved burn-in pin + major≥8
+gate) and the parallel-first new-plan default landed in v7.132.0 — but there
+was no preset escape hatch, no migration/warning surface for upgrading
+configs, no evidence-cited inventory, and the documented trust posture still
+claimed universal opt-in defaults. #2504 requires exactly this frame:
+evidence-gated flips only, migration and rollback documented and tested.
+
+## Migration steps
+
+- Nothing is required — existing configs keep their exact behavior on 7.x.
+- To restore all pre-flip (v7) defaults: set `"preset": "conservative"`.
+- Per-flip kill switches: `auto_review.enabled: false` (config) and
+  `execution_profile.parallelization_enabled: false` (per plan). Explicit
+  values always win over any flipped default or the preset.
+- `/swarm config doctor` lists pending default changes; `--fix` acknowledges
+  them (stamps `config_format_version: 3`).
+
+## Caveats
+
+- The `auto_review` default change itself activates mechanically on the first
+  8.x release (release-please owns versions); this change ships the
+  governance around it, not a new flip.
+- Supported-host qualification (#2586) is still open; its published evidence
+  is Windows-only for the R10 cells and is not advertised as cross-platform
+  qualification anywhere in this change.
+
+## Tests
+
+- `tests/unit/config/conservative-preset.test.ts` — schema/loader/release-seam
+  preset contract, explicit-override precedence (both directions), partial
+  sections, save_plan new-plan defaults, load-failure fail-open.
+- `tests/unit/config/defaults-flip-upgrade.test.ts` — v7-era configs get
+  `defaults-flip` findings; `--fix` stamps `config_format_version: 3`
+  idempotently; passive runs never write; version-3 configs stop advertising;
+  legacy rename migrations unchanged.
+- `tests/unit/config/defaults-flip-rollback.test.ts` — per-flip kill switches
+  verified at a simulated v8 release; inventory doc names both kill switches.
+- `tests/unit/config/parallelization-default.test.ts` — hardened with XDG
+  isolation (save_plan now reads config for the preset).

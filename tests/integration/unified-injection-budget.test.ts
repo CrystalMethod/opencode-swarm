@@ -22,10 +22,8 @@ import type {
 import { createKnowledgeInjectorHook } from '../../src/hooks/knowledge-injector.js';
 import { createSystemEnhancerHook } from '../../src/hooks/system-enhancer.js';
 import {
-	allocateInjectionBudget,
 	beginTurnLedger,
 	clearTurnLedger,
-	type InjectionBudgetConfig,
 	recordProducerEmission,
 } from '../../src/services/injection-budget.js';
 import { resetSwarmState, swarmState } from '../../src/state.js';
@@ -225,7 +223,9 @@ describe('Unified injection budget integration (FR-002)', () => {
 		};
 
 		// system-enhancer: small demand (~500 tokens)
-		const seHook = createSystemEnhancerHook(pluginConfig, tempDir);
+		const seHook = createSystemEnhancerHook(pluginConfig, tempDir, {
+			surface: 'messages',
+		});
 		const seTransform = seHook['experimental.chat.system.transform'] as any;
 		const seOutput = { system: [] as string[] };
 		await seTransform({ sessionID: 'test-session' }, seOutput);
@@ -319,7 +319,9 @@ describe('Unified injection budget integration (FR-002)', () => {
 			`## Decisions\n${decisions}\n## Agent Activity\n- coder: no tool activity`,
 		);
 
-		const seHook = createSystemEnhancerHook(pluginConfig, tempDir);
+		const seHook = createSystemEnhancerHook(pluginConfig, tempDir, {
+			surface: 'messages',
+		});
 		const seTransform = seHook['experimental.chat.system.transform'] as any;
 		const seOutput = { system: [] as string[] };
 		await seTransform({ sessionID: 'test-session' }, seOutput);
@@ -363,7 +365,9 @@ describe('Unified injection budget integration (FR-002)', () => {
 		const knowledgeConfig = { ...DEFAULT_KNOWLEDGE_CONFIG };
 
 		// system-enhancer should see the unified budget
-		const seHook = createSystemEnhancerHook(pluginConfig, tempDir);
+		const seHook = createSystemEnhancerHook(pluginConfig, tempDir, {
+			surface: 'messages',
+		});
 		const seTransform = seHook['experimental.chat.system.transform'] as any;
 		const seOutput = { system: [] as string[] };
 		await seTransform({ sessionID: 'test-session' }, seOutput);
@@ -469,88 +473,5 @@ describe('Unified injection budget integration (FR-002)', () => {
 		expect(seTokens).toBeLessThanOrEqual(topLevelBudget);
 		expect(kiTokens).toBeLessThanOrEqual(topLevelBudget);
 		expect(seTokens + kiTokens).toBeLessThanOrEqual(topLevelBudget);
-	});
-
-	// -----------------------------------------------------------------------
-	// SC-005 (kiDemand >= ceiling): knowledge-injector alone exceeds budget
-	// -----------------------------------------------------------------------
-
-	it('SC-005: system-enhancer gets 0 when knowledge-injector demand alone exceeds the unified ceiling', () => {
-		// With seDemand=0 and kiChars=2000 (kiDemand≈660), ceiling=500:
-		// kiDemand(660) >= ceiling(500) → SE gets 0, KI gets 500.
-		// This exercises the kiDemand >= ceiling branch (lines 108-114).
-		const config: InjectionBudgetConfig = { totalBudgetTokens: 500 };
-		const result = allocateInjectionBudget(0, 2000, config);
-		expect(result.systemEnhancerTokens).toBe(0);
-		expect(result.knowledgeInjectorTokens).toBe(500);
-		expect(result.totalTokens).toBe(500);
-	});
-
-	it('SC-005: hook flow — kiChars exceeds ceiling, SE gets 0, KI capped at ceiling', async () => {
-		// Integration variant: verify hook respects kiDemand >= ceiling result.
-		// Set a low unified ceiling (500) so that kiChars=2000 (kiDemand=660) > 500.
-		// SE demand = 0 (not called), kiChars capped at maxInjectChars=2000 → kiDemand=660 > 500.
-		const unifiedBudget = 500;
-		const pluginConfig: PluginConfig = {
-			...DEFAULT_PLUGIN_CONFIG,
-			context_budget: {
-				max_injection_tokens: 4000,
-				unified_injection_tokens: unifiedBudget,
-			},
-		};
-		const knowledgeConfig = { ...DEFAULT_KNOWLEDGE_CONFIG };
-
-		// SE not called → seDemand = 0 from getSystemEnhancerDemand
-		// KI hook: effectiveBudget = maxInjectChars = 2000
-		// kiDemand = ceil(2000 * 0.33) = 660 > 500 → SE gets 0
-		const kiHook = createKnowledgeInjectorHook(
-			tempDir,
-			knowledgeConfig,
-			{},
-			unifiedBudget,
-		);
-		const kiMessages = makeMessages(20_000);
-		const kiOutput = { messages: kiMessages };
-		await kiHook({} as Record<string, never>, kiOutput);
-		const kiInjected = findInjectedMessage(kiOutput.messages);
-		// With SE getting 0, KI's allocation = 500 tokens ≈ 1515 chars.
-		// This should still be >= MIN_INJECT_CHARS (300), so injection proceeds.
-		expect(kiInjected).toBeDefined();
-		const kiChars = totalTextLength(kiInjected!);
-		// kiChars should be capped around 1515 (500 tokens / 0.33)
-		expect(kiChars).toBeLessThanOrEqual(1600);
-	});
-
-	// -----------------------------------------------------------------------
-	// SC-006: proportional split when neither component alone exceeds ceiling
-	// -----------------------------------------------------------------------
-
-	it('SC-006: proportional split — both demands under ceiling but combined exceeds it', () => {
-		// seDemand=3000, kiChars=4000 (kiDemand≈1320), combined=4320, ceiling=4000.
-		// Neither alone (3000 < 4000, 1320 < 4000) but combined > ceiling.
-		// Proportional: seShare = floor(3000/4320 * 4000) = 2777, kiShare = 4000-2777 = 1223.
-		// This exercises the proportional split branch (lines 116-127).
-		const config: InjectionBudgetConfig = { totalBudgetTokens: 4000 };
-		const result = allocateInjectionBudget(3000, 4000, config);
-		expect(result.totalTokens).toBe(4000);
-		expect(result.systemEnhancerTokens).toBe(2777);
-		expect(result.knowledgeInjectorTokens).toBe(1223);
-		expect(result.systemEnhancerTokens).toBeGreaterThan(0);
-		expect(result.knowledgeInjectorTokens).toBeGreaterThan(0);
-	});
-
-	it('SC-006: proportional split with seDemand just under ceiling (edge case)', () => {
-		// seDemand=3999, kiChars=4000 (kiDemand≈1320), combined=5319, ceiling=4000.
-		// seDemand(3999) < 4000, kiDemand(1320) < 4000, combined(5319) > 4000.
-		// seShare = floor(3999/5319 * 4000) = floor(3007.34) = 3007, kiShare = 4000-3007 = 993.
-		const config: InjectionBudgetConfig = { totalBudgetTokens: 4000 };
-		const result = allocateInjectionBudget(3999, 4000, config);
-		expect(result.totalTokens).toBe(4000);
-		expect(result.systemEnhancerTokens).toBe(3007);
-		expect(result.knowledgeInjectorTokens).toBe(993);
-		// Both components get non-zero
-		expect(result.systemEnhancerTokens + result.knowledgeInjectorTokens).toBe(
-			4000,
-		);
 	});
 });

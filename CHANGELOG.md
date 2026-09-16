@@ -1,5 +1,40 @@
 # Changelog
 
+## [7.184.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.1...v7.184.0) (2026-09-16)
+
+
+### Features
+
+* **config:** governed v8 defaults-flip frame — conservative preset, migration, rollback, inventory ([#2504](https://github.com/ZaxbyHub/opencode-swarm/issues/2504)) ([ae07d84](https://github.com/ZaxbyHub/opencode-swarm/commit/ae07d84c965d701d0c0277559277e9255ba282be))
+
+
+### Bug Fixes
+
+* **config:** review-round hardening for the [#2504](https://github.com/ZaxbyHub/opencode-swarm/issues/2504) governance frame ([ea1c3a8](https://github.com/ZaxbyHub/opencode-swarm/commit/ea1c3a862a3741b4896439738a42de82af7fc425))
+* **prompt-cache:** stabilize architect request prefixes ([7da47f9](https://github.com/ZaxbyHub/opencode-swarm/commit/7da47f93974b204eb6370fd4b1da188a3e4f9aa9))
+* **prompt-cache:** stabilize architect request prefixes ([54412be](https://github.com/ZaxbyHub/opencode-swarm/commit/54412bed27d3b661e52aecdbb5235f3f106f9797))
+
+## [7.183.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.183.0...v7.183.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* **background:** read legacy deadline lane-failure rows without wedging the delegation store ([0c11529](https://github.com/ZaxbyHub/opencode-swarm/commit/0c115292dba713ce6c8d5aa0c8adc7515af15ad4))
+
+## [7.183.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.182.0...v7.183.0) (2026-09-15)
+
+
+### Features
+
+* **observability:** bind execution traces and task-cost metrics to exact attempts ([#2676](https://github.com/ZaxbyHub/opencode-swarm/issues/2676)) ([114338f](https://github.com/ZaxbyHub/opencode-swarm/commit/114338fec4b5025944e05c0d77006262efbd9f92))
+
+## [7.182.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.4...v7.182.0) (2026-09-15)
+
+
+### Features
+
+* **issue-tracer:** wire v3 receipts plugin-side and prove ingestion reaches a durable plan ([#2564](https://github.com/ZaxbyHub/opencode-swarm/issues/2564)) ([2b51abf](https://github.com/ZaxbyHub/opencode-swarm/commit/2b51abf50bb4a47e56ccc226ca7b20efdc45286b))
+
 ## [7.181.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.181.3...v7.181.4) (2026-09-15)
 
 

@@ -18,12 +18,13 @@ import {
 	setStoredInputArgs,
 } from '../../../src/hooks/guardrails/stored-input-args';
 import {
+	isSessionBoundArchitect,
 	type MessageArrayLike,
 	resolveMessageTransformContext,
 	resolveToolAfterContext,
 	resolveToolBeforeContext,
 } from '../../../src/hooks/host-boundary';
-import { swarmState } from '../../../src/state';
+import { type AgentSessionState, swarmState } from '../../../src/state';
 
 const SESSION = 'sess-1849';
 const CALL = 'call-1849';
@@ -223,5 +224,46 @@ describe('host-boundary adapter — messages.transform', () => {
 		const ctx = resolveMessageTransformContext({});
 		expect(ctx.sessionID).toBeUndefined();
 		expect(ctx.agent).toBeUndefined();
+	});
+});
+
+describe('isSessionBoundArchitect — regression coverage (FB-010)', () => {
+	beforeEach(restoreSession);
+	afterEach(restoreSession);
+
+	test('requires a non-empty session id and a meaningful resolved identity', () => {
+		// FB-010 was a direct-coverage gap: indirect message-adapter tests did not
+		// pin how the shared session-bound predicate treats cold/empty identity.
+		expect(isSessionBoundArchitect(undefined, 'architect')).toBe(false);
+		expect(isSessionBoundArchitect('', 'architect')).toBe(false);
+		expect(isSessionBoundArchitect(SESSION)).toBe(false);
+		expect(isSessionBoundArchitect(SESSION, '')).toBe(false);
+
+		swarmState.agentSessions.set(SESSION, {
+			agentName: '',
+		} as unknown as AgentSessionState);
+		expect(isSessionBoundArchitect(SESSION)).toBe(false);
+	});
+
+	test('honors explicit architect/delegate identities and prefixed architect names', () => {
+		swarmState.activeAgent.set(SESSION, 'reviewer');
+		expect(isSessionBoundArchitect(SESSION, 'architect')).toBe(true);
+		expect(isSessionBoundArchitect(SESSION, 'coder')).toBe(false);
+		expect(isSessionBoundArchitect(SESSION, 'mega_architect')).toBe(true);
+		expect(isSessionBoundArchitect(SESSION, 'cohort_architect')).toBe(true);
+	});
+
+	test('falls back to activeAgent and then agentSessions when explicit identity is absent', () => {
+		swarmState.activeAgent.set(SESSION, 'enterprise_architect');
+		expect(isSessionBoundArchitect(SESSION)).toBe(true);
+
+		swarmState.activeAgent.delete(SESSION);
+		swarmState.agentSessions.set(SESSION, {
+			agentName: 'architect',
+		} as unknown as AgentSessionState);
+		expect(isSessionBoundArchitect(SESSION)).toBe(true);
+
+		swarmState.agentSessions.get(SESSION)!.agentName = 'reviewer';
+		expect(isSessionBoundArchitect(SESSION)).toBe(false);
 	});
 });

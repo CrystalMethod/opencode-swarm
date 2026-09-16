@@ -108,7 +108,35 @@ function writeResidualBReceipts(dir: string, number = 42): void {
 		issueNumber: number,
 		defectClass: 'no defect class',
 		justification: 'docs-only change corrects no behavior',
+		relatedProblems: [
+			{ ref: '#2131', note: 'residual-B gates this receipt feeds' },
+		],
 		timestamp: '2026-01-01T00:00:00Z',
+	});
+}
+
+/**
+ * Issue #2564 (issue-tracer v3 receipts): branch-freshness (Phase 0, synced)
+ * and a green per-phase validator receipt, written as the real tools would.
+ */
+function writeV3Receipts(dir: string, number = 42): void {
+	writeSwarmJson(dir, 'branch-freshness.json', {
+		issueNumber: number,
+		freshness: 'synced',
+		timestamp: '2026-01-01T00:00:00Z',
+	});
+	writeSwarmJson(dir, 'trace-validation.json', {
+		issueNumber: number,
+		timestamp: '2026-01-01T00:00:00Z',
+		validations: [
+			{
+				phase: '4.6',
+				outcome: 'pass',
+				reviewedCommit: '0123456789abcdef0123456789abcdef01234567',
+				treeId: 'fedcba9876543210fedcba9876543210fedcba98',
+				timestamp: '2026-01-01T00:00:00Z',
+			},
+		],
 	});
 }
 
@@ -162,7 +190,9 @@ describe('issue-trace e2e — full chain', () => {
 		writeIssueRef(tmpDir, 42);
 		writeTraceState(tmpDir);
 		writeSpec(tmpDir, 42);
-		// No plan → authoritative planExists is false → row (f) fires.
+		// v3 Phase 0 receipt present → the freshness gate is satisfied; no plan →
+		// authoritative planExists is false → row (f) fires.
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expectIssueTraceCarrier(messages, '[MODE: PLAN]');
@@ -214,6 +244,7 @@ describe('issue-trace e2e — full chain', () => {
 		_internals.readPlanPhaseStatus = () =>
 			Promise.resolve({ planExists: true, allComplete: true });
 		writeResidualBReceipts(tmpDir);
+		writeV3Receipts(tmpDir);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(1);

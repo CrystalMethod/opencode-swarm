@@ -24,7 +24,7 @@ import {
 	clearTurnLedger,
 	getTurnLedgerSummary,
 } from '../../../src/services/injection-budget';
-import { resetSwarmState } from '../../../src/state';
+import { resetSwarmState, swarmState } from '../../../src/state';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const SESSION = 'ledger-attribution-session';
@@ -65,6 +65,10 @@ describe('system-enhancer ledger attribution — exact-once system surface (#210
 		);
 		writeFileSync(path.join(swarmDir, 'context.md'), '# Context\n');
 		resetSwarmState();
+		// Exercise the still-supported system surface for a known non-native,
+		// non-architect agent; the architect path is intentionally delivered by
+		// the registered messages-surface carrier instead.
+		swarmState.activeAgent.set(SESSION, 'coder');
 		clearTurnLedger(SESSION);
 	});
 

@@ -44,6 +44,13 @@ const GuardrailSchema = z
 	})
 	.strict();
 
+const RelatedProblemSchema = z
+	.object({
+		ref: z.string().trim().min(1).max(500),
+		note: z.string().trim().max(1000).optional(),
+	})
+	.strict();
+
 const RecordRecurrenceSweepArgsSchema = z
 	.object({
 		issueNumber: z.number().int().min(1),
@@ -57,6 +64,13 @@ const RecordRecurrenceSweepArgsSchema = z
 			.optional(),
 		dispositions: z.array(DispositionSchema).max(200).optional(),
 		guardrail: GuardrailSchema.optional(),
+		/**
+		 * Phase 1 related-problems sweep results (issue #2564): the related
+		 * issues/PRs the intake sweep found, seeding the defect class. Required
+		 * on BOTH paths — the sweep runs in Phase 1 regardless of defect class —
+		 * and non-vacuous: at least one entry with a non-empty ref.
+		 */
+		relatedProblems: z.array(RelatedProblemSchema).min(1).max(200),
 	})
 	.strict();
 
@@ -106,6 +120,7 @@ export async function executeRecordRecurrenceSweep(
 	if (data.predicates) receipt.predicates = data.predicates;
 	if (data.dispositions) receipt.dispositions = data.dispositions;
 	if (data.guardrail) receipt.guardrail = data.guardrail;
+	receipt.relatedProblems = data.relatedProblems;
 	if (context.sessionID?.trim()) receipt.sessionId = context.sessionID.trim();
 
 	let validatedPath: string;
@@ -148,7 +163,7 @@ export async function executeRecordRecurrenceSweep(
 export const record_recurrence_sweep: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Record the recurrence sweep for the current traced issue (issue #2131 residual B). The /swarm issue --trace workflow will not hand off to commit-pr until this receipt exists. For a real defect class supply: defectClass (one-sentence characterization), predicates (the exact search predicates), dispositions (every hit as FIX / FALSE_POSITIVE / OUT_OF_CLASS / DEFERRED_WITH_USER_APPROVAL), and a guardrail (kind + description + proof it catches the original defect). If the change corrects no incorrect behavior, use the literal defectClass "no defect class" with a one-line justification.',
+			'Record the recurrence sweep for the current traced issue (issue #2131 residual B; widened in #2564). The /swarm issue --trace workflow will not hand off to commit-pr until this receipt exists. Supply relatedProblems (the Phase 1 related-problems sweep results — at least one {ref, note?} entry) plus, for a real defect class: defectClass (one-sentence characterization), predicates (the exact search predicates), dispositions (every hit as FIX / FALSE_POSITIVE / OUT_OF_CLASS / DEFERRED_WITH_USER_APPROVAL), and a guardrail (kind + description + proof it catches the original defect). If the change corrects no incorrect behavior, use the literal defectClass "no defect class" with a one-line justification (relatedProblems still required).',
 		args: {
 			issueNumber: RecordRecurrenceSweepArgsSchema.shape.issueNumber,
 			defectClass: RecordRecurrenceSweepArgsSchema.shape.defectClass,
@@ -156,6 +171,7 @@ export const record_recurrence_sweep: ReturnType<typeof createSwarmTool> =
 			predicates: RecordRecurrenceSweepArgsSchema.shape.predicates,
 			dispositions: RecordRecurrenceSweepArgsSchema.shape.dispositions,
 			guardrail: RecordRecurrenceSweepArgsSchema.shape.guardrail,
+			relatedProblems: RecordRecurrenceSweepArgsSchema.shape.relatedProblems,
 		},
 		execute: executeRecordRecurrenceSweep,
 	});

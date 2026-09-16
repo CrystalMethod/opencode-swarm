@@ -38,6 +38,10 @@ import {
 	buildDelegationCostFields,
 	type PricingConfig,
 } from '../services/cost-accounting.js';
+import {
+	type ExecutionAttemptClass,
+	recordExecutionAttempt,
+} from '../services/execution-attempt.js';
 import { telemetry } from '../telemetry.js';
 import * as logger from '../utils/logger.js';
 import { buildDelegationTerminalIdentityFields } from './delegation-cost-identity.js';
@@ -257,6 +261,15 @@ export function emitDelegationBegin(
 			record.swarmPrefixedAgent,
 			record.planTaskId ?? '',
 		);
+		// Issue #2676: the dispatch attempt itself is an execution-attempt
+		// record. Nothing about cost is known at begin — all six axes stay
+		// unknown (never zero).
+		recordExecutionAttempt({
+			sessionId: record.parentSessionId,
+			...(record.planTaskId ? { taskId: record.planTaskId } : {}),
+			attemptClass: 'attempt',
+			outcomeStatus: 'unknown',
+		});
 	} catch {
 		// fail-open — observation only
 	}
@@ -292,6 +305,25 @@ type TerminalEmitRecord = Pick<
  * sweep status like `stale`, which the narrow `DelegationTerminalStatus` input
  * union does not name).
  */
+/**
+ * Attempt-class for a delegation terminal status (issue #2676). The claim and
+ * eventless/stale paths carry no provider-failure classification, so the
+ * `provider_failed` class has no producer at this seam — an unclassified
+ * failure records outcome `unknown`, never a guessed class.
+ */
+function terminalAttemptClass(status: string): ExecutionAttemptClass {
+	if (status === 'cancelled') return 'cancelled';
+	return 'result';
+}
+
+function terminalAttemptOutcome(
+	status: string,
+): 'success' | 'failure' | 'unknown' {
+	if (status === 'completed') return 'success';
+	if (status === 'error' || status === 'failed') return 'failure';
+	return 'unknown';
+}
+
 function emitDelegationCostObservation(
 	record: TerminalEmitRecord,
 	observations: DelegationObservationInput,
@@ -319,6 +351,45 @@ function emitDelegationCostObservation(
 			terminalStatus,
 			costFields,
 		);
+		// Issue #2676: bind the terminal to an execution-attempt record with
+		// exact-call identity and an unknown-honest cost block. Token axes are
+		// carried ONLY when the provider's own payload attested usage
+		// (cost_source 'reported' — the pinned SDK shapes carry cost and usage
+		// together; the synthesized missing-cost evidence item zero-fills usage
+		// and must not leak in as a known zero). An estimate-only chain carries
+		// its estimated dollar value but leaves token axes unknown.
+		const usageAttested = costFields.cost_source === 'reported';
+		recordExecutionAttempt({
+			sessionId: record.parentSessionId,
+			...(record.planTaskId ? { taskId: record.planTaskId } : {}),
+			...(record.callID ? { callId: record.callID } : {}),
+			...(record.laneId ? { laneId: record.laneId } : {}),
+			attemptClass: terminalAttemptClass(terminalStatus),
+			outcomeStatus: terminalAttemptOutcome(terminalStatus),
+			cost: {
+				...(observations.startedAt !== undefined
+					? { latencyMs: Math.max(0, Date.now() - observations.startedAt) }
+					: {}),
+				...(usageAttested
+					? {
+							inputTokens: costFields.tokens_input,
+							outputTokens: costFields.tokens_output,
+							// Combined cache read+write total (upstream axis
+							// collapse, documented in
+							// docs/execution-attempt-tracing.md).
+							cacheReadTokens: costFields.tokens_cache,
+						}
+					: {}),
+				...(costFields.cost_source === 'reported' &&
+				costFields.cost_usd !== null
+					? { billedCostUsd: costFields.cost_usd }
+					: {}),
+				...(costFields.cost_source === 'estimated' &&
+				costFields.cost_usd !== null
+					? { estimatedCostUsd: costFields.cost_usd }
+					: {}),
+			},
+		});
 	} catch (error) {
 		logger.log(
 			`[delegation-lifecycle] cost observation skipped: ${

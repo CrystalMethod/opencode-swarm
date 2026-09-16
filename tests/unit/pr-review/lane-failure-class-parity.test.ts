@@ -118,6 +118,65 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		}
 	});
 
+	it('the retired deadline class has no producer anywhere in src', () => {
+		// Read-side compatibility widened ResultSchema to accept durable
+		// pre-#2615 'deadline' rows; nothing may ever WRITE the retired
+		// member again. Whole-text scan tolerant of whitespace INCLUDING
+		// newlines between the key, operator, and quoted value — the same
+		// [:=]-on-a-key contract as the live-producer anchor above, so
+		// multi-line producer formatting cannot slip past a line-scoped
+		// check. Pure string ops (no regex-escape transport hazards).
+		const srcRoot = path.join(REPO_ROOT, 'src');
+		const tsFiles: string[] = [];
+		const walk = (entry: string): void => {
+			for (const name of fs.readdirSync(entry)) {
+				const full = path.join(entry, name);
+				if (fs.statSync(full).isDirectory()) {
+					walk(full);
+					continue;
+				}
+				if (name.endsWith('.ts')) tsFiles.push(full);
+			}
+		};
+		walk(srcRoot);
+		expect(tsFiles.length).toBeGreaterThan(0);
+		const isDeadlineProducerText = (text: string): boolean => {
+			const key = 'workflowLaneFailureClass';
+			let searchFrom = 0;
+			while (true) {
+				const idx = text.indexOf(key, searchFrom);
+				if (idx < 0) return false;
+				searchFrom = idx + key.length;
+				let i = searchFrom;
+				const isSpace = (ch: string | undefined): boolean =>
+					ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+				while (i < text.length && isSpace(text[i])) {
+					i++;
+				}
+				const op = text[i];
+				if (op !== ':' && op !== '=') continue;
+				if (op === '=') {
+					const next: string | undefined = text[i + 1];
+					// '===', '!==', '=>' are consumers, not producers.
+					if (next === '=' || next === '>' || next === '!') continue;
+				}
+				i++;
+				while (i < text.length && isSpace(text[i])) {
+					i++;
+				}
+				const quote = text[i];
+				if (quote !== "'" && quote !== '"') continue;
+				i++;
+				if (text.slice(i, i + 8) !== 'deadline') continue;
+				if (text[i + 8] === quote) return true;
+			}
+		};
+		const producers = tsFiles.filter((file) =>
+			isDeadlineProducerText(fs.readFileSync(file, 'utf8')),
+		);
+		expect(producers).toEqual([]);
+	});
+
 	it('cancel_pending settles a typed liveness terminal', async () => {
 		_internals.getSessionOps = () => idleEmptyHost('sess-pc-1');
 		await seedPendingLane(dir, '1');

@@ -230,6 +230,10 @@ export {
 	rebind_pr_feedback_head,
 } from './rebind-pr-feedback-head';
 export {
+	executeRecordBranchFreshness,
+	record_branch_freshness,
+} from './record-branch-freshness';
+export {
 	executeRecordImplementationReview,
 	record_implementation_review,
 } from './record-implementation-review';
@@ -242,9 +246,17 @@ export {
 	record_issue_reproduction,
 } from './record-issue-reproduction';
 export {
+	executeRecordMergeApproval,
+	record_merge_approval,
+} from './record-merge-approval';
+export {
 	executeRecordRecurrenceSweep,
 	record_recurrence_sweep,
 } from './record-recurrence-sweep';
+export {
+	executeRecordTraceValidation,
+	record_trace_validation,
+} from './record-trace-validation';
 export {
 	executeRecoverReworkTask,
 	recover_rework_task,
