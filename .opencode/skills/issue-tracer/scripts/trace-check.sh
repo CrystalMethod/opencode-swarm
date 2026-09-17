@@ -654,7 +654,29 @@ EOF
   head_exit="$(printf '%s\n' "$head_line" | sed -E 's/.* exit=([0-9]+) result=.*/\1/')"
   base_result="$(printf '%s\n' "$base_line" | sed -E 's/.* result=([^ ]+) log=.*/\1/')"
   head_result="$(printf '%s\n' "$head_line" | sed -E 's/.* result=([^ ]+) log=.*/\1/')"
-  manifest_base="$(awk -F '\t' -v want="$id" 'NR > 1 && $6 == want { print $9; exit }' "$manifest")"
+  # A check can cover multiple paths, and an AMEND row supersedes the earlier
+  # row for its exact (path, check-id) pair. Resolve the effective pair rows
+  # first, then select the highest sequence so an amended checkpoint's base
+  # SHA—not the historical first row—binds the replay evidence.
+  manifest_base="$(awk -F '\t' -v want="$id" '
+    NR > 1 && $6 == want {
+      pair = length($3) ":" $3 ":" $6
+      if (!(pair in latest_seq) || ($1 + 0) > latest_seq[pair]) {
+        latest_seq[pair] = $1 + 0
+        latest_base[pair] = $9
+      }
+    }
+    END {
+      for (pair in latest_seq) {
+        if (!found || latest_seq[pair] > max_seq) {
+          found = 1
+          max_seq = latest_seq[pair]
+          selected = latest_base[pair]
+        }
+      }
+      if (found) print selected
+    }
+  ' "$manifest")"
   [ "$base_sha" = "$manifest_base" ] || rule_bad "base-identity-$id" "base SHA does not match checkpoint manifest"
   [ "$head_sha" = "$(git rev-parse HEAD)" ] || rule_bad "head-identity-$id" "head SHA does not match current HEAD"
   case "$class" in

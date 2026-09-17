@@ -339,12 +339,13 @@ append_manifest_row() {
   trace_path_safe "$(dirname "$file")" dir || { echo "repro-check: manifest directory is missing or unsafe" >&2; exit 2; }
   trace_path_safe "$file" file || true
   refuse_nonregular_target "$file"
-  refuse_nonregular_target "$temp"
+  open_exclusive_target "$temp" || { echo "repro-check: could not create manifest temp file safely" >&2; exit 2; }
   {
     printf '# issue-tracer checkpoint manifest v1 rows=%s\n' "$count"
     awk 'NR > 1' "$file"
     printf '%s\n' "$row"
-  } > "$temp"
+  } >&"$exclusive_fd"
+  exec {exclusive_fd}>&-
   mv "$temp" "$file"
 }
 
@@ -362,31 +363,55 @@ refuse_nonregular_target() {
   fi
 }
 
+# Open a new regular file and retain the descriptor.  `set -C` makes the
+# creation and open use an exclusive O_EXCL-style operation, so a symlink
+# planted after refuse_nonregular_target cannot be followed by a later shell
+# redirection.  Callers write through $exclusive_fd and close it before
+# publishing the path with rename/mv.  The parent directory is checked by the
+# caller; portable shell code cannot hold an open directory descriptor across
+# all supported Bash/MSYS environments, so the final rename remains the
+# containment boundary.
+open_exclusive_target() {
+  local path="$1"
+  refuse_nonregular_target "$path"
+  set -C
+  if exec {exclusive_fd}>"$path"; then
+    set +C
+    return 0
+  fi
+  set +C
+  return 1
+}
+
 bound_log() {
   local log="$1" total kept=1048576 omitted temp
   total="$(wc -c < "$log" | tr -d ' ')"
   [ "$total" -le 2097152 ] && return
   temp="$log.truncate.tmp"
-  refuse_nonregular_target "$temp"
-  { head -c "$kept" "$log"; printf '\n[... truncated %s bytes ...]\n' "$((total - (kept * 2)))"; tail -c "$kept" "$log"; } > "$temp"
+  open_exclusive_target "$temp" || { echo "repro-check: could not create log temp file safely" >&2; exit 2; }
+  { head -c "$kept" "$log"; printf '\n[... truncated %s bytes ...]\n' "$((total - (kept * 2)))"; tail -c "$kept" "$log"; } >&"$exclusive_fd"
+  exec {exclusive_fd}>&-
   mv "$temp" "$log"
 }
 
 run_one() {
   local cwd="$1" log="$2" seconds="$3"; shift 3
-  local status=0 pid started timed=0 waited=0
+  local status=0 pid started timed=0 waited=0 temp parent
+  parent="$(dirname "$log")"
+  trace_path_safe "$parent" dir || { echo "repro-check: log parent is missing or unsafe" >&2; exit 2; }
   refuse_nonregular_target "$log"
-  : > "$log"
+  temp="$log.run.tmp.$$.$RANDOM"
+  open_exclusive_target "$temp" || { echo "repro-check: could not create log temp file safely" >&2; exit 2; }
   if [ "${REPRO_CHECK_FORCE_FALLBACK:-0}" != "1" ] && command -v timeout >/dev/null 2>&1; then
-    ( cd "$cwd" && timeout --foreground -k 5 "${seconds}s" "$@" ) > "$log" 2>&1 || status=$?
+    ( cd "$cwd" && timeout --foreground -k 5 "${seconds}s" "$@" ) >&"$exclusive_fd" 2>&1 || status=$?
   else
     # POSIX watchdog fallback: run the child in its own process group so the
     # whole group (not just the immediate child) can be killed on timeout.
     if command -v setsid >/dev/null 2>&1; then
-      ( cd "$cwd" && exec setsid "$@" ) > "$log" 2>&1 &
+      ( cd "$cwd" && exec setsid "$@" ) >&"$exclusive_fd" 2>&1 &
     else
       set -m
-      ( cd "$cwd" && "$@" ) > "$log" 2>&1 &
+      ( cd "$cwd" && "$@" ) >&"$exclusive_fd" 2>&1 &
       set +m
     fi
     pid=$!
@@ -405,21 +430,58 @@ run_one() {
     wait "$pid" 2>/dev/null || status=$?
     [ "$timed" -eq 0 ] || status=124
   fi
+  exec {exclusive_fd}>&-
+  trace_path_safe "$parent" dir || { echo "repro-check: log parent became unsafe" >&2; exit 2; }
+  refuse_nonregular_target "$log"
+  mv "$temp" "$log"
   bound_log "$log"
   printf '%s\n' "$status"
 }
 
+worktree_path_safe() {
+  local rel="$1" current part resolved target
+  is_inside_root "$rel" || return 1
+  [ -n "${worktree_real:-}" ] || return 1
+  current="$worktree_real"
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    current="$current/$part"
+    [ -L "$current" ] && return 1
+    if [ -e "$current" ]; then
+      if [ -d "$current" ]; then
+        resolved="$(cd "$current" 2>/dev/null && pwd -P)" || return 1
+        case "$resolved/" in
+          "$worktree_real/"*) ;;
+          *) return 1 ;;
+        esac
+      elif [ "$current" != "$worktree_real/$rel" ] || [ ! -f "$current" ]; then
+        return 1
+      fi
+    fi
+  done <<EOF
+$(printf '%s' "$rel" | tr '/' '\n')
+EOF
+  target="$worktree_real/$rel"
+  [ ! -L "$target" ] || return 1
+  return 0
+}
+
 copy_path() {
-  local rel="$1" source target source_dir
+  local rel="$1" source target source_dir target_parent
   is_inside_root "$rel" || { echo "repro-check: --copy path must be repo-relative without ..: $rel" >&2; exit 2; }
   repo_path_safe "$rel" || { echo "repro-check: --copy path must remain inside repo without symlink components: $rel" >&2; exit 2; }
   source="$root_real/$rel"
   source_dir="$(cd "$(dirname "$source")" && pwd -P)"
   case "$source_dir" in "$root_real"|"$root_real"/*) ;; *) echo "repro-check: --copy path resolves outside repo: $rel" >&2; exit 2;; esac
-  target="$worktree/$rel"
-  mkdir -p "$(dirname "$target")"
-  rm -rf "$target"
-  cp -R "$source" "$target"
+  target="$worktree_real/$rel"
+  target_parent="$(dirname "$target")"
+  worktree_path_safe "$rel" || { echo "repro-check: --copy target must remain inside disposable worktree: $rel" >&2; exit 2; }
+  mkdir -p -- "$target_parent"
+  worktree_path_safe "$rel" || { echo "repro-check: --copy target became unsafe while preparing destination: $rel" >&2; exit 2; }
+  rm -rf -- "$target"
+  worktree_path_safe "$rel" || { echo "repro-check: --copy target became unsafe before copy: $rel" >&2; exit 2; }
+  cp -R -- "$source" "$target"
+  worktree_path_safe "$rel" || { echo "repro-check: --copy target became unsafe after copy: $rel" >&2; exit 2; }
 }
 
 link_deps() {
@@ -504,6 +566,7 @@ do_run() {
   cleanup() { git worktree remove --force "$worktree" >/dev/null 2>&1 || true; rm -rf "$worktree"; }
   trap cleanup EXIT HUP INT TERM
   git worktree add --detach "$worktree" "$base" >/dev/null 2>&1 || { echo "repro-check: could not create disposable worktree" >&2; exit 2; }
+  worktree_real="$(cd "$worktree" 2>/dev/null && pwd -P)" || { echo "repro-check: disposable worktree cannot be resolved" >&2; exit 2; }
   for arg in ${copies[@]+"${copies[@]}"}; do copy_path "$arg"; done
   link_deps
   base_status="$(run_one "$worktree" "$trace_dir/repro/$check_id.base.log" "$timeout_seconds" "$@")"
@@ -649,7 +712,11 @@ do_checkpoint() {
   trace_path_safe "$trace_dir/repro" dir || { echo "repro-check: repro directory is missing or unsafe" >&2; exit 2; }
   trace_path_safe "$manifest" file || true
   refuse_nonregular_target "$manifest"
-  [ -f "$manifest" ] || printf '# issue-tracer checkpoint manifest v1 rows=0\n' > "$manifest"
+  if [ ! -f "$manifest" ]; then
+    open_exclusive_target "$manifest" || { echo "repro-check: could not create checkpoint manifest safely" >&2; exit 2; }
+    printf '# issue-tracer checkpoint manifest v1 rows=0\n' >&"$exclusive_fd"
+    exec {exclusive_fd}>&-
+  fi
   # validate_manifest owns the header check: it is strictly stronger than the
   # old `grep -Fx` (which matched the string on ANY line) and additionally
   # proves the recorded count, the seq run, and the field count.

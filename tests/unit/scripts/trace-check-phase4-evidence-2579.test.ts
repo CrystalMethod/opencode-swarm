@@ -56,7 +56,7 @@ test('phase 4 rejects a fabricated replay block without base/head logs', () => {
 	);
 	fs.writeFileSync(
 		path.join(trace, 'repro', 'checkpoint.manifest'),
-		`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\tsubject.txt\t${blob}\t100644\tC1\tcmd\tfail\t${head}\t-\n`,
+		`# issue-tracer checkpoint manifest v1 rows=2\n1\tCHECKPOINT\tsubject.txt\t${blob}\t100644\tC1\tcmd\tfail\t${'0'.repeat(40)}\t-\n2\tAMEND\tsubject.txt\t${blob}\t100644\tC1\tcmd\tfail\t${head}\tCHECK_WRONG\n`,
 	);
 	fs.writeFileSync(
 		path.join(trace, '08-test-results.md'),
@@ -73,5 +73,6 @@ test('phase 4 rejects a fabricated replay block without base/head logs', () => {
 	});
 	const output = `${proc.stdout.toString()}\n${proc.stderr.toString()}`;
 	expect(proc.exitCode, output).toBe(1);
+	expect(output).not.toContain('FAIL base-identity-C1');
 	expect(output).toContain('FAIL base-log-C1');
 }, 30_000);

@@ -141,3 +141,61 @@ test.skipIf(process.platform === 'win32')(
 	},
 	30_000,
 );
+
+test.skipIf(process.platform === 'win32')(
+	'rejects a copy destination whose base worktree ancestor is a symlink',
+	() => {
+		const repo = canonicalMkdtemp('repro-check-copy-target-link-');
+		const outside = canonicalMkdtemp('repro-check-copy-target-outside-');
+		roots.push(repo, outside);
+		git(repo, 'init', '-q', '-b', 'main');
+		git(repo, 'config', 'user.email', 'trace@example.invalid');
+		git(repo, 'config', 'user.name', 'Trace');
+		fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside\n');
+		fs.symlinkSync(outside, path.join(repo, 'nested'), 'dir');
+		git(repo, 'add', '-A');
+		git(repo, 'commit', '-q', '-m', 'base symlink');
+		const base = git(repo, 'rev-parse', 'HEAD');
+		fs.unlinkSync(path.join(repo, 'nested'));
+		fs.mkdirSync(path.join(repo, 'nested'));
+		fs.writeFileSync(path.join(repo, 'nested', 'file.txt'), 'current\n');
+		git(repo, 'add', '-A');
+		git(repo, 'commit', '-q', '-m', 'current directory');
+
+		const proc = Bun.spawnSync({
+			cmd: bashCommand(
+				SCRIPT,
+				'run',
+				'--base',
+				base,
+				'--class',
+				'PRESERVING',
+				'--id',
+				'C1',
+				'--slug',
+				'issue-1',
+				'--deps',
+				'none',
+				'--copy',
+				'nested/file.txt',
+				'--',
+				'cat',
+				'nested/file.txt',
+			),
+			cwd: repo,
+			stdin: 'ignore',
+			stdout: 'pipe',
+			stderr: 'pipe',
+			timeout: 30_000,
+		});
+
+		expect(proc.exitCode, proc.stderr.toString()).toBe(2);
+		expect(proc.stderr.toString()).toContain(
+			'--copy target must remain inside disposable worktree',
+		);
+		expect(fs.readFileSync(path.join(outside, 'secret.txt'), 'utf8')).toBe(
+			'outside\n',
+		);
+	},
+	30_000,
+);
