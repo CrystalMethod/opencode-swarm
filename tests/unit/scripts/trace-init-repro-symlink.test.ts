@@ -49,6 +49,26 @@ function repo() {
 	return value;
 }
 
+describe('trace-init.sh aligns with validator symlink policy', () => {
+	test('exits 2 before writing when .agents is an in-repository symlink', () => {
+		const worktree = repo();
+		const realAgents = path.join(worktree, 'real-agents');
+		fs.mkdirSync(realAgents, { recursive: true });
+		fs.symlinkSync(
+			realAgents,
+			path.join(worktree, '.agents'),
+			process.platform === 'win32' ? 'junction' : 'dir',
+		);
+
+		const result = run(worktree, ['issue-1']);
+		expect(result.code).toBe(2);
+		expect(result.err).toContain('refusing symlinked .agents component');
+		expect(
+			fs.existsSync(path.join(realAgents, 'issue-traces', 'issue-1')),
+		).toBe(false);
+	});
+});
+
 describe('trace-init.sh refuses a pre-existing symlinked repro/ directory', () => {
 	test('exits 2 and writes nothing outside the repo when repro/ is a symlink', () => {
 		const worktree = repo();

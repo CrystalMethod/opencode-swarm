@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { bashCommand } from '../../helpers/bash';
+import { bashCommand, resolveBash } from '../../helpers/bash';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const SCRIPT = path.resolve(
@@ -36,6 +36,34 @@ function run(cwd: string, args: string[]) {
 		stdout: 'pipe',
 		stderr: 'pipe',
 		timeout: 15_000,
+	});
+	return {
+		code: proc.exitCode,
+		out: proc.stdout.toString(),
+		err: proc.stderr.toString(),
+	};
+}
+function runWithPipefail(cwd: string, args: string[]) {
+	const bash = resolveBash();
+	const cmd =
+		process.platform === 'win32'
+			? [
+					bash,
+					'-c',
+					'export PATH="/usr/bin:/bin:$PATH"; exec /usr/bin/bash -o pipefail "$@"',
+					'bash',
+					SCRIPT,
+					...args,
+				]
+			: [bash, '-o', 'pipefail', SCRIPT, ...args];
+	const proc = Bun.spawnSync({
+		cmd,
+		cwd,
+		env: process.env,
+		stdin: 'ignore',
+		stdout: 'pipe',
+		stderr: 'pipe',
+		timeout: 20_000,
 	});
 	return {
 		code: proc.exitCode,
@@ -122,6 +150,36 @@ describe('trace-check.sh legacy/protocol gating', () => {
 			'FAIL state-protocol: missing (v3 ledger without protocol line)',
 		);
 		expect(result.out).not.toContain('WARN');
+	});
+
+	test('large malformed v3 state still fails closed with inherited pipefail', () => {
+		const worktree = repo();
+		const dir = trace(worktree);
+		writeState(worktree, dir);
+		const statePath = path.join(dir, 'state.md');
+		const state = fs
+			.readFileSync(statePath, 'utf8')
+			.split('\n')
+			.filter((line) => !line.startsWith('protocol: '))
+			.join('\n');
+		// Keep a v3-only marker near the beginning and make the downstream input
+		// large enough to expose a grep -q/pipefail SIGPIPE regression.
+		const padding = Array.from({ length: 10_000 }, () =>
+			'state-padding'.repeat(8),
+		).join('\n');
+		fs.writeFileSync(statePath, `${state}${padding}\n`);
+
+		const result = runWithPipefail(worktree, [
+			'phase',
+			'0',
+			'--slug',
+			'issue-1',
+		]);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(
+			'FAIL state-protocol: missing (v3 ledger without protocol line)',
+		);
+		expect(result.out).not.toContain('WARN protocol: legacy trace');
 	});
 
 	test('an unsupported protocol value fails closed rather than warning', () => {

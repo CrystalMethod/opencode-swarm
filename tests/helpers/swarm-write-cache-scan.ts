@@ -3301,6 +3301,18 @@ export const EVIDENCE_WRITE_BLIND_SPOTS: readonly EvidenceWriteBlindSpot[] = [
 			'`${filePath}.tmp.<time>.<pid>` and renames it onto that filePath.',
 	},
 	{
+		file: 'src/cli/index.ts',
+		rule: 'S',
+		target: 'target',
+		status: 'not-an-evidence-artifact',
+		reason:
+			'`cleanupFs.openSync(target, flags)` is a test-seam adapter used to ' +
+			'bind cleanup targets before deleting plugin config, prompts, and install ' +
+			'backup files. The CLI is selected by mentionsEvidencePath() because its ' +
+			'help text names the evidence command, but these targets are global config ' +
+			'and cache artifacts outside .swarm/evidence/.',
+	},
+	{
 		file: 'src/evidence/task-gate-repair.ts',
 		rule: 'W',
 		target: 'serialized',

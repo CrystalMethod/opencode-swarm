@@ -139,6 +139,46 @@ describe('repro-check.sh refuses a non-regular checkpoint.manifest', () => {
 	});
 });
 
+describe('repro-check.sh opens manifest temp files without following links', () => {
+	test.skipIf(process.platform === 'win32')(
+		'checkpoint refuses a pre-existing temp symlink and preserves its target',
+		() => {
+			const worktree = repo();
+			const base = git(worktree, 'rev-parse', 'HEAD');
+			const dir = path.join(worktree, '.agents/issue-traces/issue-1/repro');
+			fs.mkdirSync(dir, { recursive: true });
+			const manifest = path.join(dir, 'checkpoint.manifest');
+			fs.writeFileSync(
+				manifest,
+				'# issue-tracer checkpoint manifest v1 rows=0\n',
+			);
+			const outside = canonicalMkdtemp('repro-check-manifest-temp-outside-');
+			roots.push(outside);
+			const target = path.join(outside, 'victim');
+			fs.writeFileSync(target, 'untouched\n');
+			fs.symlinkSync(target, `${manifest}.append.tmp`, 'file');
+			const result = run(worktree, [
+				'checkpoint',
+				'--slug',
+				'issue-1',
+				'--id',
+				'C1',
+				'--argv',
+				'cmd',
+				'--expect',
+				'-',
+				'--base',
+				base,
+				'--',
+				'subject.txt',
+			]);
+			expect(result.code).toBe(2);
+			expect(result.err).toContain('refusing non-regular target');
+			expect(fs.readFileSync(target, 'utf8')).toBe('untouched\n');
+		},
+	);
+});
+
 describe('repro-check.sh refuses a non-regular bound_log truncate temp path', () => {
 	test('run exits 2 when a directory occupies the deterministic truncate.tmp path and leaves the original log untouched', () => {
 		const worktree = repo();

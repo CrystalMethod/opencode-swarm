@@ -58,7 +58,7 @@ describe('check-bash-portability', () => {
 		});
 		expect(result.status, result.stdout + result.stderr).toBe(0);
 		expect(result.stdout).toContain(
-			'No bash4+-only constructs found in scripts/ or .opencode/skills/*/scripts/.',
+			'No bash4+-only constructs found in scripts/, .opencode/skills/, .claude/skills/, or .agents/skills/.',
 		);
 	});
 
@@ -85,6 +85,19 @@ describe('check-bash-portability', () => {
 		expect(result.exitCode).toBe(1);
 		expect(result.messages.join('\n')).toContain('`coproc`');
 		expect(result.messages.join('\n')).toContain('`mapfile`/`readarray`');
+	});
+
+	test('flags automatic brace file-descriptor allocation', () => {
+		const result = evaluateBashPortability([
+			{
+				file: 'scripts/fd.sh',
+				content: 'exec {fd}>"$path"\nprintf ok >&"$fd"\n',
+			},
+		]);
+		expect(result.exitCode).toBe(1);
+		expect(result.messages.join('\n')).toContain(
+			'automatic brace file-descriptor allocation',
+		);
 	});
 
 	test('flags bare empty-array expansion under set -u and ignores the guarded form', () => {

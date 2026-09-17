@@ -16,6 +16,23 @@ export interface BashPortabilityResult {
 	exitCode: number;
 }
 
+export interface ShellDiscoveryResult {
+	files: string[];
+	errors: string[];
+}
+
+export interface ShellDiscoveryDeps {
+	readdirSync?: (directory: string) => fs.Dirent[];
+	opendirSync?: (directory: string) => ShellDirectory;
+	realpathSync?: (file: string) => string;
+	lstatSync?: (file: string) => fs.Stats;
+}
+
+interface ShellDirectory {
+	readSync(): fs.Dirent | null;
+	closeSync(): void;
+}
+
 export async function resolveRepoRoot(
 	startDir: string = process.cwd(),
 ): Promise<string> {
@@ -39,57 +56,283 @@ function toPosixRelative(root: string, file: string): string {
 	return path.relative(root, file).replace(/\\/g, '/');
 }
 
-function walkShFiles(startDir: string): string[] {
-	if (!fs.existsSync(startDir)) {
-		return [];
-	}
+const MAX_WALK_ENTRIES = 20_000;
+const MAX_SHELL_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_TOTAL_SHELL_BYTES = 64 * 1024 * 1024;
+const EXCLUDED_PATH_SEGMENTS = new Set([
+	'.git',
+	'.swarm',
+	'build',
+	'cache',
+	'dist',
+	'fixture',
+	'fixtures',
+	'generated',
+	'node_modules',
+	'test',
+	'tests',
+]);
+
+function sameFileIdentityForScan(left: fs.Stats, right: fs.Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+function shouldExcludePath(root: string, candidate: string): boolean {
+	const relative = toPosixRelative(root, candidate);
+	return relative
+		.split('/')
+		.some((segment) => EXCLUDED_PATH_SEGMENTS.has(segment.toLowerCase()));
+}
+
+function isContainedPath(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return (
+		relative === '' ||
+		(relative !== '..' &&
+			!relative.startsWith(`..${path.sep}`) &&
+			!path.isAbsolute(relative))
+	);
+}
+
+type ShellEntryType =
+	| 'directory'
+	| 'file'
+	| 'symbolic-link'
+	| 'special'
+	| 'unknown';
+
+interface FileSystemEntryTypeProbe {
+	isDirectory(): boolean;
+	isFile(): boolean;
+	isSymbolicLink(): boolean;
+	isBlockDevice(): boolean;
+	isCharacterDevice(): boolean;
+	isFIFO(): boolean;
+	isSocket(): boolean;
+}
+
+function classifyEntry(entry: FileSystemEntryTypeProbe): ShellEntryType {
+	// Check links before directories so a malformed or platform-specific entry
+	// can never cause the walk to follow a symlink.
+	if (entry.isSymbolicLink()) return 'symbolic-link';
+	if (entry.isDirectory()) return 'directory';
+	if (entry.isFile()) return 'file';
+	if (
+		entry.isBlockDevice() ||
+		entry.isCharacterDevice() ||
+		entry.isFIFO() ||
+		entry.isSocket()
+	)
+		return 'special';
+	return 'unknown';
+}
+
+function walkShFiles(
+	startDir: string,
+	repoRoot: string,
+	canonicalRepoRoot: string,
+	maxEntries = MAX_WALK_ENTRIES,
+	deps: ShellDiscoveryDeps = {},
+): ShellDiscoveryResult {
 	const out: string[] = [];
+	const errors: string[] = [];
 	const stack = [startDir];
-	while (stack.length > 0) {
+	let visitedEntries = 0;
+	while (stack.length > 0 && visitedEntries < maxEntries) {
 		const current = stack.pop()!;
-		const entries = fs
-			.readdirSync(current, { withFileTypes: true })
-			.sort((a, b) => a.name.localeCompare(b.name));
-		for (let i = entries.length - 1; i >= 0; i--) {
-			const entry = entries[i];
+		if (shouldExcludePath(repoRoot, current)) continue;
+		let directory: ShellDirectory | undefined;
+		let hitEntryLimit = false;
+		const entries: fs.Dirent[] = [];
+		const visitEntry = (entry: fs.Dirent): void => {
 			const full = path.join(current, entry.name);
-			if (entry.isDirectory()) {
-				stack.push(full);
+			if (shouldExcludePath(repoRoot, full)) return;
+			let entryType = classifyEntry(entry);
+			if (entryType === 'unknown') {
+				// Filesystems that do not populate dirent.d_type report every
+				// predicate as false. Resolve those entries with lstat so the
+				// scanner neither drops a shell file nor follows a symlink.
+				try {
+					entryType = classifyEntry(
+						deps.lstatSync ? deps.lstatSync(full) : fs.lstatSync(full),
+					);
+				} catch {
+					errors.push(
+						`could not inspect ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
+					);
+					return;
+				}
+				if (entryType === 'unknown') {
+					errors.push(
+						`could not classify ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
+					);
+					return;
+				}
+			}
+			if (entryType === 'symbolic-link' || entryType === 'special') return;
+			let canonical: string;
+			try {
+				canonical = deps.realpathSync
+					? deps.realpathSync(full)
+					: fs.realpathSync.native(full);
+			} catch {
+				errors.push(`could not canonicalize ${toPosixRelative(repoRoot, full)}`);
+				return;
+			}
+			if (!isContainedPath(canonicalRepoRoot, canonical)) {
+				errors.push(
+					`refusing path outside repository ${toPosixRelative(repoRoot, full)}`,
+				);
+				return;
+			}
+			if (entryType === 'directory') {
+				stack.push(canonical);
+				return;
+			}
+			if (entryType === 'file' && entry.name.endsWith('.sh')) {
+				out.push(canonical);
+			}
+		};
+		try {
+			if (deps.readdirSync) {
+				// Keep the synchronous DI seam used by the discovery tests. The
+				// production path below streams entries so a large directory is
+				// bounded before the scanner spends time sorting/materializing it.
+				for (const entry of deps.readdirSync(current)) {
+					if (++visitedEntries > maxEntries) {
+						hitEntryLimit = true;
+						break;
+					}
+					entries.push(entry);
+				}
+			} else {
+				directory = (deps.opendirSync ?? fs.opendirSync)(current);
+				while (!hitEntryLimit) {
+					const entry = directory.readSync();
+					if (entry === null) break;
+					if (++visitedEntries > maxEntries) {
+						hitEntryLimit = true;
+						break;
+					}
+					entries.push(entry);
+				}
+			}
+		} catch {
+			errors.push(`could not enumerate ${toPosixRelative(repoRoot, current)}`);
+		} finally {
+			if (directory) {
+				try {
+					directory.closeSync();
+				} catch {
+					errors.push(`could not close ${toPosixRelative(repoRoot, current)}`);
+				}
+			}
+		}
+		entries.sort((a, b) => a.name.localeCompare(b.name));
+		for (const entry of entries) visitEntry(entry);
+		if (hitEntryLimit) {
+			errors.push(
+				`entry limit ${maxEntries} exceeded under ${toPosixRelative(repoRoot, startDir)}`,
+			);
+			return { files: out, errors };
+		}
+	}
+	if (stack.length > 0) {
+		errors.push(
+			`entry limit ${maxEntries} exceeded under ${toPosixRelative(repoRoot, startDir)}`,
+		);
+	}
+	return { files: out, errors };
+}
+
+function scanRootStatus(
+	root: string,
+	startDir: string,
+	deps: ShellDiscoveryDeps,
+): { present: boolean; linked: boolean; error?: string } {
+	let stat: fs.Stats;
+	try {
+		stat = deps.lstatSync ? deps.lstatSync(startDir) : fs.lstatSync(startDir);
+	} catch (error) {
+		const code =
+			typeof error === 'object' && error !== null && 'code' in error
+				? String(error.code)
+				: '';
+		if (code === 'ENOENT') return { present: false, linked: false };
+		return {
+			present: false,
+			linked: false,
+			error: `could not inspect ${toPosixRelative(root, startDir)}`,
+		};
+	}
+	if (stat.isSymbolicLink()) {
+		return {
+			present: true,
+			linked: true,
+			error: `skipping symlinked scan root ${toPosixRelative(root, startDir)}`,
+		};
+	}
+	if (!stat.isDirectory()) {
+		return {
+			present: true,
+			linked: false,
+			error: `scan root is not a directory ${toPosixRelative(root, startDir)}`,
+		};
+	}
+	return { present: true, linked: false };
+}
+
+export function discoverShellFiles(
+	root: string,
+	maxEntries = MAX_WALK_ENTRIES,
+	deps: ShellDiscoveryDeps = {},
+): ShellDiscoveryResult {
+	const roots = [
+		path.join(root, 'scripts'),
+		path.join(root, '.opencode', 'skills'),
+		path.join(root, '.claude', 'skills'),
+		path.join(root, '.agents', 'skills'),
+	];
+	const seen = new Set<string>();
+	const out: string[] = [];
+	const errors: string[] = [];
+	let canonicalRoot: string;
+	try {
+		canonicalRoot = fs.realpathSync.native(root);
+	} catch {
+		return {
+			files: [],
+			errors: [`could not canonicalize repository root ${root}`],
+		};
+	}
+	for (const scanRoot of roots) {
+		const status = scanRootStatus(root, scanRoot, deps);
+		if (status.error) errors.push(status.error);
+		if (!status.present || status.linked) continue;
+		const discovered = walkShFiles(
+			scanRoot,
+			root,
+			canonicalRoot,
+			maxEntries,
+			deps,
+		);
+		errors.push(...discovered.errors);
+		for (const file of discovered.files) {
+			let canonical: string;
+			try {
+				canonical = deps.realpathSync
+					? deps.realpathSync(file)
+					: fs.realpathSync.native(file);
+			} catch {
+				errors.push(`could not canonicalize ${toPosixRelative(root, file)}`);
 				continue;
 			}
-			if (entry.isFile() && entry.name.endsWith('.sh')) {
-				out.push(full);
-			}
+			if (seen.has(canonical)) continue;
+			seen.add(canonical);
+			out.push(file);
 		}
 	}
-	return out;
-}
-
-function listSkillScriptsDirs(root: string): string[] {
-	const skillsRoot = path.join(root, '.opencode', 'skills');
-	if (!fs.existsSync(skillsRoot)) {
-		return [];
-	}
-	const out: string[] = [];
-	for (const entry of fs.readdirSync(skillsRoot, { withFileTypes: true })) {
-		if (!entry.isDirectory()) {
-			continue;
-		}
-		const scriptsDir = path.join(skillsRoot, entry.name, 'scripts');
-		if (fs.existsSync(scriptsDir)) {
-			out.push(scriptsDir);
-		}
-	}
-	return out;
-}
-
-function listShellFiles(root: string): string[] {
-	const out: string[] = [];
-	out.push(...walkShFiles(path.join(root, 'scripts')));
-	for (const skillScriptsDir of listSkillScriptsDirs(root)) {
-		out.push(...walkShFiles(skillScriptsDir));
-	}
-	return out.sort((a, b) => a.localeCompare(b));
+	return { files: out.sort((a, b) => a.localeCompare(b)), errors };
 }
 
 function stripCommentOnlyLines(content: string): string {
@@ -97,6 +340,90 @@ function stripCommentOnlyLines(content: string): string {
 		.split(/\r?\n/)
 		.filter((line) => !/^[ \t]*#/.test(line))
 		.join('\n');
+}
+
+function readBoundedShellFile(
+	filePath: string,
+	canonicalRepoRoot: string,
+): { content?: string; error?: string } {
+	let pathStat: fs.Stats;
+	try {
+		pathStat = fs.lstatSync(filePath);
+	} catch {
+		return { error: `could not inspect ${filePath}` };
+	}
+	if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+		return { error: `shell file is not a regular file ${filePath}` };
+	}
+	let canonicalPath: string;
+	try {
+		canonicalPath = fs.realpathSync.native(filePath);
+	} catch {
+		return { error: `could not canonicalize ${filePath}` };
+	}
+	if (!isContainedPath(canonicalRepoRoot, canonicalPath)) {
+		return { error: `refusing path outside repository ${filePath}` };
+	}
+	if (pathStat.size > MAX_SHELL_FILE_BYTES) {
+		return {
+			error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+		};
+	}
+
+	let descriptor: number | undefined;
+	try {
+		descriptor = fs.openSync(
+			filePath,
+			fs.constants.O_RDONLY |
+				((fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0),
+		);
+		const openedStat = fs.fstatSync(descriptor);
+		if (
+			!openedStat.isFile() ||
+			openedStat.dev !== pathStat.dev ||
+			openedStat.ino !== pathStat.ino
+		) {
+			return { error: `shell file changed while being opened ${filePath}` };
+		}
+		if (openedStat.size > MAX_SHELL_FILE_BYTES) {
+			return {
+				error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+			};
+		}
+		// Read at most one byte beyond the cap. This keeps the memory bound even
+		// if a writer grows the file after the fstat above.
+		const bytes = Buffer.alloc(MAX_SHELL_FILE_BYTES + 1);
+		const bytesRead = fs.readSync(
+			descriptor,
+			bytes,
+			0,
+			bytes.byteLength,
+			0,
+		);
+		const afterReadStat = fs.fstatSync(descriptor);
+		if (
+			!sameFileIdentityForScan(pathStat, afterReadStat) ||
+			afterReadStat.size > MAX_SHELL_FILE_BYTES
+		) {
+			return { error: `shell file changed while being read ${filePath}` };
+		}
+		if (bytesRead > MAX_SHELL_FILE_BYTES) {
+			return {
+				error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+			};
+		}
+		return { content: bytes.subarray(0, bytesRead).toString('utf8') };
+	} catch {
+		return { error: `could not read ${filePath}` };
+	} finally {
+		if (descriptor !== undefined) {
+			try {
+				fs.closeSync(descriptor);
+			} catch {
+				// The primary read error is more actionable than a close failure.
+			}
+		}
+	}
 }
 
 function detectSetU(codeOnly: string): boolean {
@@ -174,6 +501,16 @@ export function evaluateBashPortability(
 			fileHasViolation = true;
 		}
 
+		if (/(^|[^$A-Za-z0-9_])\{[A-Za-z_][A-Za-z0-9_]*\}[<>]/.test(codeOnly)) {
+			messages.push(
+				`ERROR: ${file} uses automatic brace file-descriptor allocation ({var}>), a bash 4+ redirection feature — not supported on macOS's bash 3.2.`,
+			);
+			messages.push(
+				'       Use a fixed descriptor or a Bash 3.2-compatible redirection instead.',
+			);
+			fileHasViolation = true;
+		}
+
 		if (detectSetU(codeOnly)) {
 			for (const arrName of extractEmptyInitArrayNames(codeOnly)) {
 				const barePattern = `"${'${'}${arrName}[@]}"`;
@@ -215,7 +552,9 @@ export function evaluateBashPortability(
 			messages.push(`  - ${file}`);
 		}
 	} else {
-		messages.push('No bash4+-only constructs found in scripts/ or .opencode/skills/*/scripts/.');
+		messages.push(
+			'No bash4+-only constructs found in scripts/, .opencode/skills/, .claude/skills/, or .agents/skills/.',
+		);
 	}
 
 	return {
@@ -226,16 +565,49 @@ export function evaluateBashPortability(
 	};
 }
 
-export async function main(startDir: string = process.cwd()): Promise<number> {
+export async function main(
+	startDir: string = process.cwd(),
+	discoveryDeps: ShellDiscoveryDeps = {},
+): Promise<number> {
 	const repoRoot = await resolveRepoRoot(startDir);
 	const selfShim = path.join(repoRoot, 'scripts', 'check-bash-portability.sh');
-	const files = listShellFiles(repoRoot)
-		.filter((file) => path.resolve(file) !== path.resolve(selfShim))
-		.map((file) => ({
-			file: toPosixRelative(repoRoot, file),
-			content: fs.readFileSync(file, 'utf-8'),
-		}));
+	const discovery = discoverShellFiles(repoRoot, MAX_WALK_ENTRIES, discoveryDeps);
+	let canonicalRepoRoot: string;
+	try {
+		canonicalRepoRoot = fs.realpathSync.native(repoRoot);
+	} catch {
+		canonicalRepoRoot = path.resolve(repoRoot);
+	}
+	const readErrors: string[] = [];
+	const files: Array<{ file: string; content: string }> = [];
+	let totalShellBytes = 0;
+	for (const file of discovery.files) {
+		if (path.resolve(file) === path.resolve(selfShim)) continue;
+		const read = readBoundedShellFile(file, canonicalRepoRoot);
+		if (read.content === undefined) {
+			readErrors.push(read.error ?? `could not read ${file}`);
+			continue;
+		}
+		const fileBytes = Buffer.byteLength(read.content, 'utf8');
+		if (totalShellBytes + fileBytes > MAX_TOTAL_SHELL_BYTES) {
+			readErrors.push(
+				`aggregate shell input exceeds ${MAX_TOTAL_SHELL_BYTES} bytes; portability scan is incomplete`,
+			);
+			break;
+		}
+		totalShellBytes += fileBytes;
+		files.push({ file: toPosixRelative(repoRoot, file), content: read.content });
+	}
 	const result = evaluateBashPortability(files);
+	for (const error of [...discovery.errors, ...readErrors]) {
+		result.messages.unshift(`ERROR: shell discovery ${error}`);
+	}
+	if (discovery.errors.length > 0 || readErrors.length > 0) {
+		result.messages.push(
+			`Shell discovery errors: ${discovery.errors.length + readErrors.length}; portability scan is incomplete.`,
+		);
+		result.exitCode = 1;
+	}
 	for (const line of result.messages) {
 		console.log(line);
 	}

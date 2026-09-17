@@ -10,7 +10,6 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { bashCommand } from '../../helpers/bash';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
@@ -110,9 +109,7 @@ function makeRepo(prefix: string): string {
 function makeOldGitShim(): string {
 	const realGit = Bun.which('git');
 	if (!realGit) throw new Error('git is required for trace-init tests');
-	const shimDir = fs.mkdtempSync(
-		path.join(os.tmpdir(), 'trace-init-old-git-shim-'),
-	);
+	const shimDir = canonicalMkdtemp('trace-init-old-git-shim-');
 	const shimScript = [
 		'#!/usr/bin/env bash',
 		'for arg in "$@"; do',
@@ -248,11 +245,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 	});
 
 	test('F-D1: refuses to follow an existing directory link that escapes the repo root', async () => {
-		const outer = track(
-			fs.realpathSync(
-				fs.mkdtempSync(path.join(os.tmpdir(), 'trace-init-symlink-outer-')),
-			),
-		);
+		const outer = track(canonicalMkdtemp('trace-init-symlink-outer-'));
 		const attackerTarget = path.join(outer, 'attacker-target');
 		fs.mkdirSync(attackerTarget);
 		const repo = path.join(outer, 'victim');
@@ -281,9 +274,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 
 	test('F-E1: in a linked worktree, the exclude entry lands where git status --ignored actually looks', async () => {
 		const mainRepo = track(makeRepo('trace-init-worktree-main-'));
-		const worktreeParent = fs.mkdtempSync(
-			path.join(os.tmpdir(), 'trace-init-worktree-linked-'),
-		);
+		const worktreeParent = canonicalMkdtemp('trace-init-worktree-linked-');
 		const linkedWorktree = path.join(worktreeParent, 'linked');
 		track(worktreeParent);
 		git(mainRepo, 'worktree', 'add', '-q', '-b', 'feature', linkedWorktree);
@@ -328,13 +319,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 		// `issue-traces` path is a symlink escaping the repo. The while-loop
 		// in trace-init.sh must stop its ancestor walk one level deeper and
 		// still catch it.
-		const outer = track(
-			fs.realpathSync(
-				fs.mkdtempSync(
-					path.join(os.tmpdir(), 'trace-init-symlink-deep-outer-'),
-				),
-			),
-		);
+		const outer = track(canonicalMkdtemp('trace-init-symlink-deep-outer-'));
 		const attackerTarget = path.join(outer, 'attacker-target-deep');
 		fs.mkdirSync(attackerTarget);
 		const repo = path.join(outer, 'victim-deep');
@@ -362,66 +347,51 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 		expect(fs.readdirSync(attackerTarget)).toHaveLength(0);
 	});
 
-	// Windows: the PATH-shim technique below relies on a bash script (no
-	// extension, relying on the executable bit + shebang) being resolved via
-	// PATH ahead of the real git.exe inside a Git-Bash/MSYS process spawned
-	// from a native Windows process. That combination (Windows-native env var
-	// construction feeding an MSYS bash's internal PATH search) is unreliable
-	// across Git-for-Windows versions and was observed to silently fail to
-	// intercept `git` in CI (exit 0, but the exclude entry was never
-	// written — indicating the fallback branch never actually ran). The
-	// fallback branch itself mirrors an already-shipped, precedented pattern
-	// (src/knowledge/cohort-identity.ts, issue #1846 / PR #1851) and is
-	// covered on Linux and macOS, where this shim technique is verified
-	// reliable.
-	test.skipIf(process.platform === 'win32')(
-		'F-E1: falls back to plain --git-common-dir (with manual absolutization) when git predates --path-format, and still lands the exclude entry in the shared common dir',
-		async () => {
-			const mainRepo = track(makeRepo('trace-init-worktree-oldgit-main-'));
-			const worktreeParent = fs.mkdtempSync(
-				path.join(os.tmpdir(), 'trace-init-worktree-oldgit-linked-'),
-			);
-			const linkedWorktree = path.join(worktreeParent, 'linked');
-			track(worktreeParent);
-			git(
-				mainRepo,
-				'worktree',
-				'add',
-				'-q',
-				'-b',
-				'feature-oldgit',
-				linkedWorktree,
-			);
+	test('F-E1: falls back to plain --git-common-dir (with manual absolutization) when git predates --path-format, and still lands the exclude entry in the shared common dir', async () => {
+		const mainRepo = track(makeRepo('trace-init-worktree-oldgit-main-'));
+		const worktreeParent = canonicalMkdtemp(
+			'trace-init-worktree-oldgit-linked-',
+		);
+		const linkedWorktree = path.join(worktreeParent, 'linked');
+		track(worktreeParent);
+		git(
+			mainRepo,
+			'worktree',
+			'add',
+			'-q',
+			'-b',
+			'feature-oldgit',
+			linkedWorktree,
+		);
 
-			const shimDir = track(makeOldGitShim());
-			const { exitCode, stderr } = runScript(linkedWorktree, ['old-git-slug'], {
-				...process.env,
-				PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
-			});
+		const shimDir = track(makeOldGitShim());
+		const { exitCode, stderr } = runScript(linkedWorktree, ['old-git-slug'], {
+			...process.env,
+			PATH: `${shimDir}${path.delimiter}${process.env.PATH ?? ''}`,
+		});
 
-			expect(exitCode).toBe(0);
-			expect(stderr).not.toContain('unrecognized option');
-			expect(stderr).not.toContain('could not resolve the git directory');
+		expect(exitCode).toBe(0);
+		expect(stderr).not.toContain('unrecognized option');
+		expect(stderr).not.toContain('could not resolve the git directory');
 
-			// Same assertion as the primary-path F-E1 test above: the exclude
-			// entry must land in the SHARED common dir, not the worktree-private
-			// admin dir, even when resolved via the fallback branch.
-			const sharedExclude = path.join(mainRepo, '.git/info/exclude');
-			expect(fs.readFileSync(sharedExclude, 'utf-8')).toContain(
-				'.agents/issue-traces/',
-			);
-			const privateExclude = path.join(
-				mainRepo,
-				'.git/worktrees/linked/info/exclude',
-			);
-			expect(
-				fs.existsSync(privateExclude) &&
-					fs
-						.readFileSync(privateExclude, 'utf-8')
-						.includes('.agents/issue-traces/'),
-			).toBe(false);
-		},
-	);
+		// Same assertion as the primary-path F-E1 test above: the exclude
+		// entry must land in the SHARED common dir, not the worktree-private
+		// admin dir, even when resolved via the fallback branch.
+		const sharedExclude = path.join(mainRepo, '.git/info/exclude');
+		expect(fs.readFileSync(sharedExclude, 'utf-8')).toContain(
+			'.agents/issue-traces/',
+		);
+		const privateExclude = path.join(
+			mainRepo,
+			'.git/worktrees/linked/info/exclude',
+		);
+		expect(
+			fs.existsSync(privateExclude) &&
+				fs
+					.readFileSync(privateExclude, 'utf-8')
+					.includes('.agents/issue-traces/'),
+		).toBe(false);
+	});
 
 	test('phase-0 identity is scoped to the repo root even when invoked from a subdirectory', async () => {
 		const repo = track(makeRepo('trace-init-subdir-identity-'));
