@@ -640,7 +640,7 @@ acceptance_rows() {
     /^## / { if (in_table) in_table = 0 }
     !in_table { next }
     $0 == "| AC | class | check | argv | expect | pre-fix | post-fix | notes |" { header = 1; next }
-    /^\|[[:space:]-|]+\|[[:space:]]*$/ { next }
+    /^\|[-[:space:]|]+\|[[:space:]]*$/ { next }
     /^\|[[:space:]]*AC[0-9]+[[:space:]]*\|/ {
       if (NF != 10) { bad = 1; next }
       for (i = 2; i <= 9; i++) {
