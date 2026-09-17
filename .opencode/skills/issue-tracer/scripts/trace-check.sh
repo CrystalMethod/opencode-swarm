@@ -421,7 +421,7 @@ acceptance_table_rows() {
     /^## / { if (in_table) in_table = 0 }
     !in_table { next }
     $0 == "| AC | class | check | argv | expect | pre-fix | post-fix | notes |" { header = 1; next }
-    /^\|[[:space:]-|]+\|[[:space:]]*$/ { next }
+    /^\|[-|[:space:]]+\|[[:space:]]*$/ { next }
     /^\|[[:space:]]*AC[0-9]+[[:space:]]*\|/ {
       # The leading and trailing delimiters make a valid row exactly ten
       # fields. Do not inspect or interpolate any cell until this is true.
