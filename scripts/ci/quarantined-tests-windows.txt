@@ -122,3 +122,42 @@ tests/unit/sandbox/win32-wrapper-runtime.test.ts
 #   or renew with an updated criterion. Inside the 14-day grace window
 #   Check 7 only warns.
 tests/unit/background/completion-observer-coder.test.ts
+#
+# tests/unit/background/pr-subscriptions-checkpoint.test.ts (issue #2812)
+# ---------------------------------------------------------------------------
+# Tests the pr-subscriptions checkpoint store (write-path bounds, eviction,
+# poll-update history). The `long-history bounds > hundreds of poll updates
+# keep the store inside documented bounds` case hard-times-out at 30000ms on
+# windows-latest unit shards under loaded runners while passing on
+# ubuntu/macos at the same SHA and locally on Windows when unloaded (hit on
+# PR #2816 windows shard 6 earlier on 2026-09-17 with two failed rounds, and
+# again on PR #2774's merge-group run 35235447387 windows shard 6 — third
+# blocked PR today). Per the #2738 playbook, quarantined on the blocked
+# branch instead of re-running. Candidate also listed by auto-filed issue
+# #2812. Pre-existing, unrelated to any specific PR.
+# OWNER: zaxbysauce — issue #2812 (windows-latest-only load timeout, 30s
+#   hard cap; third blocked PR 2026-09-17)
+# EXPIRY: 2026-10-17 — root-fix the poll-loop wall-clock sensitivity (e.g.
+#   freeze the clock or lower the update count) or renew with an updated
+#   criterion. After EXPIRY, Check 7 warns for 14 days, then hard-fails on
+#   day 15.
+tests/unit/background/pr-subscriptions-checkpoint.test.ts
+#
+# tests/unit/memory/recall-evaluation-profile-isolation.test.ts (issue #2812)
+# ---------------------------------------------------------------------------
+# Tests recall-evaluation profile-isolation embedding-cache semantics. The
+# `profile order cannot reuse a prior profile query embedding cache` case
+# times out at the 15000ms cap on windows-latest unit shards under loaded
+# runners (15.0-15.2s observed) while passing on ubuntu/macos at the same
+# SHA and locally on Windows when unloaded (hit on PR #2816 windows shard 6
+# earlier on 2026-09-17 with two failed rounds, and again on PR #2774's
+# merge-group run 35235447387 windows shard 6 — third blocked PR today).
+# Per the #2738 playbook, quarantined on the blocked branch instead of
+# re-running. Candidate also listed by auto-filed issue #2812.
+# Pre-existing, unrelated to any specific PR.
+# OWNER: zaxbysauce — issue #2812 (windows-latest-only load timeout, 15s
+#   cap; third blocked PR 2026-09-17)
+# EXPIRY: 2026-10-17 — root-fix the embedding-cache test's wall-clock
+#   sensitivity or renew with an updated criterion. After EXPIRY, Check 7
+#   warns for 14 days, then hard-fails on day 15.
+tests/unit/memory/recall-evaluation-profile-isolation.test.ts

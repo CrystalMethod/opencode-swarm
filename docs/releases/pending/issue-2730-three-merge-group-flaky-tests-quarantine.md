@@ -30,9 +30,21 @@
   on-disk path presence) and asserting the no-duplicate invariant for
   the three already-owning candidates: each path appears exactly once,
   in its owning ledger only.
+- While this PR was in the merge queue, its first merge-group round
+  failed on `unit (windows-latest, 6)` — both failing files were
+  windows-only load-timeout flakes already listed by open issue #2812
+  and on the third blocked PR that day (after PR #2816's two failed
+  rounds). Per the #2738 playbook (quarantine on the blocked branch
+  instead of re-running at the third hit), two entries were appended to
+  `scripts/ci/quarantined-tests-windows.txt`:
+  `tests/unit/background/pr-subscriptions-checkpoint.test.ts` and
+  `tests/unit/memory/recall-evaluation-profile-isolation.test.ts`
+  (each OWNER/EXPIRY 2026-10-17, citing #2812; both files pass locally
+  when unloaded). This is a separate disposition owned by issue #2812,
+  carried on this branch only to unblock its merge.
 - No source, hook, or workflow code changed. The change is confined to
-  the macOS ledger file, the new pinning test file, and this pending
-  release fragment.
+  the two CI quarantine ledger files, the new pinning test file, and
+  this pending release fragment.
 
 ## Why
 
