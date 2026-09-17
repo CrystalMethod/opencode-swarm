@@ -42,4 +42,48 @@ describe('check-bash-portability streaming discovery bound (#2566)', () => {
 		expect(result.files).toHaveLength(2);
 		expect(result.errors).toContain('entry limit 2 exceeded under scripts');
 	});
+
+	test('rejects nested entries whose canonical target escapes the repository', () => {
+		const repo = canonicalMkdtemp('bash-portability-canonical-root-');
+		const outside = canonicalMkdtemp('bash-portability-canonical-outside-');
+		roots.push(repo, outside);
+		const scripts = path.join(repo, 'scripts');
+		const nested = path.join(scripts, 'nested');
+		const escaped = path.join(outside, 'escaped');
+		fs.mkdirSync(scripts);
+		fs.mkdirSync(escaped);
+		const entry = {
+			name: 'nested',
+			isDirectory: () => true,
+			isFile: () => false,
+			isSymbolicLink: () => false,
+			isBlockDevice: () => false,
+			isCharacterDevice: () => false,
+			isFIFO: () => false,
+			isSocket: () => false,
+		} as fs.Dirent;
+		const result = discoverShellFiles(repo, 20_000, {
+			opendirSync: (directory) => {
+				if (directory !== scripts) {
+					return { readSync: () => null, closeSync: () => {} };
+				}
+				let consumed = false;
+				return {
+					readSync: () => {
+						if (consumed) return null;
+						consumed = true;
+						return entry;
+					},
+					closeSync: () => {},
+				};
+			},
+			realpathSync: (candidate) =>
+				candidate === nested ? escaped : fs.realpathSync.native(candidate),
+		});
+
+		expect(result.files).toEqual([]);
+		expect(result.errors).toContain(
+			'refusing path outside repository scripts/nested',
+		);
+	});
 });

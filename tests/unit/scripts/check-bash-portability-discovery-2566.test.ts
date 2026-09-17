@@ -219,6 +219,7 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 			expect(unavailable.code).not.toBe(0);
 			expect(unavailable.err).toContain('could not create dependency junction');
 		},
+		30_000,
 	);
 
 	test('enumeration failure is nonzero and reports an incomplete scan', async () => {

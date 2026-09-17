@@ -78,6 +78,16 @@ function shouldExcludePath(root: string, candidate: string): boolean {
 		.some((segment) => EXCLUDED_PATH_SEGMENTS.has(segment.toLowerCase()));
 }
 
+function isContainedPath(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return (
+		relative === '' ||
+		(relative !== '..' &&
+			!relative.startsWith(`..${path.sep}`) &&
+			!path.isAbsolute(relative))
+	);
+}
+
 type ShellEntryType =
 	| 'directory'
 	| 'file'
@@ -114,6 +124,7 @@ function classifyEntry(entry: FileSystemEntryTypeProbe): ShellEntryType {
 function walkShFiles(
 	startDir: string,
 	repoRoot: string,
+	canonicalRepoRoot: string,
 	maxEntries = MAX_WALK_ENTRIES,
 	deps: ShellDiscoveryDeps = {},
 ): ShellDiscoveryResult {
@@ -152,12 +163,28 @@ function walkShFiles(
 					return;
 				}
 			}
+			if (entryType === 'symbolic-link' || entryType === 'special') return;
+			let canonical: string;
+			try {
+				canonical = deps.realpathSync
+					? deps.realpathSync(full)
+					: fs.realpathSync.native(full);
+			} catch {
+				errors.push(`could not canonicalize ${toPosixRelative(repoRoot, full)}`);
+				return;
+			}
+			if (!isContainedPath(canonicalRepoRoot, canonical)) {
+				errors.push(
+					`refusing path outside repository ${toPosixRelative(repoRoot, full)}`,
+				);
+				return;
+			}
 			if (entryType === 'directory') {
-				stack.push(full);
+				stack.push(canonical);
 				return;
 			}
 			if (entryType === 'file' && entry.name.endsWith('.sh')) {
-				out.push(full);
+				out.push(canonical);
 			}
 		};
 		try {
@@ -263,11 +290,26 @@ export function discoverShellFiles(
 	const seen = new Set<string>();
 	const out: string[] = [];
 	const errors: string[] = [];
+	let canonicalRoot: string;
+	try {
+		canonicalRoot = fs.realpathSync.native(root);
+	} catch {
+		return {
+			files: [],
+			errors: [`could not canonicalize repository root ${root}`],
+		};
+	}
 	for (const scanRoot of roots) {
 		const status = scanRootStatus(root, scanRoot, deps);
 		if (status.error) errors.push(status.error);
 		if (!status.present || status.linked) continue;
-		const discovered = walkShFiles(scanRoot, root, maxEntries, deps);
+		const discovered = walkShFiles(
+			scanRoot,
+			root,
+			canonicalRoot,
+			maxEntries,
+			deps,
+		);
 		errors.push(...discovered.errors);
 		for (const file of discovered.files) {
 			let canonical: string;
