@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.184.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.3...v7.184.4) (2026-09-17)
+
+
+### Bug Fixes
+
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#2692](https://github.com/ZaxbyHub/opencode-swarm/issues/2692)) ([11eb407](https://github.com/ZaxbyHub/opencode-swarm/commit/11eb407f7db4291077f2df4649c02e1355ec0133))
+* **pr-review:** distinguish probe-skipped-no-budget from probe-timeout in pending_liveness ([#2815](https://github.com/ZaxbyHub/opencode-swarm/issues/2815)) ([87025fd](https://github.com/ZaxbyHub/opencode-swarm/commit/87025fd06792720d2b365a956269ff7f23e2556e))
+
 ## [7.184.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.2...v7.184.3) (2026-09-17)
 
 
