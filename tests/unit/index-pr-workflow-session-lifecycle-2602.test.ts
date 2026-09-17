@@ -51,7 +51,7 @@ describe('PR workflow session lifecycle — regression: deleted owner cleanup an
 		// (the #1782 Windows AV-handle race class) are invisible to the count
 		// above, so removal retries EBUSY/EPERM/ENOTEMPTY with bounded backoff.
 		// Its internal closeProjectDb is a no-op here (dispose already closed
-		// the DB), and it refuses targets outside os.tmpdir().
+		// the DB), and it refuses targets outside the system temp root.
 		safeRmRecursive(directory);
 	});
 
