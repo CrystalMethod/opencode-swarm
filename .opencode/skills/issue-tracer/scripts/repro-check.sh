@@ -86,12 +86,19 @@ validate_trace_dir_prefix() {
 # run before any mkdir -p, since mkdir -p happily follows an existing
 # symlinked ancestor before any later check on the final path can catch it.
 refuse_ancestor_symlink_escape() {
-  local check="$trace_dir" resolved
-  while [ ! -e "$check" ]; do check="$(dirname "$check")"; done
-  if [ -L "$check" ]; then
-    echo "repro-check: --trace-dir must be inside .agents/issue-traces" >&2
-    exit 2
-  fi
+  local check="${1:-$trace_dir}" resolved parent
+  while :; do
+    # `-e` is false for a dangling link. Test `-L` before deciding whether to
+    # ascend so a broken link cannot be skipped and later followed by mkdir -p.
+    if [ -L "$check" ]; then
+      echo "repro-check: --trace-dir must be inside .agents/issue-traces" >&2
+      exit 2
+    fi
+    [ -e "$check" ] && break
+    parent="$(dirname "$check")"
+    [ "$parent" != "$check" ] || break
+    check="$parent"
+  done
   resolved="$(cd "$check" && pwd -P)"
   case "$resolved/" in
     "$root_real"/*) ;;
@@ -460,6 +467,7 @@ do_run() {
   trace_for
   require_contained "$trace_dir"
   require_contained "$trace_dir/repro"
+  refuse_ancestor_symlink_escape "$trace_dir/repro"
   mkdir -p "$trace_dir/repro"
   require_contained "$trace_dir/repro"
   set_trace_root
@@ -605,6 +613,7 @@ do_checkpoint() {
   trace_for
   require_contained "$trace_dir"
   require_contained "$trace_dir/repro"
+  refuse_ancestor_symlink_escape "$trace_dir/repro"
   mkdir -p "$trace_dir/repro"
   require_contained "$trace_dir/repro"
   set_trace_root

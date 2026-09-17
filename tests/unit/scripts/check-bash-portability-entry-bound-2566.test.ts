@@ -1,11 +1,26 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { discoverShellFiles } from '../../../scripts/check-bash-portability';
+import {
+	discoverShellFiles,
+	main,
+} from '../../../scripts/check-bash-portability';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const roots: string[] = [];
+
+function git(cwd: string, ...args: string[]): void {
+	const proc = Bun.spawnSync({
+		cmd: ['git', ...args],
+		cwd,
+		stdin: 'ignore',
+		stdout: 'pipe',
+		stderr: 'pipe',
+		timeout: 10_000,
+	});
+	if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
+}
 
 afterEach(() => {
 	for (const root of roots.splice(0)) safeRmRecursive(root);
@@ -85,5 +100,27 @@ describe('check-bash-portability streaming discovery bound (#2566)', () => {
 		expect(result.errors).toContain(
 			'refusing path outside repository scripts/nested',
 		);
+	});
+
+	test('fails closed on an oversized shell file without reading it unbounded', async () => {
+		const repo = canonicalMkdtemp('bash-portability-file-bound-');
+		roots.push(repo);
+		git(repo, 'init', '-q', '-b', 'main');
+		const scripts = path.join(repo, 'scripts');
+		fs.mkdirSync(scripts);
+		fs.writeFileSync(
+			path.join(scripts, 'huge.sh'),
+			Buffer.alloc(4 * 1024 * 1024 + 1, 0x20),
+		);
+
+		const output: string[] = [];
+		const originalLog = console.log;
+		console.log = (...args: unknown[]) => output.push(args.join(' '));
+		try {
+			expect(await main(repo)).toBe(1);
+		} finally {
+			console.log = originalLog;
+		}
+		expect(output.join('\n')).toContain('shell file exceeds 4194304 bytes');
 	});
 });

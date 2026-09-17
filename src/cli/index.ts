@@ -342,6 +342,127 @@ export function isSafeInstallBackupPath(
 	return hasSafeConfigArtifactParent(resolved, configuredDir);
 }
 
+type CleanupTargetKind = 'file' | 'directory';
+
+const cleanupFs = {
+	lstatSync: (target: string) => fs.lstatSync(target),
+	openSync: (target: string, flags: number) => fs.openSync(target, flags),
+	fstatSync: (descriptor: number) => fs.fstatSync(descriptor),
+	closeSync: (descriptor: number) => fs.closeSync(descriptor),
+	unlinkSync: (target: string) => fs.unlinkSync(target),
+	rmSync: (target: string) => fs.rmSync(target, { recursive: true }),
+	existsSync: (target: string) => fs.existsSync(target),
+};
+
+function sameFileIdentity(left: fs.Stats, right: fs.Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
+
+/**
+ * Revalidate a cleanup target immediately before deleting it. The canonical
+ * path checked earlier is not, by itself, a capability: an intermediate
+ * config-directory symlink/junction can be swapped after realpath() returns.
+ * Binding both the canonical parent and the target identity closes that gap
+ * as far as Node's path-based unlink/rm APIs permit.
+ */
+function snapshotCleanupTarget(
+	canonicalTarget: string,
+	configuredDir: string,
+	kind: CleanupTargetKind,
+): fs.Stats | null {
+	const canonicalConfigDir = safeRealpathSync(configuredDir, configuredDir);
+	const canonicalParent = safeRealpathSync(
+		path.dirname(canonicalTarget),
+		path.dirname(canonicalTarget),
+	);
+	if (
+		canonicalConfigDir === null ||
+		canonicalParent === null ||
+		normalizePathForComparison(canonicalConfigDir) !==
+			normalizePathForComparison(canonicalParent)
+	) {
+		return null;
+	}
+	try {
+		const parentStat = cleanupFs.lstatSync(path.dirname(canonicalTarget));
+		// The configured root itself may be a symlink alias, but the canonical
+		// parent used for deletion must be a real directory, never a link that
+		// can be redirected between validation and the path-based syscall.
+		if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) return null;
+		const stat = cleanupFs.lstatSync(canonicalTarget);
+		if (stat.isSymbolicLink()) return null;
+		if (kind === 'file' ? !stat.isFile() : !stat.isDirectory()) return null;
+		return stat;
+	} catch {
+		return null;
+	}
+}
+
+function removeBoundCleanupTarget(
+	canonicalTarget: string,
+	configuredDir: string,
+	kind: CleanupTargetKind,
+): { ok: boolean; error?: string } {
+	const before = snapshotCleanupTarget(canonicalTarget, configuredDir, kind);
+	if (before === null) {
+		return { ok: false, error: 'target or parent changed during validation' };
+	}
+
+	let descriptor: number | undefined;
+	try {
+		if (kind === 'file') {
+			descriptor = cleanupFs.openSync(
+				canonicalTarget,
+				fs.constants.O_RDONLY |
+					((fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0),
+			);
+			const opened = cleanupFs.fstatSync(descriptor);
+			if (!sameFileIdentity(before, opened)) {
+				return { ok: false, error: 'target changed while being opened' };
+			}
+		}
+
+		// Re-check the parent and target after opening the file and immediately
+		// before the path-based delete. This catches an intermediate symlink or
+		// junction replacement in the common race window.
+		const immediatelyBefore = snapshotCleanupTarget(
+			canonicalTarget,
+			configuredDir,
+			kind,
+		);
+		if (
+			immediatelyBefore === null ||
+			!sameFileIdentity(before, immediatelyBefore)
+		) {
+			return { ok: false, error: 'target or parent changed before deletion' };
+		}
+		if (kind === 'file') {
+			cleanupFs.unlinkSync(canonicalTarget);
+		} else {
+			cleanupFs.rmSync(canonicalTarget);
+		}
+		if (cleanupFs.existsSync(canonicalTarget)) {
+			return { ok: false, error: 'delete returned but target still exists' };
+		}
+		return { ok: true };
+	} catch (error) {
+		return {
+			ok: false,
+			error: error instanceof Error ? error.message : String(error),
+		};
+	} finally {
+		if (descriptor !== undefined) {
+			try {
+				cleanupFs.closeSync(descriptor);
+			} catch {
+				// The delete result is the actionable outcome; preserve it.
+			}
+		}
+	}
+}
+
+export const _test_exports = { cleanupFs, removeBoundCleanupTarget };
+
 interface OpenCodeConfig {
 	plugin?: string[];
 	agent?: Record<string, unknown>;
@@ -918,9 +1039,15 @@ function cleanupPluginOwnedFiles(): { cleaned: boolean; hadTargets: boolean } {
 				`✗ Refused to remove plugin config (failed safety check): ${canonical ?? PLUGIN_CONFIG_PATH}`,
 			);
 		} else {
-			fs.unlinkSync(canonical);
-			console.log(`✓ Removed plugin config: ${canonical}`);
-			cleaned = true;
+			const removal = removeBoundCleanupTarget(canonical, CONFIG_DIR, 'file');
+			if (removal.ok) {
+				console.log(`✓ Removed plugin config: ${canonical}`);
+				cleaned = true;
+			} else {
+				console.log(
+					`✗ Refused to remove plugin config (target changed): ${canonical} (${removal.error})`,
+				);
+			}
 		}
 	}
 
@@ -933,9 +1060,19 @@ function cleanupPluginOwnedFiles(): { cleaned: boolean; hadTargets: boolean } {
 				`✗ Refused to remove custom prompts (failed safety check): ${canonical ?? PROMPTS_DIR}`,
 			);
 		} else {
-			fs.rmSync(canonical, { recursive: true });
-			console.log(`✓ Removed custom prompts: ${canonical}`);
-			cleaned = true;
+			const removal = removeBoundCleanupTarget(
+				canonical,
+				CONFIG_DIR,
+				'directory',
+			);
+			if (removal.ok) {
+				console.log(`✓ Removed custom prompts: ${canonical}`);
+				cleaned = true;
+			} else {
+				console.log(
+					`✗ Refused to remove custom prompts (target changed): ${canonical} (${removal.error})`,
+				);
+			}
 		}
 	}
 
@@ -955,9 +1092,15 @@ function cleanupPluginOwnedFiles(): { cleaned: boolean; hadTargets: boolean } {
 				`✗ Refused to remove install backup (failed safety check): ${canonical ?? backupPath}`,
 			);
 		} else {
-			fs.unlinkSync(canonical);
-			console.log(`✓ Removed install backup: ${canonical}`);
-			cleaned = true;
+			const removal = removeBoundCleanupTarget(canonical, CONFIG_DIR, 'file');
+			if (removal.ok) {
+				console.log(`✓ Removed install backup: ${canonical}`);
+				cleaned = true;
+			} else {
+				console.log(
+					`✗ Refused to remove install backup (target changed): ${canonical} (${removal.error})`,
+				);
+			}
 		}
 	}
 

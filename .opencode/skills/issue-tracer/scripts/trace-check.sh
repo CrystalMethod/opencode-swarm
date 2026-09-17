@@ -56,7 +56,7 @@ validate_trace_dir() {
     *) echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2; exit 2;;
   esac
   case "$candidate/" in
-    */../*|*/./*) echo "trace-check: --trace-dir cannot contain . or .. components" >&2; exit 2;;
+    */../*|*/./*|*\\*) echo "trace-check: --trace-dir cannot contain . or .. components or backslashes" >&2; exit 2;;
   esac
 
   check="$candidate"
@@ -104,7 +104,7 @@ trace_path_safe() {
     *) echo "trace-check: refusing path outside canonical trace root: $path" >&2; exit 2;;
   esac
   case "$path/" in
-    */../*|*/./*) echo "trace-check: refusing ambiguous trace path: $path" >&2; exit 2;;
+    */../*|*/./*|*\\*) echo "trace-check: refusing ambiguous trace path: $path" >&2; exit 2;;
   esac
   ancestor="$path"
   while [ "$ancestor" != "$trace_root_real" ] && [ "$ancestor" != "/" ]; do

@@ -35,7 +35,11 @@ function run(cwd: string, args: string[]) {
 		stderr: 'pipe',
 		timeout: 15_000,
 	});
-	return { code: p.exitCode, out: p.stdout.toString() };
+	return {
+		code: p.exitCode,
+		out: p.stdout.toString(),
+		err: p.stderr.toString(),
+	};
 }
 function repo() {
 	const value = canonicalMkdtemp('trace-check-phases-');
@@ -69,10 +73,10 @@ function reproduction(dir: string, rows: string) {
 		`## Commands Tried\n\`\`\`text\nrun\n\`\`\`\n- Exit code: 1\n## Reproduction Verdict\nred\n## Acceptance checks\n| AC | class | check | argv | expect | pre-fix | post-fix | notes |\n|---|---|---|---|---|---|---|---|\n${rows}\n## Red checkpoint\nmanifest: repro/checkpoint.manifest\ncheckpoint-tree-id: TREE\n`,
 	);
 }
-function manifest(dir: string, paths = ['subject.txt']) {
+function manifest(dir: string, paths = ['subject.txt'], expectValue = 'fail') {
 	fs.writeFileSync(
 		path.join(dir, 'repro/checkpoint.manifest'),
-		`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\t${paths[0]}\t${'a'.repeat(40)}\t100644\tC1\tcmd\tfail\t${'b'.repeat(40)}\t-\n`,
+		`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\t${paths[0]}\t${'a'.repeat(40)}\t100644\tC1\tcmd\t${expectValue}\t${'b'.repeat(40)}\t-\n`,
 	);
 }
 function replaceTree(dir: string, tree: string) {
@@ -90,7 +94,7 @@ function replaceTree(dir: string, tree: string) {
 describe('trace-check.sh later phases', () => {
 	test('phase 2.5 rejects table and checkpoint integrity failures', () => {
 		// note: multiple sequential script invocations under Windows Git Bash;
-		// extend beyond the default per-test budget (see 20_000ms below).
+		// extend beyond the default per-test budget on Windows Git Bash.
 		const worktree = repo();
 		const dir = setup(worktree);
 		const tree = git(worktree, 'rev-parse', 'HEAD^{tree}');
@@ -141,7 +145,7 @@ describe('trace-check.sh later phases', () => {
 		fs.rmSync(path.join(dir, 'repro/checkpoint.manifest'));
 		result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
 		expect(result.out).toContain('FAIL checkpoint-manifest');
-	}, 20_000);
+	}, 60_000);
 
 	test('phase 2.5 normalizes CRLF tables and rejects malformed/control cells before diagnostics', () => {
 		const worktree = repo();
@@ -152,7 +156,7 @@ describe('trace-check.sh later phases', () => {
 			'| AC1 | DISCRIMINATING | C1 | cmd | failure | RED | GREEN | evidence |\n| AC2 | NON-EXECUTABLE | DOCS_ONLY | - | - | - | pending | docs |',
 		);
 		replaceTree(dir, tree);
-		manifest(dir);
+		manifest(dir, ['subject.txt'], 'failure');
 		fs.writeFileSync(path.join(dir, 'repro/C1.base.log'), 'failure\n');
 		const reproductionPath = path.join(dir, '02-reproduction.md');
 		fs.writeFileSync(
@@ -160,7 +164,7 @@ describe('trace-check.sh later phases', () => {
 			fs.readFileSync(reproductionPath, 'utf8').replace(/\n/g, '\r\n'),
 		);
 		let result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
-		expect(result.code, result.out).toBe(0);
+		expect(result.code, `${result.out}\n${result.err}`).toBe(0);
 		expect(result.out).toContain('OK acceptance-table');
 
 		const malformed = fs
@@ -187,7 +191,7 @@ describe('trace-check.sh later phases', () => {
 			'FAIL acceptance-table: each row must have exactly 10 pipe columns and no control bytes',
 		);
 		expect(result.out).not.toContain(String.fromCharCode(0x1b));
-	}, 20_000);
+	}, 60_000);
 
 	test('phase 2.5 rejects an unmanifested checkpoint diff and phase 4 catches missing checks and changed checkpoint files', () => {
 		const worktree = repo();
@@ -247,7 +251,7 @@ describe('trace-check.sh later phases', () => {
 		expect(result.code).toBe(1);
 		expect(result.out).toContain('FAIL merge-sha-binding');
 		expect(result.out).toContain('NOTE: human-enforced gate');
-	}, 20_000);
+	}, 60_000);
 
 	test('phase 5 requires the pr-template headings, a PR head line, and an anchored merge state', () => {
 		const worktree = repo();
@@ -384,5 +388,21 @@ describe('trace-check.sh later phases', () => {
 			expect(result.code).toBe(0);
 			expect(result.out).toContain('OK obe-subset');
 		}
+	});
+
+	test('phase 2.5 rejects Windows backslash traversal before probing a log path', () => {
+		const worktree = repo();
+		const dir = setup(worktree);
+		const tree = git(worktree, 'rev-parse', 'HEAD^{tree}');
+		reproduction(
+			dir,
+			'| AC1 | DISCRIMINATING | ..\\..\\outside | cmd | fail | RED | pending | x |',
+		);
+		replaceTree(dir, tree);
+		manifest(dir);
+
+		const result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
+		expect(result.code, `${result.out}\n${result.err}`).toBe(2);
+		expect(result.err).toContain('refusing ambiguous trace path');
 	});
 });

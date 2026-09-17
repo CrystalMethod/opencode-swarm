@@ -57,6 +57,7 @@ function toPosixRelative(root: string, file: string): string {
 }
 
 const MAX_WALK_ENTRIES = 20_000;
+const MAX_SHELL_FILE_BYTES = 4 * 1024 * 1024;
 const EXCLUDED_PATH_SEGMENTS = new Set([
 	'.git',
 	'.swarm',
@@ -70,6 +71,10 @@ const EXCLUDED_PATH_SEGMENTS = new Set([
 	'test',
 	'tests',
 ]);
+
+function sameFileIdentityForScan(left: fs.Stats, right: fs.Stats): boolean {
+	return left.dev === right.dev && left.ino === right.ino;
+}
 
 function shouldExcludePath(root: string, candidate: string): boolean {
 	const relative = toPosixRelative(root, candidate);
@@ -336,6 +341,90 @@ function stripCommentOnlyLines(content: string): string {
 		.join('\n');
 }
 
+function readBoundedShellFile(
+	filePath: string,
+	canonicalRepoRoot: string,
+): { content?: string; error?: string } {
+	let pathStat: fs.Stats;
+	try {
+		pathStat = fs.lstatSync(filePath);
+	} catch {
+		return { error: `could not inspect ${filePath}` };
+	}
+	if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+		return { error: `shell file is not a regular file ${filePath}` };
+	}
+	let canonicalPath: string;
+	try {
+		canonicalPath = fs.realpathSync.native(filePath);
+	} catch {
+		return { error: `could not canonicalize ${filePath}` };
+	}
+	if (!isContainedPath(canonicalRepoRoot, canonicalPath)) {
+		return { error: `refusing path outside repository ${filePath}` };
+	}
+	if (pathStat.size > MAX_SHELL_FILE_BYTES) {
+		return {
+			error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+		};
+	}
+
+	let descriptor: number | undefined;
+	try {
+		descriptor = fs.openSync(
+			filePath,
+			fs.constants.O_RDONLY |
+				((fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0),
+		);
+		const openedStat = fs.fstatSync(descriptor);
+		if (
+			!openedStat.isFile() ||
+			openedStat.dev !== pathStat.dev ||
+			openedStat.ino !== pathStat.ino
+		) {
+			return { error: `shell file changed while being opened ${filePath}` };
+		}
+		if (openedStat.size > MAX_SHELL_FILE_BYTES) {
+			return {
+				error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+			};
+		}
+		// Read at most one byte beyond the cap. This keeps the memory bound even
+		// if a writer grows the file after the fstat above.
+		const bytes = Buffer.alloc(MAX_SHELL_FILE_BYTES + 1);
+		const bytesRead = fs.readSync(
+			descriptor,
+			bytes,
+			0,
+			bytes.byteLength,
+			0,
+		);
+		const afterReadStat = fs.fstatSync(descriptor);
+		if (
+			!sameFileIdentityForScan(pathStat, afterReadStat) ||
+			afterReadStat.size > MAX_SHELL_FILE_BYTES
+		) {
+			return { error: `shell file changed while being read ${filePath}` };
+		}
+		if (bytesRead > MAX_SHELL_FILE_BYTES) {
+			return {
+				error: `shell file exceeds ${MAX_SHELL_FILE_BYTES} bytes ${filePath}`,
+			};
+		}
+		return { content: bytes.subarray(0, bytesRead).toString('utf8') };
+	} catch {
+		return { error: `could not read ${filePath}` };
+	} finally {
+		if (descriptor !== undefined) {
+			try {
+				fs.closeSync(descriptor);
+			} catch {
+				// The primary read error is more actionable than a close failure.
+			}
+		}
+	}
+}
+
 function detectSetU(codeOnly: string): boolean {
 	const pattern = /(^|[ \t])set[ \t]+-[^-]*u|(^|[ \t])set[ \t]+-[^-]*[eu][^-]*u/;
 	return codeOnly.split('\n').some((line) => pattern.test(line));
@@ -472,19 +561,30 @@ export async function main(
 	const repoRoot = await resolveRepoRoot(startDir);
 	const selfShim = path.join(repoRoot, 'scripts', 'check-bash-portability.sh');
 	const discovery = discoverShellFiles(repoRoot, MAX_WALK_ENTRIES, discoveryDeps);
-	const files = discovery.files
-		.filter((file) => path.resolve(file) !== path.resolve(selfShim))
-		.map((file) => ({
-			file: toPosixRelative(repoRoot, file),
-			content: fs.readFileSync(file, 'utf-8'),
-		}));
+	let canonicalRepoRoot: string;
+	try {
+		canonicalRepoRoot = fs.realpathSync.native(repoRoot);
+	} catch {
+		canonicalRepoRoot = path.resolve(repoRoot);
+	}
+	const readErrors: string[] = [];
+	const files: Array<{ file: string; content: string }> = [];
+	for (const file of discovery.files) {
+		if (path.resolve(file) === path.resolve(selfShim)) continue;
+		const read = readBoundedShellFile(file, canonicalRepoRoot);
+		if (read.content === undefined) {
+			readErrors.push(read.error ?? `could not read ${file}`);
+			continue;
+		}
+		files.push({ file: toPosixRelative(repoRoot, file), content: read.content });
+	}
 	const result = evaluateBashPortability(files);
-	for (const error of discovery.errors) {
+	for (const error of [...discovery.errors, ...readErrors]) {
 		result.messages.unshift(`ERROR: shell discovery ${error}`);
 	}
-	if (discovery.errors.length > 0) {
+	if (discovery.errors.length > 0 || readErrors.length > 0) {
 		result.messages.push(
-			`Shell discovery errors: ${discovery.errors.length}; portability scan is incomplete.`,
+			`Shell discovery errors: ${discovery.errors.length + readErrors.length}; portability scan is incomplete.`,
 		);
 		result.exitCode = 1;
 	}
