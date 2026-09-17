@@ -67,6 +67,7 @@ describe('handlePrEvent — matching subscription delivery', () => {
 				sessionID: 'sess2',
 				prNumber: 99,
 				repoFullName: 'org/repo',
+				prUrl: 'https://github.com/org/repo/pull/99',
 				correlationId: 'sess2::org/repo::99',
 			}),
 		]);
@@ -170,6 +171,7 @@ describe('handlePrEvent — matching subscription delivery', () => {
 				sessionID: 'sess3',
 				prNumber: 10,
 				repoFullName: 'myorg/myrepo',
+				prUrl: 'https://github.com/myorg/myrepo/pull/10',
 				correlationId: 'sess3::myorg/myrepo::10',
 			}),
 		]);
