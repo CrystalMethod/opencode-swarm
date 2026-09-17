@@ -50,7 +50,7 @@ for not invalidating verdicts on other tasks' activity.
 
 - Foreground Stage B settlement silently drops settlements on unbound launch generation, route
   receipt blocks, and evidence-throw catches (`src/hooks/delegation-gate.ts:6301-6305`,
-  `:6416-6421`, `:6472-6477`) — same defect family, different path; filed as a follow-up.
+  `:6416-6421`, `:6472-6477`) — same defect family, different path; filed as #2817.
 - The cross-task `SCOPE WARNING` mis-attribution (`src/hooks/diff-scope.ts:96-97` derives changed
   files from the repository's latest commit regardless of which task is being checked) still
-  emits its mis-attributed warning after this fix; filed as a follow-up.
+  emits its mis-attributed warning after this fix; filed as #2818.
