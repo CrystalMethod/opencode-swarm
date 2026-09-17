@@ -42,6 +42,10 @@ function makeRepo(): string {
 	return repo;
 }
 
+function pathEvidence(value: string): string {
+	return value.replace(/\\/g, '/').split('/').slice(-2).join('/');
+}
+
 function runScript(cwd: string, args: string[], env?: Record<string, string>) {
 	const proc = Bun.spawnSync({
 		cmd: bashCommand(
@@ -261,7 +265,12 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 		});
 
 		expect(result.errors).toHaveLength(0);
-		expect(result.files).toContain(unknownShell);
+		// Windows native realpath may spell the temp root with a different
+		// 8.3/long-name alias than the fixture path. Preserve the meaningful
+		// evidence — the scanner found this exact repository-relative file.
+		expect(result.files.map(pathEvidence)).toContain(
+			pathEvidence(unknownShell),
+		);
 		expect(lstatCalls).toContain(unknownShell);
 	});
 

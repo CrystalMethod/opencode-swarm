@@ -47,16 +47,29 @@ normalize_terminal_cr() { sed 's/\r$//' "$1"; }
 # component are then checked for symlinks/junctions so a path that looks inside
 # the root cannot redirect reads outside it.
 validate_trace_dir() {
-  local candidate="$1" check parent resolved
+  local candidate="$1" check parent resolved canonical_candidate
   has_bad_control "$candidate" && { echo "trace-check: --trace-dir cannot contain control bytes" >&2; exit 2; }
   candidate="$(to_shell_path "$candidate")"
   has_bad_control "$candidate" && { echo "trace-check: --trace-dir cannot contain control bytes" >&2; exit 2; }
   case "$candidate/" in
-    "$root_real/.agents/issue-traces/"*) ;;
-    *) echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2; exit 2;;
+    */../*|*/./*|*\\*) echo "trace-check: --trace-dir cannot contain . or .. components or backslashes" >&2; exit 2;;
   esac
   case "$candidate/" in
-    */../*|*/./*|*\\*) echo "trace-check: --trace-dir cannot contain . or .. components or backslashes" >&2; exit 2;;
+    "$root_real/.agents/issue-traces/"*) ;;
+    *)
+      # Windows may preserve an 8.3 alias (for example RUNNER~1) in the
+      # caller's absolute path while Git resolves the repository through its
+      # long spelling. Resolve an existing explicit directory before rejecting
+      # it, while retaining the lexical traversal/backslash rejection above.
+      canonical_candidate="$(cd "$candidate" 2>/dev/null && pwd -P)" || {
+        echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2
+        exit 2
+      }
+      case "$canonical_candidate/" in
+        "$root_real/.agents/issue-traces/"*) candidate="$canonical_candidate" ;;
+        *) echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2; exit 2;;
+      esac
+      ;;
   esac
 
   check="$candidate"
