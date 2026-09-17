@@ -82,7 +82,7 @@ describe('repro-check.sh control validation under inherited pipefail', () => {
 		const base = git(worktree, 'rev-parse', 'HEAD');
 		let result = runGeneratedWithPipefail(
 			worktree,
-			'exec /usr/bin/bash -o pipefail "$1" run --base "$2" --class DISCRIMINATING --id C1 --slug issue-1 --deps none --expect "$bad" -- bash check.sh',
+			'exec bash -o pipefail "$1" run --base "$2" --class DISCRIMINATING --id C1 --slug issue-1 --deps none --expect "$bad" -- bash check.sh',
 			[base],
 		);
 		expect(result.code).toBe(2);
@@ -90,7 +90,7 @@ describe('repro-check.sh control validation under inherited pipefail', () => {
 
 		result = runGeneratedWithPipefail(
 			worktree,
-			'exec /usr/bin/bash -o pipefail "$1" checkpoint --slug issue-1 --id C1 --argv "$bad" --expect - --base "$2" subject.txt',
+			'exec bash -o pipefail "$1" checkpoint --slug issue-1 --id C1 --argv "$bad" --expect - --base "$2" subject.txt',
 			[base],
 		);
 		expect(result.code).toBe(2);
@@ -100,7 +100,7 @@ describe('repro-check.sh control validation under inherited pipefail', () => {
 
 		result = runGeneratedWithPipefail(
 			worktree,
-			'exec /usr/bin/bash -o pipefail "$1" checkpoint --slug issue-1 --id C2 --argv "bash check.sh" --expect - --base "$2" "subject${bad}.txt"',
+			'exec bash -o pipefail "$1" checkpoint --slug issue-1 --id C2 --argv "bash check.sh" --expect - --base "$2" "subject${bad}.txt"',
 			[base],
 		);
 		expect(result.code).toBe(2);

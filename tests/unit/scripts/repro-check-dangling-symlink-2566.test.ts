@@ -79,7 +79,9 @@ test.skipIf(process.platform === 'win32')(
 		});
 
 		expect(proc.exitCode, proc.stderr.toString()).toBe(2);
-		expect(proc.stderr.toString()).toContain('refusing');
+		expect(proc.stderr.toString()).toMatch(
+			/refusing|must be inside \.agents\/issue-traces/,
+		);
 		expect(fs.existsSync(path.join(outside, 'does-not-exist'))).toBe(false);
 	},
 	30_000,
