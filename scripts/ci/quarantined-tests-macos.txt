@@ -12,7 +12,8 @@
 # the gate; an EXPIRY more than 14 days in the past also fails (inside
 # the grace window it only warns).
 #
-# No active macOS-only quarantines besides the entry below.
+# Active macOS-only quarantine entries are below; each carries the Check
+# 7-enforced OWNER/EXPIRY metadata.
 
 # OWNER: zaxbysauce — issue #2738 (deterministic macOS signal-child failure:
 #   the crash fixture survives the delivered POSIX signal and exits 0 on
@@ -39,7 +40,8 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 #   run 34726206593 `unit (macos-latest, 4)`; siblings green)
 # EXPIRY: 2026-10-14 — root-fix the probe timeout sensitivity (e.g. raise
 #   PROBE_TIMEOUT_MS or pre-warm the build) or renew with an updated
-#   criterion. Inside the 14-day grace window Check 7 only warns.
+#   criterion. After EXPIRY, Check 7 warns for 14 days, then hard-fails on
+#   day 15.
 tests/unit/utils/bun-compat-exit-first-2530.test.ts
 #
 # tests/unit/commands/promote-registration.test.ts (issue #2740)
@@ -59,6 +61,6 @@ tests/unit/utils/bun-compat-exit-first-2530.test.ts
 # OWNER: zaxbysauce — issue #2740 (macos-latest merge-group retry-flake,
 #   run 34726206593 `unit (macos-latest, 6)`; siblings green)
 # EXPIRY: 2026-10-14 — root-fix the per-test env mutation / temp-dir teardown
-#   or renew with an updated criterion. Inside the 14-day grace window
-#   Check 7 only warns.
+#   or renew with an updated criterion. After EXPIRY, Check 7 warns for 14
+#   days, then hard-fails on day 15.
 tests/unit/commands/promote-registration.test.ts

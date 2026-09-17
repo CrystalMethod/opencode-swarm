@@ -20,8 +20,8 @@ const INTEGRATION_LEDGER_PATH = join(
 
 // Three paths quarantined by issue #2740. The merge-group flake-detection
 // workflow (#1782) flagged all three with `Passed on retry` annotations in
-// run 34726206593; per the recipe in
-// .hermes/skills/auto-fix-issue/references/flaky-test-quarantine.md, the
+// run 34726206593; per the quarantine-placement policy in
+// docs/testing/test-stability.md, the
 // ubuntu-latest flake lands in the general ledger (no ubuntu-specific ledger
 // exists; #2368 dispatch-lanes precedent) and the two macos-latest flakes
 // land in the macOS ledger (windows ledger re-add policy requires a windows
@@ -46,13 +46,14 @@ const ISSUE_2740_QUARANTINED_PATHS: ReadonlyArray<{
 
 // Mirror ci.yml's active-entry extraction exactly:
 //   grep -vE '^\s*#|^\s*$' scripts/ci/quarantined-tests-<os>.txt
-// (CRLF is normalized first so the assertion holds on any checkout config.)
+// (CRLF is normalized first; no trimming — ci.yml's grep/comm matching is
+// exact, so a whitespace-padded entry must fail here just as it silently
+// fails to exclude in CI.)
 function activeEntries(ledgerPath: string): string[] {
 	const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
 	return raw
 		.split('\n')
-		.filter((line: string) => !/^\s*#/.test(line) && !/^\s*$/.test(line))
-		.map((line: string) => line.trim());
+		.filter((line: string) => !/^\s*#/.test(line) && !/^\s*$/.test(line));
 }
 
 describe('ci.yml integration — quarantine ledger entries for issue #2740', () => {

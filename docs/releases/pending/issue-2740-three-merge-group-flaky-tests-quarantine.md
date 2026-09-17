@@ -67,15 +67,21 @@ to macos-latest only).
 
 ## Known caveats
 
-- Entries carry EXPIRY 2026-10-14 (30 days out; inside the 14-day grace
-  window Check 7 only warns). They must be root-fixed or renewed before the
-  expiry closes; the recommended root fixes are noted in each entry's
-  `# EXPIRY` criterion line.
+- Entries carry EXPIRY 2026-10-14. Check 7 is silent until expiry, warns for
+  14 days after it, and hard-fails `check:invariants` on day 15 (2026-10-29),
+  which fails the CI `quality` gate and blocks PR merges — the entries must
+  be root-fixed, removed, or renewed before then; the recommended root fixes
+  are noted in each entry's `# EXPIRY` criterion line.
 - Ledger placement is per-OS evidence-based: the evidence-summary flake was
   single-detection on ubuntu-latest so it landed in the general ledger (no
   ubuntu-specific ledger exists); the two macOS flakes landed in the macOS
   ledger. If any file later flakes on a second OS, it should be split or
   moved accordingly.
+- Quarantine is file-granular: the general-ledger entry suspends
+  evidence-summary-adversarial on every OS and removes it from the coverage
+  gate's measured set for the whole window — including its 24 non-flaky
+  adversarial-security assertions (the coverage threshold is aggregate, not
+  per-file). The two macOS-ledger entries keep running on ubuntu/windows.
 - These are the first macOS-ledger entries added alongside the #2738 signal
   test; both ledgers are independent of the windows ledger (STATUS: 2
   entries) and the general ledger (now 1 active entry).

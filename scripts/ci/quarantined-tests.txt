@@ -11,7 +11,8 @@
 # the gate; an EXPIRY more than 14 days in the past also fails (inside
 # the grace window it only warns).
 #
-# No active global test quarantines. Issue #1908 retired the tracked backlog.
+# Active global quarantine entries are below; each carries the Check
+# 7-enforced OWNER/EXPIRY metadata. (Issue #1908 retired the tracked backlog.)
 #
 # tests/unit/services/evidence-summary-adversarial.test.ts (issue #2740)
 # ---------------------------------------------------------------------------
@@ -33,6 +34,6 @@
 #   retry 2; no per-OS ledger exists for ubuntu so this uses the general one,
 #   matching the #2368 dispatch-lanes precedent)
 # EXPIRY: 2026-10-14 — root-fix the 500ms wall-clock budget (e.g. freeze the
-#   clock or widen the margin) or renew with an updated criterion. Inside the
-#   14-day grace window Check 7 only warns.
+#   clock or widen the margin) or renew with an updated criterion. After
+#   EXPIRY, Check 7 warns for 14 days, then hard-fails on day 15.
 tests/unit/services/evidence-summary-adversarial.test.ts
