@@ -54,6 +54,20 @@ validate_trace_dir() {
   case "$candidate/" in
     */../*|*/./*|*\\*) echo "trace-check: --trace-dir cannot contain . or .. components or backslashes" >&2; exit 2;;
   esac
+  # Inspect the caller's spelling before the alias fallback canonicalizes it.
+  # Otherwise a symlink/junction that resolves back inside the trace root would
+  # disappear from the later component walk and be accepted as a safe path.
+  check="$candidate"
+  while :; do
+    if [ -L "$check" ]; then
+      echo "trace-check: refusing symlinked trace component: $check" >&2
+      exit 2
+    fi
+    [ "$check" = "/" ] && break
+    parent="$(dirname "$check")"
+    [ "$parent" != "$check" ] || break
+    check="$parent"
+  done
   case "$candidate/" in
     "$root_real/.agents/issue-traces/"*) ;;
     *)
@@ -828,6 +842,14 @@ valid_slug "$slug" || { echo "trace-check: invalid slug" >&2; exit 2; }
 [ -n "$trace" ] || trace="$root/.agents/issue-traces/$slug"
 trace="$(to_shell_path "$trace")"
 validate_trace_dir "$trace"
+# Use the same canonical spelling that validate_trace_dir checked for all
+# subsequent artifact reads. Windows may accept an existing 8.3 alias for the
+# explicit directory while pwd -P exposes the long spelling; retaining the
+# alias here would make trace_path_safe compare unlike path strings.
+trace="$(cd "$trace" 2>/dev/null && pwd -P)" || {
+  echo "FAIL state: could not resolve canonical trace root $trace" >&2
+  exit 2
+}
 state="$trace/state.md"
 if [ ! -d "$trace" ]; then
   echo "FAIL state: missing or unsafe trace directory $trace"

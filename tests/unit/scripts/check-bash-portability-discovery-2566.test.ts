@@ -239,7 +239,11 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 
 	test('resolves unknown directory entry types with lstat instead of skipping them', () => {
 		const repo = makeRepo();
-		const scripts = path.join(repo, 'scripts');
+		// main() resolves the repository through Git. Use that same spelling for
+		// the injected dependency so Windows 8.3/long-name aliases do not bypass
+		// the synthetic lstat call.
+		const resolvedRepo = git(repo, 'rev-parse', '--show-toplevel');
+		const scripts = path.join(resolvedRepo, 'scripts');
 		const unknownShell = path.join(scripts, 'unknown.sh');
 		fs.writeFileSync(unknownShell, '#!/usr/bin/env bash\n');
 		const unknownEntry = {
@@ -276,7 +280,8 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 
 	test('fails closed when an unknown directory entry cannot be inspected', async () => {
 		const repo = makeRepo();
-		const scripts = path.join(repo, 'scripts');
+		const resolvedRepo = git(repo, 'rev-parse', '--show-toplevel');
+		const scripts = path.join(resolvedRepo, 'scripts');
 		const unknownShell = path.join(scripts, 'unknown.sh');
 		fs.writeFileSync(unknownShell, '#!/usr/bin/env bash\n');
 		const unknownEntry = {
@@ -321,7 +326,8 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 
 	test('inaccessible scan roots are nonzero instead of being treated as absent', async () => {
 		const repo = makeRepo();
-		const scripts = path.join(repo, 'scripts');
+		const resolvedRepo = git(repo, 'rev-parse', '--show-toplevel');
+		const scripts = path.join(resolvedRepo, 'scripts');
 		const report = await runWithDeps(repo, {
 			lstatSync: (candidate) => {
 				if (candidate === scripts) {
