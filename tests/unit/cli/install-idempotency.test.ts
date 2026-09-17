@@ -212,6 +212,31 @@ describe('CLI install idempotency (issue #2493)', () => {
 		expect(parsed.plugin).toContain('opencode-swarm');
 	});
 
+	for (const root of ['true', '[]']) {
+		test(`refuses a non-object JSON root (${root}) without overwriting it`, async () => {
+			const opencodeJsonPath = join(tempDir, 'opencode', 'opencode.json');
+			await writeFile(opencodeJsonPath, root);
+
+			const result = await runCLI(['install'], { XDG_CONFIG_HOME: tempDir });
+
+			expect(result.exitCode).toBe(1);
+			expect(result.stderr).toContain('must contain a JSON object at the root');
+			expect(await readFile(opencodeJsonPath, 'utf8')).toBe(root);
+		});
+	}
+
+	test('refuses a non-object legacy config root without creating opencode.json', async () => {
+		const legacyConfigPath = join(tempDir, 'opencode', 'config.json');
+		await writeFile(legacyConfigPath, '[]');
+
+		const result = await runCLI(['install'], { XDG_CONFIG_HOME: tempDir });
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain('config.json must contain a JSON object');
+		expect(await readFile(legacyConfigPath, 'utf8')).toBe('[]');
+		expect(existsSync(join(tempDir, 'opencode', 'opencode.json'))).toBe(false);
+	});
+
 	// #2493 review: `uninstall --clean` must remove the install backup — it is
 	// a byte copy of opencode.json and may hold user secrets.
 	test('uninstall --clean removes the install backup file', async () => {

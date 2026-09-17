@@ -57,6 +57,35 @@ function runWithEnv(cwd: string, args: string[], env: Record<string, string>) {
 		err: p.stderr.toString(),
 	};
 }
+
+interface PollResult<T> {
+	value: T;
+	attempts: number;
+	elapsedMs: number;
+	deadlineExceeded: boolean;
+}
+
+function pollUntil<T>(
+	probe: () => T,
+	done: (value: T) => boolean,
+	deadlineMs: number,
+	intervalMs: number,
+): PollResult<T> {
+	const maxAttempts = Math.max(1, Math.ceil(deadlineMs / intervalMs));
+	let attempts = 0;
+	let value = probe();
+	while (!done(value) && attempts < maxAttempts) {
+		Bun.sleepSync(intervalMs);
+		attempts += 1;
+		value = probe();
+	}
+	return {
+		value,
+		attempts,
+		elapsedMs: attempts * intervalMs,
+		deadlineExceeded: !done(value),
+	};
+}
 function repo() {
 	const value = canonicalMkdtemp('repro-check-');
 	roots.push(value);
@@ -119,6 +148,37 @@ describe('repro-check.sh disposable checks', () => {
 			.split('\n')
 			.filter((line) => line.includes('issue-tracer-repro.'));
 		expect(removed).toHaveLength(0);
+	});
+
+	test('treats option-like expectations as regex data and rejects controls', () => {
+		const worktree = repo();
+		const base = git(worktree, 'rev-parse', 'HEAD');
+		changePass(worktree);
+		let result = run(worktree, [
+			...args(base, 'DISCRIMINATING'),
+			'--expect',
+			'--version',
+			'--',
+			'bash',
+			'check.sh',
+		]);
+		// Without grep's option boundary, `--version` makes grep return success
+		// without matching the base log, manufacturing a RED result and PASS.
+		expect(result.code).toBe(3);
+		expect(result.out).toContain('result=ERROR');
+		expect(result.out).toContain('verdict: ERROR');
+
+		result = run(worktree, [
+			...args(base, 'DISCRIMINATING', 'C2'),
+			'--expect',
+			`bad${String.fromCharCode(0x1b)}expect`,
+			'--',
+			'bash',
+			'check.sh',
+		]);
+		expect(result.code).toBe(2);
+		expect(result.err).toContain('--expect cannot contain control bytes');
+		expect(result.err).not.toContain(String.fromCharCode(0x1b));
 	});
 
 	test('reports VACUOUS and ERROR for non-discriminating base failures', () => {
@@ -303,15 +363,18 @@ describe('repro-check.sh disposable checks', () => {
 		);
 		expect(result.code).toBe(6);
 
-		// Poll up to 3 times with 500ms sleeps to ensure process cleanup
-		let sleepAfter = countSleepProcesses();
-		for (let i = 0; i < 3 && sleepAfter > sleepBefore; i++) {
-			Bun.sleepSync(500);
-			sleepAfter = countSleepProcesses();
-		}
-
-		// Process-group kill terminates all children; single-pid kill would leave the sleep alive
-		expect(sleepAfter).toBeLessThanOrEqual(sleepBefore);
+		const cleanupPoll = pollUntil(
+			countSleepProcesses,
+			(count) => count <= sleepBefore,
+			5_000,
+			500,
+		);
+		// Process-group kill terminates all children; single-pid kill would leave the sleep alive.
+		expect(
+			cleanupPoll.deadlineExceeded,
+			`child cleanup exceeded ${cleanupPoll.elapsedMs}ms after ${cleanupPoll.attempts} polling attempts (count=${cleanupPoll.value}, baseline=${sleepBefore})`,
+		).toBe(false);
+		expect(cleanupPoll.value).toBeLessThanOrEqual(sleepBefore);
 	}, 20_000);
 
 	test('truncates oversized logs and tracks checkpoint amendments and changes', () => {
@@ -354,7 +417,7 @@ describe('repro-check.sh disposable checks', () => {
 			'--slug',
 			'issue-1',
 			'--reason',
-			'FORMAT_ONLY',
+			'CHECK_WRONG',
 			'--id',
 			'C1',
 			'--argv',

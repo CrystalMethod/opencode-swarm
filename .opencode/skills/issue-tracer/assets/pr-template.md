@@ -32,6 +32,13 @@ This is a drafting aid. The published PR body must satisfy the repository's own 
 - [Negative/boundary/adversarial case if relevant]
 - [Test drift review result]
 
+## External Checkpoint Anchor
+
+- Receipt published before implementation (human-confirmed; local validation cannot attest publication/timing): `issue-tracer-checkpoint-v1 slug=<slug> manifest=<40-hex> semantics=<40-hex> tree=<40-hex>`
+- External artifact location: [issue/PR/conversation URL or identifier]
+- Independent verification: `repro-check.sh verify-anchor --slug <slug> --receipt '<published literal>'` -> PASS
+- Local copy/provenance: [discovery copy path; explicitly non-authoritative]
+
 ## Acceptance Criteria -> Evidence
 
 | Acceptance criterion (from intake) | Evidence (command + output, or test name) |

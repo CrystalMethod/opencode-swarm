@@ -57,6 +57,36 @@ root="$(to_shell_path "$root")"
 root_real="$(cd "$root" && pwd -P)"
 trace_dir="$root/.agents/issue-traces/$slug"
 
+# The validators deliberately reject symlinks in the `.agents/issue-traces`
+# ancestry, even when a link resolves back inside this repository. Refuse the
+# same components before any state, manifest, or exclude-file write so init can
+# never create a trace that later validators cannot read.
+refuse_symlinked_agents_components() {
+  local component component_real
+  for component in \
+    "$root/.agents" \
+    "$root/.agents/issue-traces" \
+    "$trace_dir"; do
+    if [ -L "$component" ]; then
+      # Keep the established outside-repo diagnostic below, but reject links
+      # that resolve back inside the repository because validators reject those
+      # path components too. A dangling link is also fail-closed here.
+      if component_real="$(cd "$component" 2>/dev/null && pwd -P)"; then
+        case "$component_real" in
+          "$root_real"|"$root_real"/*)
+            echo "trace-init: refusing symlinked .agents component: $component" >&2
+            exit 2
+            ;;
+        esac
+      else
+        echo "trace-init: refusing symlinked .agents component: $component" >&2
+        exit 2
+      fi
+    fi
+  done
+}
+refuse_symlinked_agents_components
+
 # Reject a symlink escape before creating anything: walk up from trace_dir to
 # the nearest existing ancestor (e.g. an already-committed `.agents` that is
 # actually a symlink to outside the repo) and verify it resolves inside the

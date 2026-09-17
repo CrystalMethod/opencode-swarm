@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import {
 	getOpenProjectDbCount,
@@ -21,6 +20,7 @@ import {
 	bootKnowledgeHost,
 	createKnowledgeProject,
 } from '../helpers/knowledge-real-host.js';
+import { safeRmRecursive } from '../helpers/safe-test-dir.js';
 
 const OWNER_SESSION_ID = 'deleted-owner-session';
 const RESTORING_SESSION_ID = 'checkout-restorer-session';
@@ -39,10 +39,20 @@ describe('PR workflow session lifecycle — regression: deleted owner cleanup an
 
 	afterEach(async () => {
 		await plugin?.hooks.dispose?.();
+		// dispose() must already have released the cached project-db handle
+		// (#2480: a held .swarm/swarm.db WAL handle makes directory removal
+		// fail EBUSY on Windows). This assertion proves that dispose-ordering
+		// precondition (invariant #7 temp-dir hygiene) before cleanup runs;
+		// if it fails, cleanup aborts loudly rather than racing a live handle.
 		expect(getOpenProjectDbCount()).toBe(0);
 		_test_exports.resetTrackedStateCache();
 		resetSwarmState();
-		rmSync(directory, { recursive: true, force: true });
+		// safeRmRecursive is the operative EBUSY mitigation: external handles
+		// (the #1782 Windows AV-handle race class) are invisible to the count
+		// above, so removal retries EBUSY/EPERM/ENOTEMPTY with bounded backoff.
+		// Its internal closeProjectDb is a no-op here (dispose already closed
+		// the DB), and it refuses targets outside the system temp root.
+		safeRmRecursive(directory);
 	});
 
 	test('reaps only the deleted owner gate and leaves foreign restore blocked', async () => {
