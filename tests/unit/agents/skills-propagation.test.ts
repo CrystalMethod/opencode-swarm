@@ -63,11 +63,17 @@ describe('Skills Propagation to Subagents', () => {
 			expect(skillsSection).toContain('full skill body pasted inline');
 		});
 
-		it('states mandatory coding-task skills when present', () => {
+		it('marks coding-task skills as source-repo examples gated on presence in the current project', () => {
 			const skillsSection = prompt.slice(prompt.indexOf('SKILLS PROPAGATION'));
 			expect(skillsSection).toContain('writing-tests');
 			expect(skillsSection).toContain('engineering-conventions');
 			expect(skillsSection).toContain('when those skills are present');
+			expect(skillsSection).toContain('current project');
+			expect(skillsSection).toContain('SKILLS: none');
+			// #2802: no unconditional "always provide <repo skill>" default.
+			expect(skillsSection).not.toMatch(
+				/always\s+provide[^\n]{0,120}(?:writing-tests|engineering-conventions)/i,
+			);
 		});
 
 		it('requires descriptions next to file references for on-demand skill loading', () => {
@@ -118,33 +124,36 @@ describe('Skills Propagation to Subagents', () => {
 			);
 		});
 
-		it('coder delegation example includes file-based SKILLS reference', () => {
+		it('coder delegation example includes placeholder file-based SKILLS reference', () => {
 			const coderExample = prompt.slice(
 				prompt.indexOf('TASK: Add input validation to login'),
 				prompt.indexOf('TASK: Review login validation'),
 			);
 			expect(coderExample).toContain(
-				'SKILLS: file:.claude/skills/engineering-conventions/SKILL.md',
+				'SKILLS: file:.claude/skills/<project-skill>/SKILL.md',
 			);
 		});
 
-		it('reviewer delegation example includes file-based SKILLS reference', () => {
+		it('reviewer delegation example includes placeholder file-based SKILLS reference', () => {
 			const reviewerExample = prompt.slice(
 				prompt.indexOf('TASK: Review login validation'),
 				prompt.indexOf('TASK: Generate and run login validation tests'),
 			);
 			expect(reviewerExample).toContain(
-				'SKILLS: file:.claude/skills/engineering-conventions/SKILL.md',
+				'SKILLS_USED_BY_CODER: file:.claude/skills/<project-skill>/SKILL.md',
+			);
+			expect(reviewerExample).toContain(
+				'SKILLS: file:.claude/skills/<project-skill>/SKILL.md',
 			);
 		});
 
-		it('test_engineer delegation example includes file-based SKILLS reference', () => {
+		it('test_engineer delegation example includes placeholder file-based SKILLS reference', () => {
 			const testEngineerExample = prompt.slice(
 				prompt.indexOf('TASK: Generate and run login validation tests'),
 				prompt.indexOf('TASK: Review plan for user authentication'),
 			);
 			expect(testEngineerExample).toContain(
-				'SKILLS: file:.claude/skills/writing-tests/SKILL.md',
+				'SKILLS: file:.claude/skills/<project-skill>/SKILL.md',
 			);
 		});
 

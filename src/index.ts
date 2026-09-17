@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
@@ -20,9 +21,12 @@ import {
 import {
 	type BackgroundAutomationManager,
 	createAutomationManager,
+	isPrFeedbackLoopEnabled,
 	PlanSyncWorker,
 	type PreflightTriggerManager,
+	type PrFeedbackLoopRuntimeRegistration,
 	PrMonitorWorker,
+	registerPrFeedbackLoopRuntime,
 } from './background';
 import { createBackgroundCompletionObserver } from './background/completion-observer.js';
 import {
@@ -163,6 +167,7 @@ import {
 } from './hooks/guardrails.js';
 import { createHivePromoterHook } from './hooks/hive-promoter.js';
 import {
+	isSessionBoundArchitect,
 	type MessageArrayLike,
 	resolveMessageTransformContext,
 	resolveToolAfterContext,
@@ -197,6 +202,7 @@ import {
 } from './hooks/pr-workflow-gate.js';
 import { createPrWorkflowResponseGate } from './hooks/pr-workflow-response-gate.js';
 import { createPrWorkflowSessionResolver } from './hooks/pr-workflow-session-resolver.js';
+import { recordRealtimeLearningNudge } from './hooks/realtime-learning-nudge.js';
 import { collectReviewerReceiptAfter } from './hooks/review-receipt-collector.js';
 import {
 	beginApprovedReviewerScopeLifecycle,
@@ -217,6 +223,14 @@ import { createSteeringConsumedHook } from './hooks/steering-consumed.js';
 // the hook factories; the dispose-fence helper is a lifecycle utility used
 // solely by this file's dispose block (PR #2588 bot finding 7).
 import { cancelDeferredMaintenanceScans } from './hooks/system-enhancer';
+import type { GuidanceMessage } from './hooks/system-guidance-carrier.js';
+import {
+	appendGuidanceCarrier,
+	deliveredGuidanceDelta,
+	guidanceCarrierEnvelopeTokens,
+	messageTextOf,
+	moveGuidanceCarriersToEnd,
+} from './hooks/system-guidance-carrier.js';
 import { createSystemRenderBoundaryHook } from './hooks/system-render-boundary.js';
 import {
 	createTrajectoryLoggerHook,
@@ -273,7 +287,11 @@ import {
 } from './services/cost-accounting.js';
 import {
 	advanceTurnGeneration,
+	commitInjectionBudgetReceipt,
+	type InjectionBudgetReceipt,
 	recordProducerEmission,
+	recordProducerEmissionWithReceipt,
+	refundInjectionBudgetReceipt,
 } from './services/injection-budget';
 import {
 	formatModelPreflightWarning,
@@ -294,7 +312,10 @@ import {
 	getActiveWindow,
 	getAgentSession,
 	getFinalPromptPressure,
+	getLiveContextModelIdentity,
+	getLiveContextWindow,
 	getSessionBudgetPct,
+	setLiveContextWindow,
 	swarmState,
 } from './state';
 import {
@@ -313,6 +334,7 @@ import {
 	ENSURE_SWARM_GIT_EXCLUDED_OUTER_TIMEOUT_MS,
 	ensureSwarmGitExcluded,
 } from './utils/gitignore-warning';
+import { resolveProjectRootDecision } from './utils/project-boundary';
 import { withTimeout, withTimeoutSignal } from './utils/timeout';
 import { truncateToolOutput } from './utils/tool-output';
 
@@ -336,6 +358,9 @@ const _heartbeatTimers = new Map<string, number>();
 // Upper bound on distinct session keys tracked for heartbeat throttling. Values are
 // timestamps (not timer handles), so eviction needs no clearInterval/clearTimeout.
 const MAX_TRACKED_HEARTBEAT_SESSIONS = 500;
+/** One-shot bridge suppression for the messages transform immediately after compaction. */
+const _architectCompactionPending = new Map<string, true>();
+const MAX_TRACKED_ARCHITECT_COMPACTIONS = 500;
 // Session-deletion is a user-visible host event. Receipt reconciliation keeps
 // its own checkout lock and may outlive this budget; the short event-level
 // deadline prevents slow Git/stash inventory from delaying host delivery while
@@ -592,12 +617,36 @@ function createSwarmCommandSystemRuleHook(
 			permission?: Record<string, unknown>;
 		}
 	>,
-): (input: unknown, output: { system?: string[] }) => Promise<void> {
+	options: { surface?: 'system' | 'messages' } = {},
+): (
+	input: unknown,
+	output: {
+		system?: string[];
+		deliveryBudgetReceipts?: InjectionBudgetReceipt[];
+	},
+) => Promise<void> {
+	const surface = options.surface ?? 'system';
 	return async (input, output) => {
-		const { sessionID } = input as { sessionID?: string };
+		const { sessionID, agent, expectedGeneration } = input as {
+			sessionID?: string;
+			agent?: string;
+			expectedGeneration?: number;
+		};
 		const activeAgentName = sessionID
-			? swarmState.activeAgent.get(sessionID)
-			: undefined;
+			? surface === 'messages'
+				? (agent ??
+					swarmState.activeAgent.get(sessionID) ??
+					swarmState.agentSessions.get(sessionID)?.agentName)
+				: (swarmState.activeAgent.get(sessionID) ??
+					agent ??
+					swarmState.agentSessions.get(sessionID)?.agentName)
+			: agent;
+		if (
+			surface === 'system' &&
+			isSessionBoundArchitect(sessionID, activeAgentName)
+		) {
+			return;
+		}
 		if (
 			!agentHasSwarmCommandTool(
 				activeAgentName,
@@ -610,7 +659,6 @@ function createSwarmCommandSystemRuleHook(
 
 		const system = Array.isArray(output.system) ? output.system : [];
 		if (system.some((entry) => entry.includes(SWARM_COMMAND_SYSTEM_RULE_TAG))) {
-			output.system = system;
 			return;
 		}
 
@@ -619,19 +667,30 @@ function createSwarmCommandSystemRuleHook(
 			'When a user asks for a supported /swarm command and the message instructs you to call the `swarm_command` tool, call that tool exactly once with the provided JSON arguments. After the tool returns, show the tool output verbatim and do not add extra swarm state, summaries, or invented command output.',
 		].join('\n');
 		system.push(banner);
-		output.system = system;
 		// #2107 §2: fixed/base content — the banner is COUNTED against the turn
 		// ledger (never claimed). System-surface producer: final accounting adds
 		// this emission to the total because output.system is invisible to the
 		// messages chain.
 		if (sessionID) {
-			recordProducerEmission(
-				sessionID,
-				'swarm-command-banner',
-				estimateTokens(banner),
-				0,
-				'system',
-			);
+			if (surface === 'messages' && output.deliveryBudgetReceipts) {
+				const receipt = recordProducerEmissionWithReceipt(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					surface,
+					{ expectedGeneration },
+				);
+				if (receipt) output.deliveryBudgetReceipts.push(receipt);
+			} else {
+				recordProducerEmission(
+					sessionID,
+					'swarm-command-banner',
+					estimateTokens(banner),
+					0,
+					surface,
+					{ expectedGeneration },
+				);
+			}
 		}
 	};
 }
@@ -1068,6 +1127,34 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 // Return type intentionally inferred so the literal `{ name: ..., agent: ... }`
 // does not trip excess-property checks against `Hooks`. The wrapper above is
 // typed as `Plugin`, which validates the structural shape at the call site.
+/**
+ * Durable, bounded record of a bootstrap root redirect (#2679), written under
+ * the OWNING project root's `.swarm/advisories/` (init-orphan-recovery
+ * pattern) so the operator has a persistent, operator-understandable result
+ * beyond the console/diagnose hint. Best-effort: the console hint already
+ * fired, so any write failure is swallowed.
+ */
+function writeBootstrapRootRedirectRecord(
+	bootstrapRoot: string,
+	openedDirectory: string,
+): void {
+	try {
+		const advisoriesDir = path.join(bootstrapRoot, '.swarm', 'advisories');
+		mkdirSync(advisoriesDir, { recursive: true });
+		writeFileSync(
+			path.join(advisoriesDir, 'bootstrap-root-redirect.json'),
+			JSON.stringify({
+				kind: 'bootstrap-root-redirect',
+				opened_directory: openedDirectory,
+				project_root: bootstrapRoot,
+				note: 'Runtime state, project config, and telemetry for the opened workspace are owned by the project root.',
+			}),
+		);
+	} catch {
+		// bounded best-effort record; the console/diagnose hint already fired
+	}
+}
+
 async function initializeOpenCodeSwarm(
 	ctx: Parameters<Plugin>[0],
 	postResolutionTasks: PostResolutionTask[],
@@ -1106,6 +1193,24 @@ async function initializeOpenCodeSwarm(
 	resetConfigAdvisoryDedup();
 	resetArchitectPromptBudgetAdvisories();
 
+	// Project-root ownership (issue #2679): resolve ONCE, synchronously, before
+	// any init-path consumer touches a directory. This applies the same boundary
+	// policy as the write-time sinks (`assertProjectRoot`) to the bootstrap
+	// boundary, so an ordinary child directory of a project root that already
+	// owns `.swarm/` state can no longer receive a second runtime-state tree.
+	// Bounded (invariant 1): one realpath + at most MAX_PROJECT_ROOT_DEPTH (20)
+	// ancestor `.swarm` probes, with the indicator list consulted only for an
+	// ancestor that has `.swarm`; a directory with a direct `.git`/`.opencode`
+	// marker short-circuits after 1-2 lstat probes. No subprocess — comparable
+	// to the `hasManifestAncestor` walk already on this path.
+	const rootDecision = resolveProjectRootDecision(ctx.directory);
+	// Project surface (all `.swarm` state + `.opencode` project config/agent
+	// overrides) anchors at the bootstrap root; the opened workspace surface
+	// (git diffs, file authority, language-backend probes) keeps ctx.directory.
+	const bootstrapRoot =
+		rootDecision.kind === 'redirect' ? rootDecision.owningRoot : ctx.directory;
+	const bootstrapStateWritesEnabled = rootDecision.kind !== 'fail-closed';
+
 	// PARALLEL INIT I/O (issue #1782 / repro-704 T1 Windows failures).
 	//
 	// Three independent bounded reads used to be awaited SEQUENTIALLY here:
@@ -1136,7 +1241,7 @@ async function initializeOpenCodeSwarm(
 	// created).
 	const __initIoStart = performance.now();
 	const configLoadP = withTimeout(
-		loadPluginConfigWithMetaAsyncForInit(ctx.directory),
+		loadPluginConfigWithMetaAsyncForInit(bootstrapRoot),
 		LOAD_PLUGIN_CONFIG_TIMEOUT_MS,
 		new Error(
 			`loadPluginConfigWithMetaAsync exceeded ${LOAD_PLUGIN_CONFIG_TIMEOUT_MS}ms budget; continuing with safe-default config`,
@@ -1153,36 +1258,38 @@ async function initializeOpenCodeSwarm(
 		);
 		return getSafeDefaultConfigLoadResult();
 	});
-	const snapshotP = hasSwarmState(ctx.directory)
-		? withTimeout(
-				loadSnapshotForInit(ctx.directory),
-				5_000,
-				new Error(
-					'loadSnapshot exceeded 5s budget; continuing without snapshot rehydration',
-				),
-			).catch((err: unknown) => {
-				const msg = err instanceof Error ? err.message : String(err);
-				log('loadSnapshot timed out or failed (non-fatal)', { error: msg });
-			})
-		: Promise.resolve();
-	const gitExcludeP = hasGitMarkerAncestor(ctx.directory)
-		? withTimeout(
-				// `quiet` defaults to false; the option is currently void-discarded in
-				// `ensureSwarmGitExcluded` (src/utils/gitignore-warning.ts:223-224), so
-				// dropping `{ quiet: config.quiet }` is behavior-identical AND lets us
-				// parallelize without waiting on the config read.
-				ensureSwarmGitExcludedForInit(ctx.directory),
-				ENSURE_SWARM_GIT_EXCLUDED_OUTER_TIMEOUT_MS,
-				new Error(
-					`ensureSwarmGitExcluded exceeded ${ENSURE_SWARM_GIT_EXCLUDED_OUTER_TIMEOUT_MS}ms budget; continuing without git-hygiene check`,
-				),
-			).catch((err: unknown) => {
-				const msg = err instanceof Error ? err.message : String(err);
-				log('ensureSwarmGitExcluded timed out or failed (non-fatal)', {
-					error: msg,
-				});
-			})
-		: Promise.resolve();
+	const snapshotP =
+		bootstrapStateWritesEnabled && hasSwarmState(bootstrapRoot)
+			? withTimeout(
+					loadSnapshotForInit(bootstrapRoot),
+					5_000,
+					new Error(
+						'loadSnapshot exceeded 5s budget; continuing without snapshot rehydration',
+					),
+				).catch((err: unknown) => {
+					const msg = err instanceof Error ? err.message : String(err);
+					log('loadSnapshot timed out or failed (non-fatal)', { error: msg });
+				})
+			: Promise.resolve();
+	const gitExcludeP =
+		bootstrapStateWritesEnabled && hasGitMarkerAncestor(bootstrapRoot)
+			? withTimeout(
+					// `quiet` defaults to false; the option is currently void-discarded in
+					// `ensureSwarmGitExcluded` (src/utils/gitignore-warning.ts:223-224), so
+					// dropping `{ quiet: config.quiet }` is behavior-identical AND lets us
+					// parallelize without waiting on the config read.
+					ensureSwarmGitExcludedForInit(bootstrapRoot),
+					ENSURE_SWARM_GIT_EXCLUDED_OUTER_TIMEOUT_MS,
+					new Error(
+						`ensureSwarmGitExcluded exceeded ${ENSURE_SWARM_GIT_EXCLUDED_OUTER_TIMEOUT_MS}ms budget; continuing without git-hygiene check`,
+					),
+				).catch((err: unknown) => {
+					const msg = err instanceof Error ? err.message : String(err);
+					log('ensureSwarmGitExcluded timed out or failed (non-fatal)', {
+						error: msg,
+					});
+				})
+			: Promise.resolve();
 	// Phase 4b: resolve language-agnostic project context in parallel with the
 	// other independent init reads. Starting the lazy backend import here keeps
 	// its cold-module cost off the tail of the critical path while preserving the
@@ -1213,6 +1320,28 @@ async function initializeOpenCodeSwarm(
 		: Promise.resolve(null);
 	await Promise.all([configLoadP, snapshotP, gitExcludeP, projectContextP]);
 	const { config, loadedFromFile } = await configLoadP;
+	if (rootDecision.kind === 'redirect') {
+		// Actionable, bounded parent-root hint (AC1). `advisoryWarn` alone is
+		// buffered-only (warning-buffer), so the operator-visible leg is one
+		// console.warn line (quiet-gated, deferred fallback), matching the
+		// full-auto model-matching warning pattern.
+		const redirectHint = `[opencode-swarm] project-root ownership: "${ctx.directory}" is an ordinary subdirectory — runtime state, project config, and telemetry for this workspace are owned by the project root "${bootstrapRoot}". Open the project root (or add a .git/.opencode marker in "${ctx.directory}") to make this directory independent.`;
+		// UNCONDITIONAL (not quiet-gated): `quiet` defaults to true for routine
+		// startup noise, but a boot whose state silently lands under a different
+		// root is a containment signal the operator must see once per boot —
+		// same class as the unconditional startup version line.
+		// biome-ignore lint/suspicious/noConsole: containment redirect — operator must see which root owns .swarm state for this boot (issue #2679 AC1)
+		console.warn(redirectHint);
+		addDeferredWarning(redirectHint);
+		advisoryWarn(redirectHint);
+		writeBootstrapRootRedirectRecord(bootstrapRoot, ctx.directory);
+	} else if (rootDecision.kind === 'fail-closed') {
+		const failClosedHint = `[opencode-swarm] project-root ownership: cannot verify "${ctx.directory}" (${rootDecision.reason}) — runtime state is disabled for this session. Reopen the project from its verified root.`;
+		// biome-ignore lint/suspicious/noConsole: fail-closed ownership — operator must know state writes are disabled for this boot (issue #2679)
+		console.warn(failClosedHint);
+		addDeferredWarning(failClosedHint);
+		advisoryWarn(failClosedHint);
+	}
 	log(
 		`init-path I/O completed in ${(performance.now() - __initIoStart).toFixed(1)}ms (parallel: config+snapshot+git-exclude)`,
 	);
@@ -1324,7 +1453,7 @@ async function initializeOpenCodeSwarm(
 	// init-path subprocess to obtain one is exactly what invariant 1 forbids.
 	// Populating it is #2047's call, off the init path.
 	initObservability({
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		provenance: {
 			pluginVersion: packageJson.version,
 			// Detected via `process.versions`, never a `Bun` global reference —
@@ -1350,8 +1479,10 @@ async function initializeOpenCodeSwarm(
 	// #2482: register the SQLite observability sink FIRST so the very first
 	// emitted event is captured. Registration is O(1) (one listener push),
 	// never opens the DB, and never throws — safe on the init path.
-	registerObservabilityEventSink(ctx.directory);
-	initTelemetry(ctx.directory);
+	if (bootstrapStateWritesEnabled) {
+		registerObservabilityEventSink(bootstrapRoot);
+		initTelemetry(bootstrapRoot);
+	}
 	startHeartbeatTracking();
 
 	// #2485: opt-in remote OTLP/OpenInference export. Registration is O(1)
@@ -1361,8 +1492,8 @@ async function initializeOpenCodeSwarm(
 	// set, or an invalid endpoint, NOTHING is registered and no
 	// `.swarm/otlp-export/` directory is created.
 	const otlpExportConfig = config.observability?.export;
-	if (otlpExportConfig !== undefined) {
-		registerOtlpExporter(ctx.directory, otlpExportConfig);
+	if (otlpExportConfig !== undefined && bootstrapStateWritesEnabled) {
+		registerOtlpExporter(bootstrapRoot, otlpExportConfig);
 		if (isOtlpExporterActive()) {
 			postResolutionTasks.push(() => {
 				// Post-resolution first flush (spool replay after restart).
@@ -1371,7 +1502,7 @@ async function initializeOpenCodeSwarm(
 				// work. `flushOtlpExporterForTesting` is the drain-now entry
 				// point (single-flight, bounded iterations), used here and by
 				// checks/tests alike.
-				void flushOtlpExporterForTesting(ctx.directory).catch(() => {
+				void flushOtlpExporterForTesting(bootstrapRoot).catch(() => {
 					/* fail-open: the interval retries */
 				});
 			});
@@ -1380,16 +1511,17 @@ async function initializeOpenCodeSwarm(
 
 	const repoGraphConfig = RepoGraphConfigSchema.parse(config.repo_graph ?? {});
 	const repoGraphHookFactory = createRepoGraphBuilderHookForInit;
-	const repoGraphHook = repoGraphConfig.enabled
-		? repoGraphHookFactory(ctx.directory, undefined, {
-				enabled: true,
-				initRefresh: repoGraphConfig.init_refresh,
-				refreshCap: repoGraphConfig.refresh_cap,
-				walkBudgetMs: repoGraphConfig.walk_budget_ms,
-				maxFiles: repoGraphConfig.max_files,
-				excludeDirs: repoGraphConfig.exclude_dirs,
-			})
-		: null;
+	const repoGraphHook =
+		repoGraphConfig.enabled && bootstrapStateWritesEnabled
+			? repoGraphHookFactory(bootstrapRoot, undefined, {
+					enabled: true,
+					initRefresh: repoGraphConfig.init_refresh,
+					refreshCap: repoGraphConfig.refresh_cap,
+					walkBudgetMs: repoGraphConfig.walk_budget_ms,
+					maxFiles: repoGraphConfig.max_files,
+					excludeDirs: repoGraphConfig.exclude_dirs,
+				})
+			: null;
 	let repoGraphInitPromise: Promise<void> | undefined;
 	if (repoGraphHook) {
 		postResolutionTasks.push(() => {
@@ -1415,7 +1547,8 @@ async function initializeOpenCodeSwarm(
 	// snapshot-coordination-init retains the underlying promise; this detached
 	// scheduler is only the trigger and is never treated as the owner.
 	postResolutionTasks.push(function snapshotCoordinationPostResolutionTask() {
-		return startSnapshotCoordinationInitialization(ctx.directory);
+		if (!bootstrapStateWritesEnabled) return Promise.resolve();
+		return startSnapshotCoordinationInitialization(bootstrapRoot);
 	});
 
 	// Issue #2271 bug 4 / issue #2680: model-resolution preflight runs OFF the
@@ -1485,10 +1618,11 @@ async function initializeOpenCodeSwarm(
 	// createInitOrphanRecoveryAdvisoryHook surfaces results to the architect
 	// on their first turn after plugin init.
 	postResolutionTasks.push(() => {
-		void runInitOrphanRecovery(ctx.directory).catch((err: unknown) => {
-			const msg = err instanceof Error ? err.message : String(err);
-			log('initOrphanRecovery failed (non-fatal)', { error: msg });
-		});
+		if (bootstrapStateWritesEnabled)
+			void runInitOrphanRecovery(bootstrapRoot).catch((err: unknown) => {
+				const msg = err instanceof Error ? err.message : String(err);
+				log('initOrphanRecovery failed (non-fatal)', { error: msg });
+			});
 	});
 
 	// Issue #2041 — one bounded, fail-open PRM trajectory/replay cleanup pass.
@@ -1503,7 +1637,9 @@ async function initializeOpenCodeSwarm(
 	// per-session trigger and every subsequent plugin load remain as backstops.
 	postResolutionTasks.push(function trajectoryCleanupPostInitTask() {
 		return withTimeout(
-			cleanupOldTrajectoryFiles(ctx.directory),
+			bootstrapStateWritesEnabled
+				? cleanupOldTrajectoryFiles(bootstrapRoot)
+				: Promise.resolve(),
 			TRAJECTORY_CLEANUP_INIT_TIMEOUT_MS,
 			new Error(
 				`trajectory cleanup exceeded ${TRAJECTORY_CLEANUP_INIT_TIMEOUT_MS}ms post-init budget; continuing without it (lazy per-session cleanup remains a backstop)`,
@@ -1526,6 +1662,7 @@ async function initializeOpenCodeSwarm(
 	// server()-resolution path — Invariant 1) and fails open; the timeout
 	// bounds the scheduler's wait, not the sweep's per-family deletion caps.
 	postResolutionTasks.push(function retentionSweepPostInitTask() {
+		if (!bootstrapStateWritesEnabled) return Promise.resolve();
 		const retentionConfig = (config as Record<string, unknown> | undefined)
 			?.retention as { enabled?: unknown; dry_run?: unknown } | undefined;
 		const retentionSummaries = (config as Record<string, unknown> | undefined)
@@ -1536,7 +1673,7 @@ async function initializeOpenCodeSwarm(
 		// families instead of finishing them after the awaiter moved on.
 		let sweepCancelled = false;
 		return withTimeout(
-			runRetentionSweep(ctx.directory, {
+			runRetentionSweep(bootstrapRoot, {
 				enabled: retentionConfig?.enabled !== false,
 				dryRun: retentionConfig?.dry_run === true,
 				summariesRetentionDays:
@@ -1573,13 +1710,14 @@ async function initializeOpenCodeSwarm(
 			?.background_subagents === true
 	) {
 		postResolutionTasks.push(function backgroundMaintenancePostInitTask() {
+			if (!bootstrapStateWritesEnabled) return Promise.resolve();
 			// Returned (not `void`ed) so the task is awaitable like
 			// regenerateMemoryReflectionTask — tests and any future awaiter of
 			// the post-resolution queue can observe completion. The scheduler
 			// already treats tasks as void | Promise<void>.
 			return withTimeout(
 				import('./background/pending-delegations.js').then((m) =>
-					m.maintainBackgroundDelegations(ctx.directory, {
+					m.maintainBackgroundDelegations(bootstrapRoot, {
 						lockTimeoutMs: 5_000,
 						reason: 'post-init',
 						onLegacyCoderSettlementReconciled:
@@ -1606,9 +1744,11 @@ async function initializeOpenCodeSwarm(
 		});
 	}
 
-	// Side tasks are small and scoped to `<ctx.directory>/.swarm/`
-	// or `<ctx.directory>/.opencode/`, so none risks a home-tree scan.
-	writeSwarmConfigExampleIfNew(ctx.directory);
+	// Side tasks are small and scoped to `<bootstrapRoot>/.swarm/`
+	// or `<bootstrapRoot>/.opencode/`, so none risks a home-tree scan.
+	if (bootstrapStateWritesEnabled) {
+		writeSwarmConfigExampleIfNew(bootstrapRoot);
+	}
 	// Materialize the bundled architect MODE skills into the project so the
 	// architect's first auto-entered mode (e.g. SPECIFY on a fresh project) can
 	// load its `.swarm/bundled-skills/<mode>/SKILL.md` without first running a /swarm
@@ -1630,9 +1770,10 @@ async function initializeOpenCodeSwarm(
 	// atomic-overwrite-with-rollback, symlink-guarded, byte/file-bounded. On timeout/error we
 	// fail open — the command-path sync remains as a backstop.
 	postResolutionTasks.push(() => {
+		if (!bootstrapStateWritesEnabled) return;
 		void withTimeout(
 			syncBundledProjectSkillsIfMissingAsync(
-				ctx.directory,
+				bootstrapRoot,
 				PACKAGE_ROOT,
 				config.quiet,
 			),
@@ -1669,7 +1810,15 @@ async function initializeOpenCodeSwarm(
 
 	let autoReviewConfig: AutoReviewConfig;
 	try {
-		autoReviewConfig = resolveAutoReviewConfigForInit(config.auto_review ?? {});
+		// #2504: the resolved preset rides the release context so a conservative
+		// config keeps the pre-flip default even if the parsed section somehow
+		// reached here without the loader's base-layer materialization.
+		autoReviewConfig = resolveAutoReviewConfigForInit(
+			config.auto_review ?? {},
+			{
+				preset: config.preset,
+			},
+		);
 	} catch (error) {
 		addDeferredWarning(
 			`[swarm] Invalid auto_review configuration; auto-review is disabled until corrected: ${error instanceof Error ? error.message : String(error)}`,
@@ -1685,7 +1834,7 @@ async function initializeOpenCodeSwarm(
 	};
 	const agents = getAgentConfigs(
 		configWithResolvedAutoReview,
-		ctx.directory,
+		bootstrapRoot,
 		undefined,
 		projectContext ?? undefined,
 	);
@@ -1748,13 +1897,23 @@ async function initializeOpenCodeSwarm(
 	// guard (adversarial review C1 fix).
 	swarmState.generatedAgentNames = [...instanceGeneratedAgentNames];
 
-	const pipelineHook = createPipelineTrackerHook(config, ctx.directory);
-	const systemEnhancerHook = createSystemEnhancerHook(config, ctx.directory);
+	const pipelineHook = createPipelineTrackerHook(config, bootstrapRoot);
+	const systemEnhancerHook = createSystemEnhancerHook(config, bootstrapRoot);
+	const architectMessagesEnhancerHook = createSystemEnhancerHook(
+		config,
+		bootstrapRoot,
+		{
+			surface: 'messages',
+			deferRealtimeLearningNudgeState: true,
+			reservedEnvelopeTokens:
+				guidanceCarrierEnvelopeTokens('architect-session'),
+		},
+	);
 	const contextCapsuleInjectHook = createContextCapsuleInjectHook(
 		config,
-		ctx.directory,
+		bootstrapRoot,
 	);
-	const compactionHook = createCompactionCustomizerHook(config, ctx.directory);
+	const compactionHook = createCompactionCustomizerHook(config, bootstrapRoot);
 	const resolveIncomingAgentModel = (agentName: string): string | undefined =>
 		resolveRuntimeAgentModel(config, agents, agentName);
 	const resolveTaskRouteModelChain = (
@@ -1851,7 +2010,7 @@ async function initializeOpenCodeSwarm(
 		try {
 			const result = await sessionApi.get({
 				path: { id: childSessionID },
-				query: { directory: ctx.directory },
+				query: { directory: bootstrapRoot },
 			});
 			return typeof result?.data?.parentID === 'string' &&
 				result.data.parentID.trim() !== ''
@@ -1889,7 +2048,7 @@ async function initializeOpenCodeSwarm(
 			).catch(() => undefined);
 			if (!parentSessionId) return;
 			const recovered = await recoverPendingCostCorrection(
-				ctx.directory,
+				bootstrapRoot,
 				parentSessionId,
 				rememberedUsage.sessionId,
 				config.pricing,
@@ -1949,14 +2108,14 @@ async function initializeOpenCodeSwarm(
 		resolveIncomingAgentModel,
 		// #2044: scopes + persists the headroom health observation under the
 		// owning project (the chat-transform hook input carries no directory).
-		ctx.directory,
+		bootstrapRoot,
 	);
 	// #2107 §3: the ONE final accounting step (registered after
 	// consolidation in the messages.transform chain).
 	const finalContextAccountingStep = createFinalContextAccountingStep({
 		config,
 		// #2044: scopes the model-limit health observation to this project.
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		// Same seam createContextBudgetHandler consumes: keeps the final
 		// accounting step's model-identity ladder identical to physical
 		// pruning's (agent handoffs included).
@@ -1983,7 +2142,7 @@ async function initializeOpenCodeSwarm(
 	);
 	const systemRenderBoundaryHook = createSystemRenderBoundaryHook();
 	const commandHandler = createSwarmCommandHandler(
-		ctx.directory,
+		bootstrapRoot,
 		agentDefinitionMap,
 		{
 			getActiveAgentName: getActiveReviewAgentName,
@@ -2000,7 +2159,12 @@ async function initializeOpenCodeSwarm(
 		agentDefinitionMap,
 		agents,
 	);
-	const activityHooks = createAgentActivityHooks(config, ctx.directory);
+	const architectMessagesCommandRuleHook = createSwarmCommandSystemRuleHook(
+		agentDefinitionMap,
+		agents,
+		{ surface: 'messages' },
+	);
+	const activityHooks = createAgentActivityHooks(config, bootstrapRoot);
 	// #1821 Workstream B: real-time admission + PRM pattern persistence budgets.
 	// Parsed once at init (pure Zod, no I/O) so the hot hook path reads plain
 	// numbers rather than re-parsing per tool call.
@@ -2013,7 +2177,7 @@ async function initializeOpenCodeSwarm(
 	const prmConfig = config.prm ?? PrmConfigSchema.parse({});
 	const prmHook = createPrmHook(
 		prmConfig,
-		ctx.directory,
+		bootstrapRoot,
 		// #1821 F3: this mapping used to be an inline literal that ANDed
 		// `realtime_admission.enabled` into the producer's `enabled` flag, which
 		// also disabled the hook's durable `appendInsightCandidates` backstop — so
@@ -2030,11 +2194,11 @@ async function initializeOpenCodeSwarm(
 			enabled: true,
 			max_lines: prmConfig.max_trajectory_lines,
 		},
-		ctx.directory,
+		bootstrapRoot,
 	);
 	const delegationGateHooks = createDelegationGateHook(
 		configWithResolvedAutoReview,
-		ctx.directory,
+		bootstrapRoot,
 		agents,
 	);
 	const advisoryInjector = (sessionId: string, message: string) => {
@@ -2051,7 +2215,7 @@ async function initializeOpenCodeSwarm(
 				(config.hooks as Record<string, unknown> | undefined)
 					?.background_subagents === true,
 		},
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		reviewerReceiptOptions: {
 			dispatcher: reviewModelDispatcher,
 			config: autoReviewConfig,
@@ -2092,7 +2256,7 @@ async function initializeOpenCodeSwarm(
 				pendingDelegationsModulePromise = modulePromise;
 			}
 			const module = await modulePromise;
-			await module.maintainBackgroundDelegations(ctx.directory, {
+			await module.maintainBackgroundDelegations(bootstrapRoot, {
 				lockTimeoutMs: 2_000,
 				reason: 'session-close',
 				onLegacyCoderSettlementReconciled:
@@ -2101,13 +2265,13 @@ async function initializeOpenCodeSwarm(
 					backgroundCompletionObserver.notifyLegacyCoderSettlementAdvisoryReplaced,
 			});
 		};
-	const delegationSanitizerHook = createDelegationSanitizerHook(ctx.directory);
+	const delegationSanitizerHook = createDelegationSanitizerHook(bootstrapRoot);
 	// #2486 (D7): the consent-gated training-content capture observer.
 	// Construction performs NO I/O (invariant 1) — consent is read lazily on
 	// the first observation, so an unconsented project pays nothing.
-	const trainingCaptureObserver = createTrainingCaptureObserver(ctx.directory);
+	const trainingCaptureObserver = createTrainingCaptureObserver(bootstrapRoot);
 	const memoryLifecycleHooks = createMemoryLifecycleHooks({
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		config: config.memory,
 		getActiveAgentName: (sessionID) =>
 			sessionID ? swarmState.activeAgent.get(sessionID) : undefined,
@@ -2138,7 +2302,12 @@ async function initializeOpenCodeSwarm(
 				.catch(() => undefined)
 				.then(() =>
 					withTimeout(
-						regenerateMemoryReflectionForInit(ctx.directory, reflectionConfig),
+						bootstrapStateWritesEnabled
+							? regenerateMemoryReflectionForInit(
+									bootstrapRoot,
+									reflectionConfig,
+								)
+							: Promise.resolve(),
 						15_000,
 						new Error('memory reflection startup regeneration exceeded 15s'),
 					),
@@ -2197,7 +2366,7 @@ async function initializeOpenCodeSwarm(
 	const delegationHandler = createDelegationTrackerHook(
 		config,
 		guardrailsConfig.enabled,
-		ctx.directory,
+		bootstrapRoot,
 	);
 	const authorityConfig = AuthorityConfigSchema.parse(config.authority ?? {});
 	const worktreeDirOverride =
@@ -2206,7 +2375,7 @@ async function initializeOpenCodeSwarm(
 		? [worktreeDirOverride]
 		: [];
 	const guardrailsHooks = createGuardrailsHooks(
-		ctx.directory,
+		bootstrapRoot,
 		undefined,
 		guardrailsConfig,
 		authorityConfig,
@@ -2342,7 +2511,7 @@ async function initializeOpenCodeSwarm(
 	// Full-auto intercept: autonomous oversight when full-auto mode is active
 	const fullAutoInterceptHook = createFullAutoInterceptHook(
 		config,
-		ctx.directory,
+		bootstrapRoot,
 	);
 
 	// Full-Auto v2 hooks: permission, input-probe, delegation. Always armed
@@ -2360,22 +2529,22 @@ async function initializeOpenCodeSwarm(
 	//   - full-auto-delegation return check runs alongside.
 	const fullAutoPermissionHook = createFullAutoPermissionHook({
 		config,
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 	});
 	const fullAutoInputProbeHook = createFullAutoInputProbeHook({
 		config,
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 	});
 	const fullAutoDelegationHook = createFullAutoDelegationHook({
 		config,
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 	});
 
 	// CC command intercept: handle Claude Code command interception
 	const ccCommandInterceptHook = createCcCommandInterceptHook({});
 
 	// Issue trace: mode-transition workflow for traced GitHub issues
-	const issueTraceHook = createIssueTraceHook(config, ctx.directory);
+	const issueTraceHook = createIssueTraceHook(config, bootstrapRoot);
 
 	// Watchdog: scope-guard + delegation-ledger
 	const watchdogConfig = WatchdogConfigSchema.parse(config.watchdog ?? {});
@@ -2384,29 +2553,28 @@ async function initializeOpenCodeSwarm(
 		{
 			enabled: watchdogConfig.scope_guard,
 		},
-		ctx.directory,
+		bootstrapRoot,
 		advisoryInjector,
 	);
 	const prWorkflowResponseGate = createPrWorkflowResponseGate({
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		client: ctx.client,
 	});
 	const prWorkflowSessionResolver = createPrWorkflowSessionResolver({
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		client: ctx.client,
 	});
 
 	const delegationLedgerHook = createDelegationLedgerHook(
 		{ enabled: watchdogConfig.delegation_ledger },
-		ctx.directory,
+		bootstrapRoot,
 		advisoryInjector,
 	);
 
 	// Init orphan recovery advisory: surfaces plugin-init orphan reclamation results
 	// to the architect on their next turn via pendingAdvisoryMessages.
-	const initOrphanRecoveryAdvisoryHook = createInitOrphanRecoveryAdvisoryHook(
-		ctx.directory,
-	);
+	const initOrphanRecoveryAdvisoryHook =
+		createInitOrphanRecoveryAdvisoryHook(bootstrapRoot);
 
 	// Self-review advisory hook
 	const selfReviewConfig = SelfReviewConfigSchema.parse(
@@ -2425,7 +2593,7 @@ async function initializeOpenCodeSwarm(
 	// boundaries. Advisory + fire-and-forget — never blocks a tool call.
 	const autoReviewHook = createAutoReviewHook({
 		config: autoReviewConfig,
-		directory: ctx.directory,
+		directory: bootstrapRoot,
 		dispatcher: reviewModelDispatcher,
 		generatedAgentNames: instanceGeneratedAgentNames,
 		agentModelRegistry: reviewAgentModelRegistry,
@@ -2436,7 +2604,7 @@ async function initializeOpenCodeSwarm(
 	const summaryConfig = SummaryConfigSchema.parse(config.summaries ?? {});
 	const toolSummarizerHook = createToolSummarizerHook(
 		summaryConfig,
-		ctx.directory,
+		bootstrapRoot,
 	);
 
 	// v6.17 Knowledge system hooks — fire-and-forget, wrapped in safeHook
@@ -2457,7 +2625,7 @@ async function initializeOpenCodeSwarm(
 				.then(({ runSkillConsolidationFireAndForget }) => {
 					runSkillConsolidationFireAndForget(
 						{
-							directory: ctx.directory,
+							directory: bootstrapRoot,
 							config: skillImproverConfig,
 							source: 'startup',
 							enrichmentQuota: {
@@ -2486,9 +2654,9 @@ async function initializeOpenCodeSwarm(
 	// skill_improver keeps its own proposal quota; curator/micro-reflector
 	// enrichment uses knowledge.enrichment below.
 	const knowledgeCuratorHook = knowledgeConfig.enabled
-		? createKnowledgeCuratorHook(ctx.directory, knowledgeConfig, {
+		? createKnowledgeCuratorHook(bootstrapRoot, knowledgeConfig, {
 				llmDelegateFactory: (sessionID) =>
-					createCuratorLLMDelegate(ctx.directory, 'phase', sessionID),
+					createCuratorLLMDelegate(bootstrapRoot, 'phase', sessionID),
 				enrichmentQuota: {
 					maxCalls: knowledgeConfig.enrichment.max_calls_per_day,
 					window: knowledgeConfig.enrichment.quota_window,
@@ -2497,11 +2665,11 @@ async function initializeOpenCodeSwarm(
 		: undefined;
 	const hivePromoterHook =
 		knowledgeConfig.enabled && knowledgeConfig.hive_enabled
-			? createHivePromoterHook(ctx.directory, knowledgeConfig)
+			? createHivePromoterHook(bootstrapRoot, knowledgeConfig)
 			: undefined;
 	const knowledgeInjectorHook = knowledgeConfig.enabled
 		? createKnowledgeInjectorHook(
-				ctx.directory,
+				bootstrapRoot,
 				knowledgeConfig,
 				config.context_budget?.model_limits ?? {},
 				config.context_budget?.unified_injection_tokens,
@@ -2509,11 +2677,11 @@ async function initializeOpenCodeSwarm(
 		: undefined;
 
 	// v6.18 Steering acknowledgment hook — auto-acknowledges unconsumed steering directives
-	const steeringConsumedHook = createSteeringConsumedHook(ctx.directory);
+	const steeringConsumedHook = createSteeringConsumedHook(bootstrapRoot);
 
 	// v6.18 Agent intelligence hooks — co-change suggestions and dark-matter gap detection
-	const coChangeSuggesterHook = createCoChangeSuggesterHook(ctx.directory);
-	const darkMatterDetectorHook = createDarkMatterDetectorHook(ctx.directory);
+	const coChangeSuggesterHook = createCoChangeSuggesterHook(bootstrapRoot);
+	const darkMatterDetectorHook = createDarkMatterDetectorHook(bootstrapRoot);
 	const slopDetectorHook =
 		config.slop_detector?.enabled !== false
 			? createSlopDetectorHook(
@@ -2524,7 +2692,7 @@ async function initializeOpenCodeSwarm(
 						diffLineThreshold: 200,
 						importHygieneThreshold: 2,
 					},
-					ctx.directory,
+					bootstrapRoot,
 					(sessionId, message) => {
 						const s = swarmState.agentSessions.get(sessionId);
 						if (s) {
@@ -2542,7 +2710,7 @@ async function initializeOpenCodeSwarm(
 						timeoutMs: 30000,
 						triggerAgents: ['coder'],
 					},
-					ctx.directory,
+					bootstrapRoot,
 					(sessionId, message) => {
 						const s = swarmState.agentSessions.get(sessionId);
 						if (s) {
@@ -2561,7 +2729,7 @@ async function initializeOpenCodeSwarm(
 						emergencyThreshold: 80,
 						preserveLastNTurns: 5,
 					},
-					ctx.directory,
+					bootstrapRoot,
 					(sessionId, message) => {
 						const s = swarmState.agentSessions.get(sessionId);
 						if (s) {
@@ -2571,7 +2739,9 @@ async function initializeOpenCodeSwarm(
 				)
 			: null;
 	// v6.18 Session persistence — write state snapshot after each tool call
-	const snapshotWriterHook = createSnapshotWriterHook(ctx.directory);
+	const snapshotWriterHook = bootstrapStateWritesEnabled
+		? createSnapshotWriterHook(bootstrapRoot)
+		: async () => {}; // fail-closed (#2679): per-tool-call snapshot writes disabled
 
 	// Parse automation config (v6.7 feature flags)
 	// Read flags without activating - scaffold only for now
@@ -2588,7 +2758,7 @@ async function initializeOpenCodeSwarm(
 
 	if (automationConfig.mode !== 'manual') {
 		automationManager = createAutomationManager(automationConfig);
-		automationManager.start();
+		if (bootstrapStateWritesEnabled) automationManager.start();
 
 		// v6.7 Task 5.5: Initialize trigger manager (plumbing only, no preflight logic yet)
 		const { PreflightTriggerManager: PTM } = await import(
@@ -2607,7 +2777,7 @@ async function initializeOpenCodeSwarm(
 		const { getSharedAutomationStatusArtifact } = await import(
 			'./background/status-artifact'
 		);
-		const swarmDir = path.resolve(ctx.directory, '.swarm');
+		const swarmDir = path.resolve(bootstrapRoot, '.swarm');
 		const automationStatusArtifactPostInitTask = async () => {
 			try {
 				// Shared per-swarmDir instance: the preflight integration
@@ -2628,37 +2798,44 @@ async function initializeOpenCodeSwarm(
 				});
 			}
 		};
-		postResolutionTasks.push(automationStatusArtifactPostInitTask);
+		if (bootstrapStateWritesEnabled)
+			postResolutionTasks.push(automationStatusArtifactPostInitTask);
 
 		// v6.8 Task 1.1: Wire evidence summary integration
-		if (automationConfig.capabilities?.evidence_auto_summaries === true) {
+		if (
+			automationConfig.capabilities?.evidence_auto_summaries === true &&
+			bootstrapStateWritesEnabled
+		) {
 			const { createEvidenceSummaryIntegration } = await import(
 				'./background/evidence-summary-integration'
 			);
 			createEvidenceSummaryIntegration({
 				automationConfig,
-				directory: ctx.directory,
-				projectDir: ctx.directory,
+				directory: bootstrapRoot,
+				projectDir: bootstrapRoot,
 				summaryFilename: 'evidence-summary.json',
 			});
 			log('Evidence summary integration initialized', {
-				directory: ctx.directory,
+				directory: bootstrapRoot,
 			});
 		}
 
 		// v6.8 Task 2.2: Wire preflight integration
-		if (automationConfig.capabilities?.phase_preflight === true) {
+		if (
+			automationConfig.capabilities?.phase_preflight === true &&
+			bootstrapStateWritesEnabled
+		) {
 			const { createPreflightIntegration } = await import(
 				'./services/preflight-integration'
 			);
 			try {
 				const { manager } = createPreflightIntegration({
 					automationConfig,
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					swarmDir,
 				});
 				preflightTriggerManager = manager;
-				log('Preflight integration initialized', { directory: ctx.directory });
+				log('Preflight integration initialized', { directory: bootstrapRoot });
 			} catch (err) {
 				log('Preflight integration failed to initialize (non-fatal)', {
 					error: err instanceof Error ? err.message : String(err),
@@ -2667,14 +2844,17 @@ async function initializeOpenCodeSwarm(
 		}
 
 		// v6.8 Task 3.2: Wire PlanSyncWorker for plan.json -> plan.md sync
-		if (automationConfig.capabilities?.plan_sync === true) {
+		if (
+			automationConfig.capabilities?.plan_sync === true &&
+			bootstrapStateWritesEnabled
+		) {
 			try {
 				planSyncWorker = new PlanSyncWorker({
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					// Using defaults: debounceMs=300, pollIntervalMs=2000
 				});
 				planSyncWorker.start();
-				log('PlanSyncWorker initialized', { directory: ctx.directory });
+				log('PlanSyncWorker initialized', { directory: bootstrapRoot });
 			} catch (err) {
 				log('PlanSyncWorker failed to initialize (non-fatal)', {
 					error: err instanceof Error ? err.message : String(err),
@@ -2728,17 +2908,40 @@ async function initializeOpenCodeSwarm(
 	// leaves A's registry entry untouched; each instance's cleanupAutomation
 	// removes only its own entry.
 	ensurePrSubscriptionDispatcherInstalled();
-	registerPrMonitorWorkerHandler(ctx.directory, ensurePrMonitorWorkerRunning);
+	registerPrMonitorWorkerHandler(bootstrapRoot, ensurePrMonitorWorkerRunning);
 
 	// Register PR event subscribers for event delivery to active sessions
 	let prEventCleanup: (() => void) | null = null;
+	let prFeedbackLoopRuntimeCleanup: PrFeedbackLoopRuntimeRegistration | null =
+		null;
+	if (isPrFeedbackLoopEnabled(config)) {
+		try {
+			// Pure in-memory registration only. Head polling, agent dispatch, and
+			// all other external work remain event-driven and off the init path.
+			const registration = registerPrFeedbackLoopRuntime({
+				client: ctx.client,
+				directory: ctx.directory,
+				config,
+				agentNames: instanceGeneratedAgentNames,
+				resolveSessionAgent: (sessionID) =>
+					swarmState.activeAgent.get(sessionID) ??
+					getAgentSession(sessionID)?.agentName,
+			});
+			prFeedbackLoopRuntimeCleanup = registration;
+			postResolutionTasks.push(() => registration.promote());
+		} catch (err) {
+			log('[pr-feedback-loop] Runtime registration failed (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
 	// Wake-delivery module handle (prompt mode). Populated only when
 	// pr_monitor is enabled with event_delivery === 'prompt' — same
 	// enabled-gated dynamic-import pattern as the subscribers (invariant 1:
 	// zero added init work when the feature is disabled).
 	let prEventDelivery: {
-		noteSessionIdle: (sessionID: string) => void;
-		unregisterPrEventDelivery: () => void;
+		noteSessionIdle: (sessionID: string, directory: string) => void;
+		unregister: () => void;
 	} | null = null;
 	if (prMonitorConfig.enabled) {
 		try {
@@ -2746,7 +2949,7 @@ async function initializeOpenCodeSwarm(
 				'./background/pr-event-subscribers'
 			);
 			prEventCleanup = registerPrEventSubscribers({
-				directory: ctx.directory,
+				directory: bootstrapRoot,
 				config: prMonitorConfig,
 			});
 		} catch (err) {
@@ -2757,14 +2960,16 @@ async function initializeOpenCodeSwarm(
 		if (prMonitorConfig.event_delivery === 'prompt') {
 			try {
 				const deliveryModule = await import('./background/pr-event-delivery');
-				deliveryModule.registerPrEventDelivery({
+				const registration = deliveryModule.registerPrEventDelivery({
 					client: ctx.client,
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					config: prMonitorConfig,
 				});
+				postResolutionTasks.push(() => registration.promote());
 				prEventDelivery = {
-					noteSessionIdle: deliveryModule.noteSessionIdle,
-					unregisterPrEventDelivery: deliveryModule.unregisterPrEventDelivery,
+					noteSessionIdle: (sessionID, directory) =>
+						deliveryModule.noteSessionIdle(sessionID, directory),
+					unregister: registration,
 				};
 			} catch (err) {
 				log('[pr-monitor] Failed to register wake delivery (non-fatal)', {
@@ -2778,7 +2983,7 @@ async function initializeOpenCodeSwarm(
 	// Cheap to construct; all gating (enabled + auto_subscribe_on_pr_create)
 	// happens inside the hook.
 	const prAutoSubscribeHook = createPrAutoSubscribeHook(
-		ctx.directory,
+		bootstrapRoot,
 		prMonitorConfig,
 	);
 
@@ -2786,10 +2991,10 @@ async function initializeOpenCodeSwarm(
 	// Deferred via the wrapper-owned post-resolution queue (fail-open).
 	if (prMonitorConfig.enabled) {
 		postResolutionTasks.push(() => {
-			void listActiveSubscriptions(ctx.directory)
+			void listActiveSubscriptions(bootstrapRoot)
 				.then((active) => {
 					if (active.length > 0) {
-						ensurePrMonitorWorkerRunning(ctx.directory);
+						ensurePrMonitorWorkerRunning(bootstrapRoot);
 					}
 				})
 				.catch((err) => {
@@ -2819,7 +3024,7 @@ async function initializeOpenCodeSwarm(
 		dashboardDisposed = true;
 		try {
 			closeDashboardServerForRootIfOwner(
-				ctx.directory,
+				bootstrapRoot,
 				dashboardHandleRef.current,
 			);
 		} catch {
@@ -2832,20 +3037,21 @@ async function initializeOpenCodeSwarm(
 		// The expected-handler guard makes a stale dispose arriving after a
 		// same-root re-init a no-op instead of stripping the newer
 		// instance's registration (final-critic follow-up, this round).
-		removePrMonitorWorkerHandler(ctx.directory, ensurePrMonitorWorkerRunning);
+		removePrMonitorWorkerHandler(bootstrapRoot, ensurePrMonitorWorkerRunning);
 		prEventCleanup?.();
-		prEventDelivery?.unregisterPrEventDelivery();
-		markSnapshotCoordinationClosing(ctx.directory);
+		prEventDelivery?.unregister();
+		prFeedbackLoopRuntimeCleanup?.();
+		markSnapshotCoordinationClosing(bootstrapRoot);
 		// #2480: durable-state close: flush queued group-commit writes, then
 		// closeProjectDb (its own best-effort TRUNCATE→PASSIVE checkpoint is
 		// contention-reporting and stays fast, so it is safe on the exit path).
 		try {
-			closeGroupCommitWriter(ctx.directory);
+			closeGroupCommitWriter(bootstrapRoot);
 			// Exit handlers cannot await the retained initialization promise. If it
 			// is still running, leave the handle to OS process teardown rather than
 			// closing it underneath the import transaction.
-			if (getSnapshotCoordinationStatus(ctx.directory).settled) {
-				closeProjectDb(ctx.directory);
+			if (getSnapshotCoordinationStatus(bootstrapRoot).settled) {
+				closeProjectDb(bootstrapRoot);
 			}
 		} catch {
 			// best-effort by contract
@@ -2854,7 +3060,7 @@ async function initializeOpenCodeSwarm(
 	// Register THIS instance's cleanup in the shared once-guarded process
 	// dispatcher's registry (issue #2472 W9) — never process.on directly, which
 	// accumulated one 'exit' listener per init and never removed any.
-	const instanceExitCleanupToken = `${ctx.directory}#${++instanceExitCleanupCounter}`;
+	const instanceExitCleanupToken = `${bootstrapRoot}#${++instanceExitCleanupCounter}`;
 	registerProcessExitCleanupDispatcher();
 	instanceExitCleanups.set(instanceExitCleanupToken, cleanupAutomation);
 
@@ -2873,7 +3079,7 @@ async function initializeOpenCodeSwarm(
 				({ runConfigDoctorWithFixes }) => {
 					// Default to scan-only mode (autoFix=false) for security
 					// Autofix only runs when explicitly enabled via capability
-					return runConfigDoctorWithFixes(ctx.directory, config, enableAutofix)
+					return runConfigDoctorWithFixes(bootstrapRoot, config, enableAutofix)
 						.then((doctorResult) => {
 							if (doctorResult.result.findings.length > 0) {
 								log('Config Doctor ran on startup', {
@@ -2976,7 +3182,7 @@ async function initializeOpenCodeSwarm(
 					const handle = await startDashboardServer({
 						port: dashboardPort,
 						host: '127.0.0.1',
-						directory: ctx.directory,
+						directory: bootstrapRoot,
 					});
 					if (!handle.listening) {
 						// Disable-with-notice (AC3/AC7): the handle + the
@@ -3082,6 +3288,231 @@ async function initializeOpenCodeSwarm(
 		return Promise.resolve();
 	};
 
+	type StagedArchitectGuidance = {
+		sessionID: string;
+		agent: string;
+		system: string[];
+		deferredRealtimeLearningNudges: string[];
+		turnLedgerGeneration?: number;
+		systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+		fenceBudgetReceipt?: InjectionBudgetReceipt;
+		deliveryBudgetReceipts: InjectionBudgetReceipt[];
+	};
+	const stagedArchitectGuidanceByMessages = new WeakMap<
+		object,
+		StagedArchitectGuidance
+	>();
+	const settleDeliveryBudgetReceipts = (
+		receipts: readonly InjectionBudgetReceipt[],
+		action: 'commit' | 'refund',
+	): void => {
+		for (const receipt of receipts) {
+			if (action === 'commit') commitInjectionBudgetReceipt(receipt);
+			else refundInjectionBudgetReceipt(receipt);
+		}
+	};
+
+	/**
+	 * Early messages.transform stage for the session-bound architect path.
+	 * OpenCode invokes messages.transform before system.transform, so the full
+	 * enhancer runs here against a request-local array and is delivered only at
+	 * the tail after the other message consumers have finished.
+	 */
+	const messagesTransformArchitectEnhancerStage = async (
+		_input: unknown,
+		output: MessageArrayLike,
+	): Promise<void> => {
+		const messages = output?.messages;
+		if (!Array.isArray(messages)) return;
+		const mctx = resolveMessageTransformContext(output);
+		const sessionID = mctx.sessionID;
+		if (!sessionID) return;
+		// Compaction is correlated to the immediately following messages pass,
+		// regardless of which agent owns that pass. Consume it before the architect
+		// predicate so a non-architect summary cannot leave a stale suppression that
+		// unexpectedly affects a later architect turn in the same session.
+		const compactionPending = _architectCompactionPending.delete(sessionID);
+		if (!isSessionBoundArchitect(sessionID, mctx.agent) || compactionPending)
+			return;
+
+		const identity = getLiveContextModelIdentity(sessionID);
+		const context = identity
+			? getLiveContextWindow(sessionID, identity)
+			: undefined;
+		const model = identity
+			? {
+					id: identity.modelID,
+					providerID: identity.providerID,
+					limit: context === undefined ? undefined : { context },
+				}
+			: undefined;
+		const stagedOutput: {
+			deliveryBudgetReceipts: InjectionBudgetReceipt[];
+			system: string[];
+			deferredRealtimeLearningNudges: string[];
+			turnLedgerGeneration?: number;
+			systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+			fenceBudgetReceipt?: InjectionBudgetReceipt;
+		} = {
+			system: [] as string[],
+			deliveryBudgetReceipts: [],
+			deferredRealtimeLearningNudges: [] as string[],
+		};
+		const enhancer = architectMessagesEnhancerHook[
+			'experimental.chat.system.transform'
+		] as
+			| ((
+					input: unknown,
+					output: {
+						system: string[];
+						deferredRealtimeLearningNudges?: string[];
+						turnLedgerGeneration?: number;
+						systemEnhancerBudgetReceipt?: InjectionBudgetReceipt;
+						fenceBudgetReceipt?: InjectionBudgetReceipt;
+					},
+			  ) => Promise<void>)
+			| undefined;
+		try {
+			if (typeof enhancer === 'function') {
+				await enhancer({ sessionID, model }, stagedOutput);
+			}
+			const stagedAgent =
+				mctx.agent ??
+				swarmState.activeAgent.get(sessionID) ??
+				swarmState.agentSessions.get(sessionID)?.agentName ??
+				'architect';
+			stagedArchitectGuidanceByMessages.set(messages, {
+				sessionID,
+				agent: stagedAgent,
+				system: stagedOutput.system,
+				deferredRealtimeLearningNudges:
+					stagedOutput.deferredRealtimeLearningNudges ?? [],
+				turnLedgerGeneration: stagedOutput.turnLedgerGeneration,
+				systemEnhancerBudgetReceipt: stagedOutput.systemEnhancerBudgetReceipt,
+				fenceBudgetReceipt: stagedOutput.fenceBudgetReceipt,
+				deliveryBudgetReceipts: stagedOutput.deliveryBudgetReceipts,
+			});
+		} catch {
+			settleDeliveryBudgetReceipts(
+				stagedOutput.deliveryBudgetReceipts,
+				'refund',
+			);
+			if (stagedOutput.systemEnhancerBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.systemEnhancerBudgetReceipt);
+			}
+			if (stagedOutput.fenceBudgetReceipt) {
+				refundInjectionBudgetReceipt(stagedOutput.fenceBudgetReceipt);
+			}
+			// The enhancer is advisory; a failed staging pass must not block the
+			// host's message transform or alter the persisted conversation.
+		}
+	};
+
+	/**
+	 * Late architect delivery stage. Role filtering and the conditional command
+	 * banner operate on the staged strings before one renderable user carrier is
+	 * appended, so downstream message consumers never mistake the staged payload
+	 * for user speech.
+	 */
+	const messagesTransformArchitectEnhancerDeliveryStep = async (
+		_input: unknown,
+		output: MessageArrayLike & {
+			messages?: import('./hooks/system-guidance-carrier.js').GuidanceMessage[];
+		},
+	): Promise<void> => {
+		const messages = output?.messages;
+		if (!Array.isArray(messages)) return;
+		const staged = stagedArchitectGuidanceByMessages.get(messages);
+		if (!staged) return;
+		stagedArchitectGuidanceByMessages.delete(messages);
+
+		let deliveryConfirmed = false;
+		try {
+			const stagedOutput = {
+				system: staged.system,
+				deliveryBudgetReceipts: staged.deliveryBudgetReceipts,
+			};
+			await roleFilterSystemHook['experimental.chat.system.transform'](
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
+				stagedOutput,
+			);
+			await architectMessagesCommandRuleHook(
+				{
+					sessionID: staged.sessionID,
+					agent: staged.agent,
+					expectedGeneration: staged.turnLedgerGeneration,
+				},
+				stagedOutput,
+			);
+			const text = stagedOutput.system
+				.filter((entry) => entry.trim())
+				.join('\n\n');
+			const carrier = appendGuidanceCarrier(
+				messages,
+				'architect-session',
+				text,
+				{ sessionID: staged.sessionID },
+			);
+			// Delivery is considered successful only after the final carrier has
+			// the exact host-renderable user-role shape.
+			if (!deliveredGuidanceDelta(carrier, text)) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+				return;
+			}
+			// Settle reservations immediately after the host-renderable carrier is
+			// confirmed. Later advisory bookkeeping errors must not roll back a
+			// carrier that is already visible to the model.
+			if (staged.systemEnhancerBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+			}
+			if (staged.fenceBudgetReceipt) {
+				commitInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+			}
+			settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'commit');
+			deliveryConfirmed = true;
+			for (const sessionID of staged.deferredRealtimeLearningNudges) {
+				recordRealtimeLearningNudge(sessionID);
+			}
+			const carrierTokens = estimateTokens(messageTextOf(carrier));
+			const stagedTokens = estimateTokens(text);
+			const fenceOverheadTokens = Math.max(0, carrierTokens - stagedTokens);
+			if (fenceOverheadTokens > 0) {
+				if (staged.sessionID && staged.turnLedgerGeneration !== undefined) {
+					recordProducerEmission(
+						staged.sessionID,
+						'guidance-carrier-fence',
+						fenceOverheadTokens,
+						0,
+						'messages',
+						{ expectedGeneration: staged.turnLedgerGeneration },
+					);
+				}
+			}
+		} catch {
+			if (!deliveryConfirmed) {
+				settleDeliveryBudgetReceipts(staged.deliveryBudgetReceipts, 'refund');
+				if (staged.systemEnhancerBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.systemEnhancerBudgetReceipt);
+				}
+				if (staged.fenceBudgetReceipt) {
+					refundInjectionBudgetReceipt(staged.fenceBudgetReceipt);
+				}
+			}
+			// Guidance is fail-open at this boundary; the host still receives the
+			// unmodified real message array.
+		}
+	};
+
 	/**
 	 * messages.transform stage: scan latest architect-authored message for
 	 * KNOWLEDGE_APPLIED / KNOWLEDGE_IGNORED / KNOWLEDGE_CONTRADICTED /
@@ -3096,7 +3527,7 @@ async function initializeOpenCodeSwarm(
 			// (#1849) sessionID from output.messages[].info, not input.
 			const mctx = resolveMessageTransformContext(output as MessageArrayLike);
 			return knowledgeApplicationTransformScan(
-				ctx.directory,
+				bootstrapRoot,
 				output as {
 					messages?: import('./hooks/knowledge-types.js').MessageWithParts[];
 				},
@@ -3122,7 +3553,7 @@ async function initializeOpenCodeSwarm(
 			// (#1849) sessionID from output.messages[].info, not input.
 			const mctx = resolveMessageTransformContext(output as MessageArrayLike);
 			return skillPropagationTransformScan(
-				ctx.directory,
+				bootstrapRoot,
 				output as {
 					messages?: import('./hooks/knowledge-types.js').MessageWithParts[];
 				},
@@ -3160,6 +3591,17 @@ async function initializeOpenCodeSwarm(
 		if (process.env.DEBUG_SWARM)
 			// biome-ignore lint/suspicious/noConsole: DEBUG_SWARM diagnostic output — only fires when explicitly enabled
 			console.error(`[DIAG] messagesTransform DONE`);
+		return Promise.resolve();
+	};
+
+	/** Final request-boundary partition: real conversation first, carriers last. */
+	const messagesTransformGuidanceCarrierOrderStep = (
+		_input: unknown,
+		output: { messages?: GuidanceMessage[] },
+	): Promise<void> => {
+		if (Array.isArray(output?.messages)) {
+			moveGuidanceCarriersToEnd(output.messages);
+		}
 		return Promise.resolve();
 	};
 
@@ -3237,7 +3679,7 @@ async function initializeOpenCodeSwarm(
 			// only and must never block teardown; a future re-init for the
 			// same directory (new system-enhancer instance) un-serves it.
 			try {
-				cancelDeferredMaintenanceScans(ctx.directory);
+				cancelDeferredMaintenanceScans(bootstrapRoot);
 			} catch (err) {
 				log('dispose deferred-scan cancellation failed (non-fatal)', {
 					error: err instanceof Error ? err.message : String(err),
@@ -3264,11 +3706,11 @@ async function initializeOpenCodeSwarm(
 			// the global pool-clearing variant — the module-level pool is shared
 			// process-wide and other projects' handles must survive this
 			// instance's teardown.
-			evictAndClose(ctx.directory);
+			evictAndClose(bootstrapRoot);
 			try {
-				await closeSnapshotCoordinationInitialization(ctx.directory);
-				closeGroupCommitWriter(ctx.directory);
-				closeProjectDb(ctx.directory);
+				await closeSnapshotCoordinationInitialization(bootstrapRoot);
+				closeGroupCommitWriter(bootstrapRoot);
+				closeProjectDb(bootstrapRoot);
 			} catch (err) {
 				log('dispose durable-state close failed (non-fatal)', {
 					error: err instanceof Error ? err.message : String(err),
@@ -3373,7 +3815,7 @@ async function initializeOpenCodeSwarm(
 							childSessionID: eventChildSessionID,
 						});
 						const fullAutoRunState = loadFullAutoRunState(
-							ctx.directory,
+							bootstrapRoot,
 							eventParentSessionID,
 						);
 						if (fullAutoRunState?.runGeneration !== undefined) {
@@ -3456,13 +3898,16 @@ async function initializeOpenCodeSwarm(
 							lifecycleEvent.type === 'session.deleted' ||
 							lifecycleEvent.type === 'session.removed'
 						) {
+							// Exact-owner cleanup: a deleted session can never consume the
+							// one-shot bridge marker, so release it at the terminal event.
+							_architectCompactionPending.delete(sessionID);
 							// Session deletion is an exact-owner terminal boundary. Keep gate
 							// terminalization and receipt cleanup independent and fail-open so a
 							// foreign active gate or unavailable stash inventory cannot undo the
 							// durable owner-state cleanup.
 							try {
 								await terminalizePrWorkflowGateForSession(
-									ctx.directory,
+									bootstrapRoot,
 									sessionID,
 								);
 							} catch {
@@ -3472,7 +3917,7 @@ async function initializeOpenCodeSwarm(
 							}
 							try {
 								const reconciliation = reconcilePrWorkflowCheckoutReceipts(
-									ctx.directory,
+									bootstrapRoot,
 									sessionID,
 								);
 								const summary = await withTimeout(
@@ -3497,7 +3942,9 @@ async function initializeOpenCodeSwarm(
 									'PR workflow checkout receipt reconciliation on session deletion failed or exceeded its event budget (non-fatal)',
 								);
 							}
-							deleteSnapshotSessionRows(ctx.directory, sessionID);
+							if (bootstrapStateWritesEnabled) {
+								deleteSnapshotSessionRows(bootstrapRoot, sessionID);
+							}
 							clearPendingTaskModelRoutesForSession(sessionID);
 							clearSessionActionCircuits(sessionID);
 							clearFullAutoSevereSession(sessionID);
@@ -3509,7 +3956,7 @@ async function initializeOpenCodeSwarm(
 						// maintenance service's own tight lock bound and
 						// fail-open — failures are recorded in the durable
 						// facts ring, never fatal to the event hook.
-						if (backgroundSubagentsEnabled) {
+						if (backgroundSubagentsEnabled && bootstrapStateWritesEnabled) {
 							try {
 								await maintainBackgroundDelegationsOnSessionEvent();
 							} catch {
@@ -3526,7 +3973,7 @@ async function initializeOpenCodeSwarm(
 							const { recoverTerminalLaneReceipts } = await import(
 								'./background/delegation-lifecycle.js'
 							);
-							await recoverTerminalLaneReceipts(ctx.directory);
+							await recoverTerminalLaneReceipts(bootstrapRoot);
 						} catch {
 							// fail-open — recovery must never break the event hook
 						}
@@ -3550,7 +3997,7 @@ async function initializeOpenCodeSwarm(
 						evt?.type === 'session.idle' &&
 						typeof idleSessionID === 'string'
 					) {
-						prEventDelivery.noteSessionIdle(idleSessionID);
+						prEventDelivery.noteSessionIdle(idleSessionID, ctx.directory);
 					}
 				}
 				await backgroundCompletionObserver.event(input);
@@ -4227,6 +4674,9 @@ async function initializeOpenCodeSwarm(
 			undefined,
 			composeHandlers(
 				...[
+					// OpenCode runs messages.transform before system.transform. Stage
+					// session-bound architect guidance against this request's live array.
+					messagesTransformArchitectEnhancerStage,
 					// #2486 (D7): consent-gated training capture (read-only, fail-open).
 					messagesTransformTrainingCaptureStep,
 					// Delegation ledger: inject summary when architect session resumes
@@ -4249,6 +4699,9 @@ async function initializeOpenCodeSwarm(
 					messagesTransformKnowledgeApplicationScanStep,
 					// v2: scan for skill propagation warnings and compliance tracking
 					messagesTransformSkillPropagationScanStep,
+					// Deliver staged architect guidance only after all message consumers
+					// have completed their last-user/last-message scans.
+					messagesTransformArchitectEnhancerDeliveryStep,
 					// Final structure-mutating handler: materialize any remaining
 					// role:'system' entries into user-role guidance carriers (issue
 					// #2526). The pinned host's converter drops role:'system' entries
@@ -4264,8 +4717,11 @@ async function initializeOpenCodeSwarm(
 					// local message array — a rebind never reaches the model. See
 					// `materializeSystemGuidanceInPlace`.
 					messagesTransformSystemGuidanceMaterializeStep,
-					// #2107 §3: final context accounting. Runs AFTER consolidation
-					// (which remains the last STRUCTURE-mutating handler). Read-mostly:
+					// Terminal structure mutation: keep the persisted conversation prefix
+					// stable and move all plugin guidance carriers to the request tail.
+					messagesTransformGuidanceCarrierOrderStep,
+					// #2107 §3: final context accounting. Runs AFTER the terminal carrier
+					// partition (the last STRUCTURE-mutating handler). Read-mostly:
 					// measures the final model-visible surface once, resolves the real
 					// model limit through the same ladder physical pruning uses, records
 					// the snapshot in session state + telemetry, and may prepend ONE
@@ -4297,19 +4753,19 @@ async function initializeOpenCodeSwarm(
 				automationConfig.capabilities?.phase_preflight === true &&
 				preflightTriggerManager
 					? createPhaseMonitorHook(
-							ctx.directory,
+							bootstrapRoot,
 							preflightTriggerManager,
 							undefined,
 							(sessionId) =>
-								createCuratorLLMDelegate(ctx.directory, 'init', sessionId),
+								createCuratorLLMDelegate(bootstrapRoot, 'init', sessionId),
 						)
 					: knowledgeConfig.enabled
 						? createPhaseMonitorHook(
-								ctx.directory,
+								bootstrapRoot,
 								undefined,
 								undefined,
 								(sessionId) =>
-									createCuratorLLMDelegate(ctx.directory, 'init', sessionId),
+									createCuratorLLMDelegate(bootstrapRoot, 'init', sessionId),
 							)
 						: undefined,
 				swarmCommandSystemRuleHook,
@@ -4354,6 +4810,13 @@ async function initializeOpenCodeSwarm(
 		) => {
 			const { sessionID } = (input ?? {}) as { sessionID?: string };
 			if (sessionID) {
+				_architectCompactionPending.delete(sessionID);
+				_architectCompactionPending.set(sessionID, true);
+				capSessionMap(
+					_architectCompactionPending,
+					MAX_TRACKED_ARCHITECT_COMPACTIONS,
+					sessionID,
+				);
 				advanceTurnGeneration(sessionID);
 			}
 			const delegate = compactionHook['experimental.session.compacting'] as
@@ -4406,7 +4869,7 @@ async function initializeOpenCodeSwarm(
 						ensureAgentSession(
 							input.sessionID,
 							ORCHESTRATOR_NAME,
-							ctx.directory,
+							bootstrapRoot,
 						);
 					}
 				}
@@ -4466,7 +4929,7 @@ async function initializeOpenCodeSwarm(
 						halfOpenAfterMs: dispatchProtectionConfig.half_open_after_ms,
 					});
 					await acquireDispatchToken({
-						directory: ctx.directory,
+						directory: bootstrapRoot,
 						ratePerSecond: dispatchProtectionConfig.rate_per_second,
 						burstCapacity: dispatchProtectionConfig.burst_capacity,
 					});
@@ -4493,7 +4956,7 @@ async function initializeOpenCodeSwarm(
 					output as { args?: unknown },
 				);
 				await enforcePrWorkflowToolBefore(
-					ctx.directory,
+					bootstrapRoot,
 					prWorkflowControllerSessionID,
 					normalizeToolName(input.tool) ?? input.tool,
 					prWorkflowToolContext.args ?? undefined,
@@ -4525,7 +4988,7 @@ async function initializeOpenCodeSwarm(
 				//    a critical directive was shown but no ack was recorded.
 				//    In `warn` mode it appends to events.jsonl and returns.
 				await knowledgeApplicationGateBefore(
-					ctx.directory,
+					bootstrapRoot,
 					{
 						// (#1849) tool.execute.before input has no agent/sessionID-derived
 						// agent; use the host-boundary adapter (reads swarmState.activeAgent).
@@ -4549,7 +5012,7 @@ async function initializeOpenCodeSwarm(
 				// before its optional propagation-enabled early return. Calling it once
 				// avoids reopening every referenced skill twice.
 				const skillResult = await skillPropagationGateBefore(
-					ctx.directory,
+					bootstrapRoot,
 					{
 						// (#1849) agent + args via the host-boundary adapter.
 						tool: input.tool,
@@ -4575,7 +5038,7 @@ async function initializeOpenCodeSwarm(
 					const skillSession = ensureAgentSession(
 						input.sessionID,
 						swarmState.activeAgent.get(input.sessionID) ?? ORCHESTRATOR_NAME,
-						ctx.directory,
+						bootstrapRoot,
 					);
 					pushAdvisory(skillSession, skillResult.reason);
 				}
@@ -4599,10 +5062,10 @@ async function initializeOpenCodeSwarm(
 				);
 				const toolBeforeArgs = toolBeforeCtx.args ?? {};
 				const skillAttributionPlanTaskOptions = toTaskIdPlanContextOptions(
-					await loadPlanTaskIdContext(ctx.directory),
+					await loadPlanTaskIdContext(bootstrapRoot),
 				);
 				injectSkillsIntoDelegation(
-					ctx.directory,
+					bootstrapRoot,
 					toolBeforeArgs,
 					skillResult.recommendedSkills,
 					stripKnownSwarmPrefix(
@@ -4632,7 +5095,7 @@ async function initializeOpenCodeSwarm(
 				//    directives + ack contract. Internally fail-open; never blocks.
 				if (knowledgeConfig.enabled) {
 					await injectDelegateDirectivesBefore(
-						ctx.directory,
+						bootstrapRoot,
 						{
 							tool: input.tool,
 							agent: toolBeforeCtx.agent,
@@ -4667,7 +5130,7 @@ async function initializeOpenCodeSwarm(
 					const pressureSession = ensureAgentSession(
 						input.sessionID,
 						swarmState.activeAgent.get(input.sessionID) ?? ORCHESTRATOR_NAME,
-						ctx.directory,
+						bootstrapRoot,
 					);
 					if (!pressureSession.contextPressureWarningSent) {
 						pressureSession.contextPressureWarningSent = true;
@@ -4687,7 +5150,7 @@ async function initializeOpenCodeSwarm(
 				// would strand identity-bound state when a later policy gate throws.
 				if (autoReviewConfig.enabled) {
 					await beginApprovedReviewerScopeLifecycle({
-						directory: ctx.directory,
+						directory: bootstrapRoot,
 						tool: input.tool,
 						args: toolBeforeArgs,
 						parentSessionID: input.sessionID,
@@ -4703,7 +5166,7 @@ async function initializeOpenCodeSwarm(
 				// completions correlate by parent session + call ID; background calls
 				// promote that binding in tool.execute.after.
 				await reserveApprovedPhaseParticipation({
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					tool: input.tool,
 					parentSessionId: input.sessionID,
 					callId: input.callID,
@@ -4809,7 +5272,7 @@ async function initializeOpenCodeSwarm(
 									args: deniedArgs,
 								},
 								deniedMessage,
-								ctx.directory,
+								bootstrapRoot,
 								// Same knob as the successful-call path (issue
 								// #2041 Required 5): prm.max_trajectory_lines.
 								{ maxLines: prmConfig.max_trajectory_lines },
@@ -4964,7 +5427,7 @@ async function initializeOpenCodeSwarm(
 						input.sessionID,
 					);
 					await recordPrFeedbackPushAttemptResult(
-						ctx.directory,
+						bootstrapRoot,
 						{
 							sessionID: pushAttemptSessionID,
 							callID: input.callID,
@@ -4979,7 +5442,7 @@ async function initializeOpenCodeSwarm(
 			}
 			if (autoReviewConfig.enabled && isTaskTool) {
 				await completeReviewerScopeLifecycle({
-					directory: ctx.directory,
+					directory: bootstrapRoot,
 					tool: input.tool,
 					args: afterCtx.args,
 					output,
@@ -5009,7 +5472,7 @@ async function initializeOpenCodeSwarm(
 				if (knowledgeConfig.enabled) {
 					await safeHook(() =>
 						collectDelegateAcksAfter(
-							ctx.directory,
+							bootstrapRoot,
 							{
 								tool: input.tool,
 								sessionID: input.sessionID,
@@ -5022,7 +5485,7 @@ async function initializeOpenCodeSwarm(
 					// parse a returning reviewer's per-ID verdicts into knowledge events.
 					await safeHook(() =>
 						collectReviewerVerdictsAfter(
-							ctx.directory,
+							bootstrapRoot,
 							{
 								tool: input.tool,
 								sessionID: input.sessionID,
@@ -5036,10 +5499,10 @@ async function initializeOpenCodeSwarm(
 					// transcript. Quota-gated; classification-only without an LLM client.
 					await safeHook(() =>
 						microReflectorAfter(
-							ctx.directory,
+							bootstrapRoot,
 							input,
 							output,
-							createCuratorLLMDelegate(ctx.directory, 'phase', input.sessionID),
+							createCuratorLLMDelegate(bootstrapRoot, 'phase', input.sessionID),
 							{
 								maxCalls: knowledgeConfig.enrichment.max_calls_per_day,
 								window: knowledgeConfig.enrichment.quota_window,
@@ -5061,18 +5524,18 @@ async function initializeOpenCodeSwarm(
 				// queue-depth probe, so the non-Task path does no I/O and takes no lock.
 				await safeHook(async () => {
 					const summary = await realtimeAdmissionAfter(
-						ctx.directory,
+						bootstrapRoot,
 						{ tool: input.tool, sessionID: input.sessionID },
 						learningConfig.realtime_admission,
 						async () => {
-							const plan = await loadPlan(ctx.directory).catch(() => null);
+							const plan = await loadPlan(bootstrapRoot).catch(() => null);
 							return {
 								knowledgeConfig,
 								projectName: plan?.title ?? 'unknown',
 								phaseNumber: plan?.current_phase ?? 1,
 								sessionID: input.sessionID,
 								llmDelegate: createCuratorLLMDelegate(
-									ctx.directory,
+									bootstrapRoot,
 									'phase',
 									input.sessionID,
 								),
@@ -5101,7 +5564,7 @@ async function initializeOpenCodeSwarm(
 				// recovered args so the collector can parse subagent_type/prompt.
 				await safeHook(async () => {
 					await collectReviewerReceiptAfter(
-						ctx.directory,
+						bootstrapRoot,
 						{
 							tool: input.tool,
 							sessionID: input.sessionID,
@@ -5142,7 +5605,7 @@ async function initializeOpenCodeSwarm(
 				await safeHook(delegationGateHooks.toolAfter)(input, output);
 				await safeHook(async () => {
 					await observePhaseParticipationToolResult({
-						directory: ctx.directory,
+						directory: bootstrapRoot,
 						tool: input.tool,
 						parentSessionId: input.sessionID,
 						callId: input.callID,
@@ -5211,7 +5674,7 @@ async function initializeOpenCodeSwarm(
 				// Debugging spiral detection
 				try {
 					const spiralMatch = await detectDebuggingSpiral(
-						ctx.directory,
+						bootstrapRoot,
 						input.sessionID,
 					);
 					if (spiralMatch) {
@@ -5221,7 +5684,7 @@ async function initializeOpenCodeSwarm(
 						const spiralResult = await handleDebuggingSpiral(
 							spiralMatch,
 							taskId,
-							ctx.directory,
+							bootstrapRoot,
 						);
 						const session = swarmState.agentSessions.get(input.sessionID);
 						if (session) {
@@ -5290,7 +5753,7 @@ async function initializeOpenCodeSwarm(
 								implementation_summary: agentOutput.slice(0, 500),
 								task_goal: '',
 								final_status: 'completed',
-								directory: ctx.directory,
+								directory: bootstrapRoot,
 							});
 						}
 					} catch {
@@ -5425,7 +5888,7 @@ async function initializeOpenCodeSwarm(
 						.slice(0, 32);
 				}
 				swarmState.activeAgent.set(sessionId, ORCHESTRATOR_NAME);
-				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, ctx.directory);
+				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
 				if (taskSession) {
 					taskSession.delegationActive = false;
@@ -5632,6 +6095,37 @@ async function initializeOpenCodeSwarm(
 							}
 						}
 					}
+					// Seed the model/provider identity before messages.transform. The
+					// system hook later supplies the authoritative context limit; this
+					// bounded identity relay lets the earlier architect adapter select
+					// the same model without inventing a durable prompt state.
+					if (input?.sessionID) {
+						const messageModel = (
+							output as {
+								message?: {
+									model?: {
+										id?: unknown;
+										modelID?: unknown;
+										providerID?: unknown;
+									};
+								};
+							}
+						).message?.model;
+						if (messageModel && typeof messageModel === 'object') {
+							setLiveContextWindow(String(input.sessionID), undefined, {
+								modelID:
+									typeof messageModel.modelID === 'string'
+										? messageModel.modelID
+										: typeof messageModel.id === 'string'
+											? messageModel.id
+											: undefined,
+								providerID:
+									typeof messageModel.providerID === 'string'
+										? messageModel.providerID
+										: undefined,
+							});
+						}
+					}
 					await delegationHandler(input, output);
 
 					// (#1849) Resolve + cache the canonical cohort id once per session
@@ -5642,7 +6136,7 @@ async function initializeOpenCodeSwarm(
 					// unset and callers fall back to readLinkPointer / re-resolve-once.
 					if (input?.sessionID) {
 						try {
-							await cacheCohortIdAtMessage(ctx.directory, input.sessionID);
+							await cacheCohortIdAtMessage(bootstrapRoot, input.sessionID);
 						} catch {
 							/* non-blocking — cache stays unset */
 						}
@@ -5662,7 +6156,7 @@ async function initializeOpenCodeSwarm(
 							const stripped = stripKnownSwarmPrefix(String(input.agent));
 							if (stripped === 'architect') {
 								tickAndMaybeDispatchCadence(
-									ctx.directory,
+									bootstrapRoot,
 									input.sessionID,
 									'architectTurns',
 									config,

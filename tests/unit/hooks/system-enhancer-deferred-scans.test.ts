@@ -42,6 +42,8 @@ import {
 	cancelDeferredMaintenanceScans,
 	createSystemEnhancerHook,
 } from '../../../src/hooks/system-enhancer';
+import { clearTurnLedger } from '../../../src/services/injection-budget';
+import { swarmState } from '../../../src/state';
 import { _internals as coChangeInternals } from '../../../src/tools/co-change-analyzer';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -76,6 +78,20 @@ function makeTransform(directory: string) {
 	) => Promise<void>;
 }
 
+async function runAsKnownCoder(
+	transform: ReturnType<typeof makeTransform>,
+	sessionID: string,
+): Promise<void> {
+	swarmState.activeAgent.set(sessionID, 'coder');
+	try {
+		await transform({ sessionID }, { system: [] });
+	} finally {
+		clearTurnLedger(sessionID);
+		swarmState.liveContextWindows.delete(sessionID);
+		swarmState.activeAgent.delete(sessionID);
+	}
+}
+
 describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 	test('(a) scans do not run during the awaited transform call (check-c5 mirror)', async () => {
 		const dir = canonicalMkdtemp('se-deferred-scan-a-');
@@ -87,7 +103,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		}) as typeof realDetectDarkMatter;
 		try {
 			const transform = makeTransform(dir);
-			await transform({ sessionID: 'se-deferred-a' }, { system: [] });
+			await runAsKnownCoder(transform, 'se-deferred-a');
 
 			// The frozen C5 observables, asserted in the immediately-post-await
 			// state — exactly what repro/check-c5.ts asserts.
@@ -104,6 +120,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 			);
 		} finally {
 			coChangeInternals.detectDarkMatter = realDetectDarkMatter;
+			cancelDeferredMaintenanceScans(dir);
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -118,7 +135,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		}) as typeof realDetectDarkMatter;
 		try {
 			const transform = makeTransform(dir);
-			await transform({ sessionID: 'se-deferred-b' }, { system: [] });
+			await runAsKnownCoder(transform, 'se-deferred-b');
 
 			const materialized = await pollUntil(
 				() =>
@@ -137,6 +154,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 			expect(report).toContain('No hidden couplings detected');
 		} finally {
 			coChangeInternals.detectDarkMatter = realDetectDarkMatter;
+			cancelDeferredMaintenanceScans(dir);
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -157,14 +175,14 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		}) as typeof realDetectDarkMatter;
 		try {
 			const transform = makeTransform(dir);
-			await transform({ sessionID: 'se-deferred-c-1' }, { system: [] });
+			await runAsKnownCoder(transform, 'se-deferred-c-1');
 
 			// Wait until the first deferred scan has STARTED and is parked.
 			const started = await pollUntil(() => detectCalls >= 1, undefined, 10);
 			expect(started).toBe(true);
 
 			// Second transform while the first deferred scan is still pending.
-			await transform({ sessionID: 'se-deferred-c-2' }, { system: [] });
+			await runAsKnownCoder(transform, 'se-deferred-c-2');
 
 			// A wrongly-scheduled duplicate would run scanDocIndex (cached by
 			// now), find dark-matter.md still absent, and call detect again
@@ -183,6 +201,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		} finally {
 			releaseDetect?.();
 			coChangeInternals.detectDarkMatter = realDetectDarkMatter;
+			cancelDeferredMaintenanceScans(dir);
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -197,7 +216,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		}) as typeof realDetectDarkMatter;
 		try {
 			const transform = makeTransform(dir);
-			await transform({ sessionID: 'se-deferred-cancel' }, { system: [] });
+			await runAsKnownCoder(transform, 'se-deferred-cancel');
 
 			// The macrotask is scheduled but has NOT fired yet: registration is
 			// the handler's final synchronous act and only microtasks precede
@@ -213,6 +232,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 			expect(existsSync(join(dir, '.swarm', 'doc-manifest.json'))).toBe(false);
 		} finally {
 			coChangeInternals.detectDarkMatter = realDetectDarkMatter;
+			cancelDeferredMaintenanceScans(dir);
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
@@ -228,7 +248,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 		try {
 			// schedule (instance 1)…
 			const transform1 = makeTransform(dir);
-			await transform1({ sessionID: 'se-deferred-rearm-1' }, { system: [] });
+			await runAsKnownCoder(transform1, 'se-deferred-rearm-1');
 			// …cancel (same-tick guarantee as test (d))…
 			cancelDeferredMaintenanceScans(dir);
 			// …let the cancelled task fire and exit (clears the single-flight
@@ -240,7 +260,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 			// fresh hook, which un-serves the cancelled marker): its normal
 			// schedule path must materialize both artifacts.
 			const transform2 = makeTransform(dir);
-			await transform2({ sessionID: 'se-deferred-rearm-2' }, { system: [] });
+			await runAsKnownCoder(transform2, 'se-deferred-rearm-2');
 			const materialized = await pollUntil(
 				() =>
 					existsSync(join(dir, '.swarm', 'dark-matter.md')) &&
@@ -250,6 +270,7 @@ describe('system-enhancer deferred maintenance scans (#2472 W4 / AC-5)', () => {
 			expect(detectCalls).toBeGreaterThanOrEqual(1);
 		} finally {
 			coChangeInternals.detectDarkMatter = realDetectDarkMatter;
+			cancelDeferredMaintenanceScans(dir);
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});

@@ -214,8 +214,8 @@ describe('sweep cancellation token (review FB-10 round-2 regression)', () => {
 
 	it('stops before the FIRST post-family pass when the token expires after the directory families', async () => {
 		const root = makeRoot('cancel-post-family');
-		// familiesFor() currently yields 13 directory families, so polls
-		// 1..13 are the family-loop polls; poll 14 is the first post-family
+		// familiesFor() currently yields 14 directory families, so polls
+		// 1..14 are the family-loop polls; poll 15 is the first post-family
 		// pass (checkout-preparation artifacts). The token allows exactly the
 		// family polls and expires there — pinning the round-2 cancellation
 		// boundary before later post-family passes.
@@ -231,7 +231,7 @@ describe('sweep cancellation token (review FB-10 round-2 regression)', () => {
 		let polls = 0;
 		const result = await runRetentionSweep(root, {
 			now: NOW,
-			shouldContinue: () => ++polls <= 13,
+			shouldContinue: () => ++polls <= 14,
 		});
 
 		expect(result.errors.sweep_cancelled).toContain(

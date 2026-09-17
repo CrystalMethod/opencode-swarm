@@ -620,6 +620,8 @@ export const AUTO_REVIEW_V8_BURN_IN_DECISION: AutoReviewBurnInDecision = {
 export interface AutoReviewReleaseContext {
 	packageVersion?: string;
 	burnInDecision?: AutoReviewBurnInDecision;
+	/** Defaults profile (#2504): 'conservative' pins the pre-flip (v7) defaults and wins over the release gate. */
+	preset?: string;
 }
 
 function hasApprovedAutoReviewBurnIn(
@@ -637,6 +639,10 @@ function hasApprovedAutoReviewBurnIn(
 function autoReviewEnabledByRelease(
 	context: AutoReviewReleaseContext = {},
 ): boolean {
+	// Conservative preset (#2504): restores the pre-flip v7 default regardless
+	// of the release major — checked before the release gate so the preset
+	// always wins when no explicit key is set.
+	if (context.preset === 'conservative') return false;
 	const version = context.packageVersion ?? packageJson.version;
 	const major = Number.parseInt(version.split('.')[0] ?? '', 10);
 	return (
@@ -647,6 +653,18 @@ function autoReviewEnabledByRelease(
 		)
 	);
 }
+
+/**
+ * Lowest-precedence base layer applied by buildConfigWithMeta when
+ * `preset === 'conservative'` (#2504): the frozen v7 values for every
+ * config-level flipped surface. Extend ONLY alongside a governed flip entry in
+ * the DEFAULT_FLIPS table (src/services/config-doctor.ts) and the inventory
+ * (docs/defaults-governance.md); every key here is overridable by an explicit
+ * user/project key.
+ */
+export const CONSERVATIVE_PRESET_BASE: Readonly<Record<string, unknown>> = {
+	auto_review: { enabled: false },
+};
 
 const AutoReviewFinalConfigSchema = z.object({
 	on_phase_complete: z.boolean().default(true),
@@ -3647,6 +3665,20 @@ export const PluginConfigSchema = z.object({
 		.default(1)
 		.describe(
 			'Config format version for the migration table. Increment when fields are deprecated. Distinct from knowledge.schema_version.',
+		),
+
+	// Defaults profile (#2504 — governed v8 defaults-flip frame). Absent or
+	// "default" applies the governed v8 defaults (release-gated); "conservative"
+	// restores the pre-flip (v7) defaults for every flipped surface via
+	// CONSERVATIVE_PRESET_BASE, applied as the lowest-precedence layer in
+	// buildConfigWithMeta so an explicit user key always wins. The field MUST
+	// stay optional (no `.default(...)`) so "absent" is distinguishable from an
+	// explicit "default" and existing configs are untouched.
+	preset: z
+		.enum(['default', 'conservative'])
+		.optional()
+		.describe(
+			'Defaults profile: "default" applies the governed v8 defaults; "conservative" restores the pre-flip (v7) defaults for every flipped surface (#2504).',
 		),
 
 	// Legacy: Per-agent overrides (default swarm)

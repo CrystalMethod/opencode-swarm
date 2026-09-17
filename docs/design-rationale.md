@@ -26,7 +26,12 @@ Swarm adds the discipline that LLMs lack.
 - Conflict resolution hell
 - Non-reproducible results
 
-**Swarm's approach**: One agent at a time. Always.
+**Swarm's approach**: serial by default — with one governed exception. Since
+v7.132.0 (#1674, PR #1966) new plans default to parallel-first execution for
+PROVABLY file-disjoint task groups only; the delegation gate enforces the
+serial fallback automatically whenever scopes overlap or are unknown. The
+conservative preset (`preset: "conservative"`, #2504) restores fully serial
+new plans. Concurrency is earned by proof, not assumed.
 
 ```
 WRONG:  Agent1 ──┐
@@ -34,6 +39,7 @@ WRONG:  Agent1 ──┐
         Agent3 ──┘
 
 RIGHT:  Agent1 → Agent2 → Agent3 → Consistent result
+        (or: provably file-disjoint agents in parallel, gate-enforced)
 ```
 
 Slower? Yes. Working code? Also yes.
@@ -294,20 +300,23 @@ Architect respects dependencies. Won't start 2.2 until 2.1 is complete.
   "automation": {
     "mode": "manual",  // Default: conservative, full control
     "capabilities": {
-      "plan_sync": false,
+      "plan_sync": true,
       "phase_preflight": false,
       "config_doctor_on_startup": false,
       "config_doctor_autofix": false,
-      "evidence_auto_summaries": false,
-      "decision_drift_detection": false
+      "evidence_auto_summaries": true,
+      "decision_drift_detection": true
     }
   }
 }
 ```
 
+(The `capabilities` values above are the actual schema defaults — read-only
+capabilities default on; anything that writes or auto-runs defaults off.)
+
 **Why this works:**
 - **Progressive rollout:** Start with `manual`, enable features as needed
-- **Explicit opt-in:** Every automation feature has a feature flag (all default false)
+- **Per-capability flags:** every automation capability has its own feature flag, individually defaulted (read-only capabilities default on; anything that writes or auto-runs — `phase_preflight`, `config_doctor_on_startup`, `config_doctor_autofix` — defaults off). Governed default changes are inventoried with evidence and kill switches in `docs/defaults-governance.md` (#2504).
 - **Fail-safe defaults:** Nothing auto-runs unless explicitly enabled
 - **User control:** Architect chooses when to enable automation
 - **Reversible:** Disable mode or specific capabilities anytime

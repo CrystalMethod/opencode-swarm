@@ -192,6 +192,7 @@ function familiesFor(swarmRoot: string, now: number): Family[] {
 			maxAgeDays: 30,
 		}),
 		f('recovery', 'recovery', { maxAgeDays: 30 }),
+		f('pr-feedback-evidence', 'pr-feedback-evidence', { maxAgeDays: 30 }),
 	];
 }
 

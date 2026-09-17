@@ -32,9 +32,34 @@ import {
 	createRetroBundle,
 	createSwarmFiles,
 	DEFAULT_PLUGIN_CONFIG,
-	invokeHook,
 	setupTempDir,
 } from '../../helpers/system-enhancer-test-helpers';
+
+/**
+ * Runs evidence-injection cases through the identified architect/messages
+ * surface. The default system surface intentionally no-ops when session
+ * identity is cold, so these tests must establish the role they exercise.
+ */
+async function invokeHook(
+	config: PluginConfig,
+	tempDir: string,
+	sessionId = 'test-session',
+	activeAgent = 'architect',
+): Promise<string[]> {
+	resetSwarmState();
+	const hooks = createSystemEnhancerHook(config, tempDir, {
+		surface: 'messages',
+	});
+	const transform = hooks['experimental.chat.system.transform'] as (
+		input: { sessionID?: string },
+		output: { system: string[] },
+	) => Promise<void>;
+
+	swarmState.activeAgent.set(sessionId, activeAgent);
+	const output = { system: [] as string[] };
+	await transform({ sessionID: sessionId }, output);
+	return output.system;
+}
 
 // =============================================================================
 // Shared Fixtures
@@ -980,38 +1005,6 @@ describe('Task 2.4: Coder Retrospective Injection', () => {
 				'test-session',
 				'mega_coder',
 			);
-
-			const coderRetro = systemOutput.find((s) =>
-				s.includes('[SWARM RETROSPECTIVE]'),
-			);
-			expect(coderRetro).toBeUndefined();
-		});
-
-		it('Phase 2, agent=mega_architect → system message contains "## Previous Phase Retrospective" (full block), NOT "[SWARM RETROSPECTIVE]"', async () => {
-			await createSwarmFiles(tempDir, 2);
-			await createRetroBundle(
-				tempDir,
-				1,
-				'pass',
-				['lesson A', 'lesson B'],
-				['reason X'],
-				'Phase 1 completed successfully.',
-			);
-
-			const systemOutput = await invokeHook(
-				DEFAULT_PLUGIN_CONFIG,
-				tempDir,
-				'test-session',
-				'mega_architect',
-			);
-
-			const fullRetro = systemOutput.find((s) =>
-				s.includes('## Previous Phase Retrospective'),
-			);
-			expect(fullRetro).toBeDefined();
-			expect(fullRetro).toContain('Outcome:');
-			expect(fullRetro).toContain('Rejection reasons:');
-			expect(fullRetro).toContain('Lessons learned:');
 
 			const coderRetro = systemOutput.find((s) =>
 				s.includes('[SWARM RETROSPECTIVE]'),

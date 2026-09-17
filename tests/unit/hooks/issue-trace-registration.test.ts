@@ -21,7 +21,7 @@ describe('Issue Trace Hook Registration in src/index.ts', () => {
 	describe('Hook instance creation', () => {
 		it('src/index.ts creates issueTraceHook via createIssueTraceHook', () => {
 			expect(indexSource).toContain(
-				'createIssueTraceHook(config, ctx.directory)',
+				'createIssueTraceHook(config, bootstrapRoot)',
 			);
 		});
 	});

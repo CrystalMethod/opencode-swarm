@@ -29,6 +29,7 @@ describe('role-filter production wiring', () => {
 		input: { sessionID?: string },
 		output: { system?: string[] },
 	) => Promise<void>;
+	let registeredTransformInvoked = false;
 
 	beforeAll(async () => {
 		tempDir = canonicalMkdtemp('swarm-role-filter-wiring-');
@@ -57,9 +58,27 @@ describe('role-filter production wiring', () => {
 		swarmState.agentSessions.delete(SESSION_ID);
 	});
 
+	async function drainDeferredMaintenanceScans(): Promise<void> {
+		const docManifest = path.join(tempDir, '.swarm', 'doc-manifest.json');
+		const darkMatter = path.join(tempDir, '.swarm', 'dark-matter.md');
+		const deadline = performance.now() + 5000;
+		while (
+			!(existsSync(docManifest) && existsSync(darkMatter)) &&
+			performance.now() < deadline
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	}
+
 	afterAll(async () => {
-		restoreIndexInternals();
-		await rm(tempDir, { recursive: true, force: true });
+		try {
+			if (registeredTransformInvoked) {
+				await drainDeferredMaintenanceScans();
+			}
+		} finally {
+			restoreIndexInternals();
+			await rm(tempDir, { recursive: true, force: true });
+		}
 	});
 
 	// These assertions read the WHOLE `output.system` array rather than a single
@@ -102,6 +121,7 @@ describe('role-filter production wiring', () => {
 		];
 		const output = { system: [...seeded] };
 
+		registeredTransformInvoked = true;
 		await transform({ sessionID: SESSION_ID }, output);
 
 		// Exact, measured behaviour: of the six seeded entries the filter keeps
@@ -139,6 +159,7 @@ describe('role-filter production wiring', () => {
 		const seeded = ['base', '[FOR: architect] design context'];
 		const output = { system: [...seeded] };
 
+		registeredTransformInvoked = true;
 		await transform({ sessionID: SESSION_ID }, output);
 
 		expect(seededOnly(output.system, seeded)).toEqual(seeded);
@@ -150,6 +171,7 @@ describe('role-filter production wiring', () => {
 		const seeded = ['base', '[FOR: architect] critical context'];
 		const output = { system: [...seeded] };
 
+		registeredTransformInvoked = true;
 		await transform({ sessionID: SESSION_ID }, output);
 
 		expect(seededOnly(output.system, seeded)).toEqual(seeded);

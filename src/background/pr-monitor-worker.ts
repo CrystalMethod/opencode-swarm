@@ -737,6 +737,7 @@ export class PrMonitorWorker {
 				sub,
 				prevChecks,
 				current.status.statusCheckRollup,
+				current.status.headRefOid,
 				events,
 			);
 		}
@@ -772,6 +773,7 @@ export class PrMonitorWorker {
 						body: comment.body,
 						createdAt: comment.createdAt,
 						isReviewComment: comment.isReviewComment,
+						headRefOid: current.status.headRefOid,
 					},
 				});
 			}
@@ -791,6 +793,7 @@ export class PrMonitorWorker {
 					prNumber: sub.prNumber,
 					repoFullName: sub.repoFullName,
 					prUrl: sub.prUrl,
+					headRefOid: current.status.headRefOid,
 					mergeableState: current.merge.mergeable,
 				},
 			});
@@ -804,6 +807,7 @@ export class PrMonitorWorker {
 					prNumber: sub.prNumber,
 					repoFullName: sub.repoFullName,
 					prUrl: sub.prUrl,
+					headRefOid: current.status.headRefOid,
 					mergeableState: current.merge.mergeable,
 				},
 			});
@@ -825,6 +829,7 @@ export class PrMonitorWorker {
 						prNumber: sub.prNumber,
 						repoFullName: sub.repoFullName,
 						prUrl: sub.prUrl,
+						headRefOid: current.status.headRefOid,
 						reviewDecision: current.review.reviewDecision,
 					},
 				});
@@ -838,6 +843,7 @@ export class PrMonitorWorker {
 						prNumber: sub.prNumber,
 						repoFullName: sub.repoFullName,
 						prUrl: sub.prUrl,
+						headRefOid: current.status.headRefOid,
 						reviewDecision: current.review.reviewDecision,
 					},
 				});
@@ -869,6 +875,7 @@ export class PrMonitorWorker {
 					prNumber: sub.prNumber,
 					repoFullName: sub.repoFullName,
 					prUrl: sub.prUrl,
+					headRefOid: current.status.headRefOid,
 				},
 			});
 			snapshotUpdates.isWatching = false;
@@ -894,6 +901,7 @@ export class PrMonitorWorker {
 			status: string;
 			conclusion: string | null;
 		}>,
+		currentHeadRefOid: string,
 		events: Array<{ type: AutomationEventType; payload: unknown }>,
 	): void {
 		let allPassed = true;
@@ -924,6 +932,7 @@ export class PrMonitorWorker {
 					prNumber: sub.prNumber,
 					repoFullName: sub.repoFullName,
 					prUrl: sub.prUrl,
+					headRefOid: currentHeadRefOid,
 					failedChecks: newlyFailedChecks,
 				},
 			});
@@ -941,6 +950,7 @@ export class PrMonitorWorker {
 						repoFullName: sub.repoFullName,
 						prUrl: sub.prUrl,
 						checkCount: currentChecks.length,
+						headRefOid: currentHeadRefOid,
 					},
 				});
 			}
