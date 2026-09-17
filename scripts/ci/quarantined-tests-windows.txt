@@ -12,10 +12,11 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 3 active entries (pr-monitor-status.test.ts per issue #1982,
-# win32-wrapper-runtime.test.ts per issue #2185, and
-# completion-observer-coder.test.ts per issue #2692 — the issue #1729 debt
-# itself remains paid down; see the entries below).
+# STATUS: 5 active entries (pr-monitor-status.test.ts per issue #1982,
+# win32-wrapper-runtime.test.ts per issue #2185, completion-observer-coder.test.ts
+# per issue #2692, and pr-subscriptions-checkpoint.test.ts +
+# recall-evaluation-profile-isolation.test.ts per issue #2812 — the issue
+# #1729 debt itself remains paid down; see the entries below).
 #
 # History: this list previously held 9 Windows-only failures. They were fixed
 # in issue #1729 by a combination of:
