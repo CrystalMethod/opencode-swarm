@@ -469,7 +469,7 @@ phase2() {
 }
 
 phase25() {
-  local file="$trace/02-reproduction.md" header ac row found class check argv expect pre post notes reason checkpoint manifest_path diff_path duplicate_check rows
+  local file="$trace/02-reproduction.md" header ac row found class check argv expect pre post notes reason checkpoint manifest_path diff_path duplicate_check rows summary_ids
   if is_already_fixed; then rule_ok obe-subset; return; fi
   check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
   trace_path_safe "$file" file || return
@@ -497,6 +497,19 @@ $rows
 EOF
     [ "$found" -eq 1 ] && rule_ok "acceptance-$ac" || rule_bad "acceptance-$ac" "must appear exactly once"
   done < <(acceptance_ids)
+  summary_ids="$(acceptance_ids)"
+  while IFS=$'\t' read -r row_ac _ _ _ _ _ _ _; do
+    [ -n "$row_ac" ] || continue
+    found=0
+    while IFS= read -r ac; do
+      [ "$row_ac" = "$ac" ] && found=1
+    done <<EOF
+$summary_ids
+EOF
+    [ "$found" -eq 1 ] || rule_bad "acceptance-$row_ac" "table row is absent from issue summary"
+  done <<EOF
+$rows
+EOF
   duplicate_check="$(printf '%s\n' "$rows" | awk -F '\t' '{ if (++seen[$3] > 1 && duplicate == "") duplicate = $3 } END { if (duplicate != "") print duplicate }')"
   check="$duplicate_check"
   [ -z "$check" ] && rule_ok acceptance-check-ids || rule_bad acceptance-check-ids "duplicate check id $check"
@@ -592,17 +605,93 @@ manifest_has_check_id() {
     END { for (pair in latest) if (latest[pair] == want) found = 1; exit !found }
   ' "$manifest"
 }
+
+# Validate one recorded replay block against the acceptance table and the
+# checkpoint manifest. Presence of `### Check C1` alone is not evidence: the
+# block must carry the base/head SHA, exit status, result, verdict, and the two
+# replay logs produced by `repro-check.sh run`. The result pair is checked
+# against the row's class and the post-fix column, so a fabricated narrative
+# cannot turn Phase 4 green without real replay artifacts.
+phase4_check_evidence() {
+  local file="$1" id="$2" rows row class expect post block base_line head_line
+  local base_sha head_sha manifest_base base_exit head_exit base_result head_result verdict
+  rows="$(acceptance_table_rows "$trace/02-reproduction.md")" || {
+    rule_bad acceptance-table "missing or malformed acceptance table"
+    return
+  }
+  row="$(printf '%s\n' "$rows" | awk -F '\t' -v want="$id" '$3 == want { print; exit }')"
+  [ -n "$row" ] || { rule_bad "check-evidence-$id" "missing acceptance row"; return; }
+  IFS=$'\t' read -r _ class _ _ expect _ post _ <<EOF
+$row
+EOF
+  [ "$post" = GREEN ] || rule_bad "post-fix-$id" "acceptance row must record post-fix GREEN"
+
+  block="$(normalize_terminal_cr "$file" | awk -v marker="### Check $id" '
+    ($0 == marker || index($0, marker " (") == 1) { found += 1; in_block = 1; next }
+    in_block && /^### Check / { exit }
+    in_block { print }
+    END { if (found != 1) exit 1 }
+  ')" || {
+    rule_bad "check-evidence-$id" "must contain exactly one complete replay block"
+    return
+  }
+  base_line="$(printf '%s\n' "$block" | awk '/^- base: / { print; exit }')"
+  head_line="$(printf '%s\n' "$block" | awk '/^- head: / { print; exit }')"
+  verdict="$(printf '%s\n' "$block" | awk '/^- verdict: / { sub(/^- verdict: /, ""); print; exit }')"
+  if ! printf '%s\n' "$base_line" | grep -Eq "^- base: [0-9a-f]{40} exit=[0-9]+ result=(RED|GREEN|ERROR|FAIL|TIMEOUT|VACUOUS) log=repro/${id}\.base\.log$"; then
+    rule_bad "base-evidence-$id" "missing bound base SHA, exit, result, or replay log"
+    return
+  fi
+  if ! printf '%s\n' "$head_line" | grep -Eq "^- head: [0-9a-f]{40} exit=[0-9]+ result=(RED|GREEN|ERROR|FAIL|TIMEOUT|VACUOUS) log=repro/${id}\.head\.log$"; then
+    rule_bad "head-evidence-$id" "missing bound head SHA, exit, result, or replay log"
+    return
+  fi
+  [ "$verdict" = PASS ] || { rule_bad "verdict-$id" "replay verdict must be PASS"; return; }
+
+  base_sha="$(printf '%s\n' "$base_line" | sed -E 's/^- base: ([0-9a-f]{40}).*/\1/')"
+  head_sha="$(printf '%s\n' "$head_line" | sed -E 's/^- head: ([0-9a-f]{40}).*/\1/')"
+  base_exit="$(printf '%s\n' "$base_line" | sed -E 's/.* exit=([0-9]+) result=.*/\1/')"
+  head_exit="$(printf '%s\n' "$head_line" | sed -E 's/.* exit=([0-9]+) result=.*/\1/')"
+  base_result="$(printf '%s\n' "$base_line" | sed -E 's/.* result=([^ ]+) log=.*/\1/')"
+  head_result="$(printf '%s\n' "$head_line" | sed -E 's/.* result=([^ ]+) log=.*/\1/')"
+  manifest_base="$(awk -F '\t' -v want="$id" 'NR > 1 && $6 == want { print $9; exit }' "$manifest")"
+  [ "$base_sha" = "$manifest_base" ] || rule_bad "base-identity-$id" "base SHA does not match checkpoint manifest"
+  [ "$head_sha" = "$(git rev-parse HEAD)" ] || rule_bad "head-identity-$id" "head SHA does not match current HEAD"
+  case "$class" in
+    DISCRIMINATING) expected_base=RED; expected_head=GREEN; ;;
+    PRESERVING) expected_base=GREEN; expected_head=GREEN; ;;
+    NEW-SURFACE) expected_base=ERROR; expected_head=GREEN; ;;
+    *) rule_bad "class-$id" "invalid executable class"; return ;;
+  esac
+  [ "$base_result" = "$expected_base" ] || rule_bad "base-result-$id" "expected $expected_base, recorded $base_result"
+  [ "$head_result" = "$expected_head" ] || rule_bad "head-result-$id" "expected $expected_head, recorded $head_result"
+  [ "$head_exit" -eq 0 ] || rule_bad "head-exit-$id" "post-fix replay must exit 0"
+  case "$class" in
+    DISCRIMINATING|NEW-SURFACE)
+      [ "$base_exit" -ne 0 ] || rule_bad "base-exit-$id" "pre-fix replay must be nonzero"
+      if ! trace_path_safe "$trace/repro/$id.base.log" file || ! grep -Eq -- "$expect" "$trace/repro/$id.base.log"; then
+        rule_bad "base-log-$id" "pre-fix replay log is missing or does not match expect"
+      fi
+      ;;
+    PRESERVING) [ "$base_exit" -eq 0 ] || rule_bad "base-exit-$id" "preserving replay must be green at base" ;;
+  esac
+  trace_path_safe "$trace/repro/$id.base.log" file || rule_bad "base-log-$id" "missing or unsafe replay log"
+  trace_path_safe "$trace/repro/$id.head.log" file || rule_bad "head-log-$id" "missing or unsafe replay log"
+  rule_ok "check-evidence-$id"
+}
 phase4() {
-  local file="$trace/08-test-results.md" id manifest check_block_count deferred_clean_count
+  local file="$trace/08-test-results.md" id manifest check_block_count deferred_clean_count rows row class
   check_headings "$file" '## Regression Test' '## Acceptance check results' '## Quality Checks' '## Deferred-Work Scan' '## Verification Reasoning' '## Checkpoint verification'
   manifest="$trace/repro/checkpoint.manifest"
   trace_path_safe "$trace/02-reproduction.md" file || { rule_bad acceptance-source "missing or unsafe reproduction artifact"; return; }
   trace_path_safe "$trace/repro" dir || { rule_bad recurrence-manifest "missing or unsafe repro directory"; return; }
   trace_path_safe "$manifest" file || { rule_bad recurrence-manifest "missing or unsafe checkpoint manifest"; return; }
+  rows="$(acceptance_table_rows "$trace/02-reproduction.md")" || { rule_bad acceptance-table "missing or malformed acceptance table"; return; }
   while IFS= read -r id; do
     [ -z "$id" ] || {
-      check_block_count="$(normalize_terminal_cr "$file" | grep -cFx "### Check $id" || true)"
-      [ "${check_block_count:-0}" -gt 0 ] && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"
+      check_block_count="$(normalize_terminal_cr "$file" | awk -v marker="### Check $id" '$0 == marker || index($0, marker " (") == 1 { count++ } END { print count + 0 }')"
+      [ "${check_block_count:-0}" -eq 1 ] && rule_ok "check-block-$id" || rule_bad "check-block-$id" "must appear exactly once"
+      [ "${check_block_count:-0}" -eq 1 ] && phase4_check_evidence "$file" "$id"
     }
   done < <(executable_ids)
   while IFS= read -r id; do

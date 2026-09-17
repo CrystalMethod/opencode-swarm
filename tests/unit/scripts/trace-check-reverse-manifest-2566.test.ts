@@ -107,7 +107,9 @@ function makeRepo(): { repo: string; trace: string; tree: string } {
 			'command',
 			'## Reproduction Verdict',
 			'red',
+			'## Acceptance checks',
 			'| AC | class | check | argv | expect | pre-fix | post-fix | notes |',
+			'|---|---|---|---|---|---|---|---|',
 			'| AC1 | DISCRIMINATING | C1 | trace-check | nonzero | RED | GREEN | reverse manifest |',
 		].join('\n'),
 	);

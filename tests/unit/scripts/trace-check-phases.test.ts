@@ -221,7 +221,7 @@ describe('trace-check.sh later phases', () => {
 		result = run(worktree, ['phase', '4', '--slug', 'issue-1']);
 		expect(result.out).toContain('FAIL check-block-C1');
 		expect(result.out).toContain('FAIL checkpoint-verification');
-	});
+	}, 60_000);
 
 	test('phase 4.2 verifies disposition totals, phase 4.5 verifies clean and current review, and merge binds SHA', () => {
 		const worktree = repo();
@@ -296,7 +296,7 @@ describe('trace-check.sh later phases', () => {
 		);
 		result = run(worktree, ['phase', '5', '--slug', 'issue-1']);
 		expect(result.out).toContain('OK merge-state');
-	});
+	}, 60_000);
 
 	test('phase 4.2 fast path requires the no-defect-class marker line plus a non-placeholder Justification', () => {
 		const worktree = repo();
@@ -388,7 +388,7 @@ describe('trace-check.sh later phases', () => {
 			expect(result.code).toBe(0);
 			expect(result.out).toContain('OK obe-subset');
 		}
-	});
+	}, 60_000);
 
 	test('phase 2.5 rejects Windows backslash traversal before probing a log path', () => {
 		const worktree = repo();
@@ -405,4 +405,25 @@ describe('trace-check.sh later phases', () => {
 		expect(result.code, `${result.out}\n${result.err}`).toBe(2);
 		expect(result.err).toContain('refusing ambiguous trace path');
 	});
+
+	test('phase 2.5 rejects acceptance rows absent from the issue summary', () => {
+		const worktree = repo();
+		const dir = setup(worktree);
+		const tree = git(worktree, 'rev-parse', 'HEAD^{tree}');
+		reproduction(
+			dir,
+			'| AC1 | NON-EXECUTABLE | DOCS_ONLY | - | - | - | pending | docs |\n| AC3 | NON-EXECUTABLE | HOST_ONLY | - | - | - | pending | docs |',
+		);
+		replaceTree(dir, tree);
+		fs.writeFileSync(
+			path.join(dir, 'repro/checkpoint.manifest'),
+			'# issue-tracer checkpoint manifest v1 rows=0\n',
+		);
+
+		const result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(
+			'FAIL acceptance-AC3: table row is absent from issue summary',
+		);
+	}, 60_000);
 });

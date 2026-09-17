@@ -58,6 +58,7 @@ function toPosixRelative(root: string, file: string): string {
 
 const MAX_WALK_ENTRIES = 20_000;
 const MAX_SHELL_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_TOTAL_SHELL_BYTES = 64 * 1024 * 1024;
 const EXCLUDED_PATH_SEGMENTS = new Set([
 	'.git',
 	'.swarm',
@@ -569,6 +570,7 @@ export async function main(
 	}
 	const readErrors: string[] = [];
 	const files: Array<{ file: string; content: string }> = [];
+	let totalShellBytes = 0;
 	for (const file of discovery.files) {
 		if (path.resolve(file) === path.resolve(selfShim)) continue;
 		const read = readBoundedShellFile(file, canonicalRepoRoot);
@@ -576,6 +578,14 @@ export async function main(
 			readErrors.push(read.error ?? `could not read ${file}`);
 			continue;
 		}
+		const fileBytes = Buffer.byteLength(read.content, 'utf8');
+		if (totalShellBytes + fileBytes > MAX_TOTAL_SHELL_BYTES) {
+			readErrors.push(
+				`aggregate shell input exceeds ${MAX_TOTAL_SHELL_BYTES} bytes; portability scan is incomplete`,
+			);
+			break;
+		}
+		totalShellBytes += fileBytes;
 		files.push({ file: toPosixRelative(repoRoot, file), content: read.content });
 	}
 	const result = evaluateBashPortability(files);

@@ -61,6 +61,34 @@ is_inside_root() {
   case "/$1/" in */../*|*/./*) return 1;; esac
   return 0
 }
+
+# Resolve a repository-relative path without following a symlink or junction in
+# any component. `-f`, `cp`, and `git hash-object` all follow links, so checking
+# only the parent directory is insufficient: a link leaf could copy or freeze
+# bytes from outside the repository and later make verification report a false
+# match. Use the canonical repository root as the walk anchor so a symlinked
+# checkout path does not weaken the component checks.
+repo_path_safe() {
+  local rel="$1" current part
+  is_inside_root "$rel" || return 1
+  current="$root_real"
+  while IFS= read -r part; do
+    [ -n "$part" ] || continue
+    current="$current/$part"
+    [ -L "$current" ] && return 1
+  done <<EOF
+$(printf '%s' "$rel" | tr '/' '\n')
+EOF
+  [ -e "$current" ] || return 1
+  return 0
+}
+
+repo_file_safe() {
+  local rel="$1"
+  repo_path_safe "$rel" || return 1
+  [ -f "$root_real/$rel" ] || return 1
+  return 0
+}
 issue_traces_base="$root_real/.agents/issue-traces"
 
 # Path-only preflight: trace_dir (default or --trace-dir override) must be
@@ -384,8 +412,8 @@ run_one() {
 copy_path() {
   local rel="$1" source target source_dir
   is_inside_root "$rel" || { echo "repro-check: --copy path must be repo-relative without ..: $rel" >&2; exit 2; }
-  source="$root/$rel"
-  [ -e "$source" ] || { echo "repro-check: --copy path does not exist: $rel" >&2; exit 2; }
+  repo_path_safe "$rel" || { echo "repro-check: --copy path must remain inside repo without symlink components: $rel" >&2; exit 2; }
+  source="$root_real/$rel"
   source_dir="$(cd "$(dirname "$source")" && pwd -P)"
   case "$source_dir" in "$root_real"|"$root_real"/*) ;; *) echo "repro-check: --copy path resolves outside repo: $rel" >&2; exit 2;; esac
   target="$worktree/$rel"
@@ -639,7 +667,7 @@ do_checkpoint() {
   for path in "$@"; do
     is_inside_root "$path" || { echo "repro-check: checkpoint path must be repo-relative without ..: $path" >&2; exit 2; }
     has_bad_path "$path" && { echo "repro-check: checkpoint path cannot contain control bytes" >&2; exit 2; }
-    [ -f "$root/$path" ] || { echo "repro-check: checkpoint path must be a file: $path" >&2; exit 2; }
+    repo_file_safe "$path" || { echo "repro-check: checkpoint path must be a regular in-repository file: $path" >&2; exit 2; }
     # Re-running the sanctioned `checkpoint` command on an already-frozen pair
     # would append a fresh CHECKPOINT row that last-writer-wins re-baselines a
     # weakened check to green in do_verify. Refuse it: superseding a frozen
@@ -656,9 +684,9 @@ do_checkpoint() {
     fi
     # Always capture the current bytes for a new pair. Do not inherit the blob
     # from another check that happens to use the same path.
-    blob="$(git hash-object "$root/$path")"
+    blob="$(git hash-object "$root_real/$path")"
     mode="$(git ls-files -s -- "$path" | awk 'NR==1 {print $1}')"
-    [ -n "$mode" ] || { [ -x "$root/$path" ] && mode=100755 || mode=100644; }
+    [ -n "$mode" ] || { [ -x "$root_real/$path" ] && mode=100755 || mode=100644; }
     seq=$((seq + 1))
     # $seq is post-increment, so it is also the new total row count that the
     # header must record. Row and header land together in one temp-file swap.
@@ -686,8 +714,10 @@ do_verify() {
       echo "repro-check: checkpoint manifest contains an unsafe path or invalid check id" >&2
       exit 2
     fi
-    [ -f "$root/$path" ] || { echo "CHANGED $path $old MISSING"; changed=1; continue; }
-    new="$(git hash-object "$root/$path")"
+    if ! repo_file_safe "$path"; then
+      echo "CHANGED $path $old MISSING"; changed=1; continue
+    fi
+    new="$(git hash-object "$root_real/$path")"
     if [ "$old" = "$new" ]; then echo "OK $path ($check_id)"; else echo "CHANGED $path $old $new ($check_id)"; changed=1; fi
   done < <(awk -F '\t' '
     NR > 1 {

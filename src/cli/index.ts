@@ -369,7 +369,7 @@ function snapshotCleanupTarget(
 	canonicalTarget: string,
 	configuredDir: string,
 	kind: CleanupTargetKind,
-): fs.Stats | null {
+): { parent: fs.Stats; target: fs.Stats } | null {
 	const canonicalConfigDir = safeRealpathSync(configuredDir, configuredDir);
 	const canonicalParent = safeRealpathSync(
 		path.dirname(canonicalTarget),
@@ -392,7 +392,7 @@ function snapshotCleanupTarget(
 		const stat = cleanupFs.lstatSync(canonicalTarget);
 		if (stat.isSymbolicLink()) return null;
 		if (kind === 'file' ? !stat.isFile() : !stat.isDirectory()) return null;
-		return stat;
+		return { parent: parentStat, target: stat };
 	} catch {
 		return null;
 	}
@@ -417,7 +417,7 @@ function removeBoundCleanupTarget(
 					((fs.constants as { O_NOFOLLOW?: number }).O_NOFOLLOW ?? 0),
 			);
 			const opened = cleanupFs.fstatSync(descriptor);
-			if (!sameFileIdentity(before, opened)) {
+			if (!sameFileIdentity(before.target, opened)) {
 				return { ok: false, error: 'target changed while being opened' };
 			}
 		}
@@ -432,7 +432,8 @@ function removeBoundCleanupTarget(
 		);
 		if (
 			immediatelyBefore === null ||
-			!sameFileIdentity(before, immediatelyBefore)
+			!sameFileIdentity(before.parent, immediatelyBefore.parent) ||
+			!sameFileIdentity(before.target, immediatelyBefore.target)
 		) {
 			return { ok: false, error: 'target or parent changed before deletion' };
 		}
@@ -592,6 +593,31 @@ function loadJson<T>(filepath: string): T | null {
 	}
 }
 
+function isOpenCodeConfig(value: unknown): value is OpenCodeConfig {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+type ConfigLoad =
+	| { kind: 'missing' }
+	| { kind: 'invalid' }
+	| { kind: 'non-object' }
+	| { kind: 'object'; value: OpenCodeConfig };
+
+function loadConfigObject(filepath: string): ConfigLoad {
+	if (!fs.existsSync(filepath)) return { kind: 'missing' };
+	try {
+		const content = fs.readFileSync(filepath, 'utf-8');
+		const normalized = normalizeJsonc(content);
+		if (normalized === null) return { kind: 'invalid' };
+		const parsed: unknown = JSON.parse(normalized);
+		return isOpenCodeConfig(parsed)
+			? { kind: 'object', value: parsed }
+			: { kind: 'non-object' };
+	} catch {
+		return { kind: 'invalid' };
+	}
+}
+
 function saveJson(filepath: string, data: unknown): void {
 	fs.writeFileSync(filepath, `${JSON.stringify(data, null, 2)}\n`, 'utf-8');
 }
@@ -637,12 +663,28 @@ async function install(): Promise<number> {
 	// Keep the pre-install parsed state so we can detect "no semantic change"
 	// and skip the rewrite entirely (issue #2493: second install must be a
 	// byte-for-byte no-op that preserves user formatting and comments).
-	const originalConfig = loadJson<OpenCodeConfig>(OPENCODE_CONFIG_PATH);
+	const originalConfigLoad = loadConfigObject(OPENCODE_CONFIG_PATH);
+	if (originalConfigLoad.kind === 'non-object') {
+		console.error(
+			'✗ opencode.json must contain a JSON object at the root; refusing to overwrite it.',
+		);
+		return 1;
+	}
+	const originalConfig =
+		originalConfigLoad.kind === 'object' ? originalConfigLoad.value : null;
 	let opencodeConfig: OpenCodeConfig;
 	if (originalConfig) {
 		opencodeConfig = structuredClone(originalConfig);
 	} else {
-		const legacyConfig = loadJson<OpenCodeConfig>(LEGACY_CONFIG_PATH);
+		const legacyConfigLoad = loadConfigObject(LEGACY_CONFIG_PATH);
+		if (legacyConfigLoad.kind === 'non-object') {
+			console.error(
+				'✗ config.json must contain a JSON object at the root; refusing to overwrite it.',
+			);
+			return 1;
+		}
+		const legacyConfig =
+			legacyConfigLoad.kind === 'object' ? legacyConfigLoad.value : null;
 		if (legacyConfig) {
 			console.log(
 				'⚠ Migrating existing config from config.json to opencode.json...',
@@ -950,16 +992,20 @@ export function evictPluginCaches(additionalPaths: readonly string[] = []): {
 		// can report what was actually cleared (issue #2236 RC3 item 3).
 		const versionBeforeDelete = readCachePackageVersion(canonical);
 		try {
-			fs.rmSync(canonical, { recursive: true, force: true });
+			const removal = removeBoundCleanupTarget(
+				canonical,
+				path.dirname(canonical),
+				'directory',
+			);
 			// rmSync with `force: true` does not throw when the delete fails to
 			// fully take (e.g. a file locked by another process on Windows, or a
 			// permission-denied leaf inside the tree) — it silently no-ops
 			// instead of throwing. Verify the postcondition rather than trusting
 			// "no thrown error" (issue #2236 RC3 item 2: deletion was reported,
 			// never verified).
-			if (fs.existsSync(canonical)) {
+			if (!removal.ok) {
 				failed.push(
-					`${canonical} (rmSync returned without error, but the path still exists)`,
+					`${canonical} (${removal.error ?? 'target changed before deletion'})`,
 				);
 				continue;
 			}
@@ -1002,12 +1048,16 @@ export function evictLockFiles(): { cleared: string[]; failed: string[] } {
 			continue;
 		}
 		try {
-			fs.unlinkSync(canonical);
+			const removal = removeBoundCleanupTarget(
+				canonical,
+				path.dirname(canonical),
+				'file',
+			);
 			// Verify the postcondition rather than trusting "unlinkSync didn't
 			// throw" (issue #2236 RC3 item 2, same rationale as evictPluginCaches).
-			if (fs.existsSync(canonical)) {
+			if (!removal.ok) {
 				failed.push(
-					`${canonical} (unlinkSync returned without error, but the path still exists)`,
+					`${canonical} (${removal.error ?? 'target changed before deletion'})`,
 				);
 				continue;
 			}
