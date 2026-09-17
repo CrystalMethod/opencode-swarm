@@ -190,6 +190,17 @@ staleness. Every other outcome settles exactly as age alone would, and says why:
 | The response carried an `error` | `probe-error` |
 | The response carried no `data` | `probe-no-data` |
 
+The collection-time `pending_liveness` **advisory** shares that probe core and
+therefore most of those reasons, with two advisory-only additions
+(issue #2815): `advisory-unavailable` (the advisory's own accounting failed
+after the past-threshold set was known) and `probe-skipped-no-budget` (the
+caller's probe budget was already exhausted — typically an expired `wait:
+true` deadline or a `timeout_ms: 0` snapshot — so **no probe was attempted at
+all**). `probe-skipped-no-budget` is an observer-side budget artifact: it says
+nothing about the lane's session, and it must never be read as the host being
+unable to reach it. `probe-timeout` remains reserved for a probe that actually
+ran and hit its deadline.
+
 Where it surfaces: `probe_retained_lanes` on the `complete_pr_workflow` response,
 `probe_status` on both tool responses, `probedAliveLanes` / `probeStatus` on the
 `pr_workflow_lanes_presumed_stale` record, and `probeRetainedLanes` /

@@ -2586,11 +2586,19 @@ export interface PrWorkflowPendingLaneLiveness {
 	/**
 	 * Why the reading is not a real host status: the probe's own failure reasons,
 	 * plus `'advisory-unavailable'` when the advisory's surrounding accounting
-	 * failed unexpectedly after the past-threshold set was already known — so an
-	 * emitted entry always distinguishes "degraded" from a missing probe, and an
-	 * ABSENT `pending_liveness` keeps meaning "no lane was past the threshold".
+	 * failed unexpectedly after the past-threshold set was already known, and
+	 * `'probe-skipped-no-budget'` when the caller's probe budget was already
+	 * exhausted so NO probe was attempted at all — an observer-side budget
+	 * artifact that says nothing about child-session liveness (issue #2815 kept
+	 * this distinct from `'probe-timeout'`, which means a probe DID run and hit
+	 * its deadline) — so an emitted entry always distinguishes "degraded" from a
+	 * missing probe, and an ABSENT `pending_liveness` keeps meaning "no lane was
+	 * past the threshold".
 	 */
-	degradedReason?: PrWorkflowLaneProbeDegradedReason | 'advisory-unavailable';
+	degradedReason?:
+		| PrWorkflowLaneProbeDegradedReason
+		| 'advisory-unavailable'
+		| 'probe-skipped-no-budget';
 }
 
 /**
@@ -2651,8 +2659,14 @@ export async function collectPrWorkflowPendingLaneLiveness(
 			// No caller budget left to spend on the diagnostic: report the
 			// degradation per lane instead of spending host time the caller
 			// did not grant (the same budgeting `getLaneCollectionReadiness`
-			// applies to its status calls).
-			return pastThreshold.map((record) => degraded(record, 'probe-timeout'));
+			// applies to its status calls). The reason is deliberately NOT
+			// 'probe-timeout' — no probe was attempted, so this is an
+			// observer-side budget artifact that carries no information about
+			// the child sessions (issue #2815: the shared label invited
+			// orchestrators to read a budget artifact as a host failure).
+			return pastThreshold.map((record) =>
+				degraded(record, 'probe-skipped-no-budget'),
+			);
 		}
 		const probe = await probePrWorkflowLaneSessionStatusTypes(
 			directory,
