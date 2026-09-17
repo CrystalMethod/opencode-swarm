@@ -24,6 +24,7 @@ trace_root_real=""
 usage() { echo "usage: trace-check.sh {tree-id|handshake|phase <phase> --slug <slug> [--trace-dir <dir>]|merge --slug <slug>}" >&2; exit 2; }
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
 trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+has_bad_control() { LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'; }
 
 # Markdown trace artifacts are commonly authored on Windows.  Keep every
 # line-oriented parser below independent of the file's record separator while
@@ -38,7 +39,9 @@ normalize_terminal_cr() { sed 's/\r$//' "$1"; }
 # the root cannot redirect reads outside it.
 validate_trace_dir() {
   local candidate="$1" check parent resolved
+  has_bad_control "$candidate" && { echo "trace-check: --trace-dir cannot contain control bytes" >&2; exit 2; }
   candidate="$(to_shell_path "$candidate")"
+  has_bad_control "$candidate" && { echo "trace-check: --trace-dir cannot contain control bytes" >&2; exit 2; }
   case "$candidate/" in
     "$root_real/.agents/issue-traces/"*) ;;
     *) echo "trace-check: --trace-dir must be inside .agents/issue-traces" >&2; exit 2;;

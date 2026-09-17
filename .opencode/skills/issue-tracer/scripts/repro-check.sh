@@ -61,6 +61,10 @@ issue_traces_base="$root_real/.agents/issue-traces"
 # filesystem. Runs before any mkdir/write, so a caller cannot point the
 # script at an arbitrary path via that flag.
 validate_trace_dir_prefix() {
+  has_bad_path "$trace_dir" && {
+    echo "repro-check: --trace-dir cannot contain control bytes" >&2
+    exit 2
+  }
   case "$trace_dir/" in
     "$root"/.agents/issue-traces/*) ;;
     *)

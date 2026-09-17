@@ -72,6 +72,39 @@ function shouldExcludePath(root: string, candidate: string): boolean {
 		.some((segment) => EXCLUDED_PATH_SEGMENTS.has(segment.toLowerCase()));
 }
 
+type ShellEntryType =
+	| 'directory'
+	| 'file'
+	| 'symbolic-link'
+	| 'special'
+	| 'unknown';
+
+interface FileSystemEntryTypeProbe {
+	isDirectory(): boolean;
+	isFile(): boolean;
+	isSymbolicLink(): boolean;
+	isBlockDevice(): boolean;
+	isCharacterDevice(): boolean;
+	isFIFO(): boolean;
+	isSocket(): boolean;
+}
+
+function classifyEntry(entry: FileSystemEntryTypeProbe): ShellEntryType {
+	// Check links before directories so a malformed or platform-specific entry
+	// can never cause the walk to follow a symlink.
+	if (entry.isSymbolicLink()) return 'symbolic-link';
+	if (entry.isDirectory()) return 'directory';
+	if (entry.isFile()) return 'file';
+	if (
+		entry.isBlockDevice() ||
+		entry.isCharacterDevice() ||
+		entry.isFIFO() ||
+		entry.isSocket()
+	)
+		return 'special';
+	return 'unknown';
+}
+
 function walkShFiles(
 	startDir: string,
 	repoRoot: string,
@@ -106,14 +139,33 @@ function walkShFiles(
 			const entry = entries[i];
 			const full = path.join(current, entry.name);
 			if (shouldExcludePath(repoRoot, full)) continue;
-			// Dirent.isDirectory() is deliberately used instead of stat(): a
-			// symlinked directory must not be followed into an unbounded or
-			// unrelated tree.
-			if (entry.isDirectory() && !entry.isSymbolicLink()) {
+			let entryType = classifyEntry(entry);
+			if (entryType === 'unknown') {
+				// Filesystems that do not populate dirent.d_type report every
+				// predicate as false. Resolve those entries with lstat so the
+				// scanner neither drops a shell file nor follows a symlink.
+				try {
+					entryType = classifyEntry(
+						deps.lstatSync ? deps.lstatSync(full) : fs.lstatSync(full),
+					);
+				} catch {
+					errors.push(
+						`could not inspect ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
+					);
+					continue;
+				}
+				if (entryType === 'unknown') {
+					errors.push(
+						`could not classify ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
+					);
+					continue;
+				}
+			}
+			if (entryType === 'directory') {
 				stack.push(full);
 				continue;
 			}
-			if (entry.isFile() && entry.name.endsWith('.sh')) {
+			if (entryType === 'file' && entry.name.endsWith('.sh')) {
 				out.push(full);
 			}
 		}

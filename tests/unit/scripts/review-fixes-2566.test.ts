@@ -359,6 +359,60 @@ describe('repro-check.sh manifest path diagnostics (#2566)', () => {
 	});
 });
 
+describe('trace-dir control-byte diagnostics (#2566)', () => {
+	test('trace-check.sh and repro-check.sh reject controls before echoing the path', () => {
+		const repo = makeRepo('review-fixes-2566-control-trace-dir-');
+		makeTrace(repo, 'issue-control-dir');
+		const base = git(repo, 'rev-parse', 'HEAD');
+		const control = String.fromCharCode(0x1b);
+		const unsafeTrace = `${path.join(
+			repo,
+			'.agents',
+			'issue-traces',
+			'issue-control-dir',
+		)}${control}[31m`;
+
+		const traceCheck = run(TRACE_CHECK, repo, [
+			'phase',
+			'0',
+			'--slug',
+			'issue-control-dir',
+			'--trace-dir',
+			unsafeTrace,
+		]);
+		expect(traceCheck.code, `${traceCheck.out}\n${traceCheck.err}`).toBe(2);
+		expect(traceCheck.err).toContain(
+			'trace-check: --trace-dir cannot contain control bytes',
+		);
+		expect(traceCheck.err).not.toContain(control);
+
+		const reproCheck = run(REPRO_CHECK, repo, [
+			'run',
+			'--base',
+			base,
+			'--class',
+			'PRESERVING',
+			'--id',
+			'C1',
+			'--slug',
+			'issue-control-dir',
+			'--trace-dir',
+			unsafeTrace,
+			'--deps',
+			'none',
+			'--',
+			'bash',
+			'-c',
+			'exit 0',
+		]);
+		expect(reproCheck.code, `${reproCheck.out}\n${reproCheck.err}`).toBe(2);
+		expect(reproCheck.err).toContain(
+			'repro-check: --trace-dir cannot contain control bytes',
+		);
+		expect(reproCheck.err).not.toContain(control);
+	});
+});
+
 describe('trace-init.sh old-Git fallback (#2566)', () => {
 	test('proves the shim rejected --path-format before fallback succeeded', () => {
 		const main = makeRepo('review-fixes-2566-old-git-');

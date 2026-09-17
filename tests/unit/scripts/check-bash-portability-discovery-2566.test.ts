@@ -232,6 +232,70 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 		expect(report).toContain('portability scan is incomplete');
 	});
 
+	test('resolves unknown directory entry types with lstat instead of skipping them', () => {
+		const repo = makeRepo();
+		const scripts = path.join(repo, 'scripts');
+		const unknownShell = path.join(scripts, 'unknown.sh');
+		fs.writeFileSync(unknownShell, '#!/usr/bin/env bash\n');
+		const unknownEntry = {
+			name: 'unknown.sh',
+			isDirectory: () => false,
+			isFile: () => false,
+			isSymbolicLink: () => false,
+			isBlockDevice: () => false,
+			isCharacterDevice: () => false,
+			isFIFO: () => false,
+			isSocket: () => false,
+		} as fs.Dirent;
+		const lstatCalls: string[] = [];
+		const result = discoverShellFiles(repo, 20_000, {
+			readdirSync: (directory) =>
+				directory === scripts
+					? [unknownEntry]
+					: fs.readdirSync(directory, { withFileTypes: true }),
+			lstatSync: (file) => {
+				lstatCalls.push(file);
+				return fs.lstatSync(file);
+			},
+		});
+
+		expect(result.errors).toHaveLength(0);
+		expect(result.files).toContain(unknownShell);
+		expect(lstatCalls).toContain(unknownShell);
+	});
+
+	test('fails closed when an unknown directory entry cannot be inspected', async () => {
+		const repo = makeRepo();
+		const scripts = path.join(repo, 'scripts');
+		const unknownShell = path.join(scripts, 'unknown.sh');
+		fs.writeFileSync(unknownShell, '#!/usr/bin/env bash\n');
+		const unknownEntry = {
+			name: 'unknown.sh',
+			isDirectory: () => false,
+			isFile: () => false,
+			isSymbolicLink: () => false,
+			isBlockDevice: () => false,
+			isCharacterDevice: () => false,
+			isFIFO: () => false,
+			isSocket: () => false,
+		} as fs.Dirent;
+		const report = await runWithDeps(repo, {
+			readdirSync: (directory) =>
+				directory === scripts
+					? [unknownEntry]
+					: fs.readdirSync(directory, { withFileTypes: true }),
+			lstatSync: (file) => {
+				if (file === unknownShell) throw new Error('synthetic lstat failure');
+				return fs.lstatSync(file);
+			},
+		});
+
+		expect(report).toContain(
+			'shell discovery could not inspect scripts/unknown.sh after unknown directory entry type',
+		);
+		expect(report).toContain('portability scan is incomplete');
+	});
+
 	test('canonicalization failure is nonzero and reports an incomplete scan', async () => {
 		const report = await runWithDeps(makeRepo(), {
 			realpathSync: () => {
