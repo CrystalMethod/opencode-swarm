@@ -116,7 +116,7 @@ tests/unit/sandbox/win32-wrapper-runtime.test.ts
 # assertion text exists to drive a root-cause fix. Pre-existing, unrelated
 # to any specific PR. Quarantined per issue #2692; tracked under #1782
 # (test-stability sprint).
-# OWNER: zaxbysauce — issue #2692 (windows-latest-only merge-group flake;
+# OWNER: @zaxbysauce — issue #2692 (windows-latest-only merge-group flake;
 #   single-OS evidence: windows-1 retry-pass, ubuntu-1/macos-1 green)
 # EXPIRY: 2026-10-31 — root-fix the windows git-spawn/observer-timing flake
 #   or renew with an updated criterion. Inside the 14-day grace window

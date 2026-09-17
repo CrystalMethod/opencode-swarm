@@ -63,5 +63,5 @@ None. This is a CI test-skip data change — no runtime, config, or API change.
 - `#1737`/`#1782`/`#2477` (the historic quarantine-debt trackers) are CLOSED;
   live tracking refs are this issue #2692 (per-flake) and #1782 is the sprint
   issue referenced in the entry prose for continuity.
-- The entry carries `# OWNER: zaxbysauce` and `# EXPIRY: 2026-10-31` metadata
+- The entry carries `# OWNER: @zaxbysauce` and `# EXPIRY: 2026-10-31` metadata
   per the issue #2477 grammar; re-add/edit must preserve both lines.

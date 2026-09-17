@@ -23,10 +23,7 @@ import { join } from 'node:path';
 // OWNER/EXPIRY metadata required by Check 7 (issue #2477).
 
 const REPO_ROOT = join(import.meta.dir, '../../../..');
-const GENERAL_LEDGER_PATH = join(
-	REPO_ROOT,
-	'scripts/ci/quarantined-tests.txt',
-);
+const GENERAL_LEDGER_PATH = join(REPO_ROOT, 'scripts/ci/quarantined-tests.txt');
 const MACOS_LEDGER_PATH = join(
 	REPO_ROOT,
 	'scripts/ci/quarantined-tests-macos.txt',
@@ -45,13 +42,14 @@ const COMPLETION_OBSERVER_CODER =
 
 // Mirror ci.yml's active-entry extraction exactly:
 //   grep -vE '^\s*#|^\s*$' scripts/ci/quarantined-tests-<os>.txt
-// (CRLF is normalized first so the assertion holds on any checkout config.)
+// (CRLF is normalized first; no trimming — ci.yml's grep/comm matching is
+// exact, so a whitespace-padded entry must fail here just as it silently
+// fails to exclude in CI.)
 function activeEntries(ledgerPath: string): string[] {
 	const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
 	return raw
 		.split('\n')
-		.filter((line: string) => !/^\s*#/.test(line) && !/^\s*$/.test(line))
-		.map((line: string) => line.trim());
+		.filter((line: string) => !/^\s*#/.test(line) && !/^\s*$/.test(line));
 }
 
 describe('ci.yml integration — quarantine ledger entry for issue #2692 merge-group flake detection', () => {
@@ -90,9 +88,7 @@ describe('ci.yml integration — quarantine ledger entry for issue #2692 merge-g
 		// the flake would keep re-filing. The discovery chain globs
 		// tests/unit/**/*.test.ts, so the on-disk file must exist at exactly
 		// the ledger path relative to the repo root.
-		expect(existsSync(join(REPO_ROOT, COMPLETION_OBSERVER_CODER))).toBe(
-			true,
-		);
+		expect(existsSync(join(REPO_ROOT, COMPLETION_OBSERVER_CODER))).toBe(true);
 	});
 
 	test('the entry block carries OWNER + EXPIRY metadata (issue #2477 Check 7)', () => {
