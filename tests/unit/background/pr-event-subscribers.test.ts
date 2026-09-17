@@ -1,37 +1,153 @@
 /**
- * Phase 1 PR event subscriber registration and advisory formatting tests.
+ * Phase 1 PR Event Subscribers tests.
  *
- * The shared DI harness keeps each test file isolated when Bun co-runs files.
+ * Tests: registerPrEventSubscribers, handlePrEvent, formatAdvisory.
+ * Uses _internals DI seam for full mock isolation â€” no cross-file pollution.
+ *
+ * The _internals seam is added to pr-event-subscribers.ts specifically for
+ * testing: it exposes handlePrEvent, getGlobalEventBus, listActive,
+ * getAgentSession, and log so tests can replace them with mocks.
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
 	_internals,
 	type PrEventSubscriberOptions,
 	registerPrEventSubscribers,
 } from '../../../src/background/pr-event-subscribers';
-import {
-	type MockState,
-	makeConfig,
-	makeMockSession,
-	makeSubscription,
-	restoreInternals,
-	setupMocks,
-	TEST_DIR,
-} from '../../helpers/pr-event-subscribers-shared';
+import type { PrSubscriptionRecord } from '../../../src/background/pr-subscriptions';
+import { acquirePrFeedbackBackgroundLease } from '../../../tests/helpers/pr-feedback-background-lease';
+
+// â”€â”€ Test Fixtures â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const TEST_DIR = path.join(os.tmpdir(), 'pr-event-subscribers-test');
+
+function makeConfig(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+	return {
+		notify_ci_failure: true,
+		notify_new_comments: true,
+		notify_merge_conflict: true,
+		auto_pr_feedback: false,
+		...overrides,
+	};
+}
+
+function makeSubscription(
+	overrides: Partial<PrSubscriptionRecord> = {},
+): PrSubscriptionRecord {
+	const repoFullName = overrides.repoFullName ?? 'owner/repo';
+	const prNumber = overrides.prNumber ?? 42;
+	return {
+		correlationId: 'sess1::owner/repo::42',
+		sessionID: 'sess1',
+		prNumber,
+		repoFullName,
+		prUrl: `https://github.com/${repoFullName}/pull/${prNumber}`,
+		lastCheckedAt: 940_000,
+		isWatching: true,
+		hasUnaddressedEvents: false,
+		status: 'active',
+		createdAt: 880_000,
+		updatedAt: 940_000,
+		errorCount: 0,
+		...overrides,
+	};
+}
+
+// â”€â”€ Mock State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+interface MockState {
+	listActive: ReturnType<typeof mock>;
+	getAgentSession: ReturnType<typeof mock>;
+	readPrWorkflowGateState: ReturnType<typeof mock>;
+	activatePrWorkflow: ReturnType<typeof mock>;
+	enqueuePrFeedbackMonitorEvent: ReturnType<typeof mock>;
+	log: ReturnType<typeof mock>;
+	getGlobalEventBus: ReturnType<typeof mock>;
+	scheduleClearUnaddressed: ReturnType<typeof mock>;
+	busInstance: {
+		subscribe: ReturnType<typeof mock>;
+	};
+}
 
 let mockState: MockState;
 let savedInternals: typeof _internals;
+let releaseBackground: (() => void) | null = null;
 
-beforeEach(() => {
-	({ mockState, savedInternals } = setupMocks());
-});
+function setupMocks(): void {
+	savedInternals = { ..._internals };
 
-afterEach(() => {
-	restoreInternals(savedInternals);
-});
+	mockState = {
+		listActive: mock(() => Promise.resolve([])),
+		getAgentSession: mock(() => undefined),
+		readPrWorkflowGateState: mock(() => Promise.resolve(null)),
+		activatePrWorkflow: mock(() =>
+			Promise.resolve({ mode: 'PR_FEEDBACK', prFeedbackInventory: undefined }),
+		),
+		enqueuePrFeedbackMonitorEvent: mock(() => Promise.resolve(undefined)),
+		log: mock(() => {}),
+		getGlobalEventBus: mock(() => mockState.busInstance),
+		scheduleClearUnaddressed: mock(() => {}),
+		busInstance: {
+			subscribe: mock(() => () => {}),
+		},
+	};
 
-describe('PrEventSubscriberOptions — construction', () => {
+	_internals.listActive = mockState.listActive as typeof _internals.listActive;
+	_internals.getAgentSession =
+		mockState.getAgentSession as typeof _internals.getAgentSession;
+	_internals.readPrWorkflowGateState =
+		mockState.readPrWorkflowGateState as typeof _internals.readPrWorkflowGateState;
+	_internals.activatePrWorkflow =
+		mockState.activatePrWorkflow as typeof _internals.activatePrWorkflow;
+	_internals.enqueuePrFeedbackMonitorEvent =
+		mockState.enqueuePrFeedbackMonitorEvent as typeof _internals.enqueuePrFeedbackMonitorEvent;
+	_internals.log = mockState.log as typeof _internals.log;
+	_internals.getGlobalEventBus =
+		mockState.getGlobalEventBus as typeof _internals.getGlobalEventBus;
+	// No-op the deferred hasUnaddressedEvents clear so these tests never
+	// schedule real timers / store writes.
+	_internals.scheduleClearUnaddressed =
+		mockState.scheduleClearUnaddressed as typeof _internals.scheduleClearUnaddressed;
+}
+
+function restoreInternals(): void {
+	if (savedInternals) {
+		_internals.listActive = savedInternals.listActive;
+		_internals.getAgentSession = savedInternals.getAgentSession;
+		_internals.readPrWorkflowGateState = savedInternals.readPrWorkflowGateState;
+		_internals.activatePrWorkflow = savedInternals.activatePrWorkflow;
+		_internals.enqueuePrFeedbackMonitorEvent =
+			savedInternals.enqueuePrFeedbackMonitorEvent;
+		_internals.log = savedInternals.log;
+		_internals.getGlobalEventBus = savedInternals.getGlobalEventBus;
+		_internals.scheduleClearUnaddressed =
+			savedInternals.scheduleClearUnaddressed;
+	}
+}
+
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/**
+ * Create a mock session object that tracks pendingAdvisoryMessages.
+ */
+function makeMockSession(sessionId: string): {
+	sessionID: string;
+	pendingAdvisoryMessages: string[];
+} {
+	return {
+		sessionID: sessionId,
+		pendingAdvisoryMessages: [],
+	};
+}
+
+// â”€â”€ Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+describe('PrEventSubscriberOptions â€” construction', () => {
 	test('has expected shape', () => {
 		const opts: PrEventSubscriberOptions = {
 			directory: TEST_DIR,
@@ -43,6 +159,20 @@ describe('PrEventSubscriberOptions — construction', () => {
 });
 
 describe('registerPrEventSubscribers', () => {
+	beforeEach(async () => {
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
+		setupMocks();
+	});
+
+	afterEach(() => {
+		try {
+			restoreInternals();
+		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
+		}
+	});
+
 	test('registers subscribers for all enabled event types', () => {
 		const cleanup = registerPrEventSubscribers({
 			directory: TEST_DIR,
@@ -51,7 +181,7 @@ describe('registerPrEventSubscribers', () => {
 
 		// The legacy 3 flags gate 4 event types: notify_merge_conflict also
 		// gates pr.merge.conflict_resolved. The other flags (review/merged/
-		// closed/ci_success) are unset in makeConfig → skipped.
+		// closed/ci_success) are unset in makeConfig â†’ skipped.
 		expect(mockState.busInstance.subscribe).toHaveBeenCalledTimes(4);
 		expect(mockState.busInstance.subscribe).toHaveBeenCalledWith(
 			'pr.ci.failed',
@@ -166,6 +296,20 @@ describe('registerPrEventSubscribers', () => {
 });
 
 describe('formatAdvisory', () => {
+	beforeEach(async () => {
+		releaseBackground = await acquirePrFeedbackBackgroundLease();
+		setupMocks();
+	});
+
+	afterEach(() => {
+		try {
+			restoreInternals();
+		} finally {
+			releaseBackground?.();
+			releaseBackground = null;
+		}
+	});
+
 	const ciFailedPayload = {
 		prNumber: 42,
 		repoFullName: 'owner/repo',

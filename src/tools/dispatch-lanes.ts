@@ -2242,8 +2242,11 @@ export async function executeCollectLaneResults(
  * the no-client path, which previously returned before liveness was ever
  * evaluated. `collectPrWorkflowPendingLaneLiveness` already distinguishes
  * busy/retry from idle/unknown/absent via `hostStatus`, and reports
- * `probe-unavailable` (host client unavailable), `probe-error`, `probe-timeout`,
- * `probe-no-data`, and `advisory-unavailable` via `degradedReason`. These are
+ * `probe-unavailable` (host client unavailable), `probe-error`, `probe-timeout`
+ * (a probe RAN and hit its deadline), `probe-no-data`, `advisory-unavailable`,
+ * and `probe-skipped-no-budget` (issue #2815: the caller's probe budget was
+ * already exhausted, so NO probe was attempted — an observer-side budget
+ * artifact, not a host finding) via `degradedReason`. These are
  * observer diagnostics: none of them may be read as terminal provider failure.
  */
 async function attachPendingLaneLiveness(
@@ -3817,7 +3820,12 @@ async function getLaneCollectionReadiness(
 	statusBudgetMs: number,
 ): Promise<LaneCollectionReadiness> {
 	if (typeof session.status !== 'function') return 'unknown';
-	if (statusBudgetMs <= 0) return 'unknown';
+	// Issue #2815: no silent statusBudgetMs <= 0 pre-check anymore. A zero
+	// budget flows into `withCollectionDeadline`, which records the same
+	// "... exceeded the remaining collect_lane_results budget (0ms)"
+	// diagnostic the sibling messages fetch emits (and throws before invoking
+	// the host call), then this function's catch returns 'unknown' — identical
+	// readiness semantics, symmetric observability.
 	try {
 		const status = await withCollectionDeadline(
 			() => session.status!({ query: { directory } }),

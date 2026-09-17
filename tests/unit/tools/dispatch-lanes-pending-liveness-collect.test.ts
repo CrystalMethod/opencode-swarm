@@ -223,12 +223,66 @@ describe('collect_lane_results surfaces the advisory (issue #2280 Part B)', () =
 				pendingMs: FIVE_MINUTES_MS,
 				hostStatus: 'unknown',
 				stalledSuspect: true,
-				degradedReason: 'probe-timeout',
+				// Issue #2815: the budget was exhausted before any probe was
+				// attempted — a distinct reason from an executed probe timeout.
+				degradedReason: 'probe-skipped-no-budget',
 			},
 		]);
 		// The gate probe was never called: no host round-trip beyond the
 		// caller's (exhausted) budget.
 		expect(statusCalls).toBe(0);
+	});
+
+	test('a zero collection budget surfaces BOTH status- and messages-side (0ms) budget diagnostics in one response (issue #2815 AC5)', async () => {
+		await recordCriticLane('c-zbudget-both', FIVE_MINUTES_MS);
+		let dispatchStatusCalls = 0;
+		let dispatchMessagesCalls = 0;
+		_internals.getSessionOps = () => ({
+			status: async () => {
+				dispatchStatusCalls += 1;
+				return { data: { 'c-zbudget-both': { type: 'busy' } } };
+			},
+			messages: async () => {
+				dispatchMessagesCalls += 1;
+				return { data: [] };
+			},
+		});
+		installGateStatus({ 'c-zbudget-both': { type: 'busy' } });
+
+		const result = await executeCollectLaneResults(
+			{
+				batch_id: 'critic-batch',
+				wait: false,
+				include_pending: true,
+				timeout_ms: 0,
+			},
+			directory,
+		);
+
+		expect(result.pending).toBe(1);
+		// Neither host call may fire: each diagnostic is emitted by the budget
+		// guard before the call it bounds (issue #2815 added no host calls).
+		expect(dispatchStatusCalls).toBe(0);
+		expect(dispatchMessagesCalls).toBe(0);
+		// AC5: the status-side budget skip is surfaced symmetrically with the
+		// messages side — both (0ms) diagnostics coexist in one response.
+		const errors = result.errors ?? [];
+		expect(
+			errors.some(
+				(entry) =>
+					entry.startsWith('session.status for lane session') &&
+					entry.endsWith('(0ms)'),
+			),
+		).toBe(true);
+		expect(
+			errors.some(
+				(entry) =>
+					entry.startsWith('session.messages for lane') &&
+					entry.endsWith('(0ms)'),
+			),
+		).toBe(true);
+		// Alert-only: the lane is untouched on disk.
+		expect(laneStatusOnDisk(directory, 'c-zbudget-both')).toBe('pending');
 	});
 
 	test('the no-client path still runs the liveness advisory (issue #2381)', async () => {
