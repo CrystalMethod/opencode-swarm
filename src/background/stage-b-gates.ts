@@ -58,7 +58,9 @@ import type {
 import {
 	captureWorkspaceSnapshot,
 	changedFilesSinceSnapshot,
+	committedFilesBetween,
 	compareWorkspaceSnapshots,
+	workspaceSnapshotMatches,
 } from './workspace-snapshot.js';
 
 const GATE_EVIDENCE_ROLES = new Set([
@@ -248,23 +250,125 @@ export function validateStageBWorkspace(
 		prHeadSha: record.workspace?.prHeadSha ?? null,
 		resolveCurrentPrHeadSha: record.workspace?.prHeadSha !== null,
 	});
-	const check = compareStageBWorkspace(record, actualWorkspace);
+	const check = compareStageBWorkspace(record, actualWorkspace, directory);
 	return { ...check, ok: !check.stale };
+}
+
+const BARE_TASK_ID = /^\d+(?:\.\d+)*$/;
+
+/**
+ * Derive the declared review-scope file set from a dispatch snapshot's stored
+ * scope string (issue #2814). The delegation gate stores the session's
+ * comma-joined declared coder scope, falling back to the bare task id when
+ * none was declared. Bare task ids, empty fragments, and implausible paths
+ * are dropped individually; an empty result means no derivable scope and the
+ * caller must keep the whole-tree comparison.
+ */
+function deriveScopeFiles(
+	scope: string | null | undefined,
+): Set<string> | null {
+	if (!scope) return null;
+	const files = new Set<string>();
+	for (const fragment of scope.split(',')) {
+		const normalized = normalizeAttributionPath(fragment);
+		if (normalized === null || BARE_TASK_ID.test(normalized)) continue;
+		files.add(normalized);
+	}
+	return files.size > 0 ? files : null;
+}
+
+function scopeDirtySlice(
+	files: readonly string[],
+	scopeFiles: Set<string>,
+): Set<string> {
+	const slice = new Set<string>();
+	for (const file of files) {
+		const normalized = normalizeAttributionPath(file);
+		if (normalized !== null && scopeFiles.has(normalized)) {
+			slice.add(normalized);
+		}
+	}
+	return slice;
 }
 
 export function compareStageBWorkspace(
 	record: BackgroundDelegationRecord,
 	actualWorkspace: BackgroundWorkspaceSnapshot,
+	directory?: string,
 ): { stale: boolean; reason?: string } {
-	// Reviewer/test roles must observe the exact tree they were dispatched
-	// against. A docs agent is different: authoring documentation legitimately
-	// changes the dirty-tree digest. Bind it to the same project, Git HEAD, and
-	// PR head while allowing those expected uncommitted documentation edits.
+	// A docs agent legitimately changes the dirty-tree digest by authoring
+	// documentation. Bind it to the same project, Git HEAD, and PR head while
+	// allowing those expected uncommitted documentation edits.
 	const expectedWorkspace =
 		record.normalizedAgent === 'docs' && record.workspace
 			? { ...record.workspace, dirtyHash: null }
 			: record.workspace;
-	return compareWorkspaceSnapshots(expectedWorkspace, actualWorkspace);
+	if (!expectedWorkspace) return { stale: false };
+	if (record.normalizedAgent === 'docs') {
+		return compareWorkspaceSnapshots(expectedWorkspace, actualWorkspace);
+	}
+	// Reviewer/test roles must observe the tree they were dispatched against —
+	// scoped to the gate's declared review scope (issue #2814): concurrent
+	// activity on OTHER tasks' files (commits, dirt, untracked noise) must not
+	// invalidate a clean Stage B verdict, while any in-scope drift (dirty,
+	// committed, or reverted during the run) still does. When no scope can be
+	// derived, or either snapshot is capture-degraded (null gitHead or
+	// changedFiles), the narrowed legs cannot be computed soundly: fall back to
+	// the strict whole-tree comparison, which never admits MORE than before.
+	const scopeFiles = deriveScopeFiles(expectedWorkspace.scope);
+	const expectedHead = expectedWorkspace.gitHead;
+	const currentHead = actualWorkspace.gitHead;
+	const expectedChanged = expectedWorkspace.changedFiles;
+	const currentChanged = actualWorkspace.changedFiles;
+	if (
+		scopeFiles === null ||
+		expectedHead == null ||
+		currentHead == null ||
+		expectedChanged == null ||
+		currentChanged == null ||
+		directory === undefined
+	) {
+		return compareWorkspaceSnapshots(expectedWorkspace, actualWorkspace);
+	}
+	// Project-root and PR-head identity still bind the whole workspace; only
+	// the tree-state legs narrow. Nulling the two tree fields reuses the
+	// exported matcher for exactly the identity legs.
+	const identity = workspaceSnapshotMatches(
+		{ ...expectedWorkspace, gitHead: null, dirtyHash: null },
+		{ ...actualWorkspace, gitHead: null, dirtyHash: null },
+	);
+	if (!identity.ok) return { stale: true, reason: identity.reason };
+	const committed = committedFilesBetween(directory, expectedHead, currentHead);
+	if (committed === null) {
+		// The in-scope committed slice cannot be proven — fall back to the
+		// whole-tree comparison, which fails closed on a moved head.
+		return compareWorkspaceSnapshots(expectedWorkspace, actualWorkspace);
+	}
+	const committedInScope = committed.filter((file) =>
+		scopeFiles.has(normalizeAttributionPath(file) ?? ''),
+	);
+	if (committedInScope.length > 0) {
+		const shown = committedInScope.slice(0, 5).join(', ');
+		const extra =
+			committedInScope.length > 5
+				? ` (+${committedInScope.length - 5} more)`
+				: '';
+		return {
+			stale: true,
+			reason: `in-scope committed change: ${shown}${extra}`,
+		};
+	}
+	const dispatchDirty = scopeDirtySlice(expectedChanged, scopeFiles);
+	const currentDirty = scopeDirtySlice(currentChanged, scopeFiles);
+	const dirtied = [...currentDirty].filter((file) => !dispatchDirty.has(file));
+	const cleaned = [...dispatchDirty].filter((file) => !currentDirty.has(file));
+	if (dirtied.length > 0 || cleaned.length > 0) {
+		return {
+			stale: true,
+			reason: `in-scope dirty set changed: +[${dirtied.join(', ')}] -[${cleaned.join(', ')}]`,
+		};
+	}
+	return { stale: false };
 }
 
 export async function ingestBackgroundStageBCompletion(args: {

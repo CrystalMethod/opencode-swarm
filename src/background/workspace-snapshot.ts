@@ -2090,6 +2090,32 @@ export async function changedFilesSinceSnapshotAsync(
 	return [...changed];
 }
 
+/**
+ * Repo-relative paths committed between two treeishes. The Stage B freshness
+ * predicate narrows its committed-change leg to the gate's declared review
+ * scope (issue #2814), so it needs the committed file list rather than a
+ * whole-tree identity verdict. Returns null when the diff cannot be proven
+ * (missing head or git failure) so callers can fail closed per their own
+ * policy; an identical-head pair proves no committed change and returns [].
+ */
+export function committedFilesBetween(
+	directory: string,
+	fromHead: string | null,
+	toHead: string | null,
+): string[] | null {
+	if (fromHead === null || toHead === null) return null;
+	if (fromHead === toHead) return [];
+	const committed = runGit(directory, [
+		'diff',
+		'--name-only',
+		'-z',
+		fromHead,
+		toHead,
+	]);
+	if (committed === null) return null;
+	return parseNulPaths(committed);
+}
+
 export function workspaceSnapshotMatches(
 	expected: BackgroundWorkspaceSnapshot | undefined,
 	current: BackgroundWorkspaceSnapshot,
