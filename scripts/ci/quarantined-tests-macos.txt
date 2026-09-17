@@ -64,3 +64,36 @@ tests/unit/utils/bun-compat-exit-first-2530.test.ts
 #   or renew with an updated criterion. After EXPIRY, Check 7 warns for 14
 #   days, then hard-fails on day 15.
 tests/unit/commands/promote-registration.test.ts
+#
+# tests/unit/hooks/pr-feedback-scope-controller.test.ts (issue #2730)
+# ---------------------------------------------------------------------------
+# Tests the PR_FEEDBACK dedicated coder scope controller (8 cases): fails
+# closed before immutable verification settles, authorizes exactly one
+# planless coder Task and enforces its bound files, gives an authenticated
+# synthetic PR-feedback scope precedence over an unrelated plan, gives an
+# authenticated PR-feedback scope precedence over stale plan Stage-A state,
+# invalidates a prepared scope when the feedback revision changes,
+# atomically reserves one PR-feedback declaration when Task calls race,
+# does not consume a replacement declaration after classifying its
+# predecessor, and preserves normal-plan Stage-A rejection without scope
+# or evidence leaks. Flaky on macos-latest merge-group unit-shard 1 only:
+# CI run 34670762927 (merge_group, head 1499a74b, 2026-09-12T03:56:04Z)
+# had Attempt 1 fail and Passed on retry 1 (passed-on-retry flake); sibling
+# macos-latest unit shards 2/4/5/6, all ubuntu-latest unit shards 1-4, and
+# all windows-latest unit shards either ran the file green or did not run
+# it (shard round-robin). The ci.yml retry loop discards attempt-1 output
+# when a retry passes, so no assertion text exists to drive a root-cause
+# fix; the file passes locally (8/8 cases). Pre-existing, unrelated to any
+# specific PR. This is the last remaining issue #2730 candidate without an
+# owning entry: init-rehome.test.ts is quarantined in the general ledger
+# via issue #2660 (PR #2799), bun-compat-exit-first-2530.test.ts in this
+# ledger via issue #2740 (PR #2769), and repository-validation-real-
+# process-2675.test.ts in this ledger via issue #2738 — so this PR adds
+# only this entry and pins the no-duplicate invariant for the other three.
+# Quarantined per issue #2730; tracked under #1782 (test-stability sprint).
+# OWNER: zaxbysauce — issue #2730 (macos-latest-only merge-group flake;
+#   single-OS evidence: macos-1 retry-pass, siblings green)
+# EXPIRY: 2026-10-14 — root-fix the macos-only flake pattern or renew with
+#   an updated criterion. After EXPIRY, Check 7 warns for 14 days, then
+#   hard-fails on day 15.
+tests/unit/hooks/pr-feedback-scope-controller.test.ts
