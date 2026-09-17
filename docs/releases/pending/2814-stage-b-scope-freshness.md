@@ -22,9 +22,10 @@ freshness check for non-docs gate roles to the dispatch snapshot's declared revi
 project-root and PR-head identity legs are unchanged; the tree-state legs become (a) no declared
 scope file appears in the committed diff between the dispatch and current heads, and (b) the set
 of dirty/untracked scope files is identical between the two snapshots. Concurrent activity on
-other tasks' files no longer invalidates a verdict; every form of in-scope drift (newly dirty,
-committed during the run, or dirtied at dispatch and reverted) still does, with scoped stale
-reasons (`in-scope committed change: ...`, `in-scope dirty set changed: ...`). When no scope file
+other tasks' files no longer invalidates a verdict; every form of in-scope path-set drift (a scope
+file newly dirty or dirtied-at-dispatch-then-reverted, or an in-scope committed change between the
+dispatch and current heads) still does, with scoped stale reasons (`in-scope committed change:
+...`, `in-scope dirty set changed: ...`). When no scope file
 can be derived from the stored scope string (bare task id / null), or either snapshot is
 capture-degraded (null `gitHead`/`changedFiles`), the previous whole-tree comparison applies —
 the narrowing never admits more than before. New bounded helper `committedFilesBetween`
@@ -36,6 +37,14 @@ behavior do not auto-recover (the ingestion claim only re-claims `completed`/`in
 records, and maintenance sweeps stale records). After upgrading, re-dispatch the Stage B gates
 for the affected task — a fresh Task call records correctly under concurrent activity. Avoid
 reusing the previous dispatch's session id.
+
+**Known residual (accepted narrowing)**: the narrowed predicate compares the SET of dirty scope
+paths plus the committed diff, not per-file content. An in-scope file that was already dirty at
+dispatch AND is edited mid-run without any commit can slip past the path-set comparison (the
+pre-fix whole-tree `dirtyHash` digest would have flagged it). This requires the scope file to be
+dirty before the gate dispatch and modified again during the run with no intervening commit —
+incompatible with the documented coder-commits-before-Stage-B flow — and is accepted in exchange
+for not invalidating verdicts on other tasks' activity.
 
 **Adjacent gaps confirmed separately (not fixed here)**:
 
