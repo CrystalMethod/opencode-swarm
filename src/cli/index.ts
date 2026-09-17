@@ -405,6 +405,18 @@ function removeBoundCleanupTarget(
 ): { ok: boolean; error?: string } {
 	const before = snapshotCleanupTarget(canonicalTarget, configuredDir, kind);
 	if (before === null) {
+		if (kind === 'file') {
+			try {
+				const target = cleanupFs.lstatSync(canonicalTarget);
+				// Keep the established EISDIR diagnostic for a concrete directory,
+				// while still refusing symlinks and every other validation failure.
+				if (!target.isSymbolicLink() && target.isDirectory()) {
+					return { ok: false, error: 'path is a directory, not a file' };
+				}
+			} catch {
+				// Preserve the generic fail-closed validation error below.
+			}
+		}
 		return { ok: false, error: 'target or parent changed during validation' };
 	}
 
@@ -435,6 +447,16 @@ function removeBoundCleanupTarget(
 			!sameFileIdentity(before.parent, immediatelyBefore.parent) ||
 			!sameFileIdentity(before.target, immediatelyBefore.target)
 		) {
+			if (immediatelyBefore === null && kind === 'file') {
+				try {
+					const target = cleanupFs.lstatSync(canonicalTarget);
+					if (!target.isSymbolicLink() && target.isDirectory()) {
+						return { ok: false, error: 'path is a directory, not a file' };
+					}
+				} catch {
+					// Preserve the generic fail-closed race error below.
+				}
+			}
 			return { ok: false, error: 'target or parent changed before deletion' };
 		}
 		if (kind === 'file') {
