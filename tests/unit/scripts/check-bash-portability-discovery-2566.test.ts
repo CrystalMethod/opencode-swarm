@@ -257,7 +257,7 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 			isSocket: () => false,
 		} as fs.Dirent;
 		const lstatCalls: string[] = [];
-		const result = discoverShellFiles(repo, 20_000, {
+		const result = discoverShellFiles(resolvedRepo, 20_000, {
 			readdirSync: (directory) =>
 				directory === scripts
 					? [unknownEntry]
