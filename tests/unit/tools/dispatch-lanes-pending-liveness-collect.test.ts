@@ -223,7 +223,9 @@ describe('collect_lane_results surfaces the advisory (issue #2280 Part B)', () =
 				pendingMs: FIVE_MINUTES_MS,
 				hostStatus: 'unknown',
 				stalledSuspect: true,
-				degradedReason: 'probe-timeout',
+				// Issue #2815: the budget was exhausted before any probe was
+				// attempted — a distinct reason from an executed probe timeout.
+				degradedReason: 'probe-skipped-no-budget',
 			},
 		]);
 		// The gate probe was never called: no host round-trip beyond the

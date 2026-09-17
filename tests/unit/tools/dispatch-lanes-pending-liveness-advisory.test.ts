@@ -295,13 +295,15 @@ describe('collectPrWorkflowPendingLaneLiveness (issue #2280 Part B)', () => {
 			{ probeBudgetMs: 0 },
 		);
 		expect(statusCalls).toBe(0);
+		// Issue #2815: no probe was attempted, so the reason must NOT claim a
+		// probe timed out — 'probe-timeout' is reserved for a probe that RAN.
 		expect(advisories).toEqual([
 			{
 				laneId: 'critic-1',
 				pendingMs: FIVE_MINUTES_MS,
 				hostStatus: 'unknown',
 				stalledSuspect: true,
-				degradedReason: 'probe-timeout',
+				degradedReason: 'probe-skipped-no-budget',
 			},
 		]);
 	});
