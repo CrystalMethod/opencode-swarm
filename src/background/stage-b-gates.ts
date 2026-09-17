@@ -257,6 +257,19 @@ export function validateStageBWorkspace(
 const BARE_TASK_ID = /^\d+(?:\.\d+)*$/;
 
 /**
+ * Case-fold scope path keys on Windows only (canonicalRootKey precedent):
+ * core.ignorecase lets git report paths with different case than the authored
+ * scope entries, and the freshness predicate must not miss in-scope drift over
+ * casing. Case-sensitive platforms keep exact matching so two files that differ
+ * only by case remain distinct.
+ */
+const SCOPE_CASE_FOLD = process.platform === 'win32';
+
+function scopeMatchKey(normalized: string): string {
+	return SCOPE_CASE_FOLD ? normalized.toLowerCase() : normalized;
+}
+
+/**
  * Derive the declared review-scope file set from a dispatch snapshot's stored
  * scope string (issue #2814). The delegation gate stores the session's
  * comma-joined declared coder scope, falling back to the bare task id when
@@ -272,7 +285,7 @@ function deriveScopeFiles(
 	for (const fragment of scope.split(',')) {
 		const normalized = normalizeAttributionPath(fragment);
 		if (normalized === null || BARE_TASK_ID.test(normalized)) continue;
-		files.add(normalized);
+		files.add(scopeMatchKey(normalized));
 	}
 	return files.size > 0 ? files : null;
 }
@@ -284,7 +297,7 @@ function scopeDirtySlice(
 	const slice = new Set<string>();
 	for (const file of files) {
 		const normalized = normalizeAttributionPath(file);
-		if (normalized !== null && scopeFiles.has(normalized)) {
+		if (normalized !== null && scopeFiles.has(scopeMatchKey(normalized))) {
 			slice.add(normalized);
 		}
 	}
@@ -345,7 +358,7 @@ export function compareStageBWorkspace(
 		return compareWorkspaceSnapshots(expectedWorkspace, actualWorkspace);
 	}
 	const committedInScope = committed.filter((file) =>
-		scopeFiles.has(normalizeAttributionPath(file) ?? ''),
+		scopeFiles.has(scopeMatchKey(normalizeAttributionPath(file) ?? '')),
 	);
 	if (committedInScope.length > 0) {
 		const shown = committedInScope.slice(0, 5).join(', ');

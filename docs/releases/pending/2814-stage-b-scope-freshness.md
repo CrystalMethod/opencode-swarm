@@ -23,12 +23,14 @@ project-root and PR-head identity legs are unchanged; the tree-state legs become
 scope file appears in the committed diff between the dispatch and current heads, and (b) the set
 of dirty/untracked scope files is identical between the two snapshots. Concurrent activity on
 other tasks' files no longer invalidates a verdict; every form of in-scope path-set drift (a scope
-file newly dirty or dirtied-at-dispatch-then-reverted, or an in-scope committed change between the
-dispatch and current heads) still does, with scoped stale reasons (`in-scope committed change:
-...`, `in-scope dirty set changed: ...`). When no scope file
+file newly dirty or dirtied-at-dispatch-then-reverted, a committed rename of an in-scope file, or
+an in-scope committed change between the dispatch and current heads) still does, with scoped stale
+reasons (`in-scope committed change: ...`, `in-scope dirty set changed: ...`). Scope matching is
+case-folded on Windows (`core.ignorecase` can make git report different path case than the authored
+scope entries). When no scope file
 can be derived from the stored scope string (bare task id / null), or either snapshot is
-capture-degraded (null `gitHead`/`changedFiles`), the previous whole-tree comparison applies —
-the narrowing never admits more than before. New bounded helper `committedFilesBetween`
+capture-degraded (null `gitHead`/`changedFiles`), the previous whole-tree comparison applies — that
+fallback never admits more than the pre-fix comparison. New bounded helper `committedFilesBetween`
 (`src/background/workspace-snapshot.ts`) supplies the committed-diff leg through the existing
 bounded git runner.
 
@@ -44,7 +46,10 @@ dispatch AND is edited mid-run without any commit can slip past the path-set com
 pre-fix whole-tree `dirtyHash` digest would have flagged it). This requires the scope file to be
 dirty before the gate dispatch and modified again during the run with no intervening commit —
 incompatible with the documented coder-commits-before-Stage-B flow — and is accepted in exchange
-for not invalidating verdicts on other tasks' activity.
+for not invalidating verdicts on other tasks' activity. Related format limitation: the stored
+scope string is comma-joined, so a filename containing a comma cannot be represented and loses
+scope-narrowed protection (pre-existing scope-string format; a whole-tree fallback applies only
+when no plausible entry remains).
 
 **Adjacent gaps confirmed separately (not fixed here)**:
 

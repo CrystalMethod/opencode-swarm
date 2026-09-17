@@ -2105,9 +2105,15 @@ export function committedFilesBetween(
 ): string[] | null {
 	if (fromHead === null || toHead === null) return null;
 	if (fromHead === toHead) return [];
+	// --no-renames: default rename detection collapses a rename to only its new
+	// path, which would hide the OLD (scope-declared) path from the Stage B
+	// committed-scope filter. Listing both paths keeps a committed rename of an
+	// in-scope file visible to the freshness predicate (PR review 2819-r1
+	// PRR-005).
 	const committed = runGit(directory, [
 		'diff',
 		'--name-only',
+		'--no-renames',
 		'-z',
 		fromHead,
 		toHead,

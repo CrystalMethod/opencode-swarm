@@ -26,6 +26,8 @@ import { compareStageBWorkspace } from '../../../src/background/stage-b-gates';
 import {
 	type BackgroundWorkspaceSnapshot,
 	captureWorkspaceSnapshot,
+	committedFilesBetween,
+	_internals as workspaceSnapshotInternals,
 } from '../../../src/background/workspace-snapshot';
 import { closeProjectDb } from '../../../src/db/project-db';
 import {
@@ -82,7 +84,8 @@ type Concurrent =
 	| 'untracked-out-of-scope'
 	| 'modify-in-scope'
 	| 'commit-in-scope'
-	| 'revert-in-scope-dispatch-dirty';
+	| 'revert-in-scope-dispatch-dirty'
+	| 'rename-in-scope';
 
 async function runScenario(concurrent: Concurrent, enforceReceipts = false) {
 	resetSwarmState();
@@ -131,6 +134,16 @@ async function runScenario(concurrent: Concurrent, enforceReceipts = false) {
 			git(dir, 'commit', '-qm', 'in-scope drift');
 		} else if (concurrent === 'revert-in-scope-dispatch-dirty') {
 			git(dir, 'checkout', '--', IN_SCOPE_FILE);
+		} else if (concurrent === 'rename-in-scope') {
+			// A committed rename of the clean in-scope file must still invalidate
+			// the verdict (PR review 2819-r1 PRR-005): --no-renames makes the
+			// committed diff report the OLD (scope-declared) path too.
+			fs.renameSync(
+				path.join(dir, IN_SCOPE_FILE),
+				path.join(dir, 'src-widget-renamed.ts'),
+			);
+			git(dir, 'add', '-A');
+			git(dir, 'commit', '-qm', 'in-scope rename');
 		}
 		const obs = createBackgroundCompletionObserver({
 			config: { enabled: true },
@@ -188,42 +201,47 @@ describe('stage-b scope freshness — in-scope drift still invalidates', () => {
 		expect(result.gates).not.toContain('reviewer');
 	});
 
+	test('in-scope committed RENAME during the run still rejects the verdict', async () => {
+		const result = await runScenario('rename-in-scope');
+		expect(result.gates).not.toContain('reviewer');
+	});
+
 	test('in-scope file dirtied at dispatch then reverted still rejects', async () => {
 		const result = await runScenario('revert-in-scope-dispatch-dirty');
 		expect(result.gates).not.toContain('reviewer');
 	});
 });
 
-describe('stage-b scope freshness — fail-closed fallbacks', () => {
-	function record(
-		agent: string,
-		scope: string | null,
-	): BackgroundDelegationRecord {
-		return {
-			normalizedAgent: agent,
-			workspace: {
-				directory: '/proj',
-				gitHead: 'head-a',
-				dirtyHash: 'dirty-a',
-				changedFiles: [],
-				prHeadSha: null,
-				scope,
-			},
-		} as unknown as BackgroundDelegationRecord;
-	}
-
-	function current(overrides: Partial<BackgroundWorkspaceSnapshot>) {
-		return {
+function record(
+	agent: string,
+	scope: string | null,
+): BackgroundDelegationRecord {
+	return {
+		normalizedAgent: agent,
+		workspace: {
 			directory: '/proj',
 			gitHead: 'head-a',
 			dirtyHash: 'dirty-a',
 			changedFiles: [],
 			prHeadSha: null,
-			scope: null,
-			...overrides,
-		} as BackgroundWorkspaceSnapshot;
-	}
+			scope,
+		},
+	} as unknown as BackgroundDelegationRecord;
+}
 
+function current(overrides: Partial<BackgroundWorkspaceSnapshot>) {
+	return {
+		directory: '/proj',
+		gitHead: 'head-a',
+		dirtyHash: 'dirty-a',
+		changedFiles: [],
+		prHeadSha: null,
+		scope: null,
+		...overrides,
+	} as BackgroundWorkspaceSnapshot;
+}
+
+describe('stage-b scope freshness — fail-closed fallbacks', () => {
 	test('bare task-id scope falls back to whole-tree semantics (moved head stays stale)', () => {
 		const check = compareStageBWorkspace(
 			record('reviewer', '2.6'),
@@ -258,8 +276,9 @@ describe('stage-b scope freshness — fail-closed fallbacks', () => {
 		const check = compareStageBWorkspace(
 			record('reviewer', IN_SCOPE_FILE),
 			current({ gitHead: 'head-b', dirtyHash: 'dirty-b' }),
-			// No directory: the committed leg cannot run and the whole-tree
-			// fallback still flags the moved head — proving fail-closedness.
+			// No directory: this exercises the directory-missing guard only —
+			// the committedFilesBetween null-on-git-failure leg is covered
+			// separately below (spawnSync seam), not here.
 			undefined,
 		);
 		expect(check.stale).toBe(true);
@@ -274,4 +293,117 @@ describe('stage-b scope freshness — fail-closed fallbacks', () => {
 		// The plausible entry survives; the in-scope newly-dirty file is caught.
 		expect(check.stale).toBe(true);
 	});
+});
+
+describe('stage-b scope freshness — committed-diff null leg and identity legs (2819-r1)', () => {
+	test('committedFilesBetween: identical heads short-circuit, real commits list files, git failure returns null', () => {
+		const dir = makeProject();
+		try {
+			const head1 = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], {
+				encoding: 'utf-8',
+			}).trim();
+			fs.writeFileSync(path.join(dir, 'second.txt'), 'second\n');
+			git(dir, 'add', '-A');
+			git(dir, 'commit', '-qm', 'second');
+			const head2 = execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], {
+				encoding: 'utf-8',
+			}).trim();
+			expect(committedFilesBetween(dir, head1, head1)).toEqual([]);
+			expect(committedFilesBetween(dir, head1, head2)).toContain('second.txt');
+			const notARepo = canonicalMkdtemp('swarm-2814-nogit-');
+			try {
+				expect(committedFilesBetween(notARepo, head1, head2)).toBeNull();
+			} finally {
+				fs.rmSync(notARepo, { recursive: true, force: true, maxRetries: 3 });
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+		}
+	});
+
+	test('committedFilesBetween null (git failure) routes the moved head through the whole-tree fallback', () => {
+		const dir = makeProject();
+		try {
+			const failingSpawn = (() => ({
+				error: new Error('injected git failure'),
+				status: null,
+				stdout: null,
+				stderr: null,
+			})) as unknown as typeof workspaceSnapshotInternals.spawnSync;
+			const original = workspaceSnapshotInternals.spawnSync;
+			workspaceSnapshotInternals.spawnSync = failingSpawn;
+			try {
+				const check = compareStageBWorkspace(
+					record('reviewer', IN_SCOPE_FILE),
+					current({ gitHead: 'head-b' }),
+					dir,
+				);
+				// The narrowed committed leg cannot run; the whole-tree fallback
+				// must fail closed on the moved head (reason proves which leg).
+				expect(check.stale).toBe(true);
+				expect(check.reason?.startsWith('gitHead changed')).toBe(true);
+			} finally {
+				workspaceSnapshotInternals.spawnSync = original;
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+		}
+	});
+
+	test('identity leg: narrowed predicate ignores whole-tree dirtyHash drift when heads match', () => {
+		// Equal heads + empty dirty sets on both sides + DIFFERING dirtyHash:
+		// the pre-fix whole-tree predicate would return stale on the digest
+		// change; the narrowed identity leg nulls it, so the verdict is fresh.
+		const check = compareStageBWorkspace(
+			record('reviewer', IN_SCOPE_FILE),
+			current({ dirtyHash: 'dirty-b' }),
+			'/proj',
+		);
+		expect(check.stale).toBe(false);
+	});
+
+	test('identity leg: prHeadSha movement still invalidates', () => {
+		// A null EXPECTED prHeadSha is skipped by the matcher, so both sides
+		// must carry one for the identity leg to bind it.
+		const expected = record('reviewer', IN_SCOPE_FILE);
+		if (expected.workspace) expected.workspace.prHeadSha = 'pr-1';
+		const check = compareStageBWorkspace(
+			expected,
+			current({ prHeadSha: 'pr-2' }),
+			'/proj',
+		);
+		expect(check.stale).toBe(true);
+		expect(check.reason).toContain('prHeadSha');
+	});
+
+	test('identity leg: directory change still invalidates', () => {
+		const check = compareStageBWorkspace(
+			record('reviewer', IN_SCOPE_FILE),
+			current({ directory: '/other' }),
+			'/proj',
+		);
+		expect(check.stale).toBe(true);
+		expect(check.reason).toContain('directory changed');
+	});
+
+	test('backslash scope entry normalizes to the forward-slash changed path', () => {
+		const check = compareStageBWorkspace(
+			record('reviewer', 'src\\widget.ts'),
+			current({ changedFiles: ['src/widget.ts'] }),
+			'/proj',
+		);
+		expect(check.stale).toBe(true);
+	});
+
+	test.skipIf(process.platform !== 'win32')(
+		'case-mismatched scope entry still catches in-scope drift on win32',
+		() => {
+			const check = compareStageBWorkspace(
+				record('reviewer', 'SRC-WIDGET.TS'),
+				current({ changedFiles: ['src-widget.ts'] }),
+				'/proj',
+			);
+			expect(check.stale).toBe(true);
+		},
+	);
 });
