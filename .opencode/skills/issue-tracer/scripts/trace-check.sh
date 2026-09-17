@@ -579,12 +579,12 @@ phase4() {
   while IFS= read -r id; do
     [ -z "$id" ] || { manifest_has_check_id "$manifest" "$id" && rule_ok "manifest-check-$id" || rule_bad "manifest-check-$id" "executable acceptance check is missing from the effective manifest"; }
   done < <(executable_ids)
-  if "$script_dir/repro-check.sh" verify-semantics --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then
+  if bash "$script_dir/repro-check.sh" verify-semantics --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then
     rule_ok acceptance-manifest-semantics
   else
     rule_bad acceptance-manifest-semantics "acceptance table semantics do not match checkpoint manifest"
   fi
-  if "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
+  if bash "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
   normalize_terminal_cr "$file" | grep -A100 '^## Deferred-Work Scan$' | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
 }
 
