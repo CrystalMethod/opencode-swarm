@@ -40,13 +40,20 @@ has_bad_field() { case "$1" in *$'\t'*|*$'\n'*|*$'\r'*) return 0;; *) return 1;;
 # as data for grep by using `--` at the option/operand boundary. Reject control
 # bytes before echoing the regex in the result artifact.
 has_bad_control() {
-  LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+  # Shell variables can carry newlines, but grep treats them as record
+  # separators; reject those explicitly before scanning the remaining bytes.
+  case "$1" in *$'\t'*|*$'\n'*|*$'\r'*) return 0;; esac
+  local matches
+  # grep -c drains stdin. A terminal grep -q can make printf receive SIGPIPE
+  # under inherited pipefail, turning a real control byte into a false miss.
+  matches="$(LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -c '[[:cntrl:]]' || true)"
+  [ "${matches:-0}" -gt 0 ]
 }
 # POSIX pathnames may contain tabs/newlines, but trace paths are also rendered
 # in diagnostics. Reject every C0/DEL byte at the checkpoint boundary so an
 # ANSI escape or other control byte cannot become terminal-visible evidence.
 has_bad_path() {
-  LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+  has_bad_control "$1"
 }
 is_sha1() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{40}$'; }
 is_inside_root() {
@@ -538,17 +545,35 @@ verify_manifest_semantics() {
     return 1
   }
   table_exec="$(printf '%s\n' "$rows" | awk -F '\t' '$2 != "NON-EXECUTABLE" { print $3 "\t" $4 "\t" $5 }' | LC_ALL=C sort)"
-  manifest_exec="$(awk -F '\t' '
+  # A single acceptance check may freeze multiple files. The manifest keeps
+  # one row per (path, check-id) pair for file-integrity replay, while the
+  # acceptance table has one semantic row per check. Collapse the effective
+  # manifest by check-id here, but reject a hand-edited manifest that gives one
+  # check divergent argv/expect semantics on different paths.
+  if ! manifest_exec="$(awk -F '\t' '
     NR > 1 {
       pair = length($3) ":" $3 ":" $6
+      latest_seq[pair] = $1
       latest_check[pair] = $6
       latest_argv[pair] = $7
       latest_expect[pair] = $8
     }
     END {
-      for (pair in latest_check) print latest_check[pair] "\t" latest_argv[pair] "\t" latest_expect[pair]
+      for (pair in latest_check) {
+        check = latest_check[pair]
+        if (seen[check] && (check_argv[check] != latest_argv[pair] || check_expect[check] != latest_expect[pair])) {
+          exit 1
+        }
+        seen[check] = 1
+        check_argv[check] = latest_argv[pair]
+        check_expect[check] = latest_expect[pair]
+      }
+      for (check in seen) print check "\t" check_argv[check] "\t" check_expect[check]
     }
-  ' "$manifest" | LC_ALL=C sort)"
+  ' "$manifest" | LC_ALL=C sort)"; then
+    echo "repro-check: checkpoint manifest has divergent semantics for one check" >&2
+    return 1
+  fi
   if [ "$table_exec" = "$manifest_exec" ]; then
     return 0
   fi

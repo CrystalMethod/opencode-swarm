@@ -24,7 +24,16 @@ trace_root_real=""
 usage() { echo "usage: trace-check.sh {tree-id|handshake|phase <phase> --slug <slug> [--trace-dir <dir>]|merge --slug <slug>}" >&2; exit 2; }
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
 trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
-has_bad_control() { LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'; }
+has_bad_control() {
+  # Shell variables can carry newlines, but grep treats them as record
+  # separators; reject those explicitly before scanning the remaining bytes.
+  case "$1" in *$'\t'*|*$'\n'*|*$'\r'*) return 0;; esac
+  local matches
+  # grep -c drains stdin. A terminal grep -q can make printf receive SIGPIPE
+  # under inherited pipefail, turning a real control byte into a false miss.
+  matches="$(LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -c '[[:cntrl:]]' || true)"
+  [ "${matches:-0}" -gt 0 ]
+}
 
 # Markdown trace artifacts are commonly authored on Windows.  Keep every
 # line-oriented parser below independent of the file's record separator while
@@ -437,21 +446,24 @@ acceptance_table_rows() {
 is_already_fixed() { [ "$(state_value classification)" = "ALREADY_FIXED" ]; }
 
 phase1() {
-  local file="$trace/01-issue-summary.md" value
+  local file="$trace/01-issue-summary.md" value acceptance_count classification_count
   check_headings "$file" '## Source' '## Observed Behavior' '## Expected Behavior' '## Acceptance Criteria' '## Classification' '## Related Issues'
   trace_path_safe "$file" file || return
-  acceptance_ids | grep -q . && rule_ok acceptance-criteria || rule_bad acceptance-criteria "missing AC checkbox"
+  acceptance_count="$(acceptance_ids | grep -c . || true)"
+  [ "${acceptance_count:-0}" -gt 0 ] && rule_ok acceptance-criteria || rule_bad acceptance-criteria "missing AC checkbox"
   value="$(state_value classification)"
   case "$value" in VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE) ;; *) rule_bad classification "invalid state value"; return;; esac
-  if normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -Eq 'VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE' && normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -q "$value"; then rule_ok classification
+  classification_count="$(normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -c "$value" || true)"
+  if normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -Eq 'VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE' && [ "${classification_count:-0}" -gt 0 ]; then rule_ok classification
   else rule_bad classification "artifact does not match state"; fi
 }
 
 phase2() {
-  local file="$trace/02-reproduction.md"
+  local file="$trace/02-reproduction.md" text_block_count
   check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
   trace_path_safe "$file" file || return
-  normalize_terminal_cr "$file" | grep -q '^```text$' && rule_ok reproduction-text-block || rule_bad reproduction-text-block "missing"
+  text_block_count="$(normalize_terminal_cr "$file" | grep -c '^```text$' || true)"
+  [ "${text_block_count:-0}" -gt 0 ] && rule_ok reproduction-text-block || rule_bad reproduction-text-block "missing"
   normalize_terminal_cr "$file" | grep -Eq '^- Exit code: [0-9]+' && rule_ok reproduction-exit-code || rule_bad reproduction-exit-code "missing"
   if is_already_fixed; then check_headings "$file" '## Fixing Change'; fi
 }
@@ -466,6 +478,15 @@ phase25() {
   if ! rows="$(acceptance_table_rows "$file")"; then
     rule_bad acceptance-table "each row must have exactly 10 pipe columns and no control bytes"
     return
+  fi
+  # Keep Phase 2.5 bound to the same semantic verifier used at Phase 4. The
+  # helper is read-only: it validates the manifest and acceptance table, and
+  # does not invoke trace-check, so calling it through bash cannot recurse or
+  # introduce checkpoint side effects.
+  if bash "$script_dir/repro-check.sh" verify-semantics --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then
+    rule_ok acceptance-manifest-semantics
+  else
+    rule_bad acceptance-manifest-semantics "acceptance table semantics do not match checkpoint manifest"
   fi
   while IFS= read -r ac; do
     found=0
@@ -572,13 +593,18 @@ manifest_has_check_id() {
   ' "$manifest"
 }
 phase4() {
-  local file="$trace/08-test-results.md" id manifest
+  local file="$trace/08-test-results.md" id manifest check_block_count deferred_clean_count
   check_headings "$file" '## Regression Test' '## Acceptance check results' '## Quality Checks' '## Deferred-Work Scan' '## Verification Reasoning' '## Checkpoint verification'
   manifest="$trace/repro/checkpoint.manifest"
   trace_path_safe "$trace/02-reproduction.md" file || { rule_bad acceptance-source "missing or unsafe reproduction artifact"; return; }
   trace_path_safe "$trace/repro" dir || { rule_bad recurrence-manifest "missing or unsafe repro directory"; return; }
   trace_path_safe "$manifest" file || { rule_bad recurrence-manifest "missing or unsafe checkpoint manifest"; return; }
-  while IFS= read -r id; do [ -z "$id" ] || { normalize_terminal_cr "$file" | grep -Fx "### Check $id" >/dev/null && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"; }; done < <(executable_ids)
+  while IFS= read -r id; do
+    [ -z "$id" ] || {
+      check_block_count="$(normalize_terminal_cr "$file" | grep -cFx "### Check $id" || true)"
+      [ "${check_block_count:-0}" -gt 0 ] && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"
+    }
+  done < <(executable_ids)
   while IFS= read -r id; do
     [ -z "$id" ] || { manifest_has_check_id "$manifest" "$id" && rule_ok "manifest-check-$id" || rule_bad "manifest-check-$id" "executable acceptance check is missing from the effective manifest"; }
   done < <(executable_ids)
@@ -588,7 +614,8 @@ phase4() {
     rule_bad acceptance-manifest-semantics "acceptance table semantics do not match checkpoint manifest"
   fi
   if bash "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
-  normalize_terminal_cr "$file" | grep -A100 '^## Deferred-Work Scan$' | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
+  deferred_clean_count="$(normalize_terminal_cr "$file" | grep -A100 '^## Deferred-Work Scan$' | grep -c '^scan-deferred: clean' || true)"
+  [ "${deferred_clean_count:-0}" -gt 0 ] && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
 }
 
 phase42() {
@@ -617,7 +644,7 @@ phase45() {
   artifact_identity_matches_gate "$file" implementation-review "$head" "$tid"
 }
 phase46() {
-  local ac file="$trace/09-final-critic.md" head tid
+  local ac file="$trace/09-final-critic.md" head tid evidence_count
   clean_tree
   check_headings "$file" '## Reviewed SHA / diff hash' '## Verdict' '## Review Freshness' '## Deferred / Scoped-Out / Unwired' '## Acceptance criteria evidence'
   trace_path_safe "$file" file || return
@@ -626,7 +653,10 @@ phase46() {
   head="$(git rev-parse HEAD)"; tid="$(tree_id)"
   state_gate final-critic APPROVE "$head" "$tid"
   artifact_identity_matches_gate "$file" final-critic "$head" "$tid"
-  while IFS= read -r ac; do normalize_terminal_cr "$file" | grep -A100 '^## Acceptance criteria evidence$' | grep -q "$ac" && rule_ok "final-$ac" || rule_bad "final-$ac" "missing evidence"; done < <(acceptance_ids)
+  while IFS= read -r ac; do
+    evidence_count="$(normalize_terminal_cr "$file" | grep -A100 '^## Acceptance criteria evidence$' | grep -c "$ac" || true)"
+    [ "${evidence_count:-0}" -gt 0 ] && rule_ok "final-$ac" || rule_bad "final-$ac" "missing evidence"
+  done < <(acceptance_ids)
 }
 phase5() {
   if is_already_fixed; then rule_ok obe-subset; return; fi
@@ -700,7 +730,8 @@ protocol_value="$(state_value protocol)"
 if [ "${protocol_line:-0}" -eq 0 ]; then
   # No protocol line at all: legacy v2 ledger unless a v3-only key is present,
   # in which case this is a v3 ledger that had its protocol line stripped.
-  if state_lines | grep -Eq '^(phase0-tree-id|checkpoint-tree-id|handshake): '; then
+  v3_marker_lines="$(state_lines | grep -Ec '^(phase0-tree-id|checkpoint-tree-id|handshake): ' || true)"
+  if [ "${v3_marker_lines:-0}" -gt 0 ]; then
     echo "FAIL state-protocol: missing (v3 ledger without protocol line)"
     exit 1
   fi
