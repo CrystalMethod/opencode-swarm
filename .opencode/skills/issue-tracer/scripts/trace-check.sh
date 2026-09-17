@@ -174,13 +174,13 @@ check_headings() {
   if ! trace_path_safe "$file" file; then rule_bad "artifact-$(basename "$file")" "missing"; return; fi
   local heading count
   for heading in "$@"; do
-    count="$(grep -Fx "$heading" "$file" 2>/dev/null | wc -l | tr -d ' ')"
+    count="$(awk -v want="$heading" '{ sub(/\r$/, "", $0); if ($0 == want) n++ } END { print n + 0 }' "$file" 2>/dev/null)"
     if [ "$count" -eq 1 ]; then rule_ok "heading-${heading#\#\# }"
     elif [ "$count" -gt 1 ]; then rule_bad "duplicate-heading-${heading#\#\# }" "in $(basename "$file")"
     else rule_bad "heading-${heading#\#\# }" "missing in $(basename "$file")"; fi
   done
   # Any duplicated level-two heading is invalid even when it is not required.
-  while IFS= read -r heading; do rule_bad "duplicate-heading-${heading#\#\# }" "in $(basename "$file")"; done < <(grep '^## ' "$file" 2>/dev/null | sort | uniq -d)
+  while IFS= read -r heading; do rule_bad "duplicate-heading-${heading#\#\# }" "in $(basename "$file")"; done < <(awk '{ sub(/\r$/, "", $0); if ($0 ~ /^## /) print }' "$file" 2>/dev/null | sort | uniq -d)
 }
 
 # Parse the `## Gates` table row-by-row (split on '|', trim each cell) and
@@ -373,7 +373,51 @@ phase0() {
 
 acceptance_ids() {
   local file="$trace/01-issue-summary.md"
-  grep -E '^- \[[ x]\] AC[0-9]+:' "$file" 2>/dev/null | sed -E 's/^- \[[ x]\] (AC[0-9]+):.*/\1/'
+  sed 's/\r$//' "$file" 2>/dev/null | grep -E '^- \[[ x]\] AC[0-9]+:' | sed -E 's/^- \[[ x]\] (AC[0-9]+):.*/\1/'
+}
+
+# Return normalized acceptance-table rows as tab-separated cells. The table is
+# intentionally tolerant of LF or CRLF line endings, but never of an embedded
+# control byte: strip only the record-ending CR before validating cells. Shape
+# and control validation happen in this complete pass before phase25 uses AC,
+# check, argv, expect, or notes in rule names/messages.
+acceptance_table_header() {
+  awk '
+    { sub(/\r$/, "", $0) }
+    /^## Acceptance checks$/ { in_table = 1; next }
+    /^## / { if (in_table) in_table = 0 }
+    in_table && $0 == "| AC | class | check | argv | expect | pre-fix | post-fix | notes |" { found = 1 }
+    END { exit !found }
+  ' "$1"
+}
+acceptance_table_rows() {
+  awk -F '|' '
+    { sub(/\r$/, "", $0) }
+    /^## Acceptance checks$/ { in_table = 1; next }
+    /^## / { if (in_table) in_table = 0 }
+    !in_table { next }
+    $0 == "| AC | class | check | argv | expect | pre-fix | post-fix | notes |" { header = 1; next }
+    /^\|[[:space:]-|]+\|[[:space:]]*$/ { next }
+    /^\|[[:space:]]*AC[0-9]+[[:space:]]*\|/ {
+      # The leading and trailing delimiters make a valid row exactly ten
+      # fields. Do not inspect or interpolate any cell until this is true.
+      if (NF != 10) { bad_shape = 1; next }
+      for (i = 2; i <= 9; i++) {
+        cell = $i
+        sub(/^[ \t]+/, "", cell)
+        sub(/[ \t]+$/, "", cell)
+        if (cell ~ /[[:cntrl:]]/) { bad_control = 1 }
+        cells[i] = cell
+      }
+      print cells[2] "\t" cells[3] "\t" cells[4] "\t" cells[5] "\t" cells[6] "\t" cells[7] "\t" cells[8] "\t" cells[9]
+      count += 1
+      next
+    }
+    /^\|/ { bad_shape = 1 }
+    END {
+      if (!header || bad_shape || bad_control || count == 0) exit 1
+    }
+  ' "$1"
 }
 is_already_fixed() { [ "$(state_value classification)" = "ALREADY_FIXED" ]; }
 
@@ -398,29 +442,30 @@ phase2() {
 }
 
 phase25() {
-  local file="$trace/02-reproduction.md" header ac row found class check pre notes reason checkpoint manifest_path diff_path cells ac_probe
+  local file="$trace/02-reproduction.md" header ac row found class check argv expect pre post notes reason checkpoint manifest_path diff_path duplicate_check rows
   if is_already_fixed; then rule_ok obe-subset; return; fi
   check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
   trace_path_safe "$file" file || return
   header='| AC | class | check | argv | expect | pre-fix | post-fix | notes |'
-  grep -Fx "$header" "$file" >/dev/null 2>&1 && rule_ok acceptance-table || { rule_bad acceptance-table "missing exact header"; return; }
+  acceptance_table_header "$file" && rule_ok acceptance-table || { rule_bad acceptance-table "missing exact header"; return; }
+  if ! rows="$(acceptance_table_rows "$file")"; then
+    rule_bad acceptance-table "each row must have exactly 10 pipe columns and no control bytes"
+    return
+  fi
   while IFS= read -r ac; do
-    found="$(grep -E "^\\|[[:space:]]*$ac[[:space:]]*\\|" "$file" 2>/dev/null | wc -l | tr -d ' ')"
+    found=0
+    while IFS=$'\t' read -r row_ac _ _ _ _ _ _ _; do
+      [ "$row_ac" = "$ac" ] && found=$((found + 1))
+    done <<EOF
+$rows
+EOF
     [ "$found" -eq 1 ] && rule_ok "acceptance-$ac" || rule_bad "acceptance-$ac" "must appear exactly once"
   done < <(acceptance_ids)
-  check="$(grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' "$file" 2>/dev/null | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $4); print $4}' | sort | uniq -d | head -n1 || true)"
+  duplicate_check="$(printf '%s\n' "$rows" | awk -F '\t' '{ if (++seen[$3] > 1 && duplicate == "") duplicate = $3 } END { if (duplicate != "") print duplicate }')"
+  check="$duplicate_check"
   [ -z "$check" ] && rule_ok acceptance-check-ids || rule_bad acceptance-check-ids "duplicate check id $check"
-  while IFS= read -r row; do
-    cells="$(printf '%s' "$row" | awk -F'|' '{print NF}')"
-    if [ "${cells:-0}" -gt 10 ]; then
-      ac_probe="$(printf '%s' "$row" | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
-      rule_bad "acceptance-table-row-${ac_probe:-unknown}" "row for ${ac_probe:-unknown} has too many columns (literal | in argv?)"
-      continue
-    fi
-    IFS='|' read -r _ ac class check argv expect pre post notes _ <<EOF
-$row
-EOF
-    ac="$(trim "$ac")"; class="$(trim "$class")"; check="$(trim "$check")"; pre="$(trim "$pre")"; notes="$(trim "$notes")"
+  while IFS=$'\t' read -r ac class check argv expect pre post notes; do
+    [ -n "$ac" ] || continue
     case "$class" in
       DISCRIMINATING) [ "$pre" = RED ] || rule_bad "pre-fix-$ac" "DISCRIMINATING must be RED"; trace_path_safe "$trace/repro/$check.base.log" file || rule_bad "base-log-$check" "missing or unsafe" ;;
       PRESERVING) [ "$pre" = GREEN ] || rule_bad "pre-fix-$ac" "PRESERVING must be GREEN"; trace_path_safe "$trace/repro/$check.base.log" file || rule_bad "base-log-$check" "missing or unsafe" ;;
@@ -428,9 +473,11 @@ EOF
       NON-EXECUTABLE) case "$check" in DOCS_ONLY|HOST_ONLY|PRODUCT_DECISION|EXTERNAL_SERVICE_UNAVAILABLE) ;; *) rule_bad "non-executable-$ac" "unknown reason";; esac; [ -n "$notes" ] && [ "$notes" != '-' ] || rule_bad "notes-$ac" "required" ;;
       *) rule_bad "class-$ac" "invalid" ;;
     esac
-  done < <(grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' "$file" 2>/dev/null || true)
+  done <<EOF
+$rows
+EOF
   check_headings "$file" '## Red checkpoint'
-  checkpoint="$(grep '^checkpoint-tree-id: ' "$file" 2>/dev/null | head -n1 | sed 's/^checkpoint-tree-id: //')"
+  checkpoint="$(awk '/^checkpoint-tree-id: / { sub(/\r$/, "", $0); sub(/^checkpoint-tree-id: /, ""); print; exit }' "$file" 2>/dev/null)"
   is_hex "$checkpoint" && [ "$checkpoint" = "$(state_value checkpoint-tree-id)" ] && rule_ok red-checkpoint || rule_bad red-checkpoint "state binding missing or invalid"
   manifest_path="$trace/repro/checkpoint.manifest"
   trace_path_safe "$trace/repro" dir || { rule_bad checkpoint-manifest "missing or unsafe repro directory"; return; }
@@ -447,6 +494,7 @@ EOF
   # accidentally treat the manifest as a path-only set.
   if awk -F '\t' '
     NR > 1 {
+      if ($3 ~ /[[:cntrl:]]/) { bad = 1; next }
       pair = length($3) ":" $3 ":" $6
       latest_path[pair] = $3
       latest_blob[pair] = $4
@@ -519,6 +567,11 @@ phase4() {
   while IFS= read -r id; do
     [ -z "$id" ] || { manifest_has_check_id "$manifest" "$id" && rule_ok "manifest-check-$id" || rule_bad "manifest-check-$id" "executable acceptance check is missing from the effective manifest"; }
   done < <(executable_ids)
+  if "$script_dir/repro-check.sh" verify-semantics --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then
+    rule_ok acceptance-manifest-semantics
+  else
+    rule_bad acceptance-manifest-semantics "acceptance table semantics do not match checkpoint manifest"
+  fi
   if "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
   grep -A100 '^## Deferred-Work Scan$' "$file" 2>/dev/null | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
 }

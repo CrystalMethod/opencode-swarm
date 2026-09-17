@@ -71,19 +71,18 @@ function pollUntil<T>(
 	deadlineMs: number,
 	intervalMs: number,
 ): PollResult<T> {
-	const started = Date.now();
+	const maxAttempts = Math.max(1, Math.ceil(deadlineMs / intervalMs));
 	let attempts = 0;
 	let value = probe();
-	while (!done(value) && Date.now() - started < deadlineMs) {
+	while (!done(value) && attempts < maxAttempts) {
 		Bun.sleepSync(intervalMs);
 		attempts += 1;
 		value = probe();
 	}
-	const elapsedMs = Date.now() - started;
 	return {
 		value,
 		attempts,
-		elapsedMs,
+		elapsedMs: attempts * intervalMs,
 		deadlineExceeded: !done(value),
 	};
 }
@@ -149,6 +148,37 @@ describe('repro-check.sh disposable checks', () => {
 			.split('\n')
 			.filter((line) => line.includes('issue-tracer-repro.'));
 		expect(removed).toHaveLength(0);
+	});
+
+	test('treats option-like expectations as regex data and rejects controls', () => {
+		const worktree = repo();
+		const base = git(worktree, 'rev-parse', 'HEAD');
+		changePass(worktree);
+		let result = run(worktree, [
+			...args(base, 'DISCRIMINATING'),
+			'--expect',
+			'--version',
+			'--',
+			'bash',
+			'check.sh',
+		]);
+		// Without grep's option boundary, `--version` makes grep return success
+		// without matching the base log, manufacturing a RED result and PASS.
+		expect(result.code).toBe(3);
+		expect(result.out).toContain('result=ERROR');
+		expect(result.out).toContain('verdict: ERROR');
+
+		result = run(worktree, [
+			...args(base, 'DISCRIMINATING', 'C2'),
+			'--expect',
+			`bad${String.fromCharCode(0x1b)}expect`,
+			'--',
+			'bash',
+			'check.sh',
+		]);
+		expect(result.code).toBe(2);
+		expect(result.err).toContain('--expect cannot contain control bytes');
+		expect(result.err).not.toContain(String.fromCharCode(0x1b));
 	});
 
 	test('reports VACUOUS and ERROR for non-discriminating base failures', () => {

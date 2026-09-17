@@ -123,6 +123,22 @@ function isExactConfiguredConfigChild(
 	);
 }
 
+/**
+ * Bind a cleanup target to its config root. Callers that provide the host's
+ * configured root must use canonical containment because that root may be a
+ * symlink with a different basename. The default path retains the basename
+ * check as a cheap safety guard when no explicit root was supplied.
+ */
+function hasSafeConfigArtifactParent(
+	resolved: string,
+	configuredDir?: string,
+): boolean {
+	if (configuredDir !== undefined) {
+		return isExactConfiguredConfigChild(resolved, configuredDir);
+	}
+	return path.basename(path.dirname(resolved)) === path.basename(CONFIG_DIR);
+}
+
 // Issue #675 hardening — round 3 (depth-based guard replaces home-containment
 // after critic's cross-platform CI regression finding).
 export function isSafeCachePath(p: string): boolean {
@@ -229,9 +245,9 @@ export function isSafeLockFilePath(p: string): boolean {
  *   2. Refuse root, home, or shorter-than-home paths.
  *   3. Require ≥ 3 non-empty segments (rejects pathological
  *      XDG_CONFIG_HOME='/' which yields '/opencode/opencode-swarm', 2 segments).
- *   4. Require basename === 'opencode-swarm' AND the parent directory's
- *      basename to equal the config dir's basename (canonical layout is
- *      '<CONFIG_DIR>/opencode-swarm').
+ *   4. Require basename === 'opencode-swarm'. With no explicit configured
+ *      root, the parent basename must equal CONFIG_DIR's basename (canonical
+ *      layout is '<CONFIG_DIR>/opencode-swarm').
  *   5. When a configured root is supplied by the cleanup caller, require the
  *      canonical parent to equal that exact root, not merely share its name.
  */
@@ -251,13 +267,7 @@ export function isSafePromptsDir(p: string, configuredDir?: string): boolean {
 	if (path.basename(resolved) !== 'opencode-swarm') {
 		return false;
 	}
-	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
-		return false;
-	}
-	if (
-		configuredDir !== undefined &&
-		!isExactConfiguredConfigChild(resolved, configuredDir)
-	) {
+	if (!hasSafeConfigArtifactParent(resolved, configuredDir)) {
 		return false;
 	}
 	return true;
@@ -272,9 +282,10 @@ export function isSafePromptsDir(p: string, configuredDir?: string): boolean {
  * `opencode-swarm` directory — hence a dedicated guard.
  *
  * Defense in depth: canonicalize via safeRealpathSync; refuse root/home/
- * shorter-than-home; require basename === 'opencode-swarm.json' AND the
- * parent directory's basename to equal the config dir's basename. Cleanup
- * callers also bind the canonical parent to their exact configured root.
+ * shorter-than-home; require basename === 'opencode-swarm.json'. With no
+ * explicit configured root, the parent directory's basename must equal the
+ * config dir's basename. Cleanup callers otherwise bind the canonical parent
+ * to their exact configured root.
  */
 export function isSafePluginConfigPath(
 	p: string,
@@ -298,13 +309,7 @@ export function isSafePluginConfigPath(
 	if (path.basename(resolved) !== 'opencode-swarm.json') {
 		return false;
 	}
-	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
-		return false;
-	}
-	if (
-		configuredDir !== undefined &&
-		!isExactConfiguredConfigChild(resolved, configuredDir)
-	) {
+	if (!hasSafeConfigArtifactParent(resolved, configuredDir)) {
 		return false;
 	}
 	return true;
@@ -334,13 +339,7 @@ export function isSafeInstallBackupPath(
 	if (path.basename(resolved) !== 'opencode.swarm-install-backup.json') {
 		return false;
 	}
-	if (path.basename(path.dirname(resolved)) !== path.basename(CONFIG_DIR)) {
-		return false;
-	}
-	return (
-		configuredDir === undefined ||
-		isExactConfiguredConfigChild(resolved, configuredDir)
-	);
+	return hasSafeConfigArtifactParent(resolved, configuredDir);
 }
 
 interface OpenCodeConfig {

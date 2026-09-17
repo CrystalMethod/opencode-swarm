@@ -9,6 +9,13 @@ Use this reference for Phase 2.5 (freezing the checks) and Phase 4 (proving they
 3. Freeze the check set with `repro-check.sh checkpoint` before any production fix code exists. The checkpoint tree-id must differ from the Phase 0 tree-id only by paths listed in `repro/checkpoint.manifest` - this is validated mechanically at `trace-check.sh phase 2.5`.
 4. Phase 4 re-runs every check against the fixed tree; results are appended to the same table's `post-fix` column and echoed in `08-test-results.md`.
 
+The acceptance-table parser accepts either LF or CRLF line endings by removing
+only each record's terminal CR before matching the header and rows. Embedded
+C0/DEL control bytes (including controls in `AC`, `class`, `check`, `argv`,
+`expect`, or `notes`) and rows without exactly ten pipe-separated fields are
+rejected before any cell is used in a diagnostic. This keeps table validation
+and the semantic digest deterministic across Windows and POSIX checkouts.
+
 ## The three executable classes, plus NON-EXECUTABLE
 
 - **DISCRIMINATING** - behavior the bug breaks. Must be RED on the pre-fix tree for the expected reason (base exit nonzero and output matching `--expect`), GREEN after the fix. This is the class the bug-contrast replay rule applies to hardest.
@@ -30,7 +37,7 @@ Research measured that an agent's own generated tests overfit toward validating 
 
 Four properties are mechanically enforced, by both `checkpoint` and `verify-checkpoint`. First, **a frozen pair cannot be re-frozen**: once a `(path, check-id)` pair appears in the manifest, a plain `repro-check.sh checkpoint` on that pair exits 2, while a different check id may checkpoint the same path only after hashing the current bytes. `verify-checkpoint` independently rejects any later row for the same pair that is not an `AMEND`, so a forged duplicate `CHECKPOINT` row is refused too, and an `AMEND` must name an existing exact pair. Second, **the effective manifest has one blob per path**: multiple check ids sharing a path are deduplicable only when their latest blobs are identical; divergent effective blobs fail closed instead of becoming path-only last-writer-wins. Third, **the recorded row count is validated**: the header's `rows=<N>` must equal the number of data rows actually present. Fourth, **seq continuity is validated**: the seq column must run 1..N with no gaps and every row must carry exactly ten fields. The count and seq checks are complementary and neither is sufficient alone - seq continuity is only a *prefix* invariant, so truncating the tail (`head -3`, or dropping the last row) leaves the survivors perfectly contiguous; the count is what catches that, and seq is what catches a deletion in the middle. Together they make deleting, truncating, reordering, duplicating, or mangling a row exit 2 in both commands instead of silently dropping that check out of the replay set.
 
-These three properties are cardinality-and-shape checks. They never inspect row CONTENT. Content identity is supplied by the external checkpoint anchor below: reviewers must retain the literal receipt emitted before implementation and verify it after the fix. The manifest remains an agent-writable trace artifact, so an in-place field edit, a delete-and-refreeze, or a restamped state file is not independently authoritative; the old receipt is what makes those changes fail closed. A byte-identical refreeze is valid because it preserves the anchored manifest digest and checkpoint tree id.
+These row-shape properties do not by themselves inspect frozen content. The external checkpoint anchor below binds both content identity and the ordered acceptance-table semantics. Reviewers must retain the literal receipt emitted before implementation and verify it after the fix. The manifest and table remain agent-writable trace artifacts, so an in-place field edit, a semantic-table edit, a delete-and-refreeze, or a restamped state file is not independently authoritative; the old receipt is what makes those changes fail closed. A byte-identical refreeze is valid because it preserves the anchored digests and checkpoint tree id.
 
 So be precise about what is bought. The manifest-only rules close the ACCIDENTAL routes - a partial write, a botched hand edit, a truncating rewrite - and they close the one route that previously needed no editing at all: re-running the sanctioned freeze command to re-baseline a weakened check to green. A deliberate manifest edit or delete-and-refreeze fails when a reviewer verifies the pre-implementation external receipt. The plan critic and implementation reviewer still assess the semantic adequacy of the originally frozen checks; receipt verification does not make a weak check meaningful. Treat the manifest as a record to verify, never as a guarantee that its checks are adequate. A `v1` header with no `rows=` count is rejected outright for the same reason - accepting it for compatibility would itself be a one-line way to switch the count check off.
 
@@ -38,13 +45,22 @@ Amending a frozen check (the check was wrong or the acceptance criterion changed
 
 ## External checkpoint anchor
 
-After the final Phase-2.5 checkpoint and before any production edit, run `repro-check.sh anchor --slug <slug>`. It first verifies the manifest and emits exactly one line in this shape:
+After the final Phase-2.5 checkpoint and before any production edit, run `repro-check.sh anchor --slug <slug>`. It first verifies the manifest and that every executable table row's `check`, `argv`, and `expect` matches the effective manifest, then emits exactly one line in this shape:
 
 ```text
-issue-tracer-checkpoint-v1 slug=<slug> manifest=<40-hex manifest blob> tree=<40-hex checkpoint-tree-id>
+issue-tracer-checkpoint-v1 slug=<slug> manifest=<40-hex manifest blob> semantics=<40-hex acceptance-table digest> tree=<40-hex checkpoint-tree-id>
 ```
 
-The implementation owner publishes that literal in the issue, PR, or other reviewer-visible external conversation and records the artifact location in the trace as a non-authoritative discovery copy. The owner must not regenerate it after implementation begins. An independent reviewer copies the published literal into `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; verification compares the current manifest's `git hash-object --no-filters` digest and `state.md`'s recorded `checkpoint-tree-id`. It deliberately does not compare the live working-tree tree, which changes as the fix is implemented. Malformed, stale, tampered, or delete-and-refreeze evidence fails closed; a byte-identical refreeze remains valid because it has the same content identity.
+The implementation owner publishes that literal in the issue, PR, or other reviewer-visible external conversation and records the artifact location in the trace as a non-authoritative discovery copy. Publication and its before/after timing are human-enforced: `trace-check.sh` cannot observe that external conversation. The owner must not regenerate it after implementation begins. An independent reviewer copies the published literal into `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; verification compares the current manifest digest, the current ordered `AC/class/check/argv/expect` digest, and `state.md`'s recorded `checkpoint-tree-id`. It deliberately does not compare the live working-tree tree, which changes as the fix is implemented. Malformed, stale, tampered, semantic-table-edited, or delete-and-refreeze evidence fails closed; a byte-identical refreeze remains valid because it has the same content identity.
+
+Receipt compatibility is intentionally strict: the pre-semantics receipt
+syntax (the same `issue-tracer-checkpoint-v1` prefix without a `semantics=`
+field) is rejected as `malformed anchor receipt`. There is no safe migration
+or placeholder digest, because that old receipt never bound the acceptance
+table's `AC/class/check/argv/expect` semantics. A trace with only an old
+receipt must be rechecked and re-anchored before implementation; once
+implementation has begun, stop and obtain a new reviewed checkpoint rather
+than regenerating the receipt silently.
 
 ## Dependency strategy
 

@@ -141,7 +141,9 @@ describe('trace-check.sh reverse manifest completeness (#2566)', () => {
 		const { repo } = makeRepo();
 		const result = run(repo, ['phase', '4', '--slug', 'issue-2566']);
 
-		expect(result.code, `${result.out}\n${result.err}`).not.toBe(0);
-		expect(`${result.out}\n${result.err}`).toMatch(/manifest|C1/i);
+		expect(result.code, `${result.out}\n${result.err}`).toBe(1);
+		expect(result.out.split(/\r?\n/)).toContain(
+			'FAIL manifest-check-C1: executable acceptance check is missing from the effective manifest',
+		);
 	});
 });

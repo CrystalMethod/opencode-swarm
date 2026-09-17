@@ -10,7 +10,6 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { bashCommand } from '../../helpers/bash';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
@@ -110,9 +109,7 @@ function makeRepo(prefix: string): string {
 function makeOldGitShim(): string {
 	const realGit = Bun.which('git');
 	if (!realGit) throw new Error('git is required for trace-init tests');
-	const shimDir = fs.mkdtempSync(
-		path.join(os.tmpdir(), 'trace-init-old-git-shim-'),
-	);
+	const shimDir = canonicalMkdtemp('trace-init-old-git-shim-');
 	const shimScript = [
 		'#!/usr/bin/env bash',
 		'for arg in "$@"; do',
@@ -248,11 +245,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 	});
 
 	test('F-D1: refuses to follow an existing directory link that escapes the repo root', async () => {
-		const outer = track(
-			fs.realpathSync(
-				fs.mkdtempSync(path.join(os.tmpdir(), 'trace-init-symlink-outer-')),
-			),
-		);
+		const outer = track(canonicalMkdtemp('trace-init-symlink-outer-'));
 		const attackerTarget = path.join(outer, 'attacker-target');
 		fs.mkdirSync(attackerTarget);
 		const repo = path.join(outer, 'victim');
@@ -281,9 +274,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 
 	test('F-E1: in a linked worktree, the exclude entry lands where git status --ignored actually looks', async () => {
 		const mainRepo = track(makeRepo('trace-init-worktree-main-'));
-		const worktreeParent = fs.mkdtempSync(
-			path.join(os.tmpdir(), 'trace-init-worktree-linked-'),
-		);
+		const worktreeParent = canonicalMkdtemp('trace-init-worktree-linked-');
 		const linkedWorktree = path.join(worktreeParent, 'linked');
 		track(worktreeParent);
 		git(mainRepo, 'worktree', 'add', '-q', '-b', 'feature', linkedWorktree);
@@ -328,13 +319,7 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 		// `issue-traces` path is a symlink escaping the repo. The while-loop
 		// in trace-init.sh must stop its ancestor walk one level deeper and
 		// still catch it.
-		const outer = track(
-			fs.realpathSync(
-				fs.mkdtempSync(
-					path.join(os.tmpdir(), 'trace-init-symlink-deep-outer-'),
-				),
-			),
-		);
+		const outer = track(canonicalMkdtemp('trace-init-symlink-deep-outer-'));
 		const attackerTarget = path.join(outer, 'attacker-target-deep');
 		fs.mkdirSync(attackerTarget);
 		const repo = path.join(outer, 'victim-deep');
@@ -364,8 +349,8 @@ describe('trace-init.sh — issue-tracer trace directory setup (PR #1880 review)
 
 	test('F-E1: falls back to plain --git-common-dir (with manual absolutization) when git predates --path-format, and still lands the exclude entry in the shared common dir', async () => {
 		const mainRepo = track(makeRepo('trace-init-worktree-oldgit-main-'));
-		const worktreeParent = fs.mkdtempSync(
-			path.join(os.tmpdir(), 'trace-init-worktree-oldgit-linked-'),
+		const worktreeParent = canonicalMkdtemp(
+			'trace-init-worktree-oldgit-linked-',
 		);
 		const linkedWorktree = path.join(worktreeParent, 'linked');
 		track(worktreeParent);

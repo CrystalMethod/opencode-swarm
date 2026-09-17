@@ -3908,7 +3908,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		],
 		writerCitations: [
 			'src/config/project-init.ts:25 writeSwarmConfigExampleIfNew (first-run .swarm/config.example.json write incl. $schema ref; errors non-fatal)',
-			'src/cli/index.ts:475 saveJson — CLI-managed global/plugin config saves (outside .swarm)',
+			'src/cli/index.ts:474 saveJson — CLI-managed global/plugin config saves (outside .swarm)',
 		],
 		readerCitations: ['config loader; CLI loadJson (:269)'],
 		schemaVersion: 'config schema',

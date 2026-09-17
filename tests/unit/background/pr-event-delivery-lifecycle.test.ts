@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { mkdtempSync, realpathSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	_internals,
@@ -12,6 +10,7 @@ import {
 import type { PrFeedbackMonitorEvent } from '../../../src/background/pr-feedback-event-queue.js';
 import type { PrMonitorConfig } from '../../../src/config/schema.js';
 import type { PrWorkflowGateState } from '../../../src/hooks/pr-workflow-gate.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const SESSION_ID = 'monitor-lifecycle-session';
 const PR_URL = 'https://github.com/owner/repo/pull/42';
@@ -59,9 +58,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 beforeEach(() => {
-	directory = realpathSync(
-		mkdtempSync(path.join(os.tmpdir(), 'pr-delivery-life-')),
-	);
+	directory = canonicalMkdtemp('pr-delivery-life-');
 	savedInternals = { ..._internals };
 	_internals.log = mock(() => {}) as typeof _internals.log;
 	unregisterPrEventDelivery();

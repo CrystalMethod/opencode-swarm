@@ -30,7 +30,7 @@ Read these artifacts:
 
 Also inspect any files referenced in the plan. Do not trust summaries if the underlying code is available. Independently replay the frozen acceptance checks yourself (`repro-check.sh run` for each row) before returning a verdict - do not accept the table's pre-fix column on faith.
 
-When a checkpoint anchor exists, independently compare the externally published receipt with `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; do not accept a receipt regenerated after implementation began.
+When a checkpoint anchor exists, independently compare the externally published receipt with `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; this verifies the local manifest/table/tree digests only, while publication and its timing remain a human gate that the validator cannot observe. Do not accept a receipt regenerated after implementation began.
 
 Return exactly:
 
@@ -161,7 +161,7 @@ Find, with concrete evidence:
 - independently re-run every acceptance check yourself with `repro-check.sh run` on both the pre-fix and current trees
 - verify `repro-check.sh verify-checkpoint`, scan for tautological checks, and (at tier M/L, any risk trigger, or any NEW-SURFACE row) run the revert/mutation probe from `references/acceptance-checks.md`
 
-When a checkpoint anchor exists, independently compare the externally published receipt with `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; do not accept a receipt regenerated after implementation began.
+When a checkpoint anchor exists, independently compare the externally published receipt with `repro-check.sh verify-anchor --slug <slug> --receipt '<literal>'`; this verifies the local manifest/table/tree digests only, while publication and its timing remain a human gate that the validator cannot observe. Do not accept a receipt regenerated after implementation began.
 
 Return exactly:
 
@@ -244,7 +244,7 @@ Check:
 - every acceptance criterion maps to concrete evidence
 - validation claims are backed by commands and output
 - no work was silently deferred, scoped out, or left unwired
-- if a checkpoint anchor exists, verify the externally published literal with `repro-check.sh verify-anchor` and confirm it was published before implementation
+- if a checkpoint anchor exists, verify the externally published literal with `repro-check.sh verify-anchor` and record human confirmation that it was published before implementation (the local validator cannot verify publication or timing)
 
 Return exactly:
 

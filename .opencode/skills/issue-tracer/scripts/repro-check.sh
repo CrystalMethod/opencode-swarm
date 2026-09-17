@@ -26,7 +26,7 @@ root_real="$(cd "$root" && pwd -P)"
 script_dir="$(cd "$(dirname "$0")" && pwd -P)"
 trace_root_real=""
 
-usage() { echo "usage: repro-check.sh {run|checkpoint|verify-checkpoint|anchor|verify-anchor} --slug <slug> ..." >&2; exit 2; }
+usage() { echo "usage: repro-check.sh {run|checkpoint|verify-checkpoint|verify-semantics|anchor|verify-anchor} --slug <slug> ..." >&2; exit 2; }
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
 valid_id() {
   local suffix
@@ -36,6 +36,18 @@ valid_id() {
   esac
 }
 has_bad_field() { case "$1" in *$'\t'*|*$'\n'*|*$'\r'*) return 0;; *) return 1;; esac; }
+# Unlike a shell option, a regex beginning with `--` is valid input. Keep it
+# as data for grep by using `--` at the option/operand boundary. Reject control
+# bytes before echoing the regex in the result artifact.
+has_bad_control() {
+  LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+}
+# POSIX pathnames may contain tabs/newlines, but trace paths are also rendered
+# in diagnostics. Reject every C0/DEL byte at the checkpoint boundary so an
+# ANSI escape or other control byte cannot become terminal-visible evidence.
+has_bad_path() {
+  LC_ALL=C printf '%s' "$1" | LC_ALL=C grep -q '[[:cntrl:]]'
+}
 is_sha1() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{40}$'; }
 is_inside_root() {
   case "$1" in /*|[A-Za-z]:*|*\\*) return 1;; esac
@@ -170,9 +182,11 @@ manifest_for() { trace_for; printf '%s\n' "$trace_dir/repro/checkpoint.manifest"
 #
 # The legacy header with no `rows=` count (`... v1`) is REJECTED rather than
 # accepted for compatibility: accepting it would itself be a one-line bypass
-# (write the old header, then truncate freely). Nothing is lost by failing
-# closed - the manifest is an ephemeral, git-excluded, per-issue trace artifact
-# seeded fresh by trace-init.sh, so there is no installed base to migrate.
+# (write the old header, then truncate freely). Existing v3 manifests can,
+# however, contain an AMEND row with the historical FORMAT_ONLY reason. That
+# reason is accepted only by verification (and by a later, newly reasoned
+# amendment while recovering such a trace); do_checkpoint never accepts it as
+# a new reason, so FORMAT_ONLY cannot be introduced through this script.
 #
 # This is tamper-EVIDENCE, not tamper-proofing: the trace directory is the
 # agent's own write surface, so a rewriter that renumbers every row AND
@@ -181,9 +195,17 @@ manifest_for() { trace_for; printf '%s\n' "$trace_dir/repro/checkpoint.manifest"
 # existence or completeness to anything outside it). What it stops is a
 # partial write or a hand edit that leaves the file internally inconsistent.
 validate_manifest() {
-  local file="$1" allow_conflicts="${2:-}" problem counts
+  local file="$1" allow_conflicts="${2:-}" allow_legacy_format_only="${3:-}" problem counts header
   trace_path_safe "$file" file || { echo "repro-check: checkpoint manifest missing or unsafe" >&2; exit 2; }
-  problem="$(awk -F '\t' -v allow_conflicts="$allow_conflicts" '
+  # `awk` on some supported shells normalizes CRLF records, so inspect the
+  # raw header first. A CRLF manifest is not byte-valid for the checkpoint
+  # format and must fail as a malformed header rather than reaching replay and
+  # reporting a stale digest.
+  header=""
+  IFS= read -r header < "$file" || true
+  case "$header" in
+    *$'\r'*) problem="header" ;;
+    *) problem="$(awk -F '\t' -v allow_conflicts="$allow_conflicts" -v allow_legacy_format_only="$allow_legacy_format_only" '
     NR == 1 {
       if ($0 !~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) { bad = "header"; exit }
       declared = $0
@@ -195,8 +217,9 @@ validate_manifest() {
       rows += 1
       if (NF != 10) { bad = "fields " NR; exit }
       if ($1 "" != rows "") { bad = "seq " NR; exit }
+      if ($3 ~ /[[:cntrl:]]/) { bad = "unsafe-path"; exit }
       if ($2 != "CHECKPOINT" && $2 != "AMEND") { bad = "kind " NR; exit }
-      if (($2 == "CHECKPOINT" && $10 != "-") || ($2 == "AMEND" && $10 != "CHECK_WRONG" && $10 != "AC_CHANGED_BY_USER")) { bad = "reason " NR; exit }
+      if (($2 == "CHECKPOINT" && $10 != "-") || ($2 == "AMEND" && $10 != "CHECK_WRONG" && $10 != "AC_CHANGED_BY_USER" && !(allow_legacy_format_only == "allow-legacy-format-only" && $10 == "FORMAT_ONLY"))) { bad = "reason " NR; exit }
       # A pair is frozen by its first row; every later row for that exact
       # (path, check-id) pair must be a reasoned AMEND. A path may legitimately
       # carry multiple checks, so path alone is not an identity key here.
@@ -227,13 +250,15 @@ validate_manifest() {
       }
       if (declared != rows + 0) { print "count " declared " " rows + 0 }
     }
-  ' "$file")"
+  ' "$file")" ;;
+  esac
   case "$problem" in
     '') return 0 ;;
     'fields '*) echo "repro-check: checkpoint manifest line ${problem#fields } does not have 10 tab-separated fields" >&2 ;;
     'seq '*) echo "repro-check: checkpoint manifest seq is not contiguous (row deleted or reordered) at line ${problem#seq }" >&2 ;;
     'duplicate '*) echo "repro-check: checkpoint manifest line ${problem#duplicate } duplicates an existing CHECKPOINT pair (re-freezes without an AMEND reason)" >&2 ;;
     'orphan '*) echo "repro-check: checkpoint manifest line ${problem#orphan } AMENDs an unknown path/check-id pair" >&2 ;;
+    'unsafe-path') echo "repro-check: checkpoint manifest contains a path with control bytes" >&2 ;;
     'conflict '*) echo "repro-check: checkpoint manifest has conflicting effective blobs for path ${problem#conflict }" >&2 ;;
     'kind '*) echo "repro-check: checkpoint manifest line ${problem#kind } has an invalid kind (use CHECKPOINT or AMEND)" >&2 ;;
     'reason '*) echo "repro-check: checkpoint manifest line ${problem#reason } has an invalid reason for its kind" >&2 ;;
@@ -420,7 +445,7 @@ do_run() {
   case "$deps" in link|none) ;; *) echo "repro-check: --deps must be link or none" >&2; exit 2;; esac
   case "$timeout_seconds" in ''|*[!0-9]*|0) echo "repro-check: --timeout must be a positive integer" >&2; exit 2;; esac
   case "$class" in DISCRIMINATING|NEW-SURFACE) [ -n "$expect" ] || { echo "repro-check: --expect is required for $class" >&2; exit 2; };; esac
-  has_bad_field "$expect" && { echo "repro-check: --expect cannot contain tabs or newlines" >&2; exit 2; }
+  has_bad_control "$expect" && { echo "repro-check: --expect cannot contain control bytes" >&2; exit 2; }
   trace_for
   require_contained "$trace_dir"
   require_contained "$trace_dir/repro"
@@ -442,7 +467,7 @@ do_run() {
     base_result="TIMEOUT"; head_result="TIMEOUT"; verdict="FAIL"; exit_code=6
   elif [ "$class" = DISCRIMINATING ]; then
     if [ "$base_status" -eq 0 ]; then base_result="VACUOUS"; verdict="VACUOUS"; exit_code=4
-    elif trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
+    elif trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq -- "$expect" "$trace_dir/repro/$check_id.base.log"; then
       base_result="RED"
       if [ "$head_status" -eq 0 ]; then head_result="GREEN"; verdict="PASS"; else head_result="FAIL"; verdict="FAIL"; exit_code=5; fi
     else base_result="ERROR"; verdict="ERROR"; exit_code=3; fi
@@ -451,7 +476,7 @@ do_run() {
     head_result="$( [ "$head_status" -eq 0 ] && echo GREEN || echo FAIL )"
     if [ "$base_status" -eq 0 ] && [ "$head_status" -eq 0 ]; then verdict=PASS; else verdict=FAIL; exit_code=5; fi
   else
-    if [ "$base_status" -ne 0 ] && trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq "$expect" "$trace_dir/repro/$check_id.base.log"; then
+    if [ "$base_status" -ne 0 ] && trace_path_safe "$trace_dir/repro/$check_id.base.log" file && grep -Eq -- "$expect" "$trace_dir/repro/$check_id.base.log"; then
       base_result="ERROR"
       if [ "$head_status" -eq 0 ]; then head_result="GREEN"; verdict=PASS; else head_result="FAIL"; verdict=FAIL; exit_code=5; fi
     else base_result="FAIL"; head_result="$( [ "$head_status" -eq 0 ] && echo GREEN || echo FAIL )"; verdict=FAIL; exit_code=5; fi
@@ -459,6 +484,72 @@ do_run() {
   [ -n "${head_result:-}" ] || head_result="$( [ "$head_status" -eq 0 ] && echo GREEN || echo FAIL )"
   printf '### Check %s (%s)\n- base: %s exit=%s result=%s log=repro/%s.base.log\n- head: %s exit=%s result=%s log=repro/%s.head.log\n- argv: %s\n- expect: %s\n- verdict: %s\n' "$check_id" "$class" "$base" "$base_status" "$base_result" "$check_id" "$(git rev-parse HEAD)" "$head_status" "$head_result" "$check_id" "$(quoted_argv "$@")" "${expect:--}" "$verdict"
   exit "$exit_code"
+}
+
+acceptance_rows() {
+  local file="$trace_dir/02-reproduction.md"
+  trace_path_safe "$file" file || return 1
+  awk -F '|' '
+    # Acceptance tables deliberately accept LF and CRLF files. Remove only
+    # the record terminator CR; an embedded CR remains a rejected control byte.
+    { sub(/\r$/, "", $0) }
+    /^## Acceptance checks$/ { in_table = 1; next }
+    /^## / { if (in_table) in_table = 0 }
+    !in_table { next }
+    $0 == "| AC | class | check | argv | expect | pre-fix | post-fix | notes |" { header = 1; next }
+    /^\|[[:space:]-|]+\|[[:space:]]*$/ { next }
+    /^\|[[:space:]]*AC[0-9]+[[:space:]]*\|/ {
+      if (NF != 10) { bad = 1; next }
+      for (i = 2; i <= 9; i++) {
+        cell = $i
+        sub(/^[ \t]+/, "", cell)
+        sub(/[ \t]+$/, "", cell)
+        if (cell ~ /[[:cntrl:]]/) bad = 1
+        cells[i] = cell
+      }
+      print cells[2] "\t" cells[3] "\t" cells[4] "\t" cells[5] "\t" cells[6]
+      count += 1
+      next
+    }
+    /^\|/ { bad = 1 }
+    END { if (!header || bad || count == 0) exit 1 }
+  ' "$file"
+}
+
+semantic_digest() {
+  local canonical
+  canonical="$(acceptance_rows)" || {
+    echo "repro-check: acceptance table is missing or malformed" >&2
+    return 1
+  }
+  printf '%s\n' "$canonical" | git hash-object --stdin
+}
+
+verify_manifest_semantics() {
+  local manifest="$1" rows table_exec manifest_exec
+  trace_path_safe "$manifest" file || return 1
+  validate_manifest "$manifest" "" allow-legacy-format-only
+  rows="$(acceptance_rows)" || {
+    echo "repro-check: acceptance table is missing or malformed" >&2
+    return 1
+  }
+  table_exec="$(printf '%s\n' "$rows" | awk -F '\t' '$2 != "NON-EXECUTABLE" { print $3 "\t" $4 "\t" $5 }' | LC_ALL=C sort)"
+  manifest_exec="$(awk -F '\t' '
+    NR > 1 {
+      pair = length($3) ":" $3 ":" $6
+      latest_check[pair] = $6
+      latest_argv[pair] = $7
+      latest_expect[pair] = $8
+    }
+    END {
+      for (pair in latest_check) print latest_check[pair] "\t" latest_argv[pair] "\t" latest_expect[pair]
+    }
+  ' "$manifest" | LC_ALL=C sort)"
+  if [ "$table_exec" = "$manifest_exec" ]; then
+    return 0
+  fi
+  echo "repro-check: acceptance table semantics do not match checkpoint manifest" >&2
+  return 1
 }
 
 do_checkpoint() {
@@ -477,8 +568,8 @@ do_checkpoint() {
   case "$reason" in -) kind=CHECKPOINT;; CHECK_WRONG|AC_CHANGED_BY_USER) kind=AMEND;; *) echo "repro-check: invalid amendment reason (use CHECK_WRONG or AC_CHANGED_BY_USER)" >&2; exit 2;; esac
   case "$base" in ''|-*) echo "repro-check: --base must name a commit" >&2; exit 2;; esac
   git rev-parse --verify --quiet "$base^{commit}" >/dev/null || { echo "repro-check: --base does not resolve to a commit" >&2; exit 2; }
-  if has_bad_field "$argv" || has_bad_field "$expect"; then
-    echo "repro-check: manifest fields cannot contain tabs or newlines" >&2
+  if has_bad_control "$argv" || has_bad_control "$expect"; then
+    echo "repro-check: manifest fields cannot contain control bytes" >&2
     exit 2
   fi
   trace_for
@@ -498,15 +589,17 @@ do_checkpoint() {
   if [ "$kind" = AMEND ]; then
     # An amendment may be the next step in reconciling two same-path checks
     # that captured different bytes. Strict verification still rejects the
-    # intermediate manifest; permit only this targeted append to proceed.
-    validate_manifest "$manifest" allow-conflicts
+    # intermediate manifest; permit only this targeted append to proceed. The
+    # legacy FORMAT_ONLY exception is validation-only: the reason parser above
+    # still rejects a newly requested FORMAT_ONLY amendment.
+    validate_manifest "$manifest" allow-conflicts allow-legacy-format-only
   else
     validate_manifest "$manifest"
   fi
   seq="$(awk 'END {print NR - 1}' "$manifest")"
   for path in "$@"; do
     is_inside_root "$path" || { echo "repro-check: checkpoint path must be repo-relative without ..: $path" >&2; exit 2; }
-    has_bad_field "$path" && { echo "repro-check: checkpoint path cannot contain tabs or newlines" >&2; exit 2; }
+    has_bad_path "$path" && { echo "repro-check: checkpoint path cannot contain control bytes" >&2; exit 2; }
     [ -f "$root/$path" ] || { echo "repro-check: checkpoint path must be a file: $path" >&2; exit 2; }
     # Re-running the sanctioned `checkpoint` command on an already-frozen pair
     # would append a fresh CHECKPOINT row that last-writer-wins re-baselines a
@@ -548,7 +641,7 @@ do_verify() {
   # Iterating only the surviving rows would silently drop a frozen check when a
   # row is deleted OR the tail is truncated, so structure - header count, seq
   # run, field count - is proven before any row is replayed.
-  validate_manifest "$manifest"
+  validate_manifest "$manifest" "" allow-legacy-format-only
   while IFS=$'\t' read -r path old check_id; do
     if [ -z "$path" ] || ! is_inside_root "$path" || ! valid_id "$check_id"; then
       echo "repro-check: checkpoint manifest contains an unsafe path or invalid check id" >&2
@@ -572,6 +665,25 @@ do_verify() {
   [ "$changed" -eq 0 ] || exit 1
 }
 
+do_verify_semantics() {
+  local manifest
+  trace_dir=""; slug=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --slug) [ "$#" -ge 2 ] || usage; slug="$2"; shift 2;;
+      --trace-dir) [ "$#" -ge 2 ] || usage; trace_dir="$2"; shift 2;;
+      *) usage;;
+    esac
+  done
+  valid_slug "$slug" || { echo "repro-check: invalid slug" >&2; exit 2; }
+  trace_for
+  set_trace_root
+  manifest="$trace_dir/repro/checkpoint.manifest"
+  trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
+  verify_manifest_semantics "$manifest"
+  echo "semantics: OK"
+}
+
 state_value() {
   local key="$1" state_file="$trace_dir/state.md"
   [ -n "$trace_dir" ] || state_file="$root/.agents/issue-traces/$slug/state.md"
@@ -581,12 +693,13 @@ state_value() {
 }
 
 receipt_for() {
-  local manifest="$1" digest tree
+  local manifest="$1" digest semantics tree
   trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or unsafe" >&2; exit 2; }
   digest="$(git hash-object --no-filters "$manifest")"
+  semantics="$(semantic_digest)" || exit 2
   tree="$(state_value checkpoint-tree-id)"
   is_sha1 "$tree" || { echo "repro-check: state.md has no valid checkpoint-tree-id" >&2; exit 2; }
-  printf 'issue-tracer-checkpoint-v1 slug=%s manifest=%s tree=%s\n' "$slug" "$digest" "$tree"
+  printf 'issue-tracer-checkpoint-v1 slug=%s manifest=%s semantics=%s tree=%s\n' "$slug" "$digest" "$semantics" "$tree"
 }
 
 do_anchor() {
@@ -604,12 +717,16 @@ do_anchor() {
   set_trace_root
   manifest="$trace_dir/repro/checkpoint.manifest"
   trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
-  do_verify --slug "$slug" --trace-dir "$trace_dir"
+  # Verification diagnostics are intentionally kept on stderr by do_verify;
+  # anchor's stdout is a machine-readable, single-line receipt for reviewers
+  # to copy without filtering replay output.
+  do_verify --slug "$slug" --trace-dir "$trace_dir" >/dev/null
+  verify_manifest_semantics "$manifest" >/dev/null
   receipt_for "$manifest"
 }
 
 do_verify_anchor() {
-  local receipt="" manifest expected_digest expected_tree parsed_slug parsed_manifest parsed_tree
+  local receipt="" manifest expected_digest expected_semantics expected_tree parsed_slug parsed_manifest parsed_semantics parsed_tree
   trace_dir=""; slug=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -621,12 +738,13 @@ do_verify_anchor() {
   done
   valid_slug "$slug" || { echo "repro-check: invalid slug" >&2; exit 2; }
   case "$receipt" in *$'\n'*|*$'\r'*|*$'\t'*) echo "repro-check: anchor receipt must be one single line" >&2; exit 2;; esac
-  if ! printf '%s\n' "$receipt" | grep -Eq '^issue-tracer-checkpoint-v1 slug=[a-z0-9-]+ manifest=[0-9a-f]{40} tree=[0-9a-f]{40}$'; then
+  if ! printf '%s\n' "$receipt" | grep -Eq '^issue-tracer-checkpoint-v1 slug=[a-z0-9-]+ manifest=[0-9a-f]{40} semantics=[0-9a-f]{40} tree=[0-9a-f]{40}$'; then
     echo "repro-check: malformed anchor receipt" >&2
     exit 2
   fi
   parsed_slug="${receipt#*slug=}"; parsed_slug="${parsed_slug%% manifest=*}"
-  parsed_manifest="${receipt#*manifest=}"; parsed_manifest="${parsed_manifest%% tree=*}"
+  parsed_manifest="${receipt#*manifest=}"; parsed_manifest="${parsed_manifest%% semantics=*}"
+  parsed_semantics="${receipt#*semantics=}"; parsed_semantics="${parsed_semantics%% tree=*}"
   parsed_tree="${receipt##* tree=}"
   [ "$parsed_slug" = "$slug" ] || { echo "repro-check: anchor receipt slug does not match --slug" >&2; exit 2; }
   trace_for
@@ -635,9 +753,12 @@ do_verify_anchor() {
   trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest missing or invalid" >&2; exit 2; }
   do_verify --slug "$slug" --trace-dir "$trace_dir"
   trace_path_safe "$manifest" file || { echo "repro-check: checkpoint manifest became unsafe" >&2; exit 2; }
+  verify_manifest_semantics "$manifest" >/dev/null
   expected_digest="$(git hash-object --no-filters "$manifest")"
+  expected_semantics="$(semantic_digest)"
   expected_tree="$(state_value checkpoint-tree-id)"
   [ "$expected_digest" = "$parsed_manifest" ] || { echo "repro-check: anchor manifest digest does not match checkpoint manifest" >&2; exit 1; }
+  [ "$expected_semantics" = "$parsed_semantics" ] || { echo "repro-check: anchor semantic digest does not match acceptance table" >&2; exit 1; }
   [ "$expected_tree" = "$parsed_tree" ] || { echo "repro-check: anchor tree does not match state.md checkpoint-tree-id" >&2; exit 1; }
 }
 
@@ -646,6 +767,7 @@ case "$command" in
   run) do_run "$@";;
   checkpoint) do_checkpoint "$@";;
   verify-checkpoint) do_verify "$@";;
+  verify-semantics) do_verify_semantics "$@";;
   anchor) do_anchor "$@";;
   verify-anchor) do_verify_anchor "$@";;
   *) usage;;

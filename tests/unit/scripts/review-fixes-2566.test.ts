@@ -314,6 +314,51 @@ describe('repro-check.sh check-id validation (#2566)', () => {
 	});
 });
 
+describe('repro-check.sh manifest path diagnostics (#2566)', () => {
+	test('rejects C0/DEL bytes before a manifest path reaches diagnostics', () => {
+		const repo = makeRepo('review-fixes-2566-control-path-');
+		const trace = makeTrace(repo, 'issue-control-path');
+		const base = git(repo, 'rev-parse', 'HEAD');
+		const unsafePath = `subject.txt${String.fromCharCode(0x1b)}[31m`;
+
+		const checkpoint = run(REPRO_CHECK, repo, [
+			'checkpoint',
+			'--slug',
+			'issue-control-path',
+			'--id',
+			'C1',
+			'--argv',
+			'command',
+			'--expect',
+			'-',
+			'--base',
+			base,
+			unsafePath,
+		]);
+		expect(checkpoint.code, `${checkpoint.out}\n${checkpoint.err}`).toBe(2);
+		expect(checkpoint.err).toContain(
+			'checkpoint path cannot contain control bytes',
+		);
+		expect(checkpoint.err).not.toContain(unsafePath);
+
+		const blob = git(repo, 'hash-object', 'subject.txt');
+		fs.writeFileSync(
+			path.join(trace, 'repro', 'checkpoint.manifest'),
+			`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\t${unsafePath}\t${blob}\t100644\tC1\tcommand\t-\t${base}\t-\n`,
+		);
+		const verified = run(REPRO_CHECK, repo, [
+			'verify-checkpoint',
+			'--slug',
+			'issue-control-path',
+		]);
+		expect(verified.code, `${verified.out}\n${verified.err}`).toBe(2);
+		expect(verified.err).toContain(
+			'checkpoint manifest contains a path with control bytes',
+		);
+		expect(verified.err).not.toContain(unsafePath);
+	});
+});
+
 describe('trace-init.sh old-Git fallback (#2566)', () => {
 	test('proves the shim rejected --path-format before fallback succeeded', () => {
 		const main = makeRepo('review-fixes-2566-old-git-');

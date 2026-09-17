@@ -72,7 +72,7 @@ function reproduction(dir: string, rows: string) {
 function manifest(dir: string, paths = ['subject.txt']) {
 	fs.writeFileSync(
 		path.join(dir, 'repro/checkpoint.manifest'),
-		`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\t${paths[0]}\t${'a'.repeat(40)}\t100644\tC1\tcmd\t-\t${'b'.repeat(40)}\t-\n`,
+		`# issue-tracer checkpoint manifest v1 rows=1\n1\tCHECKPOINT\t${paths[0]}\t${'a'.repeat(40)}\t100644\tC1\tcmd\tfail\t${'b'.repeat(40)}\t-\n`,
 	);
 }
 function replaceTree(dir: string, tree: string) {
@@ -141,6 +141,52 @@ describe('trace-check.sh later phases', () => {
 		fs.rmSync(path.join(dir, 'repro/checkpoint.manifest'));
 		result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
 		expect(result.out).toContain('FAIL checkpoint-manifest');
+	}, 20_000);
+
+	test('phase 2.5 normalizes CRLF tables and rejects malformed/control cells before diagnostics', () => {
+		const worktree = repo();
+		const dir = setup(worktree);
+		const tree = git(worktree, 'rev-parse', 'HEAD^{tree}');
+		reproduction(
+			dir,
+			'| AC1 | DISCRIMINATING | C1 | cmd | failure | RED | GREEN | evidence |\n| AC2 | NON-EXECUTABLE | DOCS_ONLY | - | - | - | pending | docs |',
+		);
+		replaceTree(dir, tree);
+		manifest(dir);
+		fs.writeFileSync(path.join(dir, 'repro/C1.base.log'), 'failure\n');
+		const reproductionPath = path.join(dir, '02-reproduction.md');
+		fs.writeFileSync(
+			reproductionPath,
+			fs.readFileSync(reproductionPath, 'utf8').replace(/\n/g, '\r\n'),
+		);
+		let result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
+		expect(result.code, result.out).toBe(0);
+		expect(result.out).toContain('OK acceptance-table');
+
+		const malformed = fs
+			.readFileSync(reproductionPath, 'utf8')
+			.replace(
+				'| AC1 | DISCRIMINATING | C1 | cmd | failure | RED | GREEN | evidence |',
+				'| AC1 | DISCRIMINATING | C1 | cmd | failure | RED | GREEN | evidence',
+			);
+		fs.writeFileSync(reproductionPath, malformed);
+		result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(
+			'FAIL acceptance-table: each row must have exactly 10 pipe columns and no control bytes',
+		);
+
+		const unsafe = malformed.replace(
+			'C1 | cmd',
+			`C1${String.fromCharCode(0x1b)} | cmd`,
+		);
+		fs.writeFileSync(reproductionPath, unsafe);
+		result = run(worktree, ['phase', '2.5', '--slug', 'issue-1']);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain(
+			'FAIL acceptance-table: each row must have exactly 10 pipe columns and no control bytes',
+		);
+		expect(result.out).not.toContain(String.fromCharCode(0x1b));
 	}, 20_000);
 
 	test('phase 2.5 rejects an unmanifested checkpoint diff and phase 4 catches missing checks and changed checkpoint files', () => {

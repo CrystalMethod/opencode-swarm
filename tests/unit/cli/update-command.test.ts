@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import {
 	evictLockFiles,
 	isSafeCachePath,
+	isSafeInstallBackupPath,
 	isSafeLockFilePath,
 	isSafePluginConfigPath,
 	isSafePromptsDir,
@@ -715,5 +716,45 @@ describe('isSafePluginConfigPath', () => {
 		expect(isSafePluginConfigPath(process.env.HOME || '/home/user')).toBe(
 			false,
 		);
+	});
+});
+
+describe('configured config-root aliases', () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = await realpath(
+			await mkdtemp(join(tmpdir(), 'opencode-swarm-config-alias-')),
+		);
+	});
+
+	afterEach(async () => {
+		if (existsSync(tempDir)) {
+			await rm(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	test('accepts canonical cleanup targets when OPENCODE_CONFIG_DIR is a differently named symlink alias', async () => {
+		const configuredRoot = join(tempDir, 'host-config-root');
+		const configuredAlias = join(tempDir, 'custom-config-alias');
+		const symlinkType = process.platform === 'win32' ? 'junction' : 'dir';
+		await mkdir(configuredRoot, { recursive: true });
+		await symlink(configuredRoot, configuredAlias, symlinkType);
+
+		const promptsDir = join(configuredAlias, 'opencode-swarm');
+		const pluginConfig = join(configuredAlias, 'opencode-swarm.json');
+		const installBackup = join(
+			configuredAlias,
+			'opencode.swarm-install-backup.json',
+		);
+		await mkdir(promptsDir, { recursive: true });
+		await writeFile(pluginConfig, '{}');
+		await writeFile(installBackup, '{}');
+
+		// Before the fix, the canonical parent basename check rejected all three
+		// targets before it compared the canonical parent to the configured alias.
+		expect(isSafePromptsDir(promptsDir, configuredAlias)).toBe(true);
+		expect(isSafePluginConfigPath(pluginConfig, configuredAlias)).toBe(true);
+		expect(isSafeInstallBackupPath(installBackup, configuredAlias)).toBe(true);
 	});
 });
