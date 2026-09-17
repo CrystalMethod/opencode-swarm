@@ -501,6 +501,16 @@ export function evaluateBashPortability(
 			fileHasViolation = true;
 		}
 
+		if (/(^|[^$A-Za-z0-9_])\{[A-Za-z_][A-Za-z0-9_]*\}[<>]/.test(codeOnly)) {
+			messages.push(
+				`ERROR: ${file} uses automatic brace file-descriptor allocation ({var}>), a bash 4+ redirection feature — not supported on macOS's bash 3.2.`,
+			);
+			messages.push(
+				'       Use a fixed descriptor or a Bash 3.2-compatible redirection instead.',
+			);
+			fileHasViolation = true;
+		}
+
 		if (detectSetU(codeOnly)) {
 			for (const arrName of extractEmptyInitArrayNames(codeOnly)) {
 				const barePattern = `"${'${'}${arrName}[@]}"`;

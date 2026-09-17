@@ -345,7 +345,7 @@ append_manifest_row() {
     awk 'NR > 1' "$file"
     printf '%s\n' "$row"
   } >&"$exclusive_fd"
-  exec {exclusive_fd}>&-
+  close_exclusive_target
   mv "$temp" "$file"
 }
 
@@ -363,24 +363,57 @@ refuse_nonregular_target() {
   fi
 }
 
-# Open a new regular file and retain the descriptor.  `set -C` makes the
-# creation and open use an exclusive O_EXCL-style operation, so a symlink
-# planted after refuse_nonregular_target cannot be followed by a later shell
-# redirection.  Callers write through $exclusive_fd and close it before
-# publishing the path with rename/mv.  The parent directory is checked by the
-# caller; portable shell code cannot hold an open directory descriptor across
-# all supported Bash/MSYS environments, so the final rename remains the
-# containment boundary.
+# Open a new regular file and retain a descriptor. `exec {var}>...` would be
+# convenient, but automatic brace descriptor allocation is Bash 4+ syntax and
+# breaks the system Bash 3.2 shipped with macOS. Probe a small reserved range
+# of descriptors instead; callers write through $exclusive_fd and close it
+# before publishing the path with rename/mv. The parent directory is checked
+# by the caller; portable shell code cannot hold an open directory descriptor
+# across all supported Bash/MSYS environments, so the final rename remains
+# the containment boundary.
 open_exclusive_target() {
-  local path="$1"
+  local path="$1" fd
   refuse_nonregular_target "$path"
   set -C
-  if exec {exclusive_fd}>"$path"; then
-    set +C
-    return 0
-  fi
+  for fd in 9 10 11 12 13 14 15 16 17 18 19; do
+    # A successful duplication means the descriptor is already in use; leave
+    # it untouched and try the next reserved descriptor.
+    if true >&"$fd" 2>/dev/null; then
+      continue
+    fi
+    case "$fd" in
+      9) exec 9>"$path" && exclusive_fd=9 && set +C && return 0 ;;
+      10) exec 10>"$path" && exclusive_fd=10 && set +C && return 0 ;;
+      11) exec 11>"$path" && exclusive_fd=11 && set +C && return 0 ;;
+      12) exec 12>"$path" && exclusive_fd=12 && set +C && return 0 ;;
+      13) exec 13>"$path" && exclusive_fd=13 && set +C && return 0 ;;
+      14) exec 14>"$path" && exclusive_fd=14 && set +C && return 0 ;;
+      15) exec 15>"$path" && exclusive_fd=15 && set +C && return 0 ;;
+      16) exec 16>"$path" && exclusive_fd=16 && set +C && return 0 ;;
+      17) exec 17>"$path" && exclusive_fd=17 && set +C && return 0 ;;
+      18) exec 18>"$path" && exclusive_fd=18 && set +C && return 0 ;;
+      19) exec 19>"$path" && exclusive_fd=19 && set +C && return 0 ;;
+    esac
+  done
   set +C
   return 1
+}
+
+close_exclusive_target() {
+  case "${exclusive_fd:-}" in
+    9) exec 9>&- ;;
+    10) exec 10>&- ;;
+    11) exec 11>&- ;;
+    12) exec 12>&- ;;
+    13) exec 13>&- ;;
+    14) exec 14>&- ;;
+    15) exec 15>&- ;;
+    16) exec 16>&- ;;
+    17) exec 17>&- ;;
+    18) exec 18>&- ;;
+    19) exec 19>&- ;;
+  esac
+  exclusive_fd=""
 }
 
 bound_log() {
@@ -390,7 +423,7 @@ bound_log() {
   temp="$log.truncate.tmp"
   open_exclusive_target "$temp" || { echo "repro-check: could not create log temp file safely" >&2; exit 2; }
   { head -c "$kept" "$log"; printf '\n[... truncated %s bytes ...]\n' "$((total - (kept * 2)))"; tail -c "$kept" "$log"; } >&"$exclusive_fd"
-  exec {exclusive_fd}>&-
+  close_exclusive_target
   mv "$temp" "$log"
 }
 
@@ -430,7 +463,7 @@ run_one() {
     wait "$pid" 2>/dev/null || status=$?
     [ "$timed" -eq 0 ] || status=124
   fi
-  exec {exclusive_fd}>&-
+  close_exclusive_target
   trace_path_safe "$parent" dir || { echo "repro-check: log parent became unsafe" >&2; exit 2; }
   refuse_nonregular_target "$log"
   mv "$temp" "$log"
@@ -715,7 +748,7 @@ do_checkpoint() {
   if [ ! -f "$manifest" ]; then
     open_exclusive_target "$manifest" || { echo "repro-check: could not create checkpoint manifest safely" >&2; exit 2; }
     printf '# issue-tracer checkpoint manifest v1 rows=0\n' >&"$exclusive_fd"
-    exec {exclusive_fd}>&-
+    close_exclusive_target
   fi
   # validate_manifest owns the header check: it is strictly stronger than the
   # old `grep -Fx` (which matched the string on ANY line) and additionally

@@ -87,6 +87,19 @@ describe('check-bash-portability', () => {
 		expect(result.messages.join('\n')).toContain('`mapfile`/`readarray`');
 	});
 
+	test('flags automatic brace file-descriptor allocation', () => {
+		const result = evaluateBashPortability([
+			{
+				file: 'scripts/fd.sh',
+				content: 'exec {fd}>"$path"\nprintf ok >&"$fd"\n',
+			},
+		]);
+		expect(result.exitCode).toBe(1);
+		expect(result.messages.join('\n')).toContain(
+			'automatic brace file-descriptor allocation',
+		);
+	});
+
 	test('flags bare empty-array expansion under set -u and ignores the guarded form', () => {
 		const failing = evaluateBashPortability([
 			{
