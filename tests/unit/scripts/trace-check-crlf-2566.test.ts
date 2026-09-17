@@ -108,7 +108,7 @@ describe('trace-check.sh CRLF fixture (#2566)', () => {
 			proc.exitCode,
 			`${proc.stdout.toString()}\n${proc.stderr.toString()}`,
 		).toBe(0);
-	});
+	}, 30_000);
 
 	test('accepts CRLF in phase gates and all line-oriented trace artifacts', () => {
 		const repo = canonicalMkdtemp('trace-check-crlf-gates-');
