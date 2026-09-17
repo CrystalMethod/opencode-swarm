@@ -90,6 +90,30 @@ function makeTrace(repo: string, slug: string, phase = '0'): string {
 }
 
 describe('issue-tracer v3 hardening coverage', () => {
+	test('phase 4 invokes the non-executable repro-check helper through bash', () => {
+		const source = fs.readFileSync(TRACE_CHECK, 'utf8');
+		const phase4Start = source.indexOf('phase4() {');
+		const phase42Start = source.indexOf('phase42() {', phase4Start);
+		expect(phase4Start).toBeGreaterThanOrEqual(0);
+		expect(phase42Start).toBeGreaterThan(phase4Start);
+		const phase4 = source.slice(phase4Start, phase42Start);
+
+		// Before this regression fix, phase 4 executed repro-check.sh directly;
+		// its repository mode is 100644, so POSIX hosts returned EACCES/126.
+		expect(phase4).toContain(
+			'bash "$script_dir/repro-check.sh" verify-semantics',
+		);
+		expect(phase4).toContain(
+			'bash "$script_dir/repro-check.sh" verify-checkpoint',
+		);
+		expect(phase4).not.toContain(
+			'if "$script_dir/repro-check.sh" verify-semantics',
+		);
+		expect(phase4).not.toContain(
+			'if "$script_dir/repro-check.sh" verify-checkpoint',
+		);
+	});
+
 	test('accepts both default and explicit in-root trace directories', () => {
 		const repo = makeRepo();
 		makeTrace(repo, 'issue-default');

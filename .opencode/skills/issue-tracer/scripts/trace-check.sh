@@ -25,6 +25,11 @@ usage() { echo "usage: trace-check.sh {tree-id|handshake|phase <phase> --slug <s
 valid_slug() { case "$1" in ''|*[!a-z0-9-]*) return 1;; *) return 0;; esac; }
 trim() { printf '%s' "$1" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 
+# Markdown trace artifacts are commonly authored on Windows.  Keep every
+# line-oriented parser below independent of the file's record separator while
+# preserving embedded control bytes for the explicit validation paths.
+normalize_terminal_cr() { sed 's/\r$//' "$1"; }
+
 # Validate the caller-selected trace directory before opening state.md.  The
 # lexical prefix check rejects absolute escapes and dot components before any
 # canonicalization (which would otherwise turn an escaped path back into an
@@ -137,14 +142,14 @@ tree_id() {
 
 handshake() {
   local version candidate value shim verdict worst="MATCH"
-  version="$(awk '/^metadata:/{in_metadata=1; next} in_metadata && /^  version:/{sub(/^  version:[[:space:]]*/, ""); print; exit}' "$root/.opencode/skills/issue-tracer/SKILL.md" 2>/dev/null || true)"
+  version="$(awk '{ sub(/\r$/, "", $0) } /^metadata:/{in_metadata=1; next} in_metadata && /^  version:/{sub(/^  version:[[:space:]]*/, ""); print; exit}' "$root/.opencode/skills/issue-tracer/SKILL.md" 2>/dev/null || true)"
   [ -n "$version" ] || version="unknown"
   for candidate in "${HOME:-}/.claude/skills/issue-tracer/SKILL.md" "${HOME:-}/.codex/skills/issue-tracer/SKILL.md" "${HOME:-}/.agents/skills/issue-tracer/SKILL.md" "${HOME:-}/.zcode/skills/issue-tracer/SKILL.md"; do
     if [ ! -f "$candidate" ]; then
       verdict="ABSENT"
     else
-      value="$(grep -m1 '^  version:' "$candidate" 2>/dev/null | sed 's/^  version:[[:space:]]*//' || true)"
-      shim="$(grep -m1 '^shim:' "$candidate" 2>/dev/null | sed 's/^shim:[[:space:]]*//' || true)"
+      value="$(normalize_terminal_cr "$candidate" 2>/dev/null | grep -m1 '^  version:' | sed 's/^  version:[[:space:]]*//' || true)"
+      shim="$(normalize_terminal_cr "$candidate" 2>/dev/null | grep -m1 '^shim:' | sed 's/^shim:[[:space:]]*//' || true)"
       if [ "$value" = "$version" ] && [ "$shim" = "true" ]; then verdict="SHIM"
       elif [ "$value" = "$version" ]; then verdict="MATCH"
       else verdict="STALE:$candidate"; fi
@@ -163,9 +168,13 @@ rule_ok() { echo "OK $1"; }
 rule_bad() {
   if [ "$legacy" -eq 1 ]; then echo "WARN $1: $2"; else echo "FAIL $1: $2"; failed=1; fi
 }
+state_lines() {
+  trace_path_safe "$state" file || return 0
+  normalize_terminal_cr "$state"
+}
 state_value() {
   trace_path_safe "$state" file || return 0
-  awk -F ': ' -v key="$1" '$1 == key { print substr($0, length(key) + 3); exit }' "$state" 2>/dev/null || true
+  state_lines | awk -F ': ' -v key="$1" '$1 == key { print substr($0, length(key) + 3); exit }' 2>/dev/null || true
 }
 is_hex() { case "$1" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) return 0;; *) return 1;; esac; }
 
@@ -203,7 +212,7 @@ EOF
     [ -z "$commit" ] || [ "$c" = "$commit" ] || continue
     [ -z "$treeid" ] || [ "$t" = "$treeid" ] || continue
     return 0
-  done < "$state"
+  done < <(state_lines)
   return 1
 }
 
@@ -224,6 +233,7 @@ artifact_verdict_approved() {
   local file="$1"
   trace_path_safe "$file" file || return 1
   awk '
+    { sub(/\r$/, "", $0) }
     /^## Verdict$/ { infield = 1; next }
     /^## / { infield = 0 }
     infield {
@@ -255,6 +265,7 @@ artifact_identity() {
   local file="$1" section
   trace_path_safe "$file" file || return 1
   section="$(awk '
+    { sub(/\r$/, "", $0) }
     /^## Reviewed SHA \/ diff hash$/ { infield = 1; next }
     /^## / { infield = 0 }
     infield { print }
@@ -303,6 +314,7 @@ recurrence_justification_ok() {
   local file="$1"
   trace_path_safe "$file" file || return 1
   awk '
+    { sub(/\r$/, "", $0) }
     /^## Justification$/ { infield = 1; next }
     /^## / { infield = 0 }
     infield {
@@ -327,9 +339,9 @@ phase0() {
   trace_path_safe "$state" file || return
   keys='protocol phase tier classification base-ref base-sha freshness phase0-tree-id checkpoint-tree-id handshake tools merge next-action'
   for key in $keys; do
-    line="$(grep -n "^$key: " "$state" 2>/dev/null | cut -d: -f1 | head -n1 || true)"
+    line="$(state_lines | grep -n "^$key: " | cut -d: -f1 | head -n1 || true)"
     if [ -z "$line" ]; then rule_bad "state-$key" "missing"; continue; fi
-    if [ "$(grep -c "^$key: " "$state" 2>/dev/null || true)" -ne 1 ]; then rule_bad "state-$key" "must appear once"; fi
+    if [ "$(state_lines | grep -c "^$key: " || true)" -ne 1 ]; then rule_bad "state-$key" "must appear once"; fi
     if [ "$line" -le "$previous" ]; then rule_bad "state-order" "$key is out of order"; fi
     previous="$line"
   done
@@ -428,7 +440,7 @@ phase1() {
   acceptance_ids | grep -q . && rule_ok acceptance-criteria || rule_bad acceptance-criteria "missing AC checkbox"
   value="$(state_value classification)"
   case "$value" in VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE) ;; *) rule_bad classification "invalid state value"; return;; esac
-  if grep -A100 '^## Classification$' "$file" 2>/dev/null | grep -Eq 'VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE' && grep -A100 '^## Classification$' "$file" | grep -q "$value"; then rule_ok classification
+  if normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -Eq 'VALID|AMBIGUOUS|ALREADY_FIXED|NOT_A_BUG|FEATURE' && normalize_terminal_cr "$file" | grep -A100 '^## Classification$' | grep -q "$value"; then rule_ok classification
   else rule_bad classification "artifact does not match state"; fi
 }
 
@@ -436,8 +448,8 @@ phase2() {
   local file="$trace/02-reproduction.md"
   check_headings "$file" '## Commands Tried' '## Reproduction Verdict'
   trace_path_safe "$file" file || return
-  grep -q '^```text$' "$file" 2>/dev/null && rule_ok reproduction-text-block || rule_bad reproduction-text-block "missing"
-  grep -Eq '^- Exit code: [0-9]+' "$file" 2>/dev/null && rule_ok reproduction-exit-code || rule_bad reproduction-exit-code "missing"
+  normalize_terminal_cr "$file" | grep -q '^```text$' && rule_ok reproduction-text-block || rule_bad reproduction-text-block "missing"
+  normalize_terminal_cr "$file" | grep -Eq '^- Exit code: [0-9]+' && rule_ok reproduction-exit-code || rule_bad reproduction-exit-code "missing"
   if is_already_fixed; then check_headings "$file" '## Fixing Change'; fi
 }
 
@@ -486,7 +498,7 @@ EOF
   # that repro-check refuses a header with no count; awk rather than a
   # `head | grep -q` pipeline so no SIGPIPE can decide the verdict, and the
   # END guard makes an empty manifest fail instead of vacuously passing.
-  trace_path_safe "$manifest_path" file && awk 'NR == 1 { if ($0 ~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) exit 0; exit 1 } END { if (NR == 0) exit 1 }' "$manifest_path" && rule_ok checkpoint-manifest || { rule_bad checkpoint-manifest "missing or invalid"; return; }
+  trace_path_safe "$manifest_path" file && awk 'NR == 1 { sub(/\r$/, "", $0); if ($0 ~ /^# issue-tracer checkpoint manifest v1 rows=[0-9]+$/) exit 0; exit 1 } END { if (NR == 0) exit 1 }' "$manifest_path" && rule_ok checkpoint-manifest || { rule_bad checkpoint-manifest "missing or invalid"; return; }
   # A checkpoint tree has one effective blob per path. Multiple acceptance
   # checks may share a path when they captured identical bytes; those rows can
   # be deduplicated while deriving the tree. Divergent effective blobs for one
@@ -532,7 +544,7 @@ phase3() {
   check_headings "$trace/06-critic-review.md" '## Reviewed SHA / diff hash' '## Verdict' '## Check replay'
   trace_path_safe "$trace/05-fix-plan.md" file || return
   trace_path_safe "$trace/06-critic-review.md" file || return
-  grep -Eq '^## Round [0-9]+$' "$trace/06-critic-review.md" 2>/dev/null && rule_ok heading-round || rule_bad heading-round "missing ## Round N heading in $(basename "$trace/06-critic-review.md")"
+  awk '{ sub(/\r$/, "", $0); if ($0 ~ /^## Round [0-9]+$/) found=1 } END { exit !found }' "$trace/06-critic-review.md" 2>/dev/null && rule_ok heading-round || rule_bad heading-round "missing ## Round N heading in $(basename "$trace/06-critic-review.md")"
   artifact_verdict_approved "$trace/06-critic-review.md" && rule_ok critic-verdict || rule_bad critic-verdict "06-critic-review.md Verdict section must be exactly APPROVE"
   trace_path_safe "$trace/07-approved-plan.md" file && rule_ok approved-plan || rule_bad approved-plan "missing or unsafe"
   # The checkpoint tree may be dirty relative to HEAD at Phase 3 (the fix is
@@ -546,7 +558,7 @@ phase3() {
 
 executable_ids() {
   local file="$trace/02-reproduction.md"
-  grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' "$file" 2>/dev/null | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 != "NON-EXECUTABLE") print $4}'
+  normalize_terminal_cr "$file" | grep -E '^\|[[:space:]]*AC[0-9]+[[:space:]]*\|' | awk -F'|' '{gsub(/^[ \t]+|[ \t]+$/, "", $3); gsub(/^[ \t]+|[ \t]+$/, "", $4); if ($3 != "NON-EXECUTABLE") print $4}'
 }
 manifest_has_check_id() {
   local manifest="$1" want="$2"
@@ -563,7 +575,7 @@ phase4() {
   trace_path_safe "$trace/02-reproduction.md" file || { rule_bad acceptance-source "missing or unsafe reproduction artifact"; return; }
   trace_path_safe "$trace/repro" dir || { rule_bad recurrence-manifest "missing or unsafe repro directory"; return; }
   trace_path_safe "$manifest" file || { rule_bad recurrence-manifest "missing or unsafe checkpoint manifest"; return; }
-  while IFS= read -r id; do [ -z "$id" ] || { grep -Fx "### Check $id" "$file" >/dev/null 2>&1 && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"; }; done < <(executable_ids)
+  while IFS= read -r id; do [ -z "$id" ] || { normalize_terminal_cr "$file" | grep -Fx "### Check $id" >/dev/null && rule_ok "check-block-$id" || rule_bad "check-block-$id" "missing"; }; done < <(executable_ids)
   while IFS= read -r id; do
     [ -z "$id" ] || { manifest_has_check_id "$manifest" "$id" && rule_ok "manifest-check-$id" || rule_bad "manifest-check-$id" "executable acceptance check is missing from the effective manifest"; }
   done < <(executable_ids)
@@ -573,22 +585,22 @@ phase4() {
     rule_bad acceptance-manifest-semantics "acceptance table semantics do not match checkpoint manifest"
   fi
   if "$script_dir/repro-check.sh" verify-checkpoint --slug "$slug" --trace-dir "$trace" >/dev/null 2>&1; then rule_ok checkpoint-verification; else rule_bad checkpoint-verification "verify-checkpoint failed"; fi
-  grep -A100 '^## Deferred-Work Scan$' "$file" 2>/dev/null | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
+  normalize_terminal_cr "$file" | grep -A100 '^## Deferred-Work Scan$' | grep -q '^scan-deferred: clean' && rule_ok deferred-work-scan || rule_bad deferred-work-scan "clean result missing"
 }
 
 phase42() {
   local file="$trace/08a-recurrence-sweep.md" hits rows
   trace_path_safe "$file" file || { rule_bad recurrence-sweep "missing"; return; }
-  if grep -Eq '^no-defect-class: true$' "$file" 2>/dev/null; then
+  if normalize_terminal_cr "$file" | grep -Eq '^no-defect-class: true$'; then
     if recurrence_justification_ok "$file"; then rule_ok recurrence-sweep; else rule_bad recurrence-sweep "fast-path Justification must have non-placeholder text"; fi
     return
   fi
   check_headings "$file" '## Defect Class' '## Predicates and Results' '## Dispositions' '## Guardrail'
-  hits="$(grep -E '^- Predicate.*hits: [0-9]+' "$file" 2>/dev/null | sed -E 's/.*hits: ([0-9]+).*/\1/' | awk '{s += $1} END {print s + 0}')"
-  grep -Eq '^- Predicate.*hits: [0-9]+' "$file" 2>/dev/null && rule_ok recurrence-predicates || rule_bad recurrence-predicates "missing hit counts"
-  rows="$(awk '/^## Dispositions$/{in_table=1; next} /^## /{in_table=0} in_table && /^\|/ && $0 !~ /^\|[ -]*\|/ {n++} END {print n-1}' "$file")"
+  hits="$(normalize_terminal_cr "$file" | grep -E '^- Predicate.*hits: [0-9]+' | sed -E 's/.*hits: ([0-9]+).*/\1/' | awk '{s += $1} END {print s + 0}')"
+  normalize_terminal_cr "$file" | grep -Eq '^- Predicate.*hits: [0-9]+' && rule_ok recurrence-predicates || rule_bad recurrence-predicates "missing hit counts"
+  rows="$(normalize_terminal_cr "$file" | awk '/^## Dispositions$/{in_table=1; next} /^## /{in_table=0} in_table && /^\|/ && $0 !~ /^\|[ -]*\|/ {n++} END {print n-1}')"
   [ "$hits" -eq "$rows" ] && rule_ok recurrence-dispositions || rule_bad recurrence-dispositions "rows ($rows) do not equal hits ($hits)"
-  grep -A100 '^## Guardrail$' "$file" 2>/dev/null | tr '\n' ' ' | grep -Eq '### Check .*RED.*GREEN' && rule_ok recurrence-guardrail || rule_bad recurrence-guardrail "missing RED then GREEN check"
+  normalize_terminal_cr "$file" | grep -A100 '^## Guardrail$' | tr '\n' ' ' | grep -Eq '### Check .*RED.*GREEN' && rule_ok recurrence-guardrail || rule_bad recurrence-guardrail "missing RED then GREEN check"
 }
 
 phase45() {
@@ -611,14 +623,14 @@ phase46() {
   head="$(git rev-parse HEAD)"; tid="$(tree_id)"
   state_gate final-critic APPROVE "$head" "$tid"
   artifact_identity_matches_gate "$file" final-critic "$head" "$tid"
-  while IFS= read -r ac; do grep -A100 '^## Acceptance criteria evidence$' "$file" 2>/dev/null | grep -q "$ac" && rule_ok "final-$ac" || rule_bad "final-$ac" "missing evidence"; done < <(acceptance_ids)
+  while IFS= read -r ac; do normalize_terminal_cr "$file" | grep -A100 '^## Acceptance criteria evidence$' | grep -q "$ac" && rule_ok "final-$ac" || rule_bad "final-$ac" "missing evidence"; done < <(acceptance_ids)
 }
 phase5() {
   if is_already_fixed; then rule_ok obe-subset; return; fi
   local file="$trace/10-pr-body.md" merge_value pr_head_line pr_head_sha
   check_headings "$file" '## Acceptance Criteria -> Evidence' '## Waivers (or none)'
   trace_path_safe "$file" file || return
-  pr_head_line="$(grep -E '^PR head: [0-9a-f]{40}$' "$file" 2>/dev/null | head -n1 || true)"
+  pr_head_line="$(awk '{ sub(/\r$/, "", $0); if ($0 ~ /^PR head: [0-9a-f]{40}$/) { print; exit } }' "$file" 2>/dev/null || true)"
   if [ -z "$pr_head_line" ]; then
     rule_bad pr-head "missing PR head: <40-hex> line"
   else
@@ -636,8 +648,8 @@ merge_check() {
   local file="$trace/10b-merge-approval.md" pr final
   check_headings "$file" '## User approval (verbatim)' '## PR head SHA' '## Final critic reviewed-commit'
   trace_path_safe "$file" file || return
-  pr="$(grep -A3 '^## PR head SHA$' "$file" 2>/dev/null | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
-  final="$(grep -A3 '^## Final critic reviewed-commit$' "$file" 2>/dev/null | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
+  pr="$(normalize_terminal_cr "$file" | grep -A3 '^## PR head SHA$' | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
+  final="$(normalize_terminal_cr "$file" | grep -A3 '^## Final critic reviewed-commit$' | grep -Eo '[0-9a-f]{40}' | head -n1 || true)"
   is_hex "$pr" && [ "$pr" = "$final" ] && rule_ok merge-sha-binding || rule_bad merge-sha-binding "PR and final critic SHA differ"
   state_gate merge-approval RECORDED "" ""
   echo 'NOTE: human-enforced gate; this validator checks presence and binding only'
@@ -680,12 +692,12 @@ if ! trace_path_safe "$state" file; then
   echo "FAIL state: missing $state"
   exit 1
 fi
-protocol_line="$(grep -c '^protocol: ' "$state" 2>/dev/null || true)"
+protocol_line="$(state_lines | grep -c '^protocol: ' || true)"
 protocol_value="$(state_value protocol)"
 if [ "${protocol_line:-0}" -eq 0 ]; then
   # No protocol line at all: legacy v2 ledger unless a v3-only key is present,
   # in which case this is a v3 ledger that had its protocol line stripped.
-  if grep -Eq '^(phase0-tree-id|checkpoint-tree-id|handshake): ' "$state" 2>/dev/null; then
+  if state_lines | grep -Eq '^(phase0-tree-id|checkpoint-tree-id|handshake): '; then
     echo "FAIL state-protocol: missing (v3 ledger without protocol line)"
     exit 1
   fi

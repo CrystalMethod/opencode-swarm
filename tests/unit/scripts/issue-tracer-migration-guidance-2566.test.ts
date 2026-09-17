@@ -10,9 +10,18 @@ const MIGRATION_NOTES = path.resolve(
 describe('issue-tracer v2-to-v3 migration guidance (#2566)', () => {
 	test('preserves the legacy warning, v3 destination, and reinitialization path', () => {
 		const contents = fs.readFileSync(MIGRATION_NOTES, 'utf8');
-		const migrationStart = contents.indexOf('## Migration notes');
+		const migrationHeading = '## Migration notes';
+		const migrationStart = contents.indexOf(migrationHeading);
 		expect(migrationStart).toBeGreaterThanOrEqual(0);
-		const migration = contents.slice(migrationStart);
+		const afterMigrationHeading = contents.slice(
+			migrationStart + migrationHeading.length,
+		);
+		const nextHeadingOffset = afterMigrationHeading.search(/^#{1,6}\s/m);
+		const migrationEnd =
+			nextHeadingOffset === -1
+				? contents.length
+				: migrationStart + migrationHeading.length + nextHeadingOffset;
+		const migration = contents.slice(migrationStart, migrationEnd);
 
 		expect(migration).toContain('.claude/issue-traces/');
 		expect(migration).toContain('.agents/issue-traces/');
