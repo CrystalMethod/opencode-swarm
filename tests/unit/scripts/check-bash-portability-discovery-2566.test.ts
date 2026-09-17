@@ -275,7 +275,7 @@ describe('check-bash-portability discovery failures (#2566)', () => {
 		expect(result.files.map(pathEvidence)).toContain(
 			pathEvidence(unknownShell),
 		);
-		expect(lstatCalls).toContain(unknownShell);
+		expect(lstatCalls.map(pathEvidence)).toContain(pathEvidence(unknownShell));
 	});
 
 	test('fails closed when an unknown directory entry cannot be inspected', async () => {
