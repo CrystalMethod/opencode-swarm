@@ -39,17 +39,19 @@ describe('PR workflow session lifecycle — regression: deleted owner cleanup an
 
 	afterEach(async () => {
 		await plugin?.hooks.dispose?.();
-		// Release the cached project-db handle BEFORE removing the directory
-		// (#2480: a held .swarm/swarm.db WAL handle makes rmSync fail EBUSY on
-		// Windows). closeProjectDb is best-effort and a no-op when no handle is
-		// cached; the DB must be closed by dispose() already, but asserting the
-		// count here also covers the dispose-ordering precondition of the
-		// invariant #7 temp-dir hygiene pattern.
+		// dispose() must already have released the cached project-db handle
+		// (#2480: a held .swarm/swarm.db WAL handle makes directory removal
+		// fail EBUSY on Windows). This assertion proves that dispose-ordering
+		// precondition (invariant #7 temp-dir hygiene) before cleanup runs;
+		// if it fails, cleanup aborts loudly rather than racing a live handle.
 		expect(getOpenProjectDbCount()).toBe(0);
 		_test_exports.resetTrackedStateCache();
 		resetSwarmState();
-		// safeRmRecursive: bounded EBUSY/EPERM/ENOTEMPTY retry (#1782 Windows
-		// AV-handle race class) + refuses targets outside os.tmpdir().
+		// safeRmRecursive is the operative EBUSY mitigation: external handles
+		// (the #1782 Windows AV-handle race class) are invisible to the count
+		// above, so removal retries EBUSY/EPERM/ENOTEMPTY with bounded backoff.
+		// Its internal closeProjectDb is a no-op here (dispose already closed
+		// the DB), and it refuses targets outside os.tmpdir().
 		safeRmRecursive(directory);
 	});
 
