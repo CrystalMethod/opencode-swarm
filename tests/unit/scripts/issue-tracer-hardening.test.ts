@@ -149,6 +149,7 @@ describe('issue-tracer v3 hardening coverage', () => {
 		fs.writeFileSync(
 			path.join(trace, '02-reproduction.md'),
 			[
+				'## Acceptance checks',
 				'| AC | class | check | argv | expect | pre-fix | post-fix | notes |',
 				'| AC1 | DISCRIMINATING | C1 | cmd | fail | RED | GREEN | first |',
 				'| AC2 | PRESERVING | C2 | cmd | - | GREEN | GREEN | second |',
