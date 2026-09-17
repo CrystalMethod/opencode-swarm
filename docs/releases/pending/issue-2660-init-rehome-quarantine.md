@@ -88,7 +88,8 @@ behavior changes.
   `tests/unit/telemetry/init-rehome.test.ts` (its own detection run,
   2026-09-12, coverage-shard 3 on ubuntu-latest); its auto-fix PR #2774
   (branch head `4199ba657`) remains open and adds its own general-ledger
-  entry for the same file plus a macos-ledger entry. When #2774 merges it
+  entry for the same file (its macos-ledger additions are unrelated
+  files). When #2774 merges it
   must deduplicate to a single general-ledger entry for
   `init-rehome.test.ts` (Check 7 requires each entry to carry
   OWNER/EXPIRY; duplicates are functionally deduped for gating by

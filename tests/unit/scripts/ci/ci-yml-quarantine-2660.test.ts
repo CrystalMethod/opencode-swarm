@@ -38,7 +38,7 @@ const INIT_REHOME = 'tests/unit/telemetry/init-rehome.test.ts';
 // (CRLF is normalized first; no trimming — ci.yml's grep/comm matching is
 // exact, so a whitespace-padded entry must fail here just as it silently
 // fails to exclude in CI. No sort -u dedup either: containment checks only
-// need membership, and ci.yml dedupes on the CI side at ci.yml:637.)
+// need membership, and ci.yml dedupes on the CI side at ci.yml:638.)
 function activeEntries(ledgerPath: string): string[] {
 	const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
 	return raw
