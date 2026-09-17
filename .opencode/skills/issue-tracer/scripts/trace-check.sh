@@ -845,11 +845,14 @@ validate_trace_dir "$trace"
 # Use the same canonical spelling that validate_trace_dir checked for all
 # subsequent artifact reads. Windows may accept an existing 8.3 alias for the
 # explicit directory while pwd -P exposes the long spelling; retaining the
-# alias here would make trace_path_safe compare unlike path strings.
-trace="$(cd "$trace" 2>/dev/null && pwd -P)" || {
-  echo "FAIL state: could not resolve canonical trace root $trace" >&2
-  exit 2
-}
+# alias here would make trace_path_safe compare unlike path strings. Preserve
+# the established exit-1 result for a valid-but-absent default trace directory.
+if [ -d "$trace" ]; then
+  trace="$(cd "$trace" 2>/dev/null && pwd -P)" || {
+    echo "FAIL state: could not resolve canonical trace root $trace" >&2
+    exit 2
+  }
+fi
 state="$trace/state.md"
 if [ ! -d "$trace" ]; then
   echo "FAIL state: missing or unsafe trace directory $trace"
