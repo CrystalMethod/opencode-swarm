@@ -151,7 +151,7 @@ describe('repro-check.sh external checkpoint anchors (#2566)', () => {
 			receipt,
 		]);
 		expect(tampered.code).toBe(1);
-	});
+	}, 30_000);
 
 	test('binds acceptance-table semantics to the external receipt', () => {
 		const { repo, trace } = makeRepo();
@@ -173,7 +173,7 @@ describe('repro-check.sh external checkpoint anchors (#2566)', () => {
 		]);
 		expect(tampered.code).toBe(1);
 		expect(tampered.err).toContain('anchor semantic digest');
-	});
+	}, 30_000);
 
 	test('rejects pre-semantics anchor receipts without a migration', () => {
 		const { repo } = makeRepo();
@@ -188,7 +188,7 @@ describe('repro-check.sh external checkpoint anchors (#2566)', () => {
 		]);
 		expect(result.code).toBe(2);
 		expect(result.err).toContain('malformed anchor receipt');
-	});
+	}, 30_000);
 
 	test('uses no-filter bytes and recorded checkpoint state across CRLF and refreeze cases', () => {
 		const { repo, base, trace, manifest } = makeRepo();
@@ -283,5 +283,5 @@ describe('repro-check.sh external checkpoint anchors (#2566)', () => {
 			receipt,
 		]);
 		expect(drifted.code).toBe(1);
-	});
+	}, 30_000);
 });

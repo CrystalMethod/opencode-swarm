@@ -76,6 +76,16 @@ function checkpoint(
 	checkId: string,
 	reason?: string,
 ) {
+	return checkpointPaths(repoDir, base, checkId, ['subject.txt'], reason);
+}
+
+function checkpointPaths(
+	repoDir: string,
+	base: string,
+	checkId: string,
+	paths: string[],
+	reason?: string,
+) {
 	return run(REPRO_CHECK, repoDir, [
 		'checkpoint',
 		'--slug',
@@ -89,7 +99,7 @@ function checkpoint(
 		'-',
 		'--base',
 		base,
-		'subject.txt',
+		...paths,
 	]);
 }
 
@@ -110,6 +120,56 @@ function rows(repoDir: string): string[][] {
 }
 
 describe('repro-check.sh multi-check same-path identity (F2566-MP)', () => {
+	test('deduplicates multi-file checkpoint semantics by check id (F2813-2)', () => {
+		const worktree = repo();
+		const base = git(worktree, 'rev-parse', 'HEAD');
+		fs.writeFileSync(path.join(worktree, 'other.txt'), 'other\n');
+
+		expect(
+			checkpointPaths(worktree, base, 'C1', ['subject.txt', 'other.txt']).code,
+		).toBe(0);
+		expect(rows(worktree).map((row) => [row[2], row[5]])).toEqual([
+			['subject.txt', 'C1'],
+			['other.txt', 'C1'],
+		]);
+
+		const trace = path.join(worktree, '.agents', 'issue-traces', 'issue-1');
+		fs.writeFileSync(
+			path.join(trace, '02-reproduction.md'),
+			[
+				'## Acceptance checks',
+				'| AC | class | check | argv | expect | pre-fix | post-fix | notes |',
+				'|---|---|---|---|---|---|---|---|',
+				'| AC1 | DISCRIMINATING | C1 | bash C1.sh | - | RED | GREEN | two files |',
+			].join('\n'),
+		);
+		const verified = run(REPRO_CHECK, worktree, [
+			'verify-semantics',
+			'--slug',
+			'issue-1',
+		]);
+		expect(verified.code, `${verified.out}\n${verified.err}`).toBe(0);
+		expect(verified.out).toContain('semantics: OK');
+
+		const manifest = manifestFile(worktree);
+		const manifestLines = fs
+			.readFileSync(manifest, 'utf8')
+			.trimEnd()
+			.split('\n');
+		const divergent = manifestLines[2]?.split('\t');
+		if (!divergent) throw new Error('expected second manifest row');
+		divergent[6] = 'bash different.sh';
+		manifestLines[2] = divergent.join('\t');
+		fs.writeFileSync(manifest, `${manifestLines.join('\n')}\n`);
+		const rejected = run(REPRO_CHECK, worktree, [
+			'verify-semantics',
+			'--slug',
+			'issue-1',
+		]);
+		expect(rejected.code).toBe(1);
+		expect(rejected.err).toContain('divergent semantics for one check');
+	}, 30_000);
+
 	test('allows distinct check ids on one path, captures current bytes, and rejects duplicate pairs', () => {
 		const worktree = repo();
 		const base = git(worktree, 'rev-parse', 'HEAD');
@@ -262,6 +322,34 @@ function writePhase25Trace(worktree: string, manifestRows: string[]): string {
 const treePlaceholder = '__TREE__';
 
 describe('trace-check.sh Phase 2.5 same-path tree derivation (F2566-MP)', () => {
+	test('Phase 2.5 rejects semantic drift through the read-only verifier (F2813-3)', () => {
+		const worktree = repo('trace-phase25-semantics-2566-');
+		const blob = 'a'.repeat(40);
+		const base = 'b'.repeat(40);
+		const row = (seq: number, id: string) =>
+			`${seq}\tCHECKPOINT\tsubject.txt\t${blob}\t100644\t${id}\tcmd\tfail\t${base}\t-`;
+		const trace = writePhase25Trace(worktree, [row(1, 'C1'), row(2, 'C2')]);
+		const reproduction = path.join(trace, '02-reproduction.md');
+		fs.writeFileSync(
+			reproduction,
+			fs
+				.readFileSync(reproduction, 'utf8')
+				.replace(
+					'| AC2 | DISCRIMINATING | C2 | cmd |',
+					'| AC2 | DISCRIMINATING | C2 | drift |',
+				),
+		);
+
+		const result = run(TRACE_CHECK, worktree, [
+			'phase',
+			'2.5',
+			'--slug',
+			'issue-1',
+		]);
+		expect(result.code).toBe(1);
+		expect(result.out).toContain('FAIL acceptance-manifest-semantics');
+	}, 30_000);
+
 	test('deduplicates identical effective blobs but rejects conflicting ones', () => {
 		const worktree = repo('trace-multi-pair-2566-');
 		const blob = 'a'.repeat(40);

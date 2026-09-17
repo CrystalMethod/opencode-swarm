@@ -182,14 +182,36 @@ describe('trace-check.sh CRLF fixture (#2566)', () => {
 
 		for (const [command, expected] of [
 			[['phase', '1'], ['OK classification']],
-			[['phase', '2'], ['OK reproduction-text-block', 'OK reproduction-exit-code']],
-			[['phase', '3'], ['OK heading-round', 'OK critic-verdict', 'OK artifact-identity-plan-critic']],
+			[
+				['phase', '2'],
+				['OK reproduction-text-block', 'OK reproduction-exit-code'],
+			],
+			[
+				['phase', '3'],
+				[
+					'OK heading-round',
+					'OK critic-verdict',
+					'OK artifact-identity-plan-critic',
+				],
+			],
 			[['phase', '4.2'], ['OK recurrence-sweep']],
-			[['phase', '5'], ['OK pr-head', 'OK merge-state']],
+			[
+				['phase', '5'],
+				['OK pr-head', 'OK merge-state'],
+			],
 			[['merge'], ['OK merge-sha-binding']],
 		] as const) {
-			const result = run(repo, [...command, '--slug', 'crlf-gates', '--trace-dir', trace]);
-			expect(result.code, `${command.join(' ')}\n${result.out}\n${result.err}`).toBe(0);
+			const result = run(repo, [
+				...command,
+				'--slug',
+				'crlf-gates',
+				'--trace-dir',
+				trace,
+			]);
+			expect(
+				result.code,
+				`${command.join(' ')}\n${result.out}\n${result.err}`,
+			).toBe(0);
 			for (const line of expected) expect(result.out).toContain(line);
 		}
 	}, 30_000);

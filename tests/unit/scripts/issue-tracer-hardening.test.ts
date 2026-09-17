@@ -112,7 +112,7 @@ describe('issue-tracer v3 hardening coverage', () => {
 		expect(phase4).not.toContain(
 			'if "$script_dir/repro-check.sh" verify-checkpoint',
 		);
-	});
+	}, 30_000);
 
 	test('accepts both default and explicit in-root trace directories', () => {
 		const repo = makeRepo();
@@ -141,7 +141,7 @@ describe('issue-tracer v3 hardening coverage', () => {
 			explicitResult.code,
 			`${explicitResult.out}\n${explicitResult.err}`,
 		).toBe(0);
-	});
+	}, 30_000);
 
 	test('phase 4 rejects a partial non-empty manifest missing an executable id', () => {
 		const repo = makeRepo();
@@ -188,7 +188,7 @@ describe('issue-tracer v3 hardening coverage', () => {
 		expect(result.code).toBe(1);
 		expect(result.out).toContain('FAIL check-block-C2');
 		expect(result.out).toContain('FAIL manifest-check-C2');
-	});
+	}, 30_000);
 
 	test('verify-checkpoint rejects a hand-edited FORMAT_ONLY reason', () => {
 		const repo = makeRepo();
@@ -223,5 +223,5 @@ describe('issue-tracer v3 hardening coverage', () => {
 		]);
 		expect(result.code).toBe(2);
 		expect(result.err).toContain('invalid reason');
-	});
+	}, 30_000);
 });

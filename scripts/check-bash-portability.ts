@@ -23,8 +23,14 @@ export interface ShellDiscoveryResult {
 
 export interface ShellDiscoveryDeps {
 	readdirSync?: (directory: string) => fs.Dirent[];
+	opendirSync?: (directory: string) => ShellDirectory;
 	realpathSync?: (file: string) => string;
 	lstatSync?: (file: string) => fs.Stats;
+}
+
+interface ShellDirectory {
+	readSync(): fs.Dirent | null;
+	closeSync(): void;
 }
 
 export async function resolveRepoRoot(
@@ -118,27 +124,12 @@ function walkShFiles(
 	while (stack.length > 0 && visitedEntries < maxEntries) {
 		const current = stack.pop()!;
 		if (shouldExcludePath(repoRoot, current)) continue;
-		let entries: fs.Dirent[];
-		try {
-			entries = (deps.readdirSync
-				? deps.readdirSync(current)
-				: fs
-						.readdirSync(current, { withFileTypes: true }))
-				.sort((a, b) => a.name.localeCompare(b.name));
-		} catch {
-			errors.push(`could not enumerate ${toPosixRelative(repoRoot, current)}`);
-			continue;
-		}
-		for (let i = entries.length - 1; i >= 0; i--) {
-			if (++visitedEntries > maxEntries) {
-				errors.push(
-					`entry limit ${maxEntries} exceeded under ${toPosixRelative(repoRoot, startDir)}`,
-				);
-				return { files: out, errors };
-			}
-			const entry = entries[i];
+		let directory: ShellDirectory | undefined;
+		let hitEntryLimit = false;
+		const entries: fs.Dirent[] = [];
+		const visitEntry = (entry: fs.Dirent): void => {
 			const full = path.join(current, entry.name);
-			if (shouldExcludePath(repoRoot, full)) continue;
+			if (shouldExcludePath(repoRoot, full)) return;
 			let entryType = classifyEntry(entry);
 			if (entryType === 'unknown') {
 				// Filesystems that do not populate dirent.d_type report every
@@ -152,22 +143,65 @@ function walkShFiles(
 					errors.push(
 						`could not inspect ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
 					);
-					continue;
+					return;
 				}
 				if (entryType === 'unknown') {
 					errors.push(
 						`could not classify ${toPosixRelative(repoRoot, full)} after unknown directory entry type`,
 					);
-					continue;
+					return;
 				}
 			}
 			if (entryType === 'directory') {
 				stack.push(full);
-				continue;
+				return;
 			}
 			if (entryType === 'file' && entry.name.endsWith('.sh')) {
 				out.push(full);
 			}
+		};
+		try {
+			if (deps.readdirSync) {
+				// Keep the synchronous DI seam used by the discovery tests. The
+				// production path below streams entries so a large directory is
+				// bounded before the scanner spends time sorting/materializing it.
+				for (const entry of deps.readdirSync(current)) {
+					if (++visitedEntries > maxEntries) {
+						hitEntryLimit = true;
+						break;
+					}
+					entries.push(entry);
+				}
+			} else {
+				directory = (deps.opendirSync ?? fs.opendirSync)(current);
+				while (!hitEntryLimit) {
+					const entry = directory.readSync();
+					if (entry === null) break;
+					if (++visitedEntries > maxEntries) {
+						hitEntryLimit = true;
+						break;
+					}
+					entries.push(entry);
+				}
+			}
+		} catch {
+			errors.push(`could not enumerate ${toPosixRelative(repoRoot, current)}`);
+		} finally {
+			if (directory) {
+				try {
+					directory.closeSync();
+				} catch {
+					errors.push(`could not close ${toPosixRelative(repoRoot, current)}`);
+				}
+			}
+		}
+		entries.sort((a, b) => a.name.localeCompare(b.name));
+		for (const entry of entries) visitEntry(entry);
+		if (hitEntryLimit) {
+			errors.push(
+				`entry limit ${maxEntries} exceeded under ${toPosixRelative(repoRoot, startDir)}`,
+			);
+			return { files: out, errors };
 		}
 	}
 	if (stack.length > 0) {

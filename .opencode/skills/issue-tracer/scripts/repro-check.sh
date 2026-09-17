@@ -537,7 +537,7 @@ semantic_digest() {
 }
 
 verify_manifest_semantics() {
-  local manifest="$1" rows table_exec manifest_exec
+  local manifest="$1" rows table_exec manifest_exec manifest_semantics
   trace_path_safe "$manifest" file || return 1
   validate_manifest "$manifest" "" allow-legacy-format-only
   rows="$(acceptance_rows)" || {
@@ -550,7 +550,7 @@ verify_manifest_semantics() {
   # acceptance table has one semantic row per check. Collapse the effective
   # manifest by check-id here, but reject a hand-edited manifest that gives one
   # check divergent argv/expect semantics on different paths.
-  if ! manifest_exec="$(awk -F '\t' '
+  if ! manifest_semantics="$(awk -F '\t' '
     NR > 1 {
       pair = length($3) ":" $3 ":" $6
       latest_seq[pair] = $1
@@ -570,10 +570,11 @@ verify_manifest_semantics() {
       }
       for (check in seen) print check "\t" check_argv[check] "\t" check_expect[check]
     }
-  ' "$manifest" | LC_ALL=C sort)"; then
+  ' "$manifest")"; then
     echo "repro-check: checkpoint manifest has divergent semantics for one check" >&2
     return 1
   fi
+  manifest_exec="$(printf '%s\n' "$manifest_semantics" | LC_ALL=C sort)"
   if [ "$table_exec" = "$manifest_exec" ]; then
     return 0
   fi
