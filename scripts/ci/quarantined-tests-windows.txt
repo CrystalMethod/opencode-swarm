@@ -12,10 +12,11 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 3 active entries (pr-monitor-status.test.ts per issue #1982,
-# win32-wrapper-runtime.test.ts per issue #2185, and
-# completion-observer-coder.test.ts per issue #2692 — the issue #1729 debt
-# itself remains paid down; see the entries below).
+# STATUS: 4 active entries (pr-monitor-status.test.ts per issue #1982,
+# win32-wrapper-runtime.test.ts per issue #2185,
+# completion-observer-coder.test.ts per issue #2692, and
+# index-pr-workflow-session-lifecycle-2602.test.ts per issue #2761 — the
+# issue #1729 debt itself remains paid down; see the entries below).
 #
 # History: this list previously held 9 Windows-only failures. They were fixed
 # in issue #1729 by a combination of:
@@ -53,7 +54,7 @@
 # with all sibling OS/shards (ubuntu 1-6, macos 1-6, other windows shards)
 # green in every one of those runs. The handlePrMonitorStatusCommand cases
 # build fixtures from the live clock (lastCheckedAt = Date.now() - 90_000
-# at tests/unit/commands/pr-monitor-status.test.ts:164) and then assert
+# at tests/unit/commands/pr-monitor-status.test.ts:160) and then assert
 # exact relative-time strings ("1 minute ago"), so a ~30s runner stall
 # between fixture and render flips the bucket, and the per-test
 # mkdtempSync/rmSync teardown (lines 35-46) can race AV-held handles on
@@ -93,7 +94,7 @@ tests/unit/commands/pr-monitor-status.test.ts
 # test-stability sprint (#1782).
 # OWNER: @zaxbysauce — issue #2185
 # EXPIRY: 2026-10-01 — root-fix the PowerShell cold-spawn flake or renew with
-# an updated diagnosis under #1737/#2477
+#   an updated diagnosis under #1737/#2477
 tests/unit/sandbox/win32-wrapper-runtime.test.ts
 #
 # completion-observer-coder.test.ts (issue #2692)
@@ -122,3 +123,33 @@ tests/unit/sandbox/win32-wrapper-runtime.test.ts
 #   or renew with an updated criterion. Inside the 14-day grace window
 #   Check 7 only warns.
 tests/unit/background/completion-observer-coder.test.ts
+#
+# index-pr-workflow-session-lifecycle-2602.test.ts: regression coverage for
+# the PR-workflow gate session lifecycle that survived the issue #2602
+# ownership-restoration fix (PR #2726). Four cases (F-2602-AC1/AC2) over
+# deleted-owner cleanup, foreign-gate preservation, partial-shadow
+# unlink resilience, concurrent CAS rejection, and oversized raw payload
+# bounds. Windows-only retry-flake: merge-group run 34797415390
+# (pr-2753, head 15dcd7f1731c9e380bf7fbddb95252bca095cf6d, 2026-09-14T01:54Z),
+# `unit (windows-latest, 5)` shard (job 103839563148) — attempt 1 failed at
+# 02:16:24Z, attempt 2 failed at 02:16:28Z, retry 2 passed at 02:16:32Z
+# (passed-on-retry flake; ~4s retry gap). Sibling OS/shards (ubuntu 1-6,
+# macos 1-6, windows 1/2/3/4/6) were green in the same CI run for this
+# file; the windows-only sensitivity is consistent with the
+# windows-latest cold-FS / AV-handle class (the same pattern behind
+# pr-monitor-status.test.ts and win32-wrapper-runtime.test.ts above). The
+# ci.yml retry loop discards attempt-1 output when a retry passes, so no
+# failing assertion text exists to drive a root-cause fix; the file passes
+# locally on a clean TMPDIR (24.7s for the full 4-test suite under
+# bun:test, 2.4s for 2602 specifically). Pre-existing, unrelated to any
+# specific PR. Quarantined per issue #2761; tracked under #1737 (test
+# quarantine debt) pending a dedicated test-stability sprint (#1782).
+# OWNER: @zaxbysauce — issue #2761 (windows-only retry-flake on
+#   unit (windows-latest, 5); see merge-group run 34797415390,
+#   `unit (windows-latest, 5)` job 103839563148 for the attempt/retry trace)
+# EXPIRY: 2026-10-16 — root-fix the Windows cold-FS cleanup race (candidate
+#   helper: tests/helpers/safe-test-dir.ts safeRmRecursive with closed
+#   project-db handle + bounded EBUSY/EPERM/ENOTEMPTY retries, the same
+#   pattern already root-fixed for pr-monitor-status.test.ts via PR #2190)
+#   or renew with an updated diagnosis under #1737/#2477
+tests/unit/index-pr-workflow-session-lifecycle-2602.test.ts
