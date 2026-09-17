@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.184.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.2...v7.184.3) (2026-09-17)
+
+
+### Bug Fixes
+
+* **workflow:** close 2819-r1 review findings in stage-b freshness ([c5fa832](https://github.com/ZaxbyHub/opencode-swarm/commit/c5fa83213fe7b672984049d963a1b3803274b848))
+* **workflow:** scope stage-b gate freshness to declared review scope ([39eede4](https://github.com/ZaxbyHub/opencode-swarm/commit/39eede43f511fdcb9e8f5fd3d8547a28183eea28))
+
 ## [7.184.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.1...v7.184.2) (2026-09-17)
 
 
