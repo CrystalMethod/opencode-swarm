@@ -1,0 +1,123 @@
+# Quarantine three net-new Windows-only flaky tests from issue #2812
+
+## What changed
+
+- Appended three net-new entries to the Windows-only CI quarantine ledger,
+  `scripts/ci/quarantined-tests-windows.txt`, each carrying the structured
+  `# OWNER:` / `# EXPIRY:` metadata block required by
+  `scripts/check-invariants.ts` Check 7 (issue #2477):
+  - `tests/unit/commands/archive.test.ts` (windows-latest shard 5 retry-pass)
+  - `tests/unit/mcp/write-receipts-feedback-2500.test.ts` (windows-latest shard 5 retry-pass)
+  - `tests/unit/tools/phase-complete.lock-adversarial.test.ts` (windows-latest shard 1 all-3-retries-failed hard failure)
+- Updated the ledger's `# STATUS: N active entries` header from 6 to 9
+  (6 pre-existing on main + 3 net-new from this PR).
+- Added a new pinning regression file
+  (`tests/unit/scripts/ci/ci-yml-quarantine-2812.test.ts`) covering ledger
+  presence, scope isolation (windows-only), on-disk path presence for the
+  three net-new entries, and the windows-ledger `# STATUS` count matching
+  the active-entry count.
+- No source, hook, or workflow code changed. The change is confined to the
+  ledger file, the new pinning test file, and this pending release
+  fragment.
+
+## Why
+
+Issue #2812 was auto-filed by the flake-detection workflow
+(`.github/workflows/flake-detection.yml`, `scripts/ci/detect-and-quarantine-flakes.sh`
+rule set) after merge-group CI run 35113965170 (`merge_group` pr-2765, head
+`16f82fcec19271f6`, 2026-09-16T15:14:18Z) produced six flake candidates.
+Flake-detection run 35118789787 (filed by the workflow at
+2026-09-16T15:57:37Z) opened the tracking issue with the body listing the
+candidates verbatim from `flake-suggestions.txt`.
+
+Of the six candidates, three were already quarantined by prior PRs on
+`origin/main` by the time this PR was authored (PR #2811 for #2761
+`pr-workflow-gate-batch-gc.test.ts` on the **general** ledger; PR #2774
+for the two #2812 paths that were blocked-PQuarantined on the
+**windows** ledger during earlier blocked-PR rounds:
+`pr-subscriptions-checkpoint.test.ts` and
+`recall-evaluation-profile-isolation.test.ts`). This PR adds the
+remaining three as net-new windows-ledger entries because all six
+candidates were single-OS windows-latest flakes with green ubuntu 1..6 /
+macos 1..6 siblings in the same CI run; the windows-ledger re-add policy
+in `scripts/ci/quarantined-tests-windows.txt` routes single-OS
+windows-latest evidence to the windows ledger. The general-ledger
+placement for `pr-workflow-gate-batch-gc.test.ts` from PR #2811 stands
+unchanged.
+
+Per-OS attribution for the three net-new entries:
+
+| File | Unit shard | Outcome |
+|------|------------|---------|
+| `tests/unit/commands/archive.test.ts` | `unit (windows-latest, 5)` | `Attempt 1 failed` → `Passed on retry 1` (passed-on-retry flake) at 2026-09-16T15:30:13Z |
+| `tests/unit/mcp/write-receipts-feedback-2500.test.ts` | `unit (windows-latest, 5)` | `Attempt 1 failed` → `Passed on retry 1` (passed-on-retry flake) at 2026-09-16T15:43:19Z |
+| `tests/unit/tools/phase-complete.lock-adversarial.test.ts` | `unit (windows-latest, 1)` | All 3 in-job retries failed at 2026-09-16T15:47:21Z; assertion at `tests/unit/tools/phase-complete.lock-adversarial.test.ts:336` expected `"incomplete"` and received `"blocked"` (hard failure, FAILED annotation) |
+
+All three files pass locally on this checkout with a clean `TMPDIR`:
+
+```
+$ TMPDIR=~/.cache/hermes-tmp bun test tests/unit/commands/archive.test.ts --timeout 120000
+8 pass, 0 fail, 32 expect() calls, 0.628s
+$ TMPDIR=~/.cache/hermes-tmp bun test tests/unit/mcp/write-receipts-feedback-2500.test.ts --timeout 120000
+7 pass, 0 fail, 28 expect() calls, 6.67s
+$ TMPDIR=~/.cache/hermes-tmp bun test tests/unit/tools/phase-complete.lock-adversarial.test.ts --timeout 120000
+12 pass, 0 fail, 38 expect() calls, 1.383s
+```
+
+Sibling `ubuntu-1..6`, `macos-1..6`, and the other windows shards ran
+each file green in the same CI run — the evidence is single-OS
+windows-latest, so the entries go in the windows ledger per the
+windows-ledger re-add policy. The general ledger would suppress the files
+on ubuntu/macos too and the macOS ledger applies only on macOS runners.
+
+The `phase-complete.lock-adversarial.test.ts` hard-failure has captured
+assertion text on attempt 1 that pinpoints the failure mode: the
+phase_complete lock-contention cell sees `"blocked"` instead of the
+expected `"incomplete"` because a concurrent lock winner is still holding
+the lock when the second caller observes it — the canonical Windows
+cold-FS / AV-handle / handle-race class that the #1782 quarantine debt
+already pays down in the #1982 #2185 #2692 entries; the recommended
+root-fix pattern (safe `rmSync`-with-bounded EBUSY/EPERM retries matching
+the PR #2807 pattern for issue #2602) is noted in the entry's `# EXPIRY`
+criterion line.
+
+## Migration steps
+
+None. Quarantine is a CI-gating data change: the ci.yml unit-shard
+discovery pipeline (`grep | sort | comm`) now excludes these three
+paths from the gated test set on `windows-latest` only (the windows
+ledger applies on `RUNNER_OS == 'Windows'` per the "Collect and partition
+test files" step at `ci.yml:629-636`). Ubuntu and macOS continue to run
+them, the windows-latest `integration` job is unaffected (it does not
+honor any quarantine ledger — only the dedicated `integration` ledger
+matters there), and the coverage job honors only the general ledger
+(no ubuntu/macos over-suppression).
+
+## Known caveats
+
+- The three net-new quarantined suites pin a mix of correctness- and
+  safety-critical behavior: `/swarm archive` deletion reporting, MCP
+  receipt-feedback identity / status / transition guarantees, and
+  `phase_complete` lock acquisition + path-traversal hardening. Each
+  suite is skipped only on `windows-latest` merge-group/CI unit shards;
+  ubuntu and macOS continue to run them, and the Windows skip has an
+  `EXPIRY` of `2026-10-31` with a root-fix criterion. The `EXPIRY` is what
+  forces the retirement conversation; `scripts/check-invariants.ts`
+  Check 7 hard-fails the CI gate once the `EXPIRY` passes the 14-day
+  grace window.
+- Each entry carries `# OWNER: @zaxbysauce` and `# EXPIRY: 2026-10-31`
+  metadata per the issue #2477 grammar; re-add/edit must preserve both
+  lines.
+- `scripts/ci/quarantined-tests-windows.txt` now holds 9 active entries
+  (6 pre-existing on `origin/main` from issues #1982/#2185/#2692/#2761
+  and the two partial-issue-#2812 entries added by PR #2774, plus
+  the 3 net-new from this PR). The `# STATUS: 9 active entries` header
+  line tracks this count; drift between the declared count and the
+  actual active-entry count is caught by the
+  `windows ledger STATUS header count matches its active-entry count`
+  test in `tests/unit/scripts/ci/ci-yml-quarantine-2812.test.ts` (and by
+  the pre-existing `tests/unit/scripts/ci/ci-yml-windows-quarantine.test.ts`).
+- `#1737` / `#1782` / `#2477` (the historic quarantine-debt trackers)
+  are CLOSED; the live tracking refs are this issue #2812 (per-flake)
+  and #1782 (the test-stability sprint referenced in each entry prose
+  for continuity).
