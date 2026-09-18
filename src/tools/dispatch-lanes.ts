@@ -1632,6 +1632,12 @@ export async function executeDispatchLanesAsync(
 						depthTier !== 'S' &&
 						waveStage !== undefined &&
 						waveAttempt !== undefined;
+					// Issue #2835: the schema documents max_concurrent as "defaults
+					// to lane count", so the PR_REVIEW acknowledgment checks below
+					// must compare the DEFAULTED value — an omitted max_concurrent
+					// means "lane count", not a validation failure.
+					const effectiveMaxConcurrent =
+						parsed.data.max_concurrent ?? parsed.data.lanes.length;
 					const isInitialBase =
 						(gateState.prReviewBaseDispatches?.length ?? 0) === 0;
 					if (isInitialBase && !stagedBaseDispatch) {
@@ -1653,7 +1659,7 @@ export async function executeDispatchLanesAsync(
 						if (depthTier === 'L') {
 							if (
 								parsed.data.lanes.length !== 6 ||
-								parsed.data.max_concurrent !== 6 ||
+								effectiveMaxConcurrent !== 6 ||
 								parsed.data.lanes.some(
 									(lane) => (lane.owned_workflow_lanes?.length ?? 1) !== 1,
 								)
@@ -1667,7 +1673,7 @@ export async function executeDispatchLanesAsync(
 							parsed.data.lanes.length <
 								PR_REVIEW_BASE_LANE_FLOORS[depthTier] ||
 							parsed.data.lanes.length > PR_REVIEW_BASE_DIMENSION_IDS.length ||
-							parsed.data.max_concurrent !== parsed.data.lanes.length
+							effectiveMaxConcurrent !== parsed.data.lanes.length
 						) {
 							throw new Error(
 								`BLOCKED: initial PR_REVIEW base dispatch at depth tier ${depthTier} requires between ${PR_REVIEW_BASE_LANE_FLOORS[depthTier]} and ${PR_REVIEW_BASE_DIMENSION_IDS.length} lanes whose owned_workflow_lanes partition all six dimensions exactly once, with max_concurrent equal to the lane count; valid dimensions: ${PR_REVIEW_BASE_DIMENSION_IDS.join(', ')}; a lane with one dimension may set workflow_lane to it and omit owned_workflow_lanes`,
@@ -1678,7 +1684,7 @@ export async function executeDispatchLanesAsync(
 						if (waveStage === 'canary') {
 							if (
 								parsed.data.lanes.length !== 1 ||
-								parsed.data.max_concurrent !== 1 ||
+								effectiveMaxConcurrent !== 1 ||
 								parsed.data.lanes.some(
 									(lane) => (lane.owned_workflow_lanes?.length ?? 1) !== 1,
 								)
@@ -1687,9 +1693,7 @@ export async function executeDispatchLanesAsync(
 									'BLOCKED: PR_REVIEW staged base canary requires exactly one singleton lane and max_concurrent: 1',
 								);
 							}
-						} else if (
-							parsed.data.max_concurrent !== parsed.data.lanes.length
-						) {
+						} else if (effectiveMaxConcurrent !== parsed.data.lanes.length) {
 							throw new Error(
 								'BLOCKED: PR_REVIEW staged base fanout requires max_concurrent equal to the lane count',
 							);
@@ -5680,7 +5684,7 @@ function applyPrWorkflowPromptContract(
 		const structuredSubmissionParagraph =
 			normalizedMode.token === 'swarm-pr-review:base' ||
 			normalizedMode.token === 'swarm-pr-review:micro'
-				? `\nStructured settlement rule (issue #2384): call \`submit_pr_review_result\` exactly once with the canonical discovery result${batchId.ok && laneId.ok ? `, using batchId \`${batchId.token}\` and laneId \`${laneId.token}\`` : ''}, and then stop. The authenticated child delegation remains authoritative and resolves these identifiers when omitted. Transcript machine rows are deprecated legacy compatibility only for lanes whose snapped contract explicitly enables them, and a present structured result never falls back because of extra prose, truncation, or transcript incompleteness.`
+				? `\nStructured settlement rule (issues #2384, #2835): call \`submit_pr_review_result\` exactly once with the canonical discovery result${batchId.ok && laneId.ok ? `, using batchId \`${batchId.token}\` and laneId \`${laneId.token}\`` : ''}, and pass revisionDigest \`${revisionDigest.token}\` exactly as rendered here — the receipt contract requires that 64-hex value verbatim and rejects the submission without it — and then stop. The authenticated child delegation remains authoritative and resolves the batch and lane identifiers when omitted. Transcript machine rows are deprecated legacy compatibility only for lanes whose snapped contract explicitly enables them, and a present structured result never falls back because of extra prose, truncation, or transcript incompleteness.`
 				: '';
 		// Pre-seeded statement of the read-only shell classifier's rules
 		// (#2276): the same enforcement already runs at tool time for BOTH the

@@ -1186,7 +1186,20 @@ batch may omit `trigger_evaluation` and reuse the frozen ledger; when it
 explicitly supplies a copy, the copy must remain exactly identical. The
 runtime rejects unrelated or duplicate micro-lanes within a batch, and final
 ledger persistence rejects any row whose completed owning-lane provenance is
-absent.
+absent. One bounded exception exists (issue #2835): a `MATCHED` row whose cited
+lane is liveness-terminal — settled by the presumed-stale sweep with
+`workflowLaneFailureClass: 'liveness'`, terminal status `stale` or `error`, and
+no retained artifact — is admitted as a disclosed dead family instead of
+provenance-backed. The writer verifies that exception from the durable
+delegation record itself (micro mode, family ownership, exact pr_head_sha
+identity, liveness class, no retained output); the receipt then carries a
+`coverage_degradations` entry naming the dead batch/lane with the terminal
+status, and the review proceeds as a disclosed PARTIAL — that family is
+UNATTESTED and can never support an APPROVE verdict. This disclosure is the
+settlement of last resort for a dead family: retry the family first (the
+initial attempt plus up to 2 retries), then disclose. An operator-cancelled
+lane does NOT qualify — `cancel_pending` is a controlled act by the
+controller; re-dispatch the family instead of disclosing it.
 Poll incrementally, then settle every launched lane. Persist
 the complete ledger with `write_pr_review_trigger_eval`; its rows use the stable
 trigger IDs below. Every `MATCHED` row includes its returned `source_batch_id`
@@ -1338,7 +1351,9 @@ Verifier output is advisory until incorporated by the independent reviewer or cr
 
 **Reviewer-dispatch join barrier:** reviewer dispatch MUST NOT begin until the
 exact eleven-row micro-lane ledger is complete and persisted, every launched
-`MATCHED` micro lane is settled with its owned families attested, every
+`MATCHED` micro lane is settled with its owned families attested or disclosed
+as a liveness-terminal dead family on the persisted trigger receipt (issue
+#2835 — artifact-less sweep deaths only, never operator cancellations), every
 `NOT_TRIGGERED` row has concrete absence evidence and no provenance, and every
 accepted micro result has parser-derived provenance (Profile A) or a valid
 CLEAN attestation.
@@ -1746,7 +1761,7 @@ Council findings are supplementary, not authoritative overrides. Do not adopt co
 11. Obligation precedence is deterministic. Do not skip higher-precedence sources to fill gaps with LLM synthesis.
 12. Do not leak secrets from logs, evidence bundles, config files, URLs, or scanner output.
 13. Do not recommend destructive git or filesystem actions as fixes unless they are clearly scoped, safe, and necessary.
-14. If subagents fail, timeout, or return malformed output, retry with corrected parameters (max 2 attempts) through the dispatch mechanism of the active profile — Profile A: the same structured `dispatch_lanes_async` workflow mode and exact `pr_head_sha`, where blocking or direct-Task dispatch cannot preserve the durable provenance contract and is not an equivalent fallback; Profiles B/C: a fresh subagent or pass bound to the same exact `pr_head_sha`. If retries fail, the affected coverage dimension is BLOCKED and must be surfaced to the user before synthesis. Do not fabricate validation results, do not present partial findings as complete or beyond the truthful N-of-6 settlement (issue #2383), and do not silently mark candidates UNVERIFIED to proceed past the gap.
+14. If subagents fail, timeout, or return malformed output, retry with corrected parameters (the initial attempt plus up to 2 retries — aborting after only the first retry is one bounded retry early) through the dispatch mechanism of the active profile — Profile A: the same structured `dispatch_lanes_async` workflow mode and exact `pr_head_sha`, where blocking or direct-Task dispatch cannot preserve the durable provenance contract and is not an equivalent fallback; Profiles B/C: a fresh subagent or pass bound to the same exact `pr_head_sha`. If retries fail, the affected coverage dimension is BLOCKED and must be surfaced to the user before synthesis — except that a micro family whose every lane is liveness-terminal with no retained artifact settles through the disclosed dead-family path on the trigger receipt (issue #2835) instead of BLOCKED, and abort is legitimate only after that settlement path has been exhausted or is unavailable. Do not fabricate validation results, do not present partial findings as complete or beyond the truthful N-of-6 settlement (issue #2383), and do not silently mark candidates UNVERIFIED to proceed past the gap.
 
 15. If context pack, repo graph, deterministic signals, or Swarm artifacts are unavailable, retry with alternative access paths. If a source that should exist on the active profile is still unavailable after retry, the affected coverage dimension is BLOCKED and must be surfaced to the user. A source that cannot exist on the active profile (for example `.swarm/` artifacts outside Profile A) is marked N/A in the validation provenance instead — N/A is disclosure, never a waiver of the dimensions and families that must still be covered. Do not proceed to synthesis with unclosed coverage gaps under a "best available evidence" rationale — the architect is not authorized to produce a degraded review that hides a coverage gap; the disclosed N-of-6 PARTIAL/NO_COVERAGE settlement (issue #2383) is the only sanctioned partial exit.
 
