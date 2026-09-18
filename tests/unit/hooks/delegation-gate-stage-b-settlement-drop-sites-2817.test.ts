@@ -224,8 +224,16 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 		await drainRehydrations();
 		// 1.1 and 1.10: the bracket-terminated dedupe token must keep the
 		// shorter task's advisory from being substring-suppressed by the longer
-		// task's queued message (PRR-004).
+		// task's queued message (PRR-004). The plan fixture must genuinely
+		// carry BOTH tasks (not a single-task plan with manual session seeding).
 		writePlan(tempDir, ['1.1', '1.10']);
+		const writtenPlan = JSON.parse(
+			fs.readFileSync(`${tempDir}/.swarm/plan.json`, 'utf8'),
+		) as { phases: { tasks: { id: string }[] }[] };
+		expect(writtenPlan.phases[0]?.tasks.map((task) => task.id)).toEqual([
+			'1.1',
+			'1.10',
+		]);
 		const session = ensureAgentSession(sessionID);
 		session.taskWorkflowStates.set('1.1', 'reviewer_run');
 		session.taskWorkflowStates.set('1.10', 'reviewer_run');
@@ -270,6 +278,56 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 		expect(dropLines[0]).toContain('1.1');
 		expect(dropLines[0]).toContain('1.10');
 		expect(dropLines[0]).toContain('unbound');
+	});
+
+	it('caps the aggregated host-log task list at ten with an exact overflow count', async () => {
+		const sessionID = 'sess-2817-overflow';
+		tempDir = makeTempDir('dg-2817-overflow-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		// 12 eligible tasks drop unbound in ONE invocation: the aggregated
+		// criticalWarn line must list only the first ten (map insertion order)
+		// and disclose the exact remainder (PRR-006 boundary contract).
+		const overflowIds = Array.from({ length: 12 }, (_, i) => `1.${i + 1}`);
+		writePlan(tempDir, overflowIds);
+		const session = ensureAgentSession(sessionID);
+		for (const id of overflowIds) {
+			session.taskWorkflowStates.set(id, 'reviewer_run');
+		}
+		session.currentTaskId = overflowIds[0];
+		const hook = createDelegationGateHook(fullConfig(), tempDir);
+		const criticalWarnSpy = spyOn(logger, 'criticalWarn').mockImplementation(
+			() => {},
+		);
+
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'call-2817-overflow',
+				args: testEngineerArgs(),
+			},
+			{
+				output: overflowIds
+					.map((id) => `[TESTED] | task-${id} | PASS | ok`)
+					.join('\n'),
+			},
+		);
+		const dropLines = criticalWarnSpy.mock.calls
+			.map((call) => String(call[0] ?? ''))
+			.filter((line) => line.includes('Stage B settlement dropped'));
+		criticalWarnSpy.mockRestore();
+
+		expect(dropLines.length).toBe(1);
+		expect(dropLines[0]).toContain('(+2 more)');
+		// The first ten (insertion order 1.1..1.10) are listed; the last two
+		// (1.11, 1.12) only via the overflow count. 1.10 in the listed set also
+		// re-pins the prefix-collision fix at the host-log surface.
+		for (const listed of overflowIds.slice(0, 10)) {
+			expect(dropLines[0]).toContain(listed);
+		}
+		expect(dropLines[0]).not.toContain('1.11');
+		expect(dropLines[0]).not.toContain('1.12');
 	});
 
 	it('re-advises on the next turn after the advisory queue drains', async () => {
