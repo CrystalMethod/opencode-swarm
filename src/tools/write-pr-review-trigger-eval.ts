@@ -407,10 +407,40 @@ export async function executeWritePrReviewTriggerEval(
 			outputArtifact.artifact.chars !== record.result?.chars ||
 			record.workspace?.prHeadSha !== parsed.data.pr_head_sha ||
 			record.workspace?.gitHead !== parsed.data.pr_head_sha;
-		if (provenanceFailure) {
+		// Issue #2835: a MATCHED family whose every lane died of host
+		// abandonment settles with disclosure instead of dead-ending the whole
+		// review. The presumed-stale sweep (and only it) leaves a durable
+		// terminal record with a typed liveness class and NO retained artifact;
+		// admitting exactly that shape — verified from the durable record,
+		// never from caller text — lets the receipt persist with a dead-family
+		// disclosure the inventory's degraded-source skip already consumes.
+		// Operator cancellations share the record shape but are the
+		// controller's own act, so status "cancelled" stays fail-closed;
+		// re-dispatch the family instead of disclosing it.
+		const livenessTerminalDead =
+			provenanceFailure &&
+			!!record &&
+			record.mode === 'swarm-pr-review:micro' &&
+			recordOwnedLanes.includes(row.trigger_id) &&
+			(record.status === 'stale' || record.status === 'error') &&
+			record.result?.workflowLaneFailureClass === 'liveness' &&
+			!record.result?.outputRef?.trim() &&
+			!outputArtifact &&
+			record.workspace?.prHeadSha === parsed.data.pr_head_sha &&
+			record.workspace?.gitHead === parsed.data.pr_head_sha;
+		if (provenanceFailure && !livenessTerminalDead) {
 			return failure(
 				`MATCHED trigger ${row.trigger_id} does not reference a verifiable micro-lane provenance chain`,
 			);
+		}
+		if (livenessTerminalDead) {
+			coverageDegradations.push({
+				trigger_id: row.trigger_id,
+				source_batch_id: row.source_batch_id!,
+				source_lane_id: row.source_lane_id!,
+				reason: `liveness-terminal dead family: lane settled ${record!.status} with typed liveness class (presumed host abandonment), no retained artifact; family disclosed unattested`,
+			});
+			continue;
 		}
 		// Coverage-quality failures are tolerated and DISCLOSED on the durable
 		// receipt instead of dead-ending the whole review (retries remain the

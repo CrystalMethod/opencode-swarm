@@ -319,3 +319,23 @@ What an amendment costs, and what it preserves:
   `inventory_amendments` on the completion response and `inventoryAmendments` on
   `pr_workflow_status`. The ledger is bounded at 128 entries and is never pruned;
   further amendments are refused at the cap.
+
+## Liveness-terminal dead-family settlement at trigger-eval (issue #2835)
+
+A `MATCHED` trigger row whose cited micro lane is liveness-terminal — settled
+by the presumed-stale sweep with `workflowLaneFailureClass: 'liveness'`,
+terminal status `stale` or `error`, and no retained artifact — is admitted by
+`write_pr_review_trigger_eval` as a disclosed dead family instead of
+provenance-backed. The writer verifies the exception from the durable
+delegation record itself (micro mode, family ownership, exact pr_head_sha
+identity via `workspace.prHeadSha` and `workspace.gitHead`, typed liveness
+class, no `outputRef` and no retained artifact); the receipt then carries a
+`coverage_degradations` entry naming the dead batch/lane with the terminal
+status, and the review proceeds as a disclosed PARTIAL — that family is
+UNATTESTED and can never support an APPROVE verdict. This disclosure is the
+settlement of last resort for a dead family: retry the family first (the
+initial attempt plus up to 2 retries — aborting after only the first retry is
+one bounded retry early), then disclose, and only then is `abort_pr_workflow`
+legitimate. An operator-cancelled lane does NOT qualify — `cancel_pending` is
+a controlled act by the controller; re-dispatch the family instead of
+disclosing it.
