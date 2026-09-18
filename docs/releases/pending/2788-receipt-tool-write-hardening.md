@@ -45,10 +45,12 @@ of the seven tools ever reintroduces a hand-rolled persist path.
 
 - Frozen checks C1–C6 (arm's-length authored, red-checkpointed at base `d82f6f190`): C1–C4
   RED at base → GREEN at fix; C5–C6 PRESERVING green throughout.
-- New suite: 7/7 — forced write/rename failures leave zero residue; a first-attempt EPERM on
+- New suite: 9/9 — forced write/rename failures leave zero residue; a first-attempt EPERM on
   the atomic rename is absorbed by the bounded retry (asserted `calls === 2`); five
-  concurrent distinct-phase upserts persist all five entries; `allGreen`/`permits` equal the
-  gate-reader verdicts including the malformed-entry case; the family guardrail holds.
+  concurrent distinct-phase upserts persist all five entries; a write failure inside the
+  receipt lock releases the lock and leaves no residue; real-lock contention returns the
+  typed busy failure with no mutation; `allGreen`/`permits` equal the gate-reader verdicts
+  including the malformed-entry case; the family guardrail holds.
 - Existing suites unchanged and green: record-v3-receipts, record-issue-receipts,
   record-residual-b-receipts, issue-trace-state* (4 files), issue-trace, issue-trace-reducer,
   atomic-write, atomic-write-ratchet; `bun run typecheck`; `bun run check:registry-citations`

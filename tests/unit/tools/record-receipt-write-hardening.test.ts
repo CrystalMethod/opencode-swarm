@@ -15,6 +15,7 @@ import {
 	branchFreshnessReceiptExists,
 	traceValidationReceiptExists,
 } from '../../../src/hooks/issue-trace-state';
+import { tryAcquireLock } from '../../../src/parallel/file-locks';
 import { executeRecordBranchFreshness } from '../../../src/tools/record-branch-freshness';
 import { executeRecordIssueReproduction } from '../../../src/tools/record-issue-reproduction';
 import { executeRecordTraceValidation } from '../../../src/tools/record-trace-validation';
@@ -165,6 +166,94 @@ describe('record_trace_validation: locked read-modify-write (issue #2788)', () =
 		}
 		// Serialized writers leave no residue either.
 		expect(tmpResidue(dir)).toEqual([]);
+	});
+
+	test('a write failure inside the lock releases the lock and leaves no residue', async () => {
+		const dir = makeDir();
+		atomicInternals.writeSync = () => {
+			throw eperm('EPERM: forced write failure inside lock (test)');
+		};
+		const failed = JSON.parse(
+			await executeRecordTraceValidation(
+				{
+					issueNumber: 2788,
+					phase: '0',
+					outcome: 'pass',
+					reviewedCommit: HEX_A,
+					treeId: HEX_B,
+				},
+				dir,
+			),
+		);
+		restoreSeam();
+		expect(failed.success).toBe(false);
+		expect(tmpResidue(dir)).toEqual([]);
+		// The failed invocation's finally must have released the receipt lock:
+		// the very next call acquires and succeeds without contention.
+		const next = JSON.parse(
+			await executeRecordTraceValidation(
+				{
+					issueNumber: 2788,
+					phase: '0',
+					outcome: 'pass',
+					reviewedCommit: HEX_A,
+					treeId: HEX_B,
+				},
+				dir,
+			),
+		);
+		expect(next.success).toBe(true);
+		expect(tmpResidue(dir)).toEqual([]);
+	});
+
+	test('contention returns a typed busy failure and writes nothing', async () => {
+		const dir = makeDir();
+		// Hold the receipt lock through the same public API the tool uses —
+		// no injection seam needed for a real ELOCKED.
+		const held = await tryAcquireLock(
+			dir,
+			'trace-validation.json',
+			'test-holder',
+			'test',
+		);
+		expect(held.acquired).toBe(true);
+		try {
+			const busy = JSON.parse(
+				await executeRecordTraceValidation(
+					{
+						issueNumber: 2788,
+						phase: '0',
+						outcome: 'pass',
+						reviewedCommit: HEX_A,
+						treeId: HEX_B,
+					},
+					dir,
+				),
+			);
+			expect(busy.success).toBe(false);
+			expect(busy.message).toContain('locked by another concurrent writer');
+			// Busy performs no mutation: no receipt file, no residue.
+			expect(
+				fs.existsSync(path.join(dir, '.swarm', 'trace-validation.json')),
+			).toBe(false);
+			expect(tmpResidue(dir)).toEqual([]);
+		} finally {
+			await held.lock._release?.();
+		}
+		// After release the same call succeeds.
+		const ok = JSON.parse(
+			await executeRecordTraceValidation(
+				{
+					issueNumber: 2788,
+					phase: '0',
+					outcome: 'pass',
+					reviewedCommit: HEX_A,
+					treeId: HEX_B,
+				},
+				dir,
+			),
+		);
+		expect(ok.success).toBe(true);
 	});
 });
 

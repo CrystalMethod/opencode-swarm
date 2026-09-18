@@ -101,13 +101,13 @@ export async function executeRecordTraceValidation(
 	// drops the other writer's phase entry. Mirrors withReceiptLock
 	// (src/mcp/write-receipts.ts) and withPlanLifecycleLock (plan/manager.ts).
 	try {
-		const lock = await tryAcquireLock(
+		const lockResult = await tryAcquireLock(
 			directory,
 			'trace-validation.json',
 			'trace-validation',
 			'trace-validation',
 		);
-		if (!lock.acquired) {
+		if (!lockResult.acquired) {
 			return JSON.stringify({
 				success: false,
 				message:
@@ -180,7 +180,7 @@ export async function executeRecordTraceValidation(
 			});
 		} finally {
 			try {
-				await lock.lock._release?.();
+				await lockResult.lock._release?.();
 			} catch {
 				// The proper-lockfile stale lease is the bounded fallback.
 			}
