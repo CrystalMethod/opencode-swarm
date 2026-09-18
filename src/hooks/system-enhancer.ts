@@ -300,6 +300,7 @@ import {
 	extractCurrentTaskFromPlan,
 	extractDecisions,
 	extractPlanCursor,
+	resolvePlanCursorControls,
 } from './extractors';
 import { isSessionBoundArchitect } from './host-boundary';
 import { isLinked, readLinkPointer } from './knowledge-link';
@@ -1484,8 +1485,25 @@ export function createSystemEnhancerHook(
 						}
 
 						// Priority 1: Plan cursor (compressed plan summary)
-						if (mode !== 'DISCOVER' && planContent) {
-							const planCursor = extractPlanCursor(planContent);
+						// Issue #2580: the plan_cursor config controls (enabled /
+						// max_tokens / lookahead_tasks) are honored here and on the
+						// scoring path below through one shared resolver. Defaults
+						// equal extractPlanCursor's own, so absent config keeps the
+						// pre-#2580 output byte-identical (FR-006 policy-control
+						// exception: an explicit user config is allowed to change
+						// this injection).
+						const planCursorControls = resolvePlanCursorControls(
+							config.plan_cursor,
+						);
+						if (
+							planCursorControls.enabled &&
+							mode !== 'DISCOVER' &&
+							planContent
+						) {
+							const planCursor = extractPlanCursor(planContent, {
+								maxTokens: planCursorControls.maxTokens,
+								lookaheadTasks: planCursorControls.lookaheadTasks,
+							});
 							tryInject(planCursor);
 						}
 
@@ -2182,6 +2200,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 									directory,
 									assembledSystemPrompt,
 									contextBudgetConfig,
+									config.plan_cursor,
 								);
 								// Paired write, keyed by session. The pct and the denominator
 								// it was computed against must stay together, and a bare global
@@ -2370,6 +2389,21 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 							currentTask = extractCurrentTask(planContentForCursor);
 						}
 					}
+					// Issue #2580: with a structured plan the branch above never
+					// loads plan.md, yet Path A always injects the cursor from
+					// plan.md — and `loadPlan` migrates a markdown-only plan.md
+					// into a structured Plan (src/plan/manager.ts), so the
+					// else-branch read alone left the scoring path with NO
+					// cursor candidate for any real workspace shape. Read
+					// plan.md in both branches (planReadCache dedupes the I/O)
+					// so the candidate can never be silently dropped.
+					if (!planContentForCursor) {
+						planContentForCursor = await readSwarmFileAsync(
+							directory,
+							'plan.md',
+							planReadCache,
+						);
+					}
 
 					if (currentPhase) {
 						const text = `[SWARM CONTEXT] Current phase: ${currentPhase}`;
@@ -2399,9 +2433,23 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 						});
 					}
 
-					// Plan cursor for scoring path
-					if (planContentForCursor) {
-						const planCursor = extractPlanCursor(planContentForCursor);
+					// Plan cursor for scoring path — issue #2580: same shared
+					// plan_cursor controls as Path A (enabled gate, DISCOVER
+					// gate, maxTokens/lookaheadTasks pass-through), so
+					// disabled/default/enabled behave identically on both
+					// context paths.
+					const planCursorControls_b = resolvePlanCursorControls(
+						config.plan_cursor,
+					);
+					if (
+						planCursorControls_b.enabled &&
+						mode_b !== 'DISCOVER' &&
+						planContentForCursor
+					) {
+						const planCursor = extractPlanCursor(planContentForCursor, {
+							maxTokens: planCursorControls_b.maxTokens,
+							lookaheadTasks: planCursorControls_b.lookaheadTasks,
+						});
 						candidates.push({
 							id: `candidate-${idCounter++}`,
 							kind: 'phase',
@@ -3124,6 +3172,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 								directory,
 								assembledSystemPrompt_b,
 								contextBudgetConfig_b,
+								config.plan_cursor,
 							);
 							// Paired, session-keyed write — see the Path A note.
 							setSessionBudget(

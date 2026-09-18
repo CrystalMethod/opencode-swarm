@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { extractPlanCursor } from '../../../src/hooks/extractors';
+import {
+	extractPlanCursor,
+	resolvePlanCursorControls,
+} from '../../../src/hooks/extractors';
+import { estimateTokens } from '../../../src/hooks/utils';
 
 describe('extractPlanCursor', () => {
 	it('returns fallback for empty/undefined input', () => {
@@ -82,5 +86,111 @@ describe('extractPlanCursor', () => {
 `;
 		const cursor = extractPlanCursor(plan);
 		expect(cursor).toContain('[SWARM PLAN CURSOR]');
+	});
+
+	it('enforces the max_tokens upper bound on a pathological task line (#2580 final-crit)', () => {
+		// One arbitrarily long completed-task line: the compact rebuild's
+		// completed-phase summaries were unbounded, emitting ~4000 canonical
+		// tokens at maxTokens 500 before the final cap.
+		const longTask = 'x'.repeat(12_000);
+		const plan = `# Project Plan
+## Phase 1: Setup [COMPLETE]
+- [x] 1.1: ${longTask}
+
+## Phase 2: Development [IN PROGRESS]
+- [ ] 2.1: Current task
+
+## Phase 3: Testing [PENDING]
+- [ ] 3.1: Next task
+`;
+		const cursor = extractPlanCursor(plan, { maxTokens: 500 });
+		expect(estimateTokens(cursor)).toBeLessThanOrEqual(500);
+		// The block stays well-formed under the cap.
+		expect(cursor.startsWith('[SWARM PLAN CURSOR]')).toBe(true);
+		expect(cursor.endsWith('[/SWARM PLAN CURSOR]')).toBe(true);
+	});
+});
+
+describe('resolvePlanCursorControls (#2580)', () => {
+	it('returns schema defaults for undefined input', () => {
+		expect(resolvePlanCursorControls(undefined)).toEqual({
+			enabled: true,
+			maxTokens: 1500,
+			lookaheadTasks: 2,
+		});
+	});
+
+	it('returns schema defaults for null input', () => {
+		expect(resolvePlanCursorControls(null)).toEqual({
+			enabled: true,
+			maxTokens: 1500,
+			lookaheadTasks: 2,
+		});
+	});
+
+	it('fills absent fields of a partial block with defaults', () => {
+		expect(resolvePlanCursorControls({ enabled: false })).toEqual({
+			enabled: false,
+			maxTokens: 1500,
+			lookaheadTasks: 2,
+		});
+		expect(resolvePlanCursorControls({ lookahead_tasks: 0 })).toEqual({
+			enabled: true,
+			maxTokens: 1500,
+			lookaheadTasks: 0,
+		});
+	});
+
+	it('passes through in-range values', () => {
+		expect(
+			resolvePlanCursorControls({
+				enabled: true,
+				max_tokens: 500,
+				lookahead_tasks: 5,
+			}),
+		).toEqual({ enabled: true, maxTokens: 500, lookaheadTasks: 5 });
+	});
+
+	it('clamps out-of-range values to the schema bounds (raw configs bypass zod)', () => {
+		expect(resolvePlanCursorControls({ max_tokens: 10 })).toEqual({
+			enabled: true,
+			maxTokens: 500,
+			lookaheadTasks: 2,
+		});
+		expect(resolvePlanCursorControls({ max_tokens: 99999 })).toEqual({
+			enabled: true,
+			maxTokens: 4000,
+			lookaheadTasks: 2,
+		});
+		expect(resolvePlanCursorControls({ lookahead_tasks: -3 })).toEqual({
+			enabled: true,
+			maxTokens: 1500,
+			lookaheadTasks: 0,
+		});
+		expect(resolvePlanCursorControls({ lookahead_tasks: 42 })).toEqual({
+			enabled: true,
+			maxTokens: 1500,
+			lookaheadTasks: 5,
+		});
+	});
+
+	it('defaults match extractPlanCursor own parameter defaults (Path A byte-identical guarantee)', () => {
+		const plan = `# Project Plan
+## Phase 1: Setup [COMPLETE]
+
+## Phase 2: Development [IN PROGRESS]
+- [ ] Task 2.1: Current task
+
+## Phase 3: Testing [PENDING]
+- [ ] Task 3.1: Next task
+- [ ] Task 3.2: Another task
+`;
+		const controls = resolvePlanCursorControls(undefined);
+		expect(
+			extractPlanCursor(plan, {
+				maxTokens: controls.maxTokens,
+				lookaheadTasks: controls.lookaheadTasks,
+			}),
+		).toBe(extractPlanCursor(plan));
 	});
 });

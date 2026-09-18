@@ -534,7 +534,56 @@ No plan content available. Start by creating a .swarm/plan.md file.
 		output = compactResult.join('\n');
 	}
 
+	// Final cap (#2580): enforce the documented max_tokens UPPER BOUND on every
+	// output shape. The compact rebuild bounds IN-PROGRESS task text (60 chars)
+	// but not completed-phase task summaries, so one pathological line could
+	// still exceed the budget (final-crit finding: 4014 tokens at maxTokens 500).
+	// Reserve the closing marker plus a small ceil-boundary margin so the
+	// canonical estimator always agrees the result fits.
+	if (output.length > maxChars) {
+		const closingMarker = '\n[/SWARM PLAN CURSOR]';
+		const cap = Math.max(0, maxChars - closingMarker.length - 4);
+		output = `${output.slice(0, cap)}${closingMarker}`;
+	}
+
 	return output;
+}
+
+/**
+ * Effective plan-cursor controls for the issue #2580 contract: the
+ * `plan_cursor` schema block (enabled/max_tokens/lookahead_tasks) must reach
+ * BOTH system-enhancer context paths and the context budget report through
+ * one shared resolver so the three consumers cannot drift apart again.
+ *
+ * Field defaults mirror PlanCursorConfigSchema (src/config/schema.ts) and
+ * extractPlanCursor's own parameter defaults, so an absent or partial block
+ * (raw test configs bypass zod) yields byte-identical pre-#2580 behavior.
+ * Out-of-range values are clamped to the schema bounds as defense in depth —
+ * zod already rejects them for parsed configs.
+ */
+export interface PlanCursorControls {
+	enabled: boolean;
+	maxTokens: number;
+	lookaheadTasks: number;
+}
+
+export function resolvePlanCursorControls(
+	planCursor?:
+		| {
+				enabled?: boolean;
+				max_tokens?: number;
+				lookahead_tasks?: number;
+		  }
+		| null
+		| undefined,
+): PlanCursorControls {
+	const maxTokens = planCursor?.max_tokens ?? 1500;
+	const lookaheadTasks = planCursor?.lookahead_tasks ?? 2;
+	return {
+		enabled: planCursor?.enabled ?? true,
+		maxTokens: Math.min(4000, Math.max(500, Math.round(maxTokens))),
+		lookaheadTasks: Math.min(5, Math.max(0, Math.round(lookaheadTasks))),
+	};
 }
 
 // ============================================================================
@@ -551,6 +600,7 @@ export const _internals: {
 	extractCurrentTaskFromPlan: typeof extractCurrentTaskFromPlan;
 	extractIncompleteTasksFromPlan: typeof extractIncompleteTasksFromPlan;
 	extractPlanCursor: typeof extractPlanCursor;
+	resolvePlanCursorControls: typeof resolvePlanCursorControls;
 } = {
 	extractCurrentPhase,
 	extractCurrentTask,
@@ -561,4 +611,5 @@ export const _internals: {
 	extractCurrentTaskFromPlan,
 	extractIncompleteTasksFromPlan,
 	extractPlanCursor,
+	resolvePlanCursorControls,
 };
