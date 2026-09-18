@@ -1186,20 +1186,7 @@ batch may omit `trigger_evaluation` and reuse the frozen ledger; when it
 explicitly supplies a copy, the copy must remain exactly identical. The
 runtime rejects unrelated or duplicate micro-lanes within a batch, and final
 ledger persistence rejects any row whose completed owning-lane provenance is
-absent. One bounded exception exists (issue #2835): a `MATCHED` row whose cited
-lane is liveness-terminal — settled by the presumed-stale sweep with
-`workflowLaneFailureClass: 'liveness'`, terminal status `stale` or `error`, and
-no retained artifact — is admitted as a disclosed dead family instead of
-provenance-backed. The writer verifies that exception from the durable
-delegation record itself (micro mode, family ownership, exact pr_head_sha
-identity, liveness class, no retained output); the receipt then carries a
-`coverage_degradations` entry naming the dead batch/lane with the terminal
-status, and the review proceeds as a disclosed PARTIAL — that family is
-UNATTESTED and can never support an APPROVE verdict. This disclosure is the
-settlement of last resort for a dead family: retry the family first (the
-initial attempt plus up to 2 retries), then disclose. An operator-cancelled
-lane does NOT qualify — `cancel_pending` is a controlled act by the
-controller; re-dispatch the family instead of disclosing it.
+absent. One bounded exception (issue #2835): a sweep-settled liveness-terminal lane may back a `MATCHED` row as a disclosed dead family (never APPROVEable; cancellations never qualify) — conditions in `references/lane-output-recoverability.md`.
 Poll incrementally, then settle every launched lane. Persist
 the complete ledger with `write_pr_review_trigger_eval`; its rows use the stable
 trigger IDs below. Every `MATCHED` row includes its returned `source_batch_id`
@@ -1351,9 +1338,7 @@ Verifier output is advisory until incorporated by the independent reviewer or cr
 
 **Reviewer-dispatch join barrier:** reviewer dispatch MUST NOT begin until the
 exact eleven-row micro-lane ledger is complete and persisted, every launched
-`MATCHED` micro lane is settled with its owned families attested or disclosed
-as a liveness-terminal dead family on the persisted trigger receipt (issue
-#2835 — artifact-less sweep deaths only, never operator cancellations), every
+`MATCHED` micro lane is settled with its owned families attested or disclosed as a dead family on the trigger receipt (#2835), every
 `NOT_TRIGGERED` row has concrete absence evidence and no provenance, and every
 accepted micro result has parser-derived provenance (Profile A) or a valid
 CLEAN attestation.
