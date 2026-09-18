@@ -3457,6 +3457,90 @@ function sanitizeDenialText(value: string): string {
 }
 
 /**
+ * Why a foreground Stage B settlement was dropped (issue #2817). The drop
+ * decision itself is correct fail-closed fencing (AGENTS.md invariant 9); the
+ * reason class exists so the drop is never silent — each class maps to an
+ * operator-readable summary and, for `rejection_persist_failed`, a distinct
+ * remedy (that leg persists a REJECTED verdict, not a clean one).
+ */
+type StageBSettlementDropReason =
+	| 'unbound'
+	| 'route_blocked'
+	| 'route_capacity'
+	| 'evidence_rejected'
+	| 'rejection_persist_failed';
+
+/** Human-readable drop-class summary reused by the aggregated host-log line. */
+const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
+	StageBSettlementDropReason,
+	string
+> = {
+	unbound:
+		'unbound launch generation (the dispatch-generation binding is process-local and was lost)',
+	route_blocked: 'review route receipt enforcement blocked the settlement',
+	route_capacity: 'route evidence capacity exceeded',
+	evidence_rejected:
+		'gate evidence recording rejected the settlement (generation fencing)',
+	rejection_persist_failed: 'the rejection verdict could not be persisted',
+};
+
+/**
+ * Queue the session-visible advisory for one dropped Stage B settlement and
+ * record the task on the per-invocation collector so the host-log warning can
+ * be aggregated (one stderr line per drop class per settlement invocation —
+ * issue #2817's noise posture). The advisory itself stays per task: each
+ * wedged task needs its own named recovery cue, and pushAdvisory's dedupe key
+ * collapses within-turn repeats.
+ */
+function warnStageBSettlementDropped(
+	session: AgentSessionState,
+	params: {
+		taskId: string;
+		agent: string;
+		callID: string;
+		reasonClass: StageBSettlementDropReason;
+		detail: string;
+		drops: Map<StageBSettlementDropReason, string[]>;
+	},
+): void {
+	const { taskId, agent, callID, reasonClass, detail, drops } = params;
+	const restartNote =
+		reasonClass === 'unbound'
+			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; it cannot be reconstructed after a restart.'
+			: '';
+	// The dedupe key leads the message by advisory-queue convention (#1976):
+	// pushAdvisory's keyed dedupe matches on key-presence in queued messages.
+	const dedupeKey = `stageb-settlement-drop:${reasonClass}:${taskId}`;
+	const message =
+		reasonClass === 'rejection_persist_failed'
+			? `[${dedupeKey}] STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${callID}: ${detail}. ` +
+				`The rejection verdict was not persisted (fail-closed); the task stays at its current state. ` +
+				`Remedy: inspect .swarm/ evidence storage for this task and retry the rejection transition (the verdict need not be re-earned).`
+			: `[${dedupeKey}] STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${callID}: ${detail}.${restartNote} ` +
+				`The clean verdict was not recorded (fail-closed); the task stays at its current state. ` +
+				`Remedy: re-dispatch the ${agent} gate for task ${taskId}.`;
+	pushAdvisory(session, message, {
+		dedupeKey,
+	});
+	const tasks = drops.get(reasonClass) ?? [];
+	tasks.push(taskId);
+	drops.set(reasonClass, tasks);
+}
+
+/** Emit one ungated host-log line per drop class per settlement invocation. */
+function flushStageBSettlementDropWarnings(
+	drops: Map<StageBSettlementDropReason, string[]>,
+): void {
+	for (const [reasonClass, taskIds] of drops) {
+		if (taskIds.length === 0) continue;
+		logger.criticalWarn(
+			`[delegation-gate] Stage B settlement dropped for task(s) ${taskIds.join(', ')}: ${STAGE_B_SETTLEMENT_DROP_REASONS[reasonClass]}. See session advisories for per-task remedies.`,
+		);
+	}
+	drops.clear();
+}
+
+/**
  * Creates the experimental.chat.messages.transform hook for delegation gating.
  * Inspects coder delegations and warns when tasks are oversized or batched.
  */
@@ -6242,6 +6326,14 @@ export function createDelegationGateHook(
 								for (const err of attributionResult.errors) {
 									logger.warn(`[delegation-gate] ${err}`);
 								}
+								// Issue #2817: dropped Stage B settlements must be
+								// session-visible. Per-invocation collector; flushed after the
+								// settlement loop so the host-log warning is one line per drop
+								// class regardless of how many tasks dropped.
+								const stageBSettlementDrops = new Map<
+									StageBSettlementDropReason,
+									string[]
+								>();
 								do {
 									if (attributionResult.verdicts.size === 0) {
 										const dispatchCtx = stageBDispatchContextByCallID.get(
@@ -6302,6 +6394,14 @@ export function createDelegationGateHook(
 											logger.warn(
 												`[delegation-gate] ignoring unbound Stage B settlement for ${taskId} from call ${input.callID}`,
 											);
+											warnStageBSettlementDropped(session, {
+												taskId,
+												agent: targetAgent,
+												callID: input.callID,
+												reasonClass: 'unbound',
+												detail: `ignoring unbound Stage B settlement from call ${input.callID}`,
+												drops: stageBSettlementDrops,
+											});
 											continue;
 										}
 										const verdictEntry = attributionResult.verdicts.get(taskId);
@@ -6352,6 +6452,14 @@ export function createDelegationGateHook(
 												logger.warn(
 													`[delegation-gate] Stage B rejection could not be persisted for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
 												);
+												warnStageBSettlementDropped(session, {
+													taskId,
+													agent: targetAgent,
+													callID: input.callID,
+													reasonClass: 'rejection_persist_failed',
+													detail: `rejection could not be persisted: ${err instanceof Error ? err.message : String(err)}`,
+													drops: stageBSettlementDrops,
+												});
 											}
 											continue;
 										}
@@ -6417,6 +6525,14 @@ export function createDelegationGateHook(
 											logger.warn(
 												`[delegation-gate] Stage B route receipt blocked ${taskId}: ${routeDecision.reason ?? 'unknown reason'}`,
 											);
+											warnStageBSettlementDropped(session, {
+												taskId,
+												agent: targetAgent,
+												callID: input.callID,
+												reasonClass: 'route_blocked',
+												detail: `route receipt blocked: ${routeDecision.reason ?? 'unknown reason'}`,
+												drops: stageBSettlementDrops,
+											});
 											continue;
 										}
 										const routeCompleteDecision =
@@ -6446,6 +6562,14 @@ export function createDelegationGateHook(
 											logger.warn(
 												`[delegation-gate] Stage B route evidence capacity exceeded for ${taskId}`,
 											);
+											warnStageBSettlementDropped(session, {
+												taskId,
+												agent: targetAgent,
+												callID: input.callID,
+												reasonClass: 'route_capacity',
+												detail: 'route evidence capacity exceeded',
+												drops: stageBSettlementDrops,
+											});
 											continue;
 										}
 										try {
@@ -6474,6 +6598,14 @@ export function createDelegationGateHook(
 											logger.warn(
 												`[delegation-gate] Stage B settlement rejected for ${taskId}: ${err instanceof Error ? err.message : String(err)}`,
 											);
+											warnStageBSettlementDropped(session, {
+												taskId,
+												agent: targetAgent,
+												callID: input.callID,
+												reasonClass: 'evidence_rejected',
+												detail: `gate evidence recording rejected the settlement: ${err instanceof Error ? err.message : String(err)}`,
+												drops: stageBSettlementDrops,
+											});
 											continue;
 										}
 										recordStageBCompletion(
@@ -6543,6 +6675,10 @@ export function createDelegationGateHook(
 										}
 									}
 								} while (false as boolean);
+								// Issue #2817: surface every dropped Stage B settlement from
+								// this invocation — session advisories were queued per task
+								// above; this emits the aggregated ungated host-log line(s).
+								flushStageBSettlementDropWarnings(stageBSettlementDrops);
 							}
 						}
 					} // end if (!councilActive) — primary Stage B path
