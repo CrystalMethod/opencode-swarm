@@ -1,5 +1,22 @@
 # Changelog
 
+## [7.184.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.5...v7.184.6) (2026-09-17)
+
+
+### Bug Fixes
+
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#2730](https://github.com/ZaxbyHub/opencode-swarm/issues/2730)) ([756f938](https://github.com/ZaxbyHub/opencode-swarm/commit/756f9389536b1c73033e8dd373a4280ae1602038))
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#2761](https://github.com/ZaxbyHub/opencode-swarm/issues/2761)) ([d696e11](https://github.com/ZaxbyHub/opencode-swarm/commit/d696e1161c44484ef5f3b044d1b90bb30fef369a))
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#2807](https://github.com/ZaxbyHub/opencode-swarm/issues/2807)) ([0e35259](https://github.com/ZaxbyHub/opencode-swarm/commit/0e352592f40ffcf39c2c9e62a3c262e9dd280c03))
+* **ci:** preserve Windows trace and scan fixtures ([c6999a8](https://github.com/ZaxbyHub/opencode-swarm/commit/c6999a8181bf5b5f212af10331f73d6ea1a9afab))
+* **ci:** quarantine flaky pr-workflow-gate-batch-gc and 2602 lifecycle tests ([#2761](https://github.com/ZaxbyHub/opencode-swarm/issues/2761)) ([4016b75](https://github.com/ZaxbyHub/opencode-swarm/commit/4016b7591e779ee9b7196f51945f298e14ac2380))
+* **ci:** quarantine pr-feedback-scope-controller macOS merge-group flake ([#2730](https://github.com/ZaxbyHub/opencode-swarm/issues/2730)) ([eea991a](https://github.com/ZaxbyHub/opencode-swarm/commit/eea991a734417b2cf667bb3657666366358a5f91))
+* **ci:** root-fix windows ebusy teardown in 2602 lifecycle regression test ([#2807](https://github.com/ZaxbyHub/opencode-swarm/issues/2807)) ([74e42a3](https://github.com/ZaxbyHub/opencode-swarm/commit/74e42a3e3708092a614f6c8ee45a91152f013aed))
+* **issue-tracer:** harden evidence and installer cleanup ([3e55ac4](https://github.com/ZaxbyHub/opencode-swarm/commit/3e55ac4173cd6eed60cbaa9679e5980ebd8e5e00))
+* **issue-tracer:** normalize Windows trace paths ([8e93c9c](https://github.com/ZaxbyHub/opencode-swarm/commit/8e93c9c156a224f3f02a2bf45c82d909ebb14692))
+* **issue-tracer:** preserve missing trace exit status ([fec561a](https://github.com/ZaxbyHub/opencode-swarm/commit/fec561abdc575feab0c4b231b2b03a97175de0a9))
+* **registry:** update shifted config citation ([503f9a8](https://github.com/ZaxbyHub/opencode-swarm/commit/503f9a8590fccc5cdd3e03c2cfe9b837711c31ee))
+
 ## [7.184.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.4...v7.184.5) (2026-09-17)
 
 
