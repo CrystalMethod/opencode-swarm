@@ -48,7 +48,7 @@ execution state disagree:
    attempt has settled, run `/swarm recover --coordination` and inspect status
    again. A superseded attempt deliberately remains non-successful so its stale
    recovery cannot suppress a current-generation retry.
-5. For a task classified as `stale` or `live_wedge`, run
+5. For a task classified as `stale`, `live_wedge`, or `settlement_wedge`, run
    `/swarm recover <task_id>`. This consumes only the receipt-backed local
    repair and is idempotent. For `ambiguous`, `corrupt`, or any uncertain
    external effect, stop and reconcile with the owning process, provider, or
@@ -71,6 +71,7 @@ workflow generation is rejected without clearing newer work.
 | `ambiguous` | A live foreign or current-process owner may still be executing, so the external effect is uncertain. | Do not force a foreign owner; inspect that process/provider. |
 | `corrupt` | A receipt or projection cannot be trusted. | Preserve the evidence, replay from the ledger where possible, and reconcile manually if identity remains unproven. |
 | `live_wedge` | Settlement succeeded but the Stage A receipt is missing despite green proof. | Run task recovery; it records the justified repair and never reruns the coder. |
+| `settlement_wedge` | The workflow label drifted to idle/blocked while a COMMITTED accepted settlement plus green proof still justify Stage A (#2828). | Run `/swarm recover <task_id>` (or the architect-only `recover_stage_a_task` tool); same receipt-backed repair, never re-runs the coder. |
 | expired lease | The lease deadline passed, but expiry alone does not establish owner absence. | Wait for corroboration; do not treat the lease as freely reusable. |
 | old-generation late result | A result belongs to a prior restart generation. | Reject it; preserve the newer generation's state. |
 | `running` / `superseded` / `timed_out` coordination | Readiness is not yet authoritative, the attempt lost its generation, or the bounded attempt timed out. | Do not overlap retries; use `--coordination` only after the prior attempt settles. |
