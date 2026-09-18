@@ -1,5 +1,22 @@
 # Changelog
 
+## [7.184.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.6...v7.184.7) (2026-09-18)
+
+
+### Bug Fixes
+
+* **issue-tracer:** address PR review — lockResult naming plus locked-failure and busy-path tests ([#2788](https://github.com/ZaxbyHub/opencode-swarm/issues/2788)) ([c43f2cc](https://github.com/ZaxbyHub/opencode-swarm/commit/c43f2cc5638ffbdbff4e70447da6be4be8b3a551))
+* **issue-tracer:** harden record_* receipt writes via canonical atomic writer and locked upsert ([#2788](https://github.com/ZaxbyHub/opencode-swarm/issues/2788)) ([fa9fee5](https://github.com/ZaxbyHub/opencode-swarm/commit/fa9fee512a980827e9ad2bb68d5b6769841fded9))
+* **issue-tracer:** harden record_* receipt writes via canonical atomic writer and locked upsert ([#2788](https://github.com/ZaxbyHub/opencode-swarm/issues/2788)) ([95c36fb](https://github.com/ZaxbyHub/opencode-swarm/commit/95c36fbbae8e980d6a580867d46d7ac3288b9220))
+* **workflow:** address PR [#2832](https://github.com/ZaxbyHub/opencode-swarm/issues/2832) review findings (diagnose healthy count, refusal wording, audit dedupe, helper dedupe) ([78a55e5](https://github.com/ZaxbyHub/opencode-swarm/commit/78a55e58a270c6101458e29dff4fcf3da0a260b9))
+* **workflow:** complete review-hardening repairs (PR [#2830](https://github.com/ZaxbyHub/opencode-swarm/issues/2830) critic round) ([d89a8d0](https://github.com/ZaxbyHub/opencode-swarm/commit/d89a8d08026f8ce733b4c5986ff4e60c022d3882))
+* **workflow:** harden Stage B drop advisories after review (PR [#2830](https://github.com/ZaxbyHub/opencode-swarm/issues/2830)) ([f678006](https://github.com/ZaxbyHub/opencode-swarm/commit/f678006a93740d9cd717cc8dbbcfb86af35e830a))
+* **workflow:** settlement-backed stage A recovery for idle/blocked wedges ([f19ff33](https://github.com/ZaxbyHub/opencode-swarm/commit/f19ff33be5552b07cf49019e23253843cd281390))
+* **workflow:** settlement-backed stage A recovery for idle/blocked wedges ([fe753d1](https://github.com/ZaxbyHub/opencode-swarm/commit/fe753d1789f856b06907ec036dcd2b437c7f7ca5))
+* **workflow:** surface dropped foreground Stage B settlements (issue [#2817](https://github.com/ZaxbyHub/opencode-swarm/issues/2817)) ([4a3e820](https://github.com/ZaxbyHub/opencode-swarm/commit/4a3e820e60ced341ba4b3f4d82507a7e3156bdf8))
+* **workflow:** surface dropped foreground Stage B settlements (issue [#2817](https://github.com/ZaxbyHub/opencode-swarm/issues/2817)) ([06d826f](https://github.com/ZaxbyHub/opencode-swarm/commit/06d826fe1144047143a9155522fdf664f719547d))
+* **workflow:** surface settlement_wedge in /swarm diagnose and correct tool contract text ([6a25261](https://github.com/ZaxbyHub/opencode-swarm/commit/6a252618201d26a684cb5c909c4dac50423ebce3))
+
 ## [7.184.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.5...v7.184.6) (2026-09-17)
 
 
