@@ -110,6 +110,14 @@ export const CORE_EVENTS_MENTION_ALLOWLIST: Readonly<
 		reason: 'tool description/result strings describing where the audit event lands (documentation text, no I/O — the append itself goes through appendStageARepairEvent/appendCoreEventSync) — the #2755 sibling of the approve-* entries',
 		cls: 'prompt-doc',
 	},
+	'src/tools/recover-stage-a-task.ts': {
+		reason: 'tool description/result strings describing where the audit event lands (documentation text, no I/O — the append itself goes through appendStageARepairEvent/appendCoreEventSync) — the #2828 sibling of the recover_rework_task entry',
+		cls: 'prompt-doc',
+	},
+	'src/workflow/settlement-recovery.ts': {
+		reason: 'docstring/error strings describing where the audit event lands (documentation text, no I/O — the append itself goes through appendStageARepairEvent/appendCoreEventSync) — issue #2828',
+		cls: 'prompt-doc',
+	},
 	'src/services/diagnose-service.ts': {
 		reason: 'user-facing diagnostic output strings naming the checked store (the reads themselves go through the seam API)',
 		cls: 'prompt-doc',

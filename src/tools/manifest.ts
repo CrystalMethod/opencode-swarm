@@ -112,6 +112,7 @@ import { record_merge_approval } from './record-merge-approval';
 import { record_recurrence_sweep } from './record-recurrence-sweep';
 import { record_trace_validation } from './record-trace-validation';
 import { recover_rework_task } from './recover-rework-task';
+import { recover_stage_a_task } from './recover-stage-a-task';
 import { repair_gate_evidence } from './repair-gate-evidence';
 import { repair_knowledge_receipt_ledger } from './repair-knowledge-receipt-ledger';
 import { repo_map } from './repo-map';
@@ -203,6 +204,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	approve_plan_critic: () => approve_plan_critic,
 	approve_retry_sounding_board: () => approve_retry_sounding_board,
 	recover_rework_task: () => recover_rework_task,
+	recover_stage_a_task: () => recover_stage_a_task,
 	prepare_pr_workflow_checkout: () => prepare_pr_workflow_checkout,
 	record_implementation_review: () => record_implementation_review,
 	record_issue_publication: () => record_issue_publication,

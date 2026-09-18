@@ -262,6 +262,10 @@ export {
 	recover_rework_task,
 } from './recover-rework-task';
 export {
+	executeRecoverStageATask,
+	recover_stage_a_task,
+} from './recover-stage-a-task';
+export {
 	executeRunPrFeedbackStageA,
 	run_pr_feedback_stage_a,
 } from './run-pr-feedback-stage-a';

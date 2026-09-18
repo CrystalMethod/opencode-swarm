@@ -62,6 +62,16 @@ function renderStageARepairOutcome(outcome: StageARepairOutcome): string {
 			if (outcome.state === 'rework_required') {
 				return `⏭️ Task ${outcome.taskId}: workflow state is rework_required — not a coder_delegated Stage A wedge, nothing to repair here. If the Stage B verdict did not require a code change, have the architect run the recover_rework_task tool for this task; otherwise delegate the coder to repair first.`;
 			}
+			// Issue #2828: idle/blocked are the settlement-wedge states. When the
+			// scan refuses there, either the receipts are incomplete OR Stage A
+			// is already recorded (proof-present idle is outside the mechanical
+			// envelope and needs no repair) — name both honestly instead of a
+			// conflated "proof present or not settled" dead end, and state
+			// plainly that --force never overrides Stage A wedge-classification
+			// refusals.
+			if (outcome.state === 'idle' || outcome.state === 'blocked') {
+				return `⏭️ Task ${outcome.taskId}: workflow state is ${outcome.state} — no Stage A repair is needed or provable here (a mechanical repair requires a COMMITTED accepted coder settlement AND green post-settlement pre-check evidence AND no Stage A proof already recorded). When Stage A is already recorded the task needs nothing; when the receipts exist but the mechanical envelope excludes them, the architect can run the audited recover_stage_a_task tool. --force does not override Stage A wedge-classification refusals.`;
+			}
 			return `⏭️ Task ${outcome.taskId}: workflow state is ${outcome.state} with pre_check proof present or not settled — nothing to repair`;
 		case 'skipped_not_green':
 			return `⏭️ Task ${outcome.taskId}: no green post-settlement pre-check evidence (${outcome.reason === 'no_pre_check_bundles' ? 'missing or non-green secretscan/SAST bundle — run pre_check_batch first' : 'latest pre-check run failed or predates the settlement'}) — refusing to mark Stage A passed without proof`;

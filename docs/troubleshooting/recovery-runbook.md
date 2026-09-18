@@ -48,7 +48,7 @@ execution state disagree:
    attempt has settled, run `/swarm recover --coordination` and inspect status
    again. A superseded attempt deliberately remains non-successful so its stale
    recovery cannot suppress a current-generation retry.
-5. For a task classified as `stale` or `live_wedge`, run
+5. For a task classified as `stale`, `live_wedge`, or `settlement_wedge`, run
    `/swarm recover <task_id>`. This consumes only the receipt-backed local
    repair and is idempotent. For `ambiguous`, `corrupt`, or any uncertain
    external effect, stop and reconcile with the owning process, provider, or
@@ -71,6 +71,7 @@ workflow generation is rejected without clearing newer work.
 | `ambiguous` | A live foreign or current-process owner may still be executing, so the external effect is uncertain. | Do not force a foreign owner; inspect that process/provider. |
 | `corrupt` | A receipt or projection cannot be trusted. | Preserve the evidence, replay from the ledger where possible, and reconcile manually if identity remains unproven. |
 | `live_wedge` | Settlement succeeded but the Stage A receipt is missing despite green proof. | Run task recovery; it records the justified repair and never reruns the coder. |
+| `settlement_wedge` | The workflow label drifted to idle/blocked while a COMMITTED accepted settlement plus green proof still justify Stage A (#2828). | Run `/swarm recover <task_id>` (or the architect-only `recover_stage_a_task` tool); same receipt-backed repair, never re-runs the coder. |
 | expired lease | The lease deadline passed, but expiry alone does not establish owner absence. | Wait for corroboration; do not treat the lease as freely reusable. |
 | old-generation late result | A result belongs to a prior restart generation. | Reject it; preserve the newer generation's state. |
 | `running` / `superseded` / `timed_out` coordination | Readiness is not yet authoritative, the attempt lost its generation, or the bounded attempt timed out. | Do not overlap retries; use `--coordination` only after the prior attempt settles. |
@@ -89,6 +90,7 @@ projection contract.
 - **ambiguous** — the dispatch may genuinely be in flight: owned by a live foreign process (another OpenCode instance) or registered in this process. The external effect stays uncertain; close that instance (or run recovery there), never force a foreign owner from here. `--force` releases only *this* process's ownership and is an operator assertion, not a status claim.
 - **corrupt** — the durable receipt is unparseable. Recovery refuses corrupt facts instead of rewriting them: inspect `.swarm/coder-settlements/<task_id>.json` and reconcile manually. Do not delete or hand-edit the file.
 - **live_wedge** — the task settled but its Stage A receipt is missing while green post-settlement pre-check proof exists. `/swarm recover <task_id>` deterministically writes the missing `stage_a_passed` transition — it never re-runs the coder and never edits evidence files. Without green proof it reports `skipped_not_green` and asks for `pre_check_batch` first.
+- **settlement_wedge** — the workflow label drifted to `idle` (a force-repair's `repair_idle` cleared the gate proofs) or `blocked` while a COMMITTED accepted coder settlement and green post-settlement pre-check proof still justify Stage A (issue #2828). `/swarm recover <task_id>` deterministically writes the settlement-backed `stage_a_passed` (a `settlementRecovery` marker plus a `stage_a_repair` audit event distinguish it from a mechanical pass); the agent-side audited escape hatch is the architect-only `recover_stage_a_task` tool. `--force` does not apply to this class — it only releases in-process settlement-WAL ownership. Background-dispatched coder tasks never write a settlement WAL, so this wedge is unreachable for them by construction; without the receipts the refusal stands (repair never fabricates Stage A justification).
 - **healthy** — terminal receipts agree with the workflow state; reported as a count, nothing to do.
 
 ## Deterministic repair vs external side effects

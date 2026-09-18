@@ -86,7 +86,7 @@ Each task in the swarm follows a per-task state machine. The Architect advances 
 |---|---|---|
 | `idle` | Task not yet started | Default state |
 | `coder_delegated` | An accepted coder mutation created fresh verification debt | A coder settlement proves an in-scope mutation and rotates the workflow generation |
-| `pre_check_passed` | Automated gates passed | `pre_check_batch` returns `gates_passed: true` |
+| `pre_check_passed` | Automated gates passed | `pre_check_batch` returns `gates_passed: true`. Recovery entry modes (audited, marked in the evidence): `recover_rework_task` writes a supervised `stage_a_passed` from `rework_required` (#2755), and `/swarm recover` or the `recover_stage_a_task` tool write a settlement-backed `stage_a_passed` from `idle`/`blocked` when a COMMITTED accepted settlement plus green post-settlement pre-check proof still justify Stage A (#2828) |
 | `reviewer_run` | Human-style review complete | Reviewer delegation returns APPROVED |
 | `tests_run` | Verification tests passed | Test engineer delegation returns PASS |
 | `rework_required` | Current-generation verification failed and same-task repair is required | Stage A fails, or reviewer/test engineer returns a negative or malformed verdict. A TESTED `SKIPPED` verdict (tests not run) is the exception: it stays Stage B eligible for test-gate re-dispatch instead of entering `rework_required` (#2756) |

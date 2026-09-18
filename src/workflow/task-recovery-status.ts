@@ -21,7 +21,8 @@ export type TaskRecoveryCategory =
 	| 'stale'
 	| 'ambiguous'
 	| 'corrupt'
-	| 'live_wedge';
+	| 'live_wedge'
+	| 'settlement_wedge';
 
 export interface TaskRecoveryStatus {
 	taskId: string;
@@ -158,6 +159,16 @@ export function classifyEvidenceRecoveryTask(
 	taskId: string,
 	evidence: TaskEvidence | null,
 	greenPreCheck: boolean | null,
+	options?: {
+		/**
+		 * The scan verified a COMMITTED settlement WAL with `accepted === true`
+		 * for this task (issue #2828). Only the wedge scan supplies this; it
+		 * distinguishes a settlement wedge (idle/blocked state whose durable
+		 * receipts still justify Stage A) from an ordinary not-started or
+		 * terminal task.
+		 */
+		settlementCommittedAccepted?: boolean;
+	},
 ): TaskRecoveryStatus {
 	const snapshot: TaskWorkflowSnapshot | null =
 		evidence?.workflow !== undefined && evidence.workflow !== null
@@ -201,6 +212,26 @@ export function classifyEvidenceRecoveryTask(
 				suggestedNextCommand: `/swarm recover ${taskId}`,
 			};
 		}
+	}
+
+	if (
+		options?.settlementCommittedAccepted === true &&
+		(snapshot.state === 'idle' || snapshot.state === 'blocked')
+	) {
+		return {
+			...base,
+			category: 'settlement_wedge',
+			repairAllowed: greenPreCheck === true,
+			uncertainExternalEffect: false,
+			explanation: `settlement-backed task wedge — workflow at ${snapshot.state} while a COMMITTED accepted coder settlement still justifies Stage A for generation ${snapshot.generation}${
+				greenPreCheck === true
+					? ' and green post-settlement pre-check bundles exist: the missing Stage A record is deterministically repairable without re-running the coder or editing evidence'
+					: greenPreCheck === false
+						? ' but pre-check proof is missing or not green: run pre_check_batch first — the repair refuses to mark Stage A passed without proof'
+						: ''
+			}`,
+			suggestedNextCommand: `/swarm recover ${taskId}`,
+		};
 	}
 
 	return {
