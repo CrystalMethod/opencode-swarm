@@ -62,7 +62,10 @@ export function makeTempDir(prefix: string): string {
 	return dir;
 }
 
-export function writePlan(directory: string): void {
+export function writePlan(
+	directory: string,
+	taskIds: string[] = [TASK_ID],
+): void {
 	fs.writeFileSync(
 		path.join(directory, '.swarm', 'plan.json'),
 		JSON.stringify({

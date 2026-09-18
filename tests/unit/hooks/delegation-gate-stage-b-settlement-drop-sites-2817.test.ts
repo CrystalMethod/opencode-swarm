@@ -1,13 +1,15 @@
 /**
  * Issue #2817 regression tests, part 2 — sweep-found drop sites, dedupe,
- * happy path, and council exclusion. (The three issue-named drop sites live
- * in delegation-gate-stage-b-settlement-drop-advisory-2817.test.ts; shared
+ * aggregation/host-log coverage, second-turn re-advise, happy path, and
+ * council exclusion. (The three issue-named drop sites live in
+ * delegation-gate-stage-b-settlement-drop-advisory-2817.test.ts; shared
  * fixtures in _stage-b-settlement-2817-helpers.ts.)
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
 import type { PluginConfig } from '../../../src/config';
+import { closeProjectDb } from '../../../src/db/project-db';
 import { setGatesForIdentity } from '../../../src/db/qa-gate-profile';
 import {
 	readTaskEvidence,
@@ -20,6 +22,7 @@ import {
 	resetSwarmState,
 	startAgentSession,
 } from '../../../src/state';
+import * as logger from '../../../src/utils/logger';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import {
 	drainRehydrations,
@@ -33,6 +36,7 @@ import {
 	settlementDropAdvisories,
 	TASK_ID,
 	testEngineerArgs,
+	writePlan,
 } from './_stage-b-settlement-2817-helpers.js';
 
 let tempDir: string;
@@ -45,6 +49,13 @@ beforeEach(() => {
 
 afterEach(() => {
 	resetSwarmState();
+	try {
+		// setGatesForIdentity (council test) caches a project DB handle for
+		// tempDir; release it before the recursive delete (Windows EBUSY).
+		if (tempDir) closeProjectDb(tempDir);
+	} catch {
+		// best-effort handle release
+	}
 	try {
 		if (tempDir) {
 			fs.rmSync(tempDir, {
@@ -123,9 +134,10 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 		expect(advisories.length).toBeGreaterThan(0);
 		expect(advisories.join(' ')).toMatch(/capacity/i);
 		expect(advisories.join(' ')).toMatch(REDISPATCH_RE);
-		// Fencing preserved: nothing settled.
+		// Fencing preserved: nothing settled — no reviewer gate evidence at all
+		// (the fixture seeds none; any recorded gate would be a regression).
 		const evidence = await readTaskEvidence(tempDir, TASK_ID);
-		expect(evidence?.gates?.reviewer?.sessionId === sessionID).toBe(false);
+		expect(evidence?.gates?.reviewer).toBeUndefined();
 	});
 
 	it('rejection-persist failure queues the distinct rejection advisory (no clean-verdict wording)', async () => {
@@ -170,7 +182,11 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 		// Distinct wording: no clean-verdict claim, no re-dispatch remedy on this leg.
 		expect(advisory).not.toContain('clean verdict');
 		expect(advisory).not.toMatch(REDISPATCH_RE);
-		// Fencing preserved: the rejection did not land, task stays eligible.
+		// Fencing preserved: the rejection did not land — no test_engineer gate
+		// evidence (the fixture seeds only a reviewer gate) and the task stays
+		// eligible.
+		const evidence = await readTaskEvidence(tempDir, TASK_ID);
+		expect(evidence?.gates?.test_engineer).toBeUndefined();
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
 	});
 
@@ -201,6 +217,90 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 		expect(advisories.length).toBe(1);
 	});
 
+	it('multi-task drop: per-task advisories survive prefix task ids and ONE aggregated criticalWarn line fires per class', async () => {
+		const sessionID = 'sess-2817-multi';
+		tempDir = makeTempDir('dg-2817-multi-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		// 1.1 and 1.10: the bracket-terminated dedupe token must keep the
+		// shorter task's advisory from being substring-suppressed by the longer
+		// task's queued message (PRR-004).
+		writePlan(tempDir, ['1.1', '1.10']);
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set('1.1', 'reviewer_run');
+		session.taskWorkflowStates.set('1.10', 'reviewer_run');
+		session.currentTaskId = '1.1';
+		const hook = createDelegationGateHook(fullConfig(), tempDir);
+		const criticalWarnSpy = spyOn(logger, 'criticalWarn').mockImplementation(
+			() => {},
+		);
+
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'call-2817-multi',
+				args: testEngineerArgs(),
+			},
+			{
+				output: `[TESTED] | task-1.10 | PASS | ok\n[TESTED] | task-1.1 | PASS | ok`,
+			},
+		);
+
+		// BOTH per-task advisories are queued — neither suppressed by the other.
+		const advisories = settlementDropAdvisories(sessionID);
+		expect(
+			advisories.some((m) =>
+				m.includes('[stageb-settlement-drop:unbound:1.1]'),
+			),
+		).toBe(true);
+		expect(
+			advisories.some((m) =>
+				m.includes('[stageb-settlement-drop:unbound:1.10]'),
+			),
+		).toBe(true);
+		// Aggregated host-log: exactly one criticalWarn for the unbound class,
+		// naming both tasks on one line. (Read mock.calls BEFORE mockRestore —
+		// restoring clears the call log.)
+		const dropLines = criticalWarnSpy.mock.calls
+			.map((call) => String(call[0] ?? ''))
+			.filter((line) => line.includes('Stage B settlement dropped'));
+		criticalWarnSpy.mockRestore();
+		expect(dropLines.length).toBe(1);
+		expect(dropLines[0]).toContain('1.1');
+		expect(dropLines[0]).toContain('1.10');
+		expect(dropLines[0]).toContain('unbound');
+	});
+
+	it('re-advises on the next turn after the advisory queue drains', async () => {
+		const sessionID = 'sess-2817-nextturn';
+		tempDir = makeTempDir('dg-2817-nextturn-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		await seedReviewerApproved(tempDir, 'nextturn');
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set(TASK_ID, 'reviewer_run');
+		session.currentTaskId = TASK_ID;
+		const hook = createDelegationGateHook(fullConfig(), tempDir);
+		const args = testEngineerArgs();
+
+		await hook.toolAfter(
+			{ tool: 'Task', sessionID, callID: 'call-2817-turn-1', args },
+			{ output: `[TESTED] | task-${TASK_ID} | PASS | ok` },
+		);
+		expect(settlementDropAdvisories(sessionID).length).toBe(1);
+
+		// Turn boundary: the guardrails drain clears the pending queue.
+		session.pendingAdvisoryMessages = [];
+
+		await hook.toolAfter(
+			{ tool: 'Task', sessionID, callID: 'call-2817-turn-2', args },
+			{ output: `[TESTED] | task-${TASK_ID} | PASS | ok` },
+		);
+		// The next turn's drop re-surfaces — no permanent suppression.
+		expect(settlementDropAdvisories(sessionID).length).toBe(1);
+	});
+
 	it('bound clean settlement still settles and advances (fencing intact, happy path)', async () => {
 		const sessionID = 'sess-2817-happy';
 		tempDir = makeTempDir('dg-2817-happy-');
@@ -212,6 +312,9 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 			tempDir,
 		);
 		const callID = 'call-2817-happy';
+		const criticalWarnSpy = spyOn(logger, 'criticalWarn').mockImplementation(
+			() => {},
+		);
 
 		await hook.toolBefore(
 			{ tool: 'Task', sessionID, callID },
@@ -235,14 +338,22 @@ describe('foreground Stage B settlement drop visibility — sweep sites + preser
 			},
 			{ text: `[REVIEWED] | task-${TASK_ID} | APPROVED | looks good` },
 		);
+		// Read the call log BEFORE mockRestore — restoring clears it.
+		const happyPathDropLineEmitted = criticalWarnSpy.mock.calls
+			.map((call) => String(call[0] ?? ''))
+			.some((line) => line.includes('Stage B settlement dropped'));
+		criticalWarnSpy.mockRestore();
 
 		const session = ensureAgentSession(sessionID);
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
 		const evidence = await readTaskEvidence(tempDir, TASK_ID);
 		expect(evidence?.gates?.reviewer).toBeDefined();
 		expect(session.stageBCompletion?.get(TASK_ID)?.has('reviewer')).toBe(true);
-		// No drop advisory on the happy path.
+		// No drop advisory on the happy path...
 		expect(settlementDropAdvisories(sessionID).length).toBe(0);
+		// ...and no drop host-log line either (suppression, not just absence of
+		// queue entries).
+		expect(happyPathDropLineEmitted).toBe(false);
 	});
 
 	it('council mode does not emit settlement-drop advisories (council owns advancement)', async () => {

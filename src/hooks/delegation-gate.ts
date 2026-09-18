@@ -3503,24 +3503,31 @@ function warnStageBSettlementDropped(
 		drops: Map<StageBSettlementDropReason, string[]>;
 	},
 ): void {
-	const { taskId, agent, callID, reasonClass, detail, drops } = params;
+	const { taskId, agent, reasonClass, drops } = params;
 	const restartNote =
 		reasonClass === 'unbound'
 			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; it cannot be reconstructed after a restart.'
 			: '';
-	// The dedupe key leads the message by advisory-queue convention (#1976):
+	// The dedupe token leads the message by advisory-queue convention (#1976):
 	// pushAdvisory's keyed dedupe matches on key-presence in queued messages.
-	const dedupeKey = `stageb-settlement-drop:${reasonClass}:${taskId}`;
+	// The closing bracket terminates the key so a prefix task id (1.1 vs 1.10)
+	// can never substring-match another task's queued message.
+	const dedupeToken = `[stageb-settlement-drop:${reasonClass}:${taskId}]`;
+	// Control-char hygiene (same policy as sanitizeDenialText): callID is
+	// host-supplied and detail embeds internal error text; neither may forge
+	// multi-line advisory content or drive terminal escape sequences.
+	const safeCallID = sanitizeDenialText(params.callID);
+	const safeDetail = sanitizeDenialText(params.detail);
 	const message =
 		reasonClass === 'rejection_persist_failed'
-			? `[${dedupeKey}] STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${callID}: ${detail}. ` +
+			? `${dedupeToken} STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${safeCallID}: ${safeDetail}. ` +
 				`The rejection verdict was not persisted (fail-closed); the task stays at its current state. ` +
 				`Remedy: inspect .swarm/ evidence storage for this task and retry the rejection transition (the verdict need not be re-earned).`
-			: `[${dedupeKey}] STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${callID}: ${detail}.${restartNote} ` +
+			: `${dedupeToken} STAGE B SETTLEMENT DROPPED: ${agent} task ${taskId} from call ${safeCallID}: ${safeDetail}.${restartNote} ` +
 				`The clean verdict was not recorded (fail-closed); the task stays at its current state. ` +
 				`Remedy: re-dispatch the ${agent} gate for task ${taskId}.`;
 	pushAdvisory(session, message, {
-		dedupeKey,
+		dedupeKey: dedupeToken,
 	});
 	const tasks = drops.get(reasonClass) ?? [];
 	tasks.push(taskId);
@@ -3533,8 +3540,13 @@ function flushStageBSettlementDropWarnings(
 ): void {
 	for (const [reasonClass, taskIds] of drops) {
 		if (taskIds.length === 0) continue;
+		// Bound the joined list so a pathological many-task drop cannot produce
+		// an arbitrarily long host-log line.
+		const listed = taskIds.slice(0, 10).join(', ');
+		const overflow =
+			taskIds.length > 10 ? ` (+${taskIds.length - 10} more)` : '';
 		logger.criticalWarn(
-			`[delegation-gate] Stage B settlement dropped for task(s) ${taskIds.join(', ')}: ${STAGE_B_SETTLEMENT_DROP_REASONS[reasonClass]}. See session advisories for per-task remedies.`,
+			`[delegation-gate] Stage B settlement dropped for task(s) ${listed}${overflow}: ${STAGE_B_SETTLEMENT_DROP_REASONS[reasonClass]}. See session advisories for per-task remedies.`,
 		);
 	}
 	drops.clear();
@@ -6399,7 +6411,7 @@ export function createDelegationGateHook(
 												agent: targetAgent,
 												callID: input.callID,
 												reasonClass: 'unbound',
-												detail: `ignoring unbound Stage B settlement from call ${input.callID}`,
+												detail: 'ignoring unbound Stage B settlement',
 												drops: stageBSettlementDrops,
 											});
 											continue;

@@ -185,8 +185,9 @@ describe('foreground Stage B settlement drop visibility — issue-named sites (#
 		const advisory = advisories.find((m) => m.includes(TASK_ID)) ?? '';
 		expect(advisory).toMatch(REDISPATCH_RE);
 		expect(advisory).toContain('TASK_WORKFLOW_GENERATION_MISMATCH');
-		// Fencing preserved: no test_engineer gate recorded for the stale verdict.
+		// Fencing preserved: no test_engineer gate recorded at all for the
+		// stale verdict (the fixture seeds only a reviewer gate).
 		const evidence = await readTaskEvidence(tempDir, TASK_ID);
-		expect(evidence?.gates?.test_engineer?.sessionId === sessionID).toBe(false);
+		expect(evidence?.gates?.test_engineer).toBeUndefined();
 	});
 });
