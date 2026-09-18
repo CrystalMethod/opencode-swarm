@@ -12,10 +12,9 @@
  * prior issue's receipt cannot satisfy a new trace.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { z } from 'zod';
 import { validateSwarmPath } from '../hooks/utils';
+import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
 
 const RecordIssuePublicationArgsSchema = z
@@ -69,15 +68,7 @@ export async function executeRecordIssuePublication(
 	}
 
 	try {
-		const dir = path.dirname(validatedPath);
-		await fs.promises.mkdir(dir, { recursive: true });
-		const tmpPath = path.join(dir, '.issue-publication.json.tmp');
-		await fs.promises.writeFile(
-			tmpPath,
-			JSON.stringify(receipt, null, 2),
-			'utf-8',
-		);
-		await fs.promises.rename(tmpPath, validatedPath);
+		await atomicWriteSwarmFile(validatedPath, JSON.stringify(receipt, null, 2));
 		return JSON.stringify({
 			success: true,
 			issueNumber,

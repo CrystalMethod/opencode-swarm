@@ -11,10 +11,9 @@
  * `merge_approval_recorded` status when the reader observes this receipt.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { z } from 'zod';
 import { validateSwarmPath } from '../hooks/utils';
+import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
 
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -29,8 +28,6 @@ const RecordMergeApprovalArgsSchema = z
 		userApprovalVerbatim: z.string().trim().min(1).max(8000),
 	})
 	.strict();
-
-let tempCounter = 0;
 
 export async function executeRecordMergeApproval(
 	args: unknown,
@@ -79,19 +76,7 @@ export async function executeRecordMergeApproval(
 	}
 
 	try {
-		const dir = path.dirname(validatedPath);
-		await fs.promises.mkdir(dir, { recursive: true });
-		tempCounter += 1;
-		const tmpPath = path.join(
-			dir,
-			`.merge-approval.json.tmp.${process.pid}.${tempCounter}`,
-		);
-		await fs.promises.writeFile(
-			tmpPath,
-			JSON.stringify(receipt, null, 2),
-			'utf-8',
-		);
-		await fs.promises.rename(tmpPath, validatedPath);
+		await atomicWriteSwarmFile(validatedPath, JSON.stringify(receipt, null, 2));
 		return JSON.stringify({
 			success: true,
 			issueNumber: data.issueNumber,
