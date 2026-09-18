@@ -260,6 +260,11 @@ export const TOOL_METADATA = {
 			'recover a task wedged at rework_required when the reviewer/test_engineer verdict did not require a code change: write a supervised stage_a_passed so those gates can be re-dispatched without re-running the coder (issue #2755)',
 		agents: ['architect'],
 	},
+	recover_stage_a_task: {
+		description:
+			'recover a task wedged in the settlement-backed Stage A deadlock — workflow at idle/blocked while a COMMITTED accepted coder settlement and green post-settlement pre-check proof justify Stage A: write a settlement-backed stage_a_passed so reviewer/test_engineer can be dispatched, without re-running the coder (issue #2828)',
+		agents: ['architect'],
+	},
 	prepare_pr_workflow_checkout: {
 		description:
 			'prepare an auditable PR workflow checkout or restore its exact original branch/HEAD and preserved stash after terminal cleanup',

@@ -215,17 +215,50 @@ type StageATaskScan =
 	  }
 	| {
 			kind: 'repairable';
+			/**
+			 * Which durable receipts justify the repair: the #2665 live_wedge
+			 * (workflow at coder_delegated with no pre_check gate proof) or the
+			 * #2828 settlement wedge (idle/blocked with a COMMITTED accepted
+			 * coder settlement). Drives the reducer's guarded entry flag.
+			 */
+			mode: 'live_wedge' | 'settlement_wedge';
 			generation: number;
 			green: boolean;
 			predecessorTransitionId: string | null;
 			evidence: TaskEvidence | null;
 	  };
 
+/** Latest COMMITTED settlement facts for one task, from the shared WAL listing. */
+function latestCommittedAcceptedSettlementMs(
+	taskId: string,
+	walStates: readonly CoderSettlementWalState[],
+): number | null {
+	let latest: number | null = null;
+	for (const state of walStates) {
+		if (state.taskId !== taskId) continue;
+		if (state.state !== 'COMMITTED') continue;
+		if (state.accepted !== true) continue;
+		if (state.recordedAt === undefined) continue;
+		const parsed = Date.parse(state.recordedAt);
+		if (!Number.isFinite(parsed)) continue;
+		latest = latest === null ? parsed : Math.max(latest, parsed);
+	}
+	return latest;
+}
+
 /**
  * The decision core (issue #2665): identical predicates to the pre-refactor
  * repair loop — wedged means workflow `coder_delegated` with no pre_check
  * gate proof; the recency proof uses the latest COMMITTED settlement's
  * recordedAt with the task's own last-transition timestamp as fallback.
+ *
+ * Issue #2828 adds the settlement wedge: workflow drifted to `idle` (a
+ * force-repair's `repair_idle` rotated the generation and cleared the gate
+ * proofs) or `blocked` (a `task_blocked` label past a recorded or missing
+ * Stage A), while a COMMITTED accepted settlement WAL plus green
+ * post-settlement pre-check bundles still justify Stage A. The state label
+ * alone never proves health when those receipts disagree with it — the
+ * disagreement is the repairable wedge.
  */
 async function scanStageATask(
 	directory: string,
@@ -234,15 +267,74 @@ async function scanStageATask(
 ): Promise<StageATaskScan> {
 	const evidence = await readTaskEvidence(directory, taskId);
 	const workflow = getTaskWorkflowSnapshot(evidence);
-	if (workflow.state !== 'coder_delegated') {
+	if (workflow.state === 'coder_delegated') {
+		if (!evidence?.gates?.pre_check) {
+			// #2665 live_wedge path (unchanged).
+			const greenness = await hasGreenPostSettlementPreCheck(
+				directory,
+				liveWedgeSettledAfterMs(taskId, workflow, walStates),
+			);
+			if (!greenness.green) {
+				return { kind: 'not_green', reason: greenness.reason, evidence };
+			}
+			return {
+				kind: 'repairable',
+				mode: 'live_wedge',
+				generation: workflow.generation,
+				green: true,
+				predecessorTransitionId: workflow.lastTransitionId ?? null,
+				evidence,
+			};
+		}
 		return { kind: 'not_wedged', state: workflow.state, evidence };
 	}
-	if (evidence?.gates?.pre_check) {
+	if (workflow.state === 'idle' || workflow.state === 'blocked') {
+		// #2828 settlement wedge: the durable receipts, not the state label,
+		// decide. `idle` additionally requires the pre_check proof to be absent
+		// (the normal post-repair_idle shape); `blocked` admits a previously
+		// recorded proof too — the wedge there is the state regression, and
+		// re-recording Stage A is idempotent for the gate entry.
+		const settledAfterMs = latestCommittedAcceptedSettlementMs(
+			taskId,
+			walStates,
+		);
+		if (
+			settledAfterMs !== null &&
+			(workflow.state === 'blocked' || !evidence?.gates?.pre_check)
+		) {
+			const greenness = await hasGreenPostSettlementPreCheck(
+				directory,
+				settledAfterMs,
+			);
+			if (!greenness.green) {
+				return { kind: 'not_green', reason: greenness.reason, evidence };
+			}
+			return {
+				kind: 'repairable',
+				mode: 'settlement_wedge',
+				generation: workflow.generation,
+				green: true,
+				predecessorTransitionId: workflow.lastTransitionId ?? null,
+				evidence,
+			};
+		}
 		return { kind: 'not_wedged', state: workflow.state, evidence };
 	}
-	// The caller supplies ONE settlement-WAL listing per invocation (hoisted:
-	// neither loop mutates settlement WALs mid-pass), so N candidate tasks cost
-	// one listing instead of N (PR #2697 review, PRR-004).
+	return { kind: 'not_wedged', state: workflow.state, evidence };
+}
+
+/**
+ * Recency anchor for the #2665 live_wedge: the latest COMMITTED settlement
+ * for this task (accepted or not), falling back to the task's own
+ * last-transition timestamp (the accepted_mutation that put it at
+ * coder_delegated) so recency is still provable rather than silently
+ * disabled for WAL-less tasks.
+ */
+function liveWedgeSettledAfterMs(
+	taskId: string,
+	workflow: { updatedAt: string },
+	walStates: readonly CoderSettlementWalState[],
+): number | null {
 	let settledAfterMs: number | null = null;
 	for (const state of walStates) {
 		if (state.taskId !== taskId) continue;
@@ -257,33 +349,11 @@ async function scanStageATask(
 		settledAfterMs =
 			settledAfterMs === null ? parsed : Math.max(settledAfterMs, parsed);
 	}
-	// An unreadable/failed WAL listing surfaces above (the caller's per-task
-	// error path); here a successful-but-empty listing simply falls through to
-	// the evidence-timestamp fallback below.
 	if (settledAfterMs === null) {
-		// No settlement WAL exists for this task (background-dispatched
-		// coder tasks never create one — see stage-b-gates.ts), or the
-		// WAL read failed. Fall back to the task's own last-transition
-		// timestamp (the accepted_mutation that put it at
-		// coder_delegated) so recency is still provable rather than
-		// silently disabled.
 		const fallbackTs = Date.parse(workflow.updatedAt);
 		if (Number.isFinite(fallbackTs)) settledAfterMs = fallbackTs;
 	}
-	const greenness = await hasGreenPostSettlementPreCheck(
-		directory,
-		settledAfterMs,
-	);
-	if (!greenness.green) {
-		return { kind: 'not_green', reason: greenness.reason, evidence };
-	}
-	return {
-		kind: 'repairable',
-		generation: workflow.generation,
-		green: true,
-		predecessorTransitionId: workflow.lastTransitionId ?? null,
-		evidence,
-	};
+	return settledAfterMs;
 }
 
 export interface StageAScanResult {
@@ -319,11 +389,25 @@ export async function scanWedgedStageA(
 			const verdict = await scanStageATask(directory, taskId, walStates);
 			if (verdict.kind === 'repairable') {
 				results.push(
-					classifyEvidenceRecoveryTask(taskId, verdict.evidence, verdict.green),
+					classifyEvidenceRecoveryTask(
+						taskId,
+						verdict.evidence,
+						verdict.green,
+						{
+							settlementCommittedAccepted: verdict.mode === 'settlement_wedge',
+						},
+					),
 				);
 			} else if (verdict.kind === 'not_green') {
 				results.push(
-					classifyEvidenceRecoveryTask(taskId, verdict.evidence, false),
+					classifyEvidenceRecoveryTask(taskId, verdict.evidence, false, {
+						settlementCommittedAccepted:
+							verdict.evidence !== null &&
+							['idle', 'blocked'].includes(
+								getTaskWorkflowSnapshot(verdict.evidence).state,
+							) &&
+							latestCommittedAcceptedSettlementMs(taskId, walStates) !== null,
+					}),
 				);
 			} else {
 				results.push(
@@ -336,14 +420,16 @@ export async function scanWedgedStageA(
 }
 
 /**
- * Repair path for tasks already wedged at `coder_delegated`
- * (TASK_WORKFLOW_STAGE_A_REQUIRED post-reset wedge). For each flat task
- * evidence file whose workflow store sits at `coder_delegated` with no
- * pre_check gate proof AND a green post-settlement pre-check bundle, emits
- * the missing `stage_a_passed` transition directly and appends an audit
- * event. Never re-runs the coder; live DISPATCHED/PREPARED settlement WALs
- * refuse the transition loudly (CODER_SETTLEMENT_IN_PROGRESS) and surface as
- * per-task errors without blocking siblings.
+ * Repair path for tasks wedged without a recorded Stage A (issue #2665 live
+ * wedge; issue #2828 settlement wedge). For each flat task evidence file
+ * whose workflow store sits at `coder_delegated` with no pre_check gate proof
+ * AND a green post-settlement pre-check bundle — or whose workflow drifted to
+ * `idle`/`blocked` while a COMMITTED accepted coder settlement plus green
+ * post-settlement pre-check proof still justify Stage A — emits the missing
+ * `stage_a_passed` transition directly and appends an audit event. Never
+ * re-runs the coder; live DISPATCHED/PREPARED settlement WALs refuse the
+ * transition loudly (CODER_SETTLEMENT_IN_PROGRESS) and surface as per-task
+ * errors without blocking siblings.
  */
 export async function repairWedgedStageA(
 	directory: string,
@@ -381,6 +467,9 @@ export async function repairWedgedStageA(
 			const transitionId = `stage-a-repair:${taskId}:${scan.generation}`;
 			await transitionTaskWorkflowEvidence(directory, taskId, {
 				type: 'stage_a_passed',
+				...(scan.mode === 'settlement_wedge'
+					? { settlementRecovery: true as const }
+					: {}),
 				expectedGeneration: scan.generation,
 				transitionId,
 			});
@@ -389,6 +478,10 @@ export async function repairWedgedStageA(
 				taskId,
 				transitionId,
 				generation: scan.generation,
+				...(scan.mode === 'settlement_wedge'
+					? { settlementRecovery: true }
+					: {}),
+				via: 'swarm-recover',
 				// Issue #2665: the new receipt names its predecessor — the
 				// transition that wedged the task (the accepted_mutation that
 				// left the workflow at coder_delegated without Stage A proof).

@@ -334,4 +334,157 @@ describe('issue #2268 — /swarm recover command', () => {
 			expect(workflow.state).toBe('pre_check_passed');
 		});
 	});
+
+	describe('issue #2828 — settlement-wedge repair and refusal rendering', () => {
+		function writeCommittedAcceptedWal(taskId: string): void {
+			const walDir = path.join(directory, '.swarm', 'coder-settlements');
+			fs.mkdirSync(walDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(walDir, `${taskId}.json`),
+				JSON.stringify({
+					version: 1,
+					state: 'COMMITTED',
+					taskId,
+					transitionId: `coder:wal-${taskId}`,
+					actor: 'test',
+					processId: process.pid,
+					runtimeId: '00000000-0000-4000-8000-000000000000',
+					expectedGeneration: 1,
+					context: {
+						baseline: {
+							directory,
+							gitHead: null,
+							dirtyHash: null,
+							prHeadSha: null,
+							scope: null,
+							changedFiles: [],
+						},
+						declaredFiles: ['src/feature.ts'],
+					},
+					accepted: true,
+					recordedAt: FIXED_NOW_ISO,
+				}),
+			);
+		}
+
+		async function writeGreenPreCheck(): Promise<void> {
+			await withFrozenClockAsync(
+				async () => {
+					await saveEvidence(directory, 'secretscan', {
+						task_id: 'secretscan',
+						type: 'secretscan',
+						timestamp: FIXED_NOW_ISO,
+						agent: 'pre_check_batch',
+						verdict: 'pass',
+						summary: 'no secrets found',
+						findings_count: 0,
+						files_scanned: 10,
+						skipped_files: 0,
+						incomplete_files: 0,
+						incomplete_paths: [],
+					});
+					await saveEvidence(directory, 'sast_scan', {
+						task_id: 'sast_scan',
+						type: 'sast',
+						timestamp: FIXED_NOW_ISO,
+						agent: 'pre_check_batch',
+						verdict: 'pass',
+						summary: 'no findings',
+						findings: [],
+						engine: 'tier_a',
+						files_scanned: 5,
+						findings_count: 0,
+						findings_by_severity: { critical: 0, high: 0, medium: 0, low: 0 },
+					});
+				},
+				{ isoNow: FIXED_NOW_ISO },
+			);
+		}
+
+		/** accepted_mutation → stage_a_passed → task_blocked (→ repair_idle). */
+		async function settleAt(
+			taskId: string,
+			target: 'blocked' | 'idle',
+		): Promise<void> {
+			await withFrozenClockAsync(
+				async () => {
+					await transitionTaskWorkflowEvidence(directory, taskId, {
+						type: 'accepted_mutation',
+						agentType: 'coder',
+						expectedGeneration: 0,
+						transitionId: `coder:setup-${taskId}`,
+					});
+					await transitionTaskWorkflowEvidence(directory, taskId, {
+						type: 'stage_a_passed',
+						expectedGeneration: 1,
+						transitionId: `pre-check:setup-${taskId}`,
+					});
+					await transitionTaskWorkflowEvidence(directory, taskId, {
+						type: 'task_blocked',
+						expectedGeneration: 1,
+						transitionId: `terminal:setup-${taskId}`,
+					});
+					if (target === 'idle') {
+						await transitionTaskWorkflowEvidence(directory, taskId, {
+							type: 'repair_idle',
+							expectedGeneration: 1,
+							transitionId: `repair:setup-${taskId}`,
+						});
+					}
+				},
+				{ isoNow: FIXED_NOW_ISO },
+			);
+		}
+
+		test('repairs the idle post-force settlement wedge and drops the dead-end line', async () => {
+			await settleAt('4.1', 'idle');
+			writeCommittedAcceptedWal('4.1');
+			await writeGreenPreCheck();
+
+			const out = await handleRecoverCommand(directory, ['4.1']);
+
+			expect(out).toContain('Task 4.1: Stage A repaired');
+			expect(out).toContain('Repaired 1 wedged task(s)');
+			expect(out).not.toContain('nothing to repair');
+			expect(out).not.toContain('No wedged tasks repaired.');
+			const workflow = getTaskWorkflowSnapshot(
+				await readTaskEvidence(directory, '4.1'),
+			);
+			expect(workflow.state).toBe('pre_check_passed');
+			expect(workflow.settlementRecovery).toBe(true);
+		});
+
+		test('repairs the blocked settlement wedge with proof present', async () => {
+			await settleAt('4.2', 'blocked');
+			writeCommittedAcceptedWal('4.2');
+			await writeGreenPreCheck();
+
+			const out = await handleRecoverCommand(directory, ['4.2']);
+
+			expect(out).toContain('Task 4.2: Stage A repaired');
+			const workflow = getTaskWorkflowSnapshot(
+				await readTaskEvidence(directory, '4.2'),
+			);
+			expect(workflow.state).toBe('pre_check_passed');
+			expect(workflow.settlementRecovery).toBe(true);
+		});
+
+		test('a receipts-less idle task gets the pointed settlement-wedge refusal, not the conflated dead end', async () => {
+			await settleAt('4.3', 'idle');
+			await writeGreenPreCheck();
+
+			const out = await handleRecoverCommand(directory, ['4.3']);
+
+			expect(out).toContain('no settlement-backed Stage A wedge is provable');
+			expect(out).toContain('recover_stage_a_task');
+			expect(out).toContain(
+				'--force does not override Stage A wedge-classification refusals',
+			);
+			expect(out).toContain('No wedged tasks repaired.');
+			const workflow = getTaskWorkflowSnapshot(
+				await readTaskEvidence(directory, '4.3'),
+			);
+			expect(workflow.state).toBe('idle');
+		});
+	});
 });
