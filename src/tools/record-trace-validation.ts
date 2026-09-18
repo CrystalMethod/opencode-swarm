@@ -10,12 +10,25 @@
  * recorded phase's latest run passed". The reducer's TRACE_VALIDATION_GATE
  * blocks the commit-pr handoff while any entry is missing, failing, or
  * malformed.
+ *
+ * The read-modify-write upsert runs under the per-file receipt lock
+ * (tryAcquireLock, keyed by this receipt's name — the same keyed-lock family
+ * as plan.json and the MCP receipt journal) so concurrent invocations
+ * serialize instead of silently dropping entries; contention resolves to
+ * serialization or a typed busy failure, never last-writer-wins (issue #2788).
+ * The persist step goes through the canonical atomic writer
+ * (src/utils/atomic-write.ts), which owns exact own-temp cleanup and the
+ * bounded Windows rename retry. The response's `allGreen` field is the gate
+ * READER's verdict computed from the persisted receipt — an advisory
+ * read-back for the calling agent, never consumed by the reducer.
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { z } from 'zod';
+import { traceValidationReceiptExists } from '../hooks/issue-trace-state';
 import { validateSwarmPath } from '../hooks/utils';
+import { tryAcquireLock } from '../parallel/file-locks';
+import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
 
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -55,8 +68,6 @@ interface StoredValidation {
 	timestamp: string;
 }
 
-let tempCounter = 0;
-
 export async function executeRecordTraceValidation(
 	args: unknown,
 	directory: string,
@@ -84,71 +95,96 @@ export async function executeRecordTraceValidation(
 		});
 	}
 
+	// Per-file receipt lock (issue #2788): the upsert is a read-modify-write
+	// over the whole validations array, so concurrent invocations must
+	// serialize or fail typed-busy — an unlocked last-writer-wins silently
+	// drops the other writer's phase entry. Mirrors withReceiptLock
+	// (src/mcp/write-receipts.ts) and withPlanLifecycleLock (plan/manager.ts).
 	try {
-		const dir = path.dirname(validatedPath);
-		await fs.promises.mkdir(dir, { recursive: true });
-
-		// Read-modify-write upsert: one entry per phase, replaced in place.
-		let validations: StoredValidation[] = [];
-		try {
-			const raw = await fs.promises.readFile(validatedPath, 'utf-8');
-			const existing: unknown = JSON.parse(raw);
-			if (
-				typeof existing === 'object' &&
-				existing !== null &&
-				Array.isArray((existing as Record<string, unknown>).validations)
-			) {
-				validations = (
-					(existing as Record<string, unknown>).validations as unknown[]
-				).filter(
-					(v): v is StoredValidation =>
-						typeof v === 'object' &&
-						v !== null &&
-						typeof (v as StoredValidation).phase === 'string',
-				);
-			}
-		} catch {
-			// Absent or unreadable receipt — start fresh.
+		const lock = await tryAcquireLock(
+			directory,
+			'trace-validation.json',
+			'trace-validation',
+			'trace-validation',
+		);
+		if (!lock.acquired) {
+			return JSON.stringify({
+				success: false,
+				message:
+					'The trace-validation receipt is locked by another concurrent writer; no write was attempted. Re-run record_trace_validation for this phase once the other writer finishes.',
+			});
 		}
-		const entry: StoredValidation = {
-			phase: data.phase,
-			outcome: data.outcome,
-			reviewedCommit: data.reviewedCommit,
-			treeId: data.treeId,
-			timestamp: new Date().toISOString(),
-		};
-		const idx = validations.findIndex((v) => v.phase === data.phase);
-		if (idx === -1) validations.push(entry);
-		else validations[idx] = entry;
+		try {
+			// Read-modify-write upsert: one entry per phase, replaced in place.
+			let validations: StoredValidation[] = [];
+			try {
+				const raw = await fs.promises.readFile(validatedPath, 'utf-8');
+				const existing: unknown = JSON.parse(raw);
+				if (
+					typeof existing === 'object' &&
+					existing !== null &&
+					Array.isArray((existing as Record<string, unknown>).validations)
+				) {
+					validations = (
+						(existing as Record<string, unknown>).validations as unknown[]
+					).filter(
+						(v): v is StoredValidation =>
+							typeof v === 'object' &&
+							v !== null &&
+							typeof (v as StoredValidation).phase === 'string',
+					);
+				}
+			} catch {
+				// Absent or unreadable receipt — start fresh.
+			}
+			const entry: StoredValidation = {
+				phase: data.phase,
+				outcome: data.outcome,
+				reviewedCommit: data.reviewedCommit,
+				treeId: data.treeId,
+				timestamp: new Date().toISOString(),
+			};
+			const idx = validations.findIndex((v) => v.phase === data.phase);
+			if (idx === -1) validations.push(entry);
+			else validations[idx] = entry;
 
-		const receipt: Record<string, unknown> = {
-			issueNumber: data.issueNumber,
-			timestamp: new Date().toISOString(),
-			validations,
-		};
-		if (context.sessionID?.trim()) receipt.sessionId = context.sessionID.trim();
+			const receipt: Record<string, unknown> = {
+				issueNumber: data.issueNumber,
+				timestamp: new Date().toISOString(),
+				validations,
+			};
+			if (context.sessionID?.trim())
+				receipt.sessionId = context.sessionID.trim();
 
-		tempCounter += 1;
-		const tmpPath = path.join(
-			dir,
-			`.trace-validation.json.tmp.${process.pid}.${tempCounter}`,
-		);
-		await fs.promises.writeFile(
-			tmpPath,
-			JSON.stringify(receipt, null, 2),
-			'utf-8',
-		);
-		await fs.promises.rename(tmpPath, validatedPath);
-		const allGreen = validations.every((v) => v.outcome === 'pass');
-		return JSON.stringify({
-			success: true,
-			issueNumber: data.issueNumber,
-			path: '.swarm/trace-validation.json',
-			allGreen,
-			message: allGreen
-				? `Validator receipt recorded for issue #${data.issueNumber} phase ${data.phase} (${data.outcome}); every recorded phase is green.`
-				: `Validator receipt recorded for issue #${data.issueNumber} phase ${data.phase} (${data.outcome}), but at least one recorded phase is failing — fix and re-record that phase as a pass before handoff.`,
-		});
+			await atomicWriteSwarmFile(
+				validatedPath,
+				JSON.stringify(receipt, null, 2),
+			);
+			// Read-back through the gate reader: the reported verdict is by
+			// construction the TRACE_VALIDATION_GATE's verdict on the persisted
+			// bytes, so the advisory response field can never drift from the gate
+			// (a lenient local computation once claimed green over malformed
+			// entries the reader rejects — issue #2788).
+			const allGreen = await traceValidationReceiptExists(
+				directory,
+				data.issueNumber,
+			);
+			return JSON.stringify({
+				success: true,
+				issueNumber: data.issueNumber,
+				path: '.swarm/trace-validation.json',
+				allGreen,
+				message: allGreen
+					? `Validator receipt recorded for issue #${data.issueNumber} phase ${data.phase} (${data.outcome}); every recorded phase is green.`
+					: `Validator receipt recorded for issue #${data.issueNumber} phase ${data.phase} (${data.outcome}), but at least one recorded phase is failing — fix and re-record that phase as a pass before handoff.`,
+			});
+		} finally {
+			try {
+				await lock.lock._release?.();
+			} catch {
+				// The proper-lockfile stale lease is the bounded fallback.
+			}
+		}
 	} catch (error) {
 		return JSON.stringify({
 			success: false,
@@ -160,7 +196,7 @@ export async function executeRecordTraceValidation(
 export const record_trace_validation: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Record one per-phase trace-check.sh validator outcome for the current traced issue (issue #2564): the phase (v3 enum 0..5 incl. 2.5/4.2/4.5/4.6), the outcome (pass or fail), and the exact reviewedCommit and treeId the validator reported. Re-running a phase replaces its entry. The /swarm issue --trace workflow will not hand off to commit-pr while any recorded phase is failing or none is recorded.',
+			"Record one per-phase trace-check.sh validator outcome for the current traced issue (issue #2564): the phase (v3 enum 0..5 incl. 2.5/4.2/4.5/4.6), the outcome (pass or fail), and the exact reviewedCommit and treeId the validator reported. Re-running a phase replaces its entry. The /swarm issue --trace workflow will not hand off to commit-pr while any recorded phase is failing or none is recorded. The receipt write is serialized by a per-file receipt lock, and the response's allGreen field mirrors the gate reader's verdict on the persisted receipt (advisory for the calling agent — the reducer always recomputes it independently).",
 		args: {
 			issueNumber: RecordTraceValidationArgsSchema.shape.issueNumber,
 			phase: RecordTraceValidationArgsSchema.shape.phase,

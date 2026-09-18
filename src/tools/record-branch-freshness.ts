@@ -9,12 +9,18 @@
  * whether the outcome permits the trace: synced permits, behind never
  * permits, fetch-failed permits only with a non-empty recorded override.
  * The reducer's FRESHNESS_GATE consumes that verdict before PLAN.
+ *
+ * The persist step goes through the canonical atomic writer
+ * (src/utils/atomic-write.ts), which owns exact own-temp cleanup and the
+ * bounded Windows rename retry (issue #2788). The response's `permits` field
+ * is the gate READER's verdict computed from the persisted receipt — an
+ * advisory read-back for the calling agent, never consumed by the reducer.
  */
 
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { z } from 'zod';
+import { branchFreshnessReceiptExists } from '../hooks/issue-trace-state';
 import { validateSwarmPath } from '../hooks/utils';
+import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
 
 const FreshnessValueSchema = z
@@ -36,8 +42,6 @@ const RecordBranchFreshnessArgsSchema = z
 		override: z.string().trim().min(1).max(4000).optional(),
 	})
 	.strict();
-
-let tempCounter = 0;
 
 export async function executeRecordBranchFreshness(
 	args: unknown,
@@ -82,24 +86,14 @@ export async function executeRecordBranchFreshness(
 	}
 
 	try {
-		const dir = path.dirname(validatedPath);
-		await fs.promises.mkdir(dir, { recursive: true });
-		tempCounter += 1;
-		const tmpPath = path.join(
-			dir,
-			`.branch-freshness.json.tmp.${process.pid}.${tempCounter}`,
+		await atomicWriteSwarmFile(validatedPath, JSON.stringify(receipt, null, 2));
+		// Read-back through the gate reader: the reported verdict is by
+		// construction the FRESHNESS_GATE's verdict on the persisted bytes, so
+		// the advisory response field can never drift from the gate (issue #2788).
+		const permits = await branchFreshnessReceiptExists(
+			directory,
+			data.issueNumber,
 		);
-		await fs.promises.writeFile(
-			tmpPath,
-			JSON.stringify(receipt, null, 2),
-			'utf-8',
-		);
-		await fs.promises.rename(tmpPath, validatedPath);
-		const permits =
-			data.freshness === 'synced' ||
-			(data.freshness.startsWith('fetch-failed:') &&
-				typeof data.override === 'string' &&
-				data.override.length > 0);
 		return JSON.stringify({
 			success: true,
 			issueNumber: data.issueNumber,
@@ -124,7 +118,7 @@ export async function executeRecordBranchFreshness(
 export const record_branch_freshness: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Record the Phase 0 branch-freshness outcome for the current traced issue (issue #2564): freshness is "synced", "behind:<n>", or "fetch-failed:<reason>" exactly as the fetch recorded it, plus an optional verbatim user override for a failed fetch. The /swarm issue --trace workflow will not transition to PLAN until the recorded outcome permits (synced, or fetch-failed with an override).',
+			'Record the Phase 0 branch-freshness outcome for the current traced issue (issue #2564): freshness is "synced", "behind:<n>", or "fetch-failed:<reason>" exactly as the fetch recorded it, plus an optional verbatim user override for a failed fetch. The /swarm issue --trace workflow will not transition to PLAN until the recorded outcome permits (synced, or fetch-failed with an override). The response\'s permits field mirrors the gate reader\'s verdict on the persisted receipt (advisory for the calling agent — the reducer always recomputes it independently).',
 		args: {
 			issueNumber: RecordBranchFreshnessArgsSchema.shape.issueNumber,
 			freshness: RecordBranchFreshnessArgsSchema.shape.freshness,
