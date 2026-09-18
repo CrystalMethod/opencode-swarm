@@ -5,7 +5,7 @@ import {
 	getTaskWorkflowSnapshot,
 	readTaskEvidence,
 	type TaskEvidence,
-	transitionTaskWorkflowEvidence,
+	transitionTaskWorkflowEvidenceWithStatus,
 } from '../gate-evidence.js';
 import { validateSwarmPath } from '../hooks/utils.js';
 import { sanitizeDiagnosticText } from '../scope/path-identity.js';
@@ -229,7 +229,7 @@ type StageATaskScan =
 	  };
 
 /** Latest COMMITTED settlement facts for one task, from the shared WAL listing. */
-function latestCommittedAcceptedSettlementMs(
+export function latestCommittedAcceptedSettlementMs(
 	taskId: string,
 	walStates: readonly CoderSettlementWalState[],
 ): number | null {
@@ -465,28 +465,38 @@ export async function repairWedgedStageA(
 				continue;
 			}
 			const transitionId = `stage-a-repair:${taskId}:${scan.generation}`;
-			await transitionTaskWorkflowEvidence(directory, taskId, {
-				type: 'stage_a_passed',
-				...(scan.mode === 'settlement_wedge'
-					? { settlementRecovery: true as const }
-					: {}),
-				expectedGeneration: scan.generation,
-				transitionId,
-			});
-			await appendStageARepairEvent(directory, {
-				action: 'repaired',
+			const { duplicated } = await transitionTaskWorkflowEvidenceWithStatus(
+				directory,
 				taskId,
-				transitionId,
-				generation: scan.generation,
-				...(scan.mode === 'settlement_wedge'
-					? { settlementRecovery: true }
-					: {}),
-				via: 'swarm-recover',
-				// Issue #2665: the new receipt names its predecessor — the
-				// transition that wedged the task (the accepted_mutation that
-				// left the workflow at coder_delegated without Stage A proof).
-				predecessorTransitionId: scan.predecessorTransitionId,
-			});
+				{
+					type: 'stage_a_passed',
+					...(scan.mode === 'settlement_wedge'
+						? { settlementRecovery: true as const }
+						: {}),
+					expectedGeneration: scan.generation,
+					transitionId,
+				},
+			);
+			// A concurrent same-generation repair (or any writer that recorded
+			// the identical transition first) makes this write a duplicate
+			// no-op detected inside the evidence lock. Skip the audit append so
+			// a no-op repair never logs a second `repaired` event.
+			if (!duplicated) {
+				await appendStageARepairEvent(directory, {
+					action: 'repaired',
+					taskId,
+					transitionId,
+					generation: scan.generation,
+					...(scan.mode === 'settlement_wedge'
+						? { settlementRecovery: true }
+						: {}),
+					via: 'swarm-recover',
+					// Issue #2665: the new receipt names its predecessor — the
+					// transition that wedged the task (the accepted_mutation that
+					// left the workflow at coder_delegated without Stage A proof).
+					predecessorTransitionId: scan.predecessorTransitionId,
+				});
+			}
 			results.push({
 				taskId,
 				outcome: 'repaired',

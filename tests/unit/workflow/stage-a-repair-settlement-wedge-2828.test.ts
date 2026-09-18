@@ -5,12 +5,10 @@
  * workflow drifted to idle (force-repair cleared the gate proofs) or blocked
  * while a COMMITTED accepted settlement plus green post-settlement pre-check
  * bundles still justify Stage A. Split from stage-a-repair.test.ts (FR-006);
- * the live_wedge (coder_delegated) leg stays pinned there.
+ * the live_wedge (coder_delegated) leg stays pinned there. Fixtures are
+ * shared with the other #2828 suites via _settlement-recovery-2828-helpers.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { saveEvidence } from '../../../src/evidence/manager';
 import {
 	getTaskWorkflowSnapshot,
 	readTaskEvidence,
@@ -21,10 +19,12 @@ import {
 	scanWedgedStageA,
 } from '../../../src/workflow/stage-a-repair';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
-
-const FIXED_NOW_MS = new Date('2026-01-01T00:00:00.000Z').getTime();
-const SETTLED_AT_ISO = new Date(FIXED_NOW_MS - 60_000).toISOString();
-const STALE_AT_ISO = new Date(FIXED_NOW_MS - 120_000).toISOString();
+import {
+	readRepairEvents,
+	settleAt,
+	writeCommittedWal,
+	writeGreenBundles,
+} from './_settlement-recovery-2828-helpers';
 
 let directory = '';
 let cleanup = (): void => {};
@@ -37,117 +37,11 @@ afterEach(() => {
 	cleanup();
 });
 
-function writeCommittedWal(taskId: string, accepted = true): void {
-	const walPath = path.join(
-		directory,
-		'.swarm',
-		'coder-settlements',
-		`${taskId}.json`,
-	);
-	fs.mkdirSync(path.dirname(walPath), { recursive: true });
-	fs.writeFileSync(
-		walPath,
-		JSON.stringify({
-			version: 1,
-			state: 'COMMITTED',
-			taskId,
-			transitionId: `coder:test-${taskId}`,
-			actor: 'test',
-			processId: process.pid,
-			runtimeId: '00000000-0000-4000-8000-000000000000',
-			expectedGeneration: 1,
-			context: {
-				baseline: {
-					directory,
-					gitHead: null,
-					dirtyHash: null,
-					prHeadSha: null,
-					scope: null,
-					changedFiles: [],
-				},
-				declaredFiles: ['src/changed.ts'],
-			},
-			accepted,
-			recordedAt: SETTLED_AT_ISO,
-		}),
-	);
-}
-
-async function writeGreenBundles(stale = false): Promise<void> {
-	const stamp = stale ? STALE_AT_ISO : SETTLED_AT_ISO;
-	await saveEvidence(directory, 'secretscan', {
-		task_id: 'secretscan',
-		type: 'secretscan',
-		timestamp: stamp,
-		agent: 'pre_check_batch',
-		verdict: 'pass',
-		summary: 'no secrets found',
-		findings_count: 0,
-		files_scanned: 10,
-		skipped_files: 0,
-		incomplete_files: 0,
-		incomplete_paths: [],
-	});
-	await saveEvidence(directory, 'sast_scan', {
-		task_id: 'sast_scan',
-		type: 'sast',
-		timestamp: stamp,
-		agent: 'pre_check_batch',
-		verdict: 'pass',
-		summary: 'no findings',
-		findings: [],
-		engine: 'tier_a',
-		files_scanned: 5,
-		findings_count: 0,
-		findings_by_severity: { critical: 0, high: 0, medium: 0, low: 0 },
-	});
-}
-
-async function settleAt(
-	taskId: string,
-	target: 'blocked' | 'idle',
-): Promise<void> {
-	await transitionTaskWorkflowEvidence(directory, taskId, {
-		type: 'accepted_mutation',
-		agentType: 'coder',
-		expectedGeneration: 0,
-		transitionId: `coder:setup-${taskId}`,
-	});
-	await transitionTaskWorkflowEvidence(directory, taskId, {
-		type: 'stage_a_passed',
-		expectedGeneration: 1,
-		transitionId: `pre-check:setup-${taskId}`,
-	});
-	await transitionTaskWorkflowEvidence(directory, taskId, {
-		type: 'task_blocked',
-		expectedGeneration: 1,
-		transitionId: `terminal:setup-${taskId}`,
-	});
-	if (target === 'idle') {
-		await transitionTaskWorkflowEvidence(directory, taskId, {
-			type: 'repair_idle',
-			expectedGeneration: 1,
-			transitionId: `repair:setup-${taskId}`,
-		});
-	}
-}
-
-function repairEvents(): Record<string, unknown>[] {
-	const eventsPath = path.join(directory, '.swarm', 'events.jsonl');
-	if (!fs.existsSync(eventsPath)) return [];
-	return fs
-		.readFileSync(eventsPath, 'utf8')
-		.trim()
-		.split('\n')
-		.map((line) => JSON.parse(line) as Record<string, unknown>)
-		.filter((event) => event.type === 'stage_a_repair');
-}
-
 describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 	test('repairs the idle post-force wedge without re-running the coder', async () => {
-		await settleAt('5.1', 'idle');
-		writeCommittedWal('5.1');
-		await writeGreenBundles();
+		await settleAt(directory, '5.1', 'idle');
+		writeCommittedWal(directory, '5.1');
+		await writeGreenBundles(directory);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.1'],
@@ -170,9 +64,9 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 	});
 
 	test('repairs the blocked wedge and restores the Stage B precondition', async () => {
-		await settleAt('5.2', 'blocked');
-		writeCommittedWal('5.2');
-		await writeGreenBundles();
+		await settleAt(directory, '5.2', 'blocked');
+		writeCommittedWal(directory, '5.2');
+		await writeGreenBundles(directory);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.2'],
@@ -192,13 +86,13 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 	});
 
 	test('emits an audited settlement recovery event with predecessor linkage', async () => {
-		await settleAt('5.3', 'idle');
-		writeCommittedWal('5.3');
-		await writeGreenBundles();
+		await settleAt(directory, '5.3', 'idle');
+		writeCommittedWal(directory, '5.3');
+		await writeGreenBundles(directory);
 
 		await repairWedgedStageA(directory, { taskIds: ['5.3'] });
 
-		const events = repairEvents();
+		const events = readRepairEvents(directory);
 		expect(events).toHaveLength(1);
 		expect(events[0]).toMatchObject({
 			action: 'repaired',
@@ -210,9 +104,9 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 	});
 
 	test('second run is idempotent (skipped_not_wedged at pre_check_passed)', async () => {
-		await settleAt('5.4', 'idle');
-		writeCommittedWal('5.4');
-		await writeGreenBundles();
+		await settleAt(directory, '5.4', 'idle');
+		writeCommittedWal(directory, '5.4');
+		await writeGreenBundles(directory);
 		await repairWedgedStageA(directory, { taskIds: ['5.4'] });
 
 		const second = await repairWedgedStageA(directory, { taskIds: ['5.4'] });
@@ -224,12 +118,12 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 				state: 'pre_check_passed',
 			},
 		]);
-		expect(repairEvents()).toHaveLength(1);
+		expect(readRepairEvents(directory)).toHaveLength(1);
 	});
 
 	test('idle without a settlement WAL is still refused (nothing justifies repair)', async () => {
-		await settleAt('5.5', 'idle');
-		await writeGreenBundles();
+		await settleAt(directory, '5.5', 'idle');
+		await writeGreenBundles(directory);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.5'],
@@ -242,13 +136,13 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 			await readTaskEvidence(directory, '5.5'),
 		);
 		expect(workflow.state).toBe('idle');
-		expect(repairEvents()).toHaveLength(0);
+		expect(readRepairEvents(directory)).toHaveLength(0);
 	});
 
 	test('idle with only a not-accepted settlement WAL is still refused', async () => {
-		await settleAt('5.6', 'idle');
-		writeCommittedWal('5.6', false);
-		await writeGreenBundles();
+		await settleAt(directory, '5.6', 'idle');
+		writeCommittedWal(directory, '5.6', false);
+		await writeGreenBundles(directory);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.6'],
@@ -257,12 +151,19 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 		expect(results).toEqual([
 			{ taskId: '5.6', outcome: 'skipped_not_wedged', state: 'idle' },
 		]);
+		const workflow = getTaskWorkflowSnapshot(
+			await readTaskEvidence(directory, '5.6'),
+		);
+		expect(workflow.state).toBe('idle');
+		expect(workflow.generation).toBe(2);
+		expect(workflow.lastTransitionId).toBe('repair:setup-5.6');
+		expect(readRepairEvents(directory)).toHaveLength(0);
 	});
 
 	test('wedge state with stale bundles reports skipped_not_green', async () => {
-		await settleAt('5.7', 'idle');
-		writeCommittedWal('5.7');
-		await writeGreenBundles(true);
+		await settleAt(directory, '5.7', 'idle');
+		writeCommittedWal(directory, '5.7');
+		await writeGreenBundles(directory, true);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.7'],
@@ -284,8 +185,8 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 			expectedGeneration: 0,
 			transitionId: 'coder:setup-5.8',
 		});
-		writeCommittedWal('5.8');
-		await writeGreenBundles();
+		writeCommittedWal(directory, '5.8');
+		await writeGreenBundles(directory);
 
 		const { results } = await repairWedgedStageA(directory, {
 			taskIds: ['5.8'],
@@ -297,18 +198,54 @@ describe('repairWedgedStageA settlement wedge (issue #2828)', () => {
 		);
 		expect(workflow.state).toBe('pre_check_passed');
 		expect(workflow.settlementRecovery).toBeUndefined();
-		const events = repairEvents();
+		const events = readRepairEvents(directory);
 		expect(events[0]).not.toHaveProperty('settlementRecovery');
+	});
+
+	test('an already-recorded identical Stage A write logs no second audit event', async () => {
+		// Whether a racing writer recorded the transition first (duplicate
+		// no-op inside the lock, pinned at the primitive level in
+		// settlement-recovery-reducer-2828.test.ts) or the Stage A pass simply
+		// already happened, a re-run of the repair over the same receipts must
+		// never append a second `repaired` audit event.
+		await settleAt(directory, '5.9', 'blocked');
+		writeCommittedWal(directory, '5.9');
+		await writeGreenBundles(directory);
+		await transitionTaskWorkflowEvidence(directory, '5.9', {
+			type: 'stage_a_passed',
+			settlementRecovery: true,
+			expectedGeneration: 1,
+			transitionId: 'stage-a-repair:5.9:1',
+		});
+		expect(readRepairEvents(directory)).toHaveLength(0);
+
+		const { results } = await repairWedgedStageA(directory, {
+			taskIds: ['5.9'],
+		});
+
+		expect(results).toEqual([
+			{
+				taskId: '5.9',
+				outcome: 'skipped_not_wedged',
+				state: 'pre_check_passed',
+			},
+		]);
+		const workflow = getTaskWorkflowSnapshot(
+			await readTaskEvidence(directory, '5.9'),
+		);
+		expect(workflow.state).toBe('pre_check_passed');
+		expect(workflow.generation).toBe(1);
+		expect(readRepairEvents(directory)).toHaveLength(0);
 	});
 });
 
 describe('scanWedgedStageA classification (issue #2828)', () => {
 	test('classifies both wedge shapes as settlement_wedge with repair allowed', async () => {
-		await settleAt('6.1', 'idle');
-		writeCommittedWal('6.1');
-		await writeGreenBundles();
-		await settleAt('6.2', 'blocked');
-		writeCommittedWal('6.2');
+		await settleAt(directory, '6.1', 'idle');
+		writeCommittedWal(directory, '6.1');
+		await writeGreenBundles(directory);
+		await settleAt(directory, '6.2', 'blocked');
+		writeCommittedWal(directory, '6.2');
 
 		const scan = await scanWedgedStageA(directory, { taskIds: ['6.1', '6.2'] });
 
@@ -327,8 +264,8 @@ describe('scanWedgedStageA classification (issue #2828)', () => {
 	});
 
 	test('classifies a receipts-less idle task healthy, not settlement_wedge', async () => {
-		await settleAt('6.3', 'idle');
-		await writeGreenBundles();
+		await settleAt(directory, '6.3', 'idle');
+		await writeGreenBundles(directory);
 
 		const scan = await scanWedgedStageA(directory, { taskIds: ['6.3'] });
 

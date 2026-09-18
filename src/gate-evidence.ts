@@ -429,6 +429,16 @@ export interface TaskEvidenceTransaction {
 	taskId: string;
 	read(): TaskEvidence | null;
 	transition(event: TaskWorkflowTransitionEvent): Promise<TaskEvidence>;
+	/**
+	 * Same as `transition`, plus whether the reducer treated the event as a
+	 * duplicate no-op (the durable evidence already recorded this exact
+	 * transitionId + outcome, so nothing changed). Optional for backward
+	 * compatibility with older transaction implementations; callers of the
+	 * plain `transition` cannot distinguish a fresh write from a duplicate.
+	 */
+	transitionWithStatus?(
+		event: TaskWorkflowTransitionEvent,
+	): Promise<{ evidence: TaskEvidence; duplicated: boolean }>;
 }
 
 const GateEvidenceSchema = z
@@ -1295,26 +1305,55 @@ export async function transitionTaskWorkflowEvidence(
 	taskId: string,
 	event: TaskWorkflowTransitionEvent,
 ): Promise<TaskEvidence> {
+	const { evidence } = await transitionTaskWorkflowEvidenceWithStatus(
+		directory,
+		taskId,
+		event,
+	);
+	return evidence;
+}
+
+/**
+ * Same as `transitionTaskWorkflowEvidence`, plus whether the reducer treated
+ * the event as a duplicate no-op (the durable evidence already recorded this
+ * exact transitionId + outcome). Duplicate detection needs the locked pre-
+ * transition state, so it is only available from inside the transaction; a
+ * transaction implementation without `transitionWithStatus` reports
+ * `duplicated: false` (unknown, not proven-fresh).
+ */
+export async function transitionTaskWorkflowEvidenceWithStatus(
+	directory: string,
+	taskId: string,
+	event: TaskWorkflowTransitionEvent,
+): Promise<{ evidence: TaskEvidence; duplicated: boolean }> {
 	assertValidTaskId(taskId);
 
 	let updatedEvidence: TaskEvidence | null = null;
+	let duplicated = false;
 	await withTaskEvidenceTransaction(
 		directory,
 		taskId,
 		event.type,
 		async (transaction) => {
+			if (transaction.transitionWithStatus) {
+				const result = await transaction.transitionWithStatus(event);
+				updatedEvidence = result.evidence;
+				duplicated = result.duplicated;
+				return;
+			}
 			updatedEvidence = await transaction.transition(event);
 		},
 	);
 
-	return (
-		updatedEvidence ?? {
+	return {
+		evidence: updatedEvidence ?? {
 			taskId,
 			required_gates: [],
 			gates: {},
 			workflow: createDefaultWorkflowMetadata(new Date().toISOString()),
-		}
-	);
+		},
+		duplicated,
+	};
 }
 
 export async function withTaskEvidenceTransaction<T>(
@@ -1358,20 +1397,33 @@ export async function withTaskEvidenceTransaction<T>(
 			return validated;
 		};
 
+		const transitionWithStatusImpl = async (
+			event: TaskWorkflowTransitionEvent,
+		): Promise<{ evidence: TaskEvidence; duplicated: boolean }> => {
+			const boundEvent = bindTrustedNoMutationSettlement(
+				directory,
+				taskId,
+				event,
+			);
+			assertTaskEvidenceWriteAllowed(directory, taskId, boundEvent);
+			const nextEvidence = updateEvidenceForTransition(current, boundEvent);
+			// updateEvidenceForTransition returns its `existing` argument
+			// unchanged on a duplicate transition — the same object as the
+			// locked current state — so identity is the duplicate signal.
+			const duplicated = nextEvidence === current;
+			nextEvidence.taskId = taskId;
+			const evidence = await persist(nextEvidence, boundEvent);
+			return { evidence, duplicated };
+		};
+
 		return callback({
 			taskId,
 			read: () => current,
 			transition: async (event) => {
-				const boundEvent = bindTrustedNoMutationSettlement(
-					directory,
-					taskId,
-					event,
-				);
-				assertTaskEvidenceWriteAllowed(directory, taskId, boundEvent);
-				const nextEvidence = updateEvidenceForTransition(current, boundEvent);
-				nextEvidence.taskId = taskId;
-				return persist(nextEvidence, boundEvent);
+				const { evidence } = await transitionWithStatusImpl(event);
+				return evidence;
 			},
+			transitionWithStatus: transitionWithStatusImpl,
 		});
 	});
 }

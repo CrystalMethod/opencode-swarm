@@ -475,7 +475,7 @@ describe('issue #2268 — /swarm recover command', () => {
 
 			const out = await handleRecoverCommand(directory, ['4.3']);
 
-			expect(out).toContain('no settlement-backed Stage A wedge is provable');
+			expect(out).toContain('no Stage A repair is needed or provable here');
 			expect(out).toContain('recover_stage_a_task');
 			expect(out).toContain(
 				'--force does not override Stage A wedge-classification refusals',

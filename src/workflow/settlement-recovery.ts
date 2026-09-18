@@ -6,13 +6,11 @@ import {
 } from '../gate-evidence.js';
 import { sanitizeDiagnosticText } from '../scope/path-identity.js';
 import { ensureAgentSession } from '../state.js';
-import {
-	type CoderSettlementWalState,
-	listCoderSettlementWalStates,
-} from './coder-settlement.js';
+import { listCoderSettlementWalStates } from './coder-settlement.js';
 import {
 	appendStageARepairEvent,
 	hasGreenPostSettlementPreCheck,
+	latestCommittedAcceptedSettlementMs,
 } from './stage-a-repair.js';
 
 export interface SettlementRecoverySummary {
@@ -30,24 +28,6 @@ export interface SettlementRecoverySummary {
 	 * audit record that may not exist (issue #2755 review, FB-001 contract).
 	 */
 	auditEventRecorded: boolean;
-}
-
-/** Latest COMMITTED accepted settlement timestamp for the task, if any. */
-function latestCommittedAcceptedSettlementMs(
-	taskId: string,
-	walStates: readonly CoderSettlementWalState[],
-): number | null {
-	let latest: number | null = null;
-	for (const state of walStates) {
-		if (state.taskId !== taskId) continue;
-		if (state.state !== 'COMMITTED') continue;
-		if (state.accepted !== true) continue;
-		if (state.recordedAt === undefined) continue;
-		const parsed = Date.parse(state.recordedAt);
-		if (!Number.isFinite(parsed)) continue;
-		latest = latest === null ? parsed : Math.max(latest, parsed);
-	}
-	return latest;
 }
 
 /**

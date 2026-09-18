@@ -1289,8 +1289,13 @@ export async function getDiagnoseData(
 		const missingLines = missingStatuses
 			.map(renderTaskRecoveryLine)
 			.filter(Boolean);
+		// A wedged task's settlement WAL is terminal ("healthy" from the WAL
+		// classifier's single-store view) while the wedge scan reports the
+		// same task as repairable — count it as wedged, never as healthy
+		// (issue #2828 review: the detail line must not contradict itself).
+		const wedgeTaskIds = new Set(wedgeStatuses.map((s) => s.taskId));
 		const healthyCount = settlementStatuses.filter(
-			(s) => s.category === 'healthy',
+			(s) => s.category === 'healthy' && !wedgeTaskIds.has(s.taskId),
 		).length;
 
 		if (nonHealthy.length === 0 && !truncated) {

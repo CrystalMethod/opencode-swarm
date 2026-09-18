@@ -12,6 +12,7 @@ import {
 	getTaskWorkflowSnapshot,
 	readTaskEvidence,
 	transitionTaskWorkflowEvidence,
+	transitionTaskWorkflowEvidenceWithStatus,
 } from '../../../src/gate-evidence';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 import { settleAt } from './_settlement-recovery-2828-helpers';
@@ -180,5 +181,62 @@ describe('settlementRecovery reducer admission + marker lifecycle (#2828)', () =
 		);
 		expect(workflow.state).toBe('blocked');
 		expect(workflow.settlementRecovery).toBe(true);
+	});
+});
+
+describe('transitionTaskWorkflowEvidenceWithStatus duplicate semantics (#2828 PRR-009)', () => {
+	test('an identical re-transition reports duplicated=true and leaves evidence unchanged', async () => {
+		await settleAt(directory, '8.9', 'idle');
+		const event = {
+			type: 'stage_a_passed',
+			settlementRecovery: true,
+			expectedGeneration: 2,
+			transitionId: 'stage-a-repair:8.9:2',
+		} as const;
+		const first = await transitionTaskWorkflowEvidenceWithStatus(
+			directory,
+			'8.9',
+			event,
+		);
+		expect(first.duplicated).toBe(false);
+		const firstWorkflow = getTaskWorkflowSnapshot(first.evidence);
+		expect(firstWorkflow.state).toBe('pre_check_passed');
+		expect(firstWorkflow.lastTransitionId).toBe('stage-a-repair:8.9:2');
+
+		const second = await transitionTaskWorkflowEvidenceWithStatus(
+			directory,
+			'8.9',
+			event,
+		);
+		expect(second.duplicated).toBe(true);
+		const secondWorkflow = getTaskWorkflowSnapshot(second.evidence);
+		expect(secondWorkflow.lastTransitionId).toBe('stage-a-repair:8.9:2');
+		expect(secondWorkflow.updatedAt).toBe(firstWorkflow.updatedAt);
+	});
+
+	test('a fresh transition reports duplicated=false', async () => {
+		await settleAt(directory, '8.10', 'idle');
+		const first = await transitionTaskWorkflowEvidenceWithStatus(
+			directory,
+			'8.10',
+			{
+				type: 'stage_a_passed',
+				settlementRecovery: true,
+				expectedGeneration: 2,
+				transitionId: 'stage-a-repair:8.10:2',
+			},
+		);
+		expect(first.duplicated).toBe(false);
+		const second = await transitionTaskWorkflowEvidenceWithStatus(
+			directory,
+			'8.10',
+			{
+				type: 'task_blocked',
+				expectedGeneration: 2,
+				transitionId: 'stage-a-repair:8.10:block',
+			},
+		);
+		expect(second.duplicated).toBe(false);
+		expect(getTaskWorkflowSnapshot(second.evidence).state).toBe('blocked');
 	});
 });
