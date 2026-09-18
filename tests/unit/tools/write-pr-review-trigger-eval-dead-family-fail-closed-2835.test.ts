@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
@@ -213,6 +214,56 @@ async function recordContractFailureMicroLaneWithMismatchedArtifact(
 	});
 }
 
+/**
+ * An OPERATOR-CANCELLED micro lane for the family: status 'cancelled' with
+ * typed liveness class and NO retained artifact — the exact record shape
+ * cancel_pending produces. It must NOT be admitted as a dead family: a
+ * cancellation is the controller's own controlled act and must be
+ * re-dispatched, never disclosed. Only the sweep's stale/error shapes
+ * qualify (issue #2835).
+ */
+async function recordCancelledLivenessMicroLane(
+	root: string,
+	batchId: string,
+	laneId: string,
+): Promise<void> {
+	const correlationId = `${batchId}-${laneId}-session`;
+	const reason = `lane ${laneId} cancelled by controller`;
+	await recordPendingDelegation(root, {
+		correlationId,
+		jobId: null,
+		subagentSessionId: correlationId,
+		parentSessionId: SESSION_ID,
+		callID: `${batchId}-call`,
+		normalizedAgent: 'explorer',
+		swarmPrefixedAgent: 'explorer',
+		planTaskId: null,
+		evidenceTaskId: null,
+		batchId,
+		laneId,
+		mode: 'swarm-pr-review:micro',
+		prReviewLegacyTranscriptCompatibility: true,
+		workflowLane: DEAD_TRIGGER,
+		workspace: {
+			directory: root,
+			gitHead: HEAD_SHA,
+			dirtyHash: null,
+			prHeadSha: HEAD_SHA,
+			scope: REVIEW_SCOPE,
+		},
+	});
+	await appendDelegationTransition(root, correlationId, {
+		status: 'cancelled',
+		result: {
+			error: reason,
+			chars: reason.length,
+			truncated: false,
+			digest: createHash('sha256').update(reason).digest('hex'),
+			workflowLaneFailureClass: 'liveness',
+		},
+	});
+}
+
 async function establishBoundReviewGate(root: string): Promise<void> {
 	gateInternals.resolveCurrentGitHead = () => HEAD_SHA;
 	gateInternals.resolveIsWorkingTreeClean = () => true;
@@ -330,6 +381,25 @@ describe('C3: forged and identity-mismatched provenance still fail closed (no we
 			'c3-contract-run',
 			'micro-batch-contract',
 			'lane-unclassified-contract',
+		);
+		expect(result.success).toBe(false);
+		expect(result.message).toContain(PROVENANCE_FAILURE);
+	});
+
+	test('an operator-cancelled liveness lane with no artifact is rejected (cancellation is not host abandonment)', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root);
+		await bindLedger(root);
+		await recordCancelledLivenessMicroLane(
+			root,
+			'micro-batch-cancelled',
+			'lane-unclassified-cancelled',
+		);
+		const result = await runWriter(
+			root,
+			'c3-cancelled-run',
+			'micro-batch-cancelled',
+			'lane-unclassified-cancelled',
 		);
 		expect(result.success).toBe(false);
 		expect(result.message).toContain(PROVENANCE_FAILURE);
