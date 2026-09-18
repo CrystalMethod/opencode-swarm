@@ -631,10 +631,16 @@ The `plan_cursor` config enables a compact representation of the project plan th
 ```
 
 - **enabled** – When `true` (default) Swarm injects a plan cursor instead of the full `plan.md`.
-- **max_tokens** – Upper bound on tokens emitted for the cursor (default 1500). The cursor includes the current phase summary, the full current task, and up to `lookahead_tasks` upcoming tasks. Earlier phases are reduced to one‑line summaries.
-- **lookahead_tasks** – Number of future tasks to include in full detail (default 2). Set to `0` to show only the current task.
+- **max_tokens** – Upper bound on tokens emitted for the cursor (default 1500). The cursor includes the current phase summary, the full current task, and up to `lookahead_tasks` upcoming tasks. Earlier phases are reduced to one‑line summaries.
+- **lookahead_tasks** – Number of future tasks to include in full detail (default 2). Set to `0` to show only the current task.
 
-Disabling (`"enabled": false`) falls back to the pre‑v6.13 behavior of injecting the entire plan text.
+All three controls are honored on both context‑injection paths (the default
+injection path and the opt‑in `context_budget.scoring` ranking path) and in the
+context‑budget report's token accounting, through one shared resolver
+(`resolvePlanCursorControls`, src/hooks/extractors.ts — issue #2580).
+Disabling (`"enabled": false`) suppresses the cursor block while keeping the
+phase header and current‑task context injections — the pre‑v6.13 behavior; the
+full plan text is never injected in its place.
 
 ### Tool Output Truncation (v6.13)
 
