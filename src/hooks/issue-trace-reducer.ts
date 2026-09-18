@@ -80,6 +80,17 @@ export interface WorkflowArtifacts {
 	traceValidationVerified: boolean;
 	/** A PR-head-bound merge-approval receipt has been observed (issue #2564). */
 	mergeApprovalObserved: boolean;
+	/**
+	 * The loaded plan is bound to the CURRENT effective spec (issue #2600):
+	 * the authoritative plan carries a `specHash` equal to the current spec's
+	 * SHA-256. `false` means the plan was authored against a different spec
+	 * (or predates spec linkage) — executing it under this trace would run the
+	 * wrong plan. Explicit `=== false` (not falsy): the hook always supplies a
+	 * real boolean when a plan exists, and a v2-shaped artifacts literal from a
+	 * legacy direct caller stays transparent instead of parking (same
+	 * convention as `freshnessPermitted` / `traceValidationVerified`).
+	 */
+	planBoundToSpec?: boolean;
 }
 
 export interface TransitionResult {
@@ -106,14 +117,17 @@ export interface ComputeNextModeParams {
  *   (b) merge_approval_recorded (truly terminal)         → no-op
  *   (b') published + merge-approval receipt observed     → merge_approval_recorded (RECORDED, never certified)
  *   (c) publication_handoff: observe publication → PUBLISHED; else no-op
- *   (d) Cross-issue guard (spec issue ≠ current issue)   → no-op
+ *   (d) Cross-issue guard (spec issue ≠ current issue)   → one-shot SPEC_MISMATCH_GATE directive (issue #2600)
  *   (e) Spec does not exist                              → no-op
  *   (f-0) Spec exists, no plan, branch-freshness NOT
  *       permitted                                        → one-shot FRESHNESS_GATE directive
  *   (f) Spec exists, no plan, freshness permitted, reproduction permitted,
  *       never transitioned (or re-entrant idempotency)   → PLAN
  *   (f-block) Spec exists, no plan, reproduction NOT permitted → one-shot REPRO_GATE directive
- *   (g) Plan exists but critic not approved              → no-op
+ *   (g-binding) Plan exists but NOT bound to the current
+ *       spec (foreign/unverifiable)                      → one-shot PLAN_BINDING_GATE directive (issue #2600)
+ *   (g-repro) Plan exists, bound, reproduction NOT permitted → one-shot REPRO_GATE_LATE directive (issue #2600)
+ *   (g) Plan exists, bound, repro permitted, critic not approved → one-shot CRITIC_GATE directive (issue #2600)
  *   (h) Critic approved, phases incomplete, not yet PLAN_TO_EXECUTE → EXECUTE
  *   (i-pre1) Phases complete, impl-review receipt missing → one-shot REVIEW_GATE directive
  *   (i-pre2) Impl-review ok, recurrence-sweep receipt missing → one-shot RECURRENCE_GATE directive
@@ -122,6 +136,10 @@ export interface ComputeNextModeParams {
  *
  * Idempotency: rows (f), (h), (i) return no-op when
  * `traceState.lastTransition` already equals the target transition value.
+ * Every gate row is ONE-SHOT: it fires from `lastTransition === null` or from
+ * the sentinel of a gate that precedes it in the ladder, then waits quietly
+ * for its receipt (issue #2600: silence is indistinguishable from a stuck
+ * engine, so each wait state names its recovery exactly once).
  */
 export function computeNextMode(
 	params: ComputeNextModeParams,
@@ -182,12 +200,36 @@ export function computeNextMode(
 		return noop;
 	}
 
-	// Row (d): cross-issue fail-closed guard (spec AND trace state must match)
+	// Row (d): cross-issue fail-closed guard (spec AND trace state must match).
+	// Issue #2600 (DD-C002): a DEFINITE mismatch (a spec exists but belongs to
+	// another issue, or the trace state is bound to another issue) emits a
+	// one-shot directive instead of a bare noop — silence here is
+	// indistinguishable from a stuck engine. `specIssueNumber === null` (spec
+	// not yet generated, or Source Issue unparseable) keeps the silent
+	// fail-closed park: the ingest flow legitimately has no spec mid-flight,
+	// and nudging it with a mismatch directive would contradict the very
+	// transition it is working toward. Fires only from a fresh trace
+	// (lastTransition === null): /swarm issue --trace resets the sentinel on
+	// every invocation, so each newly mismatched trace is nudged exactly once,
+	// then the engine waits quietly for the spec to be corrected.
 	if (
 		workflowArtifacts.specIssueNumber === null ||
 		workflowArtifacts.specIssueNumber !== issueReference.number ||
 		traceState.issueNumber !== issueReference.number
 	) {
+		if (
+			traceState.lastTransition === null &&
+			(workflowArtifacts.specIssueNumber !== null ||
+				traceState.issueNumber !== issueReference.number)
+		) {
+			return {
+				nextMode: 'ISSUE_INGEST',
+				directive:
+					'The spec on disk (## Source Issue) does not match the traced issue #N. Regenerate the spec for this issue through the issue-ingest flow (/swarm issue), or correct the ## Source Issue number in .swarm/spec.md. The trace will not advance while the spec belongs to a different issue.',
+				nextLastTransition: 'SPEC_MISMATCH_GATE',
+				nextStatus: 'in_progress',
+			};
+		}
 		return noop;
 	}
 
@@ -211,7 +253,8 @@ export function computeNextMode(
 		if (workflowArtifacts.freshnessPermitted === false) {
 			if (
 				traceState.lastTransition === null ||
-				traceState.lastTransition === 'REPRO_GATE'
+				traceState.lastTransition === 'REPRO_GATE' ||
+				traceState.lastTransition === 'SPEC_MISMATCH_GATE'
 			) {
 				return {
 					nextMode: 'ISSUE_INGEST',
@@ -230,12 +273,14 @@ export function computeNextMode(
 			// trace can leave localization and transition to PLAN. Emit a ONE-SHOT
 			// directive (sentinel lastTransition REPRO_GATE) so the mode-driving
 			// engine is not silently idle while it waits for evidence — silence
-			// here is indistinguishable from a stuck engine. FRESHNESS_GATE also
-			// counts as "nothing has fired yet": a freshness receipt landing
-			// after the freshness nudge must still get the reproduction nudge.
+			// here is indistinguishable from a stuck engine. FRESHNESS_GATE and
+			// SPEC_MISMATCH_GATE also count as "nothing has fired yet": a receipt
+			// or spec correction landing after those nudges must still get the
+			// reproduction nudge.
 			if (
 				traceState.lastTransition === null ||
-				traceState.lastTransition === 'FRESHNESS_GATE'
+				traceState.lastTransition === 'FRESHNESS_GATE' ||
+				traceState.lastTransition === 'SPEC_MISMATCH_GATE'
 			) {
 				return {
 					nextMode: 'ISSUE_INGEST',
@@ -252,7 +297,8 @@ export function computeNextMode(
 			traceState.lastTransition === null ||
 			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN' ||
 			traceState.lastTransition === 'REPRO_GATE' ||
-			traceState.lastTransition === 'FRESHNESS_GATE'
+			traceState.lastTransition === 'FRESHNESS_GATE' ||
+			traceState.lastTransition === 'SPEC_MISMATCH_GATE'
 		) {
 			if (traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN') {
 				return noop;
@@ -269,8 +315,83 @@ export function computeNextMode(
 		return noop;
 	}
 
-	// Row (g): plan exists but critic has not approved
+	// Row (g-binding): plan exists but is NOT bound to the current spec
+	// (issue #2600, DD-C001). `planBoundToSpec === false` means the loaded plan
+	// carries a specHash that differs from the current effective spec (or no
+	// specHash at all) — executing it under this trace would run a plan
+	// authored for a different spec/issue. Fail closed with a ONE-SHOT
+	// directive (sentinel PLAN_BINDING_GATE); EXECUTE is unreachable on a
+	// foreign plan. Explicit `=== false` keeps legacy v2-shaped artifacts
+	// literals transparent (mirrors freshnessPermitted/traceValidationVerified).
+	// Fires from a fresh trace or from any pre-plan sentinel: whichever gate
+	// fired last, a plan appearing (or a spec changing) under an active trace
+	// must be binding-checked before anything else can drive.
+	if (workflowArtifacts.planBoundToSpec === false) {
+		if (
+			traceState.lastTransition === null ||
+			traceState.lastTransition === 'SPEC_MISMATCH_GATE' ||
+			traceState.lastTransition === 'FRESHNESS_GATE' ||
+			traceState.lastTransition === 'REPRO_GATE' ||
+			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN'
+		) {
+			return {
+				nextMode: 'PLAN',
+				directive:
+					'The loaded plan cannot be bound to the current spec for issue #N — its recorded specHash differs from the current spec (or the plan predates spec linkage), so executing it under this trace would run the wrong plan. Re-save the plan against the current spec (save_plan after the spec is correct), or run /swarm reset to clear the foreign plan and re-plan. The trace will not transition to EXECUTE on a plan it cannot bind.',
+				nextLastTransition: 'PLAN_BINDING_GATE',
+				nextStatus: 'in_progress',
+			};
+		}
+		return noop;
+	}
+
+	// Row (g-repro): a plan already exists and is bound, but reproduction
+	// evidence (or a typed waiver) was never recorded for THIS issue (issue
+	// #2600: the reproduction gate used to live only inside the !planExists
+	// branch and was structurally skipped when a plan existed). ONE-SHOT
+	// directive (sentinel REPRO_GATE_LATE) — the waived-with-directive path:
+	// record the receipt or restart with --no-repro.
+	if (!workflowArtifacts.reproductionPermitted) {
+		if (
+			traceState.lastTransition === null ||
+			traceState.lastTransition === 'SPEC_MISMATCH_GATE' ||
+			traceState.lastTransition === 'PLAN_BINDING_GATE' ||
+			traceState.lastTransition === 'FRESHNESS_GATE' ||
+			traceState.lastTransition === 'REPRO_GATE' ||
+			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN'
+		) {
+			return {
+				nextMode: 'ISSUE_INGEST',
+				directive:
+					'A plan already exists for this trace, but reproduction evidence has not been recorded for issue #N. Attempt a minimal reproduction and call record_issue_reproduction (performed: true, commands, output_summary), or restart with /swarm issue --no-repro. The trace will not transition to EXECUTE until reproduction is permitted.',
+				nextLastTransition: 'REPRO_GATE_LATE',
+				nextStatus: 'in_progress',
+			};
+		}
+		return noop;
+	}
+
+	// Row (g): plan exists, bound, repro permitted, but the critic has not
+	// approved (issue #2600, DD-C002): ONE-SHOT directive (sentinel
+	// CRITIC_GATE) naming the #2012-class recovery instead of a bare noop.
 	if (!workflowArtifacts.criticApproved) {
+		if (
+			traceState.lastTransition === null ||
+			traceState.lastTransition === 'SPEC_MISMATCH_GATE' ||
+			traceState.lastTransition === 'PLAN_BINDING_GATE' ||
+			traceState.lastTransition === 'REPRO_GATE_LATE' ||
+			traceState.lastTransition === 'FRESHNESS_GATE' ||
+			traceState.lastTransition === 'REPRO_GATE' ||
+			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN'
+		) {
+			return {
+				nextMode: 'CRITIC-GATE',
+				directive:
+					'The plan for issue #N is not yet critic-approved. Dispatch MODE: CRITIC-GATE and wait for VERDICT: APPROVED before EXECUTE. If the critic already returned APPROVED but the snapshot was not recorded (issue #2012), call approve_plan_critic with a reason, or run /swarm approve-plan-critic <reason>, to record the approval.',
+				nextLastTransition: 'CRITIC_GATE',
+				nextStatus: 'in_progress',
+			};
+		}
 		return noop;
 	}
 

@@ -151,16 +151,34 @@ describe('Row (c): publication_handoff', () => {
 
 // ── Row (d): cross-issue fail-closed guard ─────────────────────
 
-describe('Row (d): cross-issue fail-closed guard', () => {
-	test('null specIssueNumber returns no-op', () => {
-		const t = makeTrace();
+describe('Row (d): cross-issue fail-closed guard (one-shot directive, issue #2600)', () => {
+	test('null specIssueNumber stays silent (ingest mid-flight / unparseable Source Issue)', () => {
+		// No spec yet (or no parseable Source Issue): the fail-closed park keeps
+		// its historical silence — the ingest flow legitimately has no spec
+		// mid-flight, and a mismatch nudge here would contradict the transition
+		// it is working toward.
+		const t = makeTrace({ lastTransition: null });
 		expect(isNoop(call(makeRef(), t, { specIssueNumber: null }), t)).toBe(true);
 	});
 
-	test('mismatched specIssueNumber returns no-op', () => {
-		const t = makeTrace();
+	test('mismatched specIssueNumber emits a one-shot directive, then waits quietly', () => {
+		// First drive (fresh trace): directive fires.
+		const r = call(
+			makeRef({ number: 42 }),
+			makeTrace({ lastTransition: null }),
+			{
+				specIssueNumber: 99,
+			},
+		);
+		expect(r.nextMode).toBe('ISSUE_INGEST');
+		expect(r.nextLastTransition).toBe('SPEC_MISMATCH_GATE');
+		expect(r.directive).toMatch(/spec/i);
+		expect(r.directive).toMatch(/issue/i);
+
+		// Second drive: already nudged once → silent noop.
+		const t2 = makeTrace({ lastTransition: 'SPEC_MISMATCH_GATE' });
 		expect(
-			isNoop(call(makeRef({ number: 42 }), t, { specIssueNumber: 99 }), t),
+			isNoop(call(makeRef({ number: 42 }), t2, { specIssueNumber: 99 }), t2),
 		).toBe(true);
 	});
 
@@ -174,17 +192,17 @@ describe('Row (d): cross-issue fail-closed guard', () => {
 		expect(r.nextLastTransition).toBe('ISSUE_INGEST_TO_PLAN');
 	});
 
-	test('mismatched traceState.issueNumber returns no-op even when specIssueNumber matches', () => {
-		const t = makeTrace({ issueNumber: 99 }); // trace belongs to issue 99
-		expect(
-			isNoop(
-				call(makeRef({ number: 42 }), t, {
-					specIssueNumber: 42,
-					planExists: false,
-				}),
-				t,
-			),
-		).toBe(true);
+	test('mismatched traceState.issueNumber emits the directive even when specIssueNumber matches', () => {
+		const r = call(
+			makeRef({ number: 42 }),
+			makeTrace({ issueNumber: 99, lastTransition: null }), // trace belongs to issue 99
+			{
+				specIssueNumber: 42,
+				planExists: false,
+			},
+		);
+		expect(r.nextLastTransition).toBe('SPEC_MISMATCH_GATE');
+		expect(r.directive).not.toBeNull();
 	});
 });
 
@@ -261,8 +279,14 @@ describe('Row (f): spec exists, no plan → PLAN (reproduction gate)', () => {
 		expect(isNoop(call(makeRef(), t, { planExists: false }), t)).toBe(true);
 	});
 
-	test('does not fire if plan exists', () => {
-		const t = makeTrace({ lastTransition: null });
-		expect(isNoop(call(makeRef(), t, { planExists: true }), t)).toBe(true);
+	test('plan-exists path advances to the critic gate (row g directive) instead of stalling', () => {
+		// Issue #2600: with a plan on disk and the critic not yet approving it,
+		// the ladder must surface CRITIC_GATE (not a silent noop).
+		const r = call(makeRef(), makeTrace({ lastTransition: null }), {
+			planExists: true,
+		});
+		expect(r.nextMode).toBe('CRITIC-GATE');
+		expect(r.nextLastTransition).toBe('CRITIC_GATE');
+		expect(r.directive).toContain('approve_plan_critic');
 	});
 });

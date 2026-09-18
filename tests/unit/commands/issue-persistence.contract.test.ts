@@ -351,7 +351,10 @@ describe('issue persistence — rollback and atomic-write contracts', () => {
 		}) as typeof atomicWriteInternals.renameSync;
 
 		try {
-			handleIssueCommand(tempDir, ['https://github.com/owner/repo/issues/42']);
+			handleIssueCommand(tempDir, [
+				'https://github.com/owner/repo/issues/42',
+				'--trace',
+			]);
 		} finally {
 			atomicWriteInternals.renameSync = realRename;
 		}
@@ -386,7 +389,10 @@ describe('issue persistence — rollback and atomic-write contracts', () => {
 			renameSpy as typeof atomicWriteInternals.renameSync;
 
 		try {
-			handleIssueCommand(tempDir, ['https://github.com/owner/repo/issues/42']);
+			handleIssueCommand(tempDir, [
+				'https://github.com/owner/repo/issues/42',
+				'--trace',
+			]);
 		} finally {
 			atomicWriteInternals.renameSync = renameTracker.orig;
 		}
@@ -447,7 +453,10 @@ describe('issue persistence — rollback and atomic-write contracts', () => {
 	// =========================================================================
 	test('stale-state isolation: second call overwrites trace-state to new issueNumber', () => {
 		// First call — issue 42
-		handleIssueCommand(tempDir, ['https://github.com/owner/repo/issues/42']);
+		handleIssueCommand(tempDir, [
+			'https://github.com/owner/repo/issues/42',
+			'--trace',
+		]);
 
 		const tracePath = path.join(swarmDir, 'issue-trace-state.json');
 		const firstTrace = JSON.parse(fsSync.readFileSync(tracePath, 'utf-8'));
@@ -461,6 +470,7 @@ describe('issue persistence — rollback and atomic-write contracts', () => {
 		// Second call — issue 99 (different number)
 		const secondResult = handleIssueCommand(tempDir, [
 			'https://github.com/owner/repo/issues/99',
+			'--trace',
 		]);
 		expect(secondResult).toContain(
 			'issue="https://github.com/owner/repo/issues/99"',

@@ -2222,9 +2222,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'record-implementation-review.ts:84 / record-issue-publication.ts:71 / record-issue-reproduction.ts:82 / record-recurrence-sweep.ts:137 — atomic single JSONs with Zod-bounded fields, persisted via atomicWriteSwarmFile (issue #2788)',
 			'record-branch-freshness.ts:89 / record-trace-validation.ts:159 / record-merge-approval.ts:79 — issue #2564 v3 receipts: atomic single JSONs via atomicWriteSwarmFile (issue #2788); trace-validation upserts one bounded entry per phase under the per-file receipt lock (tryAcquireLock, src/parallel/file-locks.ts:143)',
-			'issue-trace-state.ts:435 writeTraceState + issue.ts:216-264 — transactional two-artifact write with rollback (:243-288)',
+			'issue-trace-state.ts:440 writeTraceState + issue.ts:241-304 — transactional trace-gated write with rollback (:258-304)',
 		],
-		readerCitations: ['issue-trace-state.ts:396,414 — full-file reads with legacy completed→status normalization (:369-379); v3 readers branch-freshness/trace-validation/merge-approval co-located'],
+		readerCitations: ['issue-trace-state.ts:401,419 — full-file reads with legacy completed→status normalization (:374-384); v3 readers branch-freshness/trace-validation/merge-approval co-located'],
 		schemaVersion: 'per-artifact Zod schemas (commands ≤200, text ≤4000 chars; v3 receipts ≤10 upserted entries, SHAs 40-hex)',
 		stateClass: 'governed-content',
 		privacyClass: 'metadata',

@@ -99,7 +99,7 @@ describe('issue-ingestion journey v3 — ingestion through resume', () => {
 		expect((task?.fr_refs ?? []).length).toBeGreaterThan(0);
 	});
 
-	test('interruption/resume: cache resets do not restart the trace (row g waits silently)', async () => {
+	test('interruption/resume: cache resets do not restart the trace (row g surfaces its one-shot directive, then waits)', async () => {
 		project = createJourneyProject();
 		handleIssueCommand(project.dir, [
 			'ZaxbyHub/opencode-swarm#2564',
@@ -112,13 +112,20 @@ describe('issue-ingestion journey v3 — ingestion through resume', () => {
 		await project.saveJourneyPlan('in_progress', 'in_progress');
 
 		// Simulated restart: in-memory caches drop, on-disk state is all that
-		// remains. The trace resumes where it left off (critic gate pending,
-		// row g silent) rather than re-running earlier gates.
+		// remains. The trace resumes where it left off (critic gate pending):
+		// row g surfaces its ONE-SHOT critic-gate directive (issue #2600 — no
+		// silent stall) without re-running earlier gates...
 		project.resetCaches();
 		const step = await project.cycle();
-		expect(step.state.lastTransition).toBe('ISSUE_INGEST_TO_PLAN');
+		expect(step.state.lastTransition).toBe('CRITIC_GATE');
 		expect(step.state.status).toBe('in_progress');
-		expect(step.text).toBe('');
+		expect(step.text).toMatch(/approve_plan_critic/);
+
+		// ...and the second cycle waits quietly (one-shot, no re-nagging).
+		project.resetCaches();
+		const step2 = await project.cycle();
+		expect(step2.state.lastTransition).toBe('CRITIC_GATE');
+		expect(step2.text).toBe('');
 	});
 
 	test('critic approval via the real architect-session path drives EXECUTE', async () => {
