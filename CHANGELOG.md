@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.184.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.9...v7.184.10) (2026-09-19)
+
+
+### Bug Fixes
+
+* **planning:** connect TODO evidence production to the configured completion gate ([#2581](https://github.com/ZaxbyHub/opencode-swarm/issues/2581)) ([39291b9](https://github.com/ZaxbyHub/opencode-swarm/commit/39291b9ba5237c3fb65bd2dd18df797c9ade5749))
+* **planning:** connect TODO evidence production to the configured completion gate ([#2581](https://github.com/ZaxbyHub/opencode-swarm/issues/2581)) ([2b1e43f](https://github.com/ZaxbyHub/opencode-swarm/commit/2b1e43ff8c4994101d77a335eafd4273b845e059))
+* **review:** address final-critic findings on todo_gate wiring ([#2581](https://github.com/ZaxbyHub/opencode-swarm/issues/2581)) ([92d7a55](https://github.com/ZaxbyHub/opencode-swarm/commit/92d7a550693cfe8f69d27acfba2a0ab10c75878d))
+* **subprocess:** bound the remaining wrapper-bounded and shell-form spawn sites ([#2705](https://github.com/ZaxbyHub/opencode-swarm/issues/2705)) ([a084d8d](https://github.com/ZaxbyHub/opencode-swarm/commit/a084d8dea8c5c6eeb6393a668305e9689a224df6))
+* **subprocess:** bound the remaining wrapper-bounded and shell-form spawn sites ([#2705](https://github.com/ZaxbyHub/opencode-swarm/issues/2705)) ([8ea31ae](https://github.com/ZaxbyHub/opencode-swarm/commit/8ea31ae95f13751ead4397092339a458a248a478))
+
 ## [7.184.9](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.8...v7.184.9) (2026-09-19)
 
 
