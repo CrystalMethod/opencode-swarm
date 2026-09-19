@@ -174,12 +174,35 @@ package root, never an absolute user path.
 
 **Parallel foundation:** `evidence_lock_acquired`, `evidence_lock_contended`, `plan_ledger_cas_retry`
 
-**PRM:** `prm_pattern_detected`, `prm_course_correction_injected`, `prm_escalation_triggered`, `prm_hard_stop`, `prm_hard_stop_delivered`
+**PRM:** `prm_pattern_detected`, `prm_course_correction_injected`, `prm_escalation_triggered`, `prm_hard_stop`, `prm_hard_stop_delivered`, `prm_hard_stop_terminal`
 
 `prm_hard_stop` records that an escalation reached the maximum (emitted by the
 escalation tracker); `prm_hard_stop_delivered` records that the denial actually
 reached the agent. A trigger with no matching delivery means the containment
-armed but never got through.
+armed but never got through. `prm_hard_stop_terminal` is a third, distinct
+record: the episode transitioned to the terminal handoff state (after one
+further detection past the hard stop) and entered its cooldown; the bounded
+episode state machine, per-ladder counting, and cooldown semantics are
+specified in `docs/configuration.md` (Hard-stop episode state machine).
+
+#### Record populations and denominators (audit-facing terms)
+
+The counters above answer different questions because they count different
+populations. A trigger row, a delivered denial, a terminal event, a host tool
+error, and a completed task are not interchangeable, and none of them is a
+causal task-failure rate without its bounded attempt denominator:
+
+| Population | Record source | What it counts | Denominator required for any rate |
+|---|---|---|---|
+| Hard-stop trigger | `prm_hard_stop` telemetry | An escalation ladder reached its maximum for one episode | Pattern detections (`prm_pattern_detected`) for that ladder, bounded by a stated time window or episode |
+| Delivered denial | `prm_hard_stop_delivered` telemetry | The denial actually reached the agent (thrown by the tool-before guardrail) | Matching triggers in the same episode window |
+| Terminal event | `prm_hard_stop_terminal` telemetry | An episode transitioned to terminal handoff and cooldown | Episodes that reached a hard stop in the window |
+| Host tool error | Tool-invocation failure records — the `max_consecutive_errors` circuit-breaker accounting in `src/hooks/guardrails/tool-before.ts` (documented in `docs/installation.md`); surfaces as `hard_limit_hit` telemetry at threshold (`gate_failed` is a separate event used by plan-ledger task gates, not the tool-error circuit) | Individual tool invocations that failed in the host | Total tool invocations in the window |
+| Completed task | Plan-ledger task status records (emitted as `task_state_changed` telemetry) | Tasks that reached completed status | All tasks attempted in the window |
+
+Two cautions when quoting these numbers: summing counters across populations
+produces a meaningless figure, and any cache manifest or coverage capture is a
+point-in-time artifact — it does not bind every historical runtime episode.
 
 **Environment:** `environment_detected`, `auto_oversight_escalation`, `heartbeat`
 
