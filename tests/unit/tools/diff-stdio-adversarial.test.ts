@@ -244,3 +244,49 @@ describe('ADVERSARIAL: stdio fix verification', () => {
 		});
 	});
 });
+
+describe('ADVERSARIAL: explicit maxBuffer on the AST helper calls (#2705)', () => {
+	test('fileExistsInRef (cat-file) and getContentFromRef (show) pass the 5 MiB bound', async () => {
+		mockExecFileSync.mockImplementation((file: string, args: string[]) => {
+			if (Array.isArray(args) && args.includes('--numstat')) {
+				return '1	0	src/a.ts';
+			}
+			return 'file content';
+		});
+		try {
+			await diff.execute({ base: 'HEAD' }, '/fake/dir');
+		} finally {
+			mockExecFileSync.mockImplementation(() => '');
+		}
+
+		const catFileCalls = mockExecFileSync.mock.calls.filter(
+			(call) =>
+				Array.isArray(call[1]) && (call[1] as string[]).includes('cat-file'),
+		);
+		expect(
+			catFileCalls.length,
+			'fileExistsInRef (git cat-file) was never invoked — maxBuffer assertion vacuous',
+		).toBeGreaterThanOrEqual(1);
+		for (const call of catFileCalls) {
+			expect(
+				call[2]?.maxBuffer,
+				'fileExistsInRef (git cat-file) missing maxBuffer (siblings pass 5 MiB)',
+			).toBe(5 * 1024 * 1024);
+		}
+
+		const showCalls = mockExecFileSync.mock.calls.filter(
+			(call) =>
+				Array.isArray(call[1]) && (call[1] as string[]).includes('show'),
+		);
+		expect(
+			showCalls.length,
+			'getContentFromRef (git show) was never invoked — maxBuffer assertion vacuous',
+		).toBeGreaterThanOrEqual(1);
+		for (const call of showCalls) {
+			expect(
+				call[2]?.maxBuffer,
+				'getContentFromRef (git show) missing maxBuffer (siblings pass 5 MiB)',
+			).toBe(5 * 1024 * 1024);
+		}
+	});
+});
