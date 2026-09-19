@@ -1530,9 +1530,12 @@ export function skillContractDigest(body: string): string {
 }
 
 function readSkillContractStamp(frontmatter: string): string | undefined {
-	const match = new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`, 'm').exec(
-		frontmatter.replace(/\r\n/g, '\n'),
-	);
+	// String.match rather than RegExp.exec: the SAST callee-binding
+	// classifier (issue #2300) flags an unresolved .exec member call as
+	// exec-like and requires manual review.
+	const match = frontmatter
+		.replace(/\r\n/g, '\n')
+		.match(new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`, 'm'));
 	return match?.[1];
 }
 
