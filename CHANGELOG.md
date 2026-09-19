@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.184.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.7...v7.184.8) (2026-09-18)
+
+
+### Bug Fixes
+
+* **config:** make plan_cursor controls effective on both context paths ([6704237](https://github.com/ZaxbyHub/opencode-swarm/commit/67042377a0cb1b84fe6e5b2f73085abb6a57ee0f))
+* **config:** make plan_cursor controls effective on both context paths ([#2580](https://github.com/ZaxbyHub/opencode-swarm/issues/2580)) ([081adaf](https://github.com/ZaxbyHub/opencode-swarm/commit/081adaf41a9594b1bb3b6793ef5d3c87a359b486))
+* **pr-review:** settle liveness-dead micro families with disclosed trigger-eval receipts ([14c898c](https://github.com/ZaxbyHub/opencode-swarm/commit/14c898c4d185976b12815aeb7b55d571a693197c))
+* **pr-review:** settle liveness-dead micro families with disclosed trigger-eval receipts ([0ca1e6e](https://github.com/ZaxbyHub/opencode-swarm/commit/0ca1e6e55e984afbde67785ca7e3b754558241b8)), closes [#2835](https://github.com/ZaxbyHub/opencode-swarm/issues/2835)
+
 ## [7.184.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.6...v7.184.7) (2026-09-18)
 
 
