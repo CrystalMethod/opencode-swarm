@@ -56,6 +56,16 @@ describe('issue #2600 — empty dispositions rejected (reader)', () => {
 		expect(await recurrenceSweepReceiptExists(dir, 42)).toBe(false);
 	});
 
+	test('dispositions key omitted entirely (undefined) fails the gate too', async () => {
+		// Review pr2837-r1 F8: pin the Array.isArray(undefined) === false branch
+		// explicitly, so a future reader rewrite cannot silently start treating
+		// a missing dispositions key as satisfied for a real defect class.
+		const receipt = realDefectClassReceipt([]);
+		delete receipt.dispositions;
+		const dir = writeReceipt(canonicalMkdtemp('rec-sweep-2600-'), receipt);
+		expect(await recurrenceSweepReceiptExists(dir, 42)).toBe(false);
+	});
+
 	test('control: a non-empty dispositions receipt still satisfies the gate', async () => {
 		const dir = writeReceipt(
 			canonicalMkdtemp('rec-sweep-2600-'),

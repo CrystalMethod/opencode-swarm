@@ -208,17 +208,20 @@ export function computeNextMode(
 	// not yet generated, or Source Issue unparseable) keeps the silent
 	// fail-closed park: the ingest flow legitimately has no spec mid-flight,
 	// and nudging it with a mismatch directive would contradict the very
-	// transition it is working toward. Fires only from a fresh trace
-	// (lastTransition === null): /swarm issue --trace resets the sentinel on
-	// every invocation, so each newly mismatched trace is nudged exactly once,
-	// then the engine waits quietly for the spec to be corrected.
+	// transition it is working toward. Fires from a fresh trace AND from any
+	// later sentinel except its own (review pr2837-r1 M1): a spec edited to a
+	// different issue MID-TRACE (while parked at, say, CRITIC_GATE) is exactly
+	// the mismatch class this row exists to catch, so the gate re-arms — its
+	// own sentinel keeps each nudge one-shot, and once the spec is corrected
+	// the normal ladder re-drives from SPEC_MISMATCH_GATE (every later gate
+	// row accepts it).
 	if (
 		workflowArtifacts.specIssueNumber === null ||
 		workflowArtifacts.specIssueNumber !== issueReference.number ||
 		traceState.issueNumber !== issueReference.number
 	) {
 		if (
-			traceState.lastTransition === null &&
+			traceState.lastTransition !== 'SPEC_MISMATCH_GATE' &&
 			(workflowArtifacts.specIssueNumber !== null ||
 				traceState.issueNumber !== issueReference.number)
 		) {
@@ -323,21 +326,18 @@ export function computeNextMode(
 	// directive (sentinel PLAN_BINDING_GATE); EXECUTE is unreachable on a
 	// foreign plan. Explicit `=== false` keeps legacy v2-shaped artifacts
 	// literals transparent (mirrors freshnessPermitted/traceValidationVerified).
-	// Fires from a fresh trace or from any pre-plan sentinel: whichever gate
-	// fired last, a plan appearing (or a spec changing) under an active trace
-	// must be binding-checked before anything else can drive.
+	// Fires from a fresh trace or from ANY later sentinel (review pr2837-r1
+	// F6): whichever gate fired last, a spec changing under an active trace
+	// must be binding-checked before anything else can drive — an unbound
+	// plan can never reach rows (g-repro)/(g)/(h) because the guard below
+	// returns unconditionally, but re-emitting the directive here turns that
+	// fail-closed silence into an actionable re-nudge.
 	if (workflowArtifacts.planBoundToSpec === false) {
-		if (
-			traceState.lastTransition === null ||
-			traceState.lastTransition === 'SPEC_MISMATCH_GATE' ||
-			traceState.lastTransition === 'FRESHNESS_GATE' ||
-			traceState.lastTransition === 'REPRO_GATE' ||
-			traceState.lastTransition === 'ISSUE_INGEST_TO_PLAN'
-		) {
+		if (traceState.lastTransition !== 'PLAN_BINDING_GATE') {
 			return {
 				nextMode: 'PLAN',
 				directive:
-					'The loaded plan cannot be bound to the current spec for issue #N — its recorded specHash differs from the current spec (or the plan predates spec linkage), so executing it under this trace would run the wrong plan. Re-save the plan against the current spec (save_plan after the spec is correct), or run /swarm reset to clear the foreign plan and re-plan. The trace will not transition to EXECUTE on a plan it cannot bind.',
+					'The loaded plan cannot be bound to the current spec for issue #N — its recorded specHash differs from the current spec (or the plan predates spec linkage), so executing it under this trace would run the wrong plan. Re-save the plan against the current spec (save_plan after the spec is correct), or run /swarm reset to clear the foreign plan and re-plan (note: reset also deletes .swarm/spec.md and the recorded review receipts, so re-run /swarm issue --trace afterwards to regenerate them). The trace will not transition to EXECUTE on a plan it cannot bind.',
 				nextLastTransition: 'PLAN_BINDING_GATE',
 				nextStatus: 'in_progress',
 			};

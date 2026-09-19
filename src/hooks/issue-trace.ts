@@ -79,6 +79,7 @@ let cachedPhaseStatus: {
 	dir: string;
 	planJsonSize: number;
 	planJsonMtime: number;
+	ledgerRevision: string | null;
 	result: {
 		planExists: boolean;
 		allComplete: boolean;
@@ -185,19 +186,41 @@ async function cachedReadPlanPhaseStatus(directory: string): Promise<{
 		// No plan.json — size/mtime stay -1; a cache populated at -1 still reflects
 		// "no projection", and is invalidated when plan.json appears.
 	}
+	// Ledger revision as a second fingerprint component (review pr2837-r1 F5):
+	// plan.json's size+mtime alone cannot see a ledger append that crashed
+	// before the plan.json write, so a stale planSpecHash could survive and
+	// mis-inform the binding gate. The probe is the same read-only
+	// getPlanLedgerState the approval cache already pays for each cycle. An
+	// unreadable authority suspends caching (fresh read every cycle) so a
+	// broken DB can never pin a stale value.
+	let ledgerRevision: string | null;
+	try {
+		const state = _internals.getPlanLedgerState(directory);
+		ledgerRevision = state
+			? `ledger:${state.lastSeq}:${state.lastEventHash ?? ''}:${state.updatedAt}`
+			: 'no-ledger';
+	} catch {
+		ledgerRevision = null;
+	}
 	if (
 		cachedPhaseStatus &&
 		cachedPhaseStatus.dir === directory &&
 		cachedPhaseStatus.planJsonSize === currentSize &&
-		cachedPhaseStatus.planJsonMtime === currentMtime
+		cachedPhaseStatus.planJsonMtime === currentMtime &&
+		cachedPhaseStatus.ledgerRevision !== null &&
+		cachedPhaseStatus.ledgerRevision === ledgerRevision
 	) {
 		return cachedPhaseStatus.result;
 	}
 	const result = await _internals.readPlanPhaseStatus(directory);
+	if (ledgerRevision === null) {
+		return result;
+	}
 	cachedPhaseStatus = {
 		dir: directory,
 		planJsonSize: currentSize,
 		planJsonMtime: currentMtime,
+		ledgerRevision,
 		result,
 	};
 	return result;

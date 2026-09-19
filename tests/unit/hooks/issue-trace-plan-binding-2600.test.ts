@@ -228,6 +228,74 @@ describe('issue #2600 — plan binding gate (reducer)', () => {
 		}
 	});
 
+	test('binding gate re-arms from the post-plan sentinels (mid-flight spec edit re-nudges)', () => {
+		// Review pr2837-r1 F6: a spec edited while the trace is parked at a
+		// later gate must re-nudge (unbound plan), not stall silently behind
+		// the exhausted pre-plan sentinels. The guard's own-sentinel exclusion
+		// keeps each nudge one-shot; the hard `return noop` still guarantees
+		// rows (g-repro)/(g)/(h) never drive an unbound plan. The
+		// allPhasesComplete=true leg also pins the publication-ladder swallow
+		// class: an unbound COMPLETED plan re-nudges instead of silently
+		// no-opping the REVIEW_GATE/EXECUTE_TO_COMMIT directives the
+		// post-completion rows would otherwise emit.
+		for (const allPhasesComplete of [false, true]) {
+			for (const lastTransition of [
+				'REPRO_GATE_LATE',
+				'CRITIC_GATE',
+				'PLAN_TO_EXECUTE',
+				'REVIEW_GATE',
+				'EXECUTE_TO_COMMIT',
+			]) {
+				const r = call(makeRef(), makeTrace({ lastTransition }), {
+					planBoundToSpec: false,
+					criticApproved: true,
+					reproductionPermitted: true,
+					allPhasesComplete,
+				});
+				expect(r.nextMode).not.toBe('EXECUTE');
+				expect(r.nextLastTransition).toBe('PLAN_BINDING_GATE');
+			}
+		}
+	});
+
+	test('recovery chain: park → plan corrected → repro → critic → EXECUTE', () => {
+		// Review pr2837-r1 F7: the documented recovery (re-save the plan)
+		// actually re-drives the ladder. Every hop is driven by the reducer
+		// from the previous hop's sentinel.
+		const parked = call(makeRef(), makeTrace(), { planBoundToSpec: false });
+		expect(parked.nextLastTransition).toBe('PLAN_BINDING_GATE');
+
+		const repro = call(
+			makeRef(),
+			makeTrace({ lastTransition: parked.nextLastTransition }),
+			{ planBoundToSpec: true, reproductionPermitted: false },
+		);
+		expect(repro.nextLastTransition).toBe('REPRO_GATE_LATE');
+
+		const critic = call(
+			makeRef(),
+			makeTrace({ lastTransition: repro.nextLastTransition }),
+			{
+				planBoundToSpec: true,
+				reproductionPermitted: true,
+				criticApproved: false,
+			},
+		);
+		expect(critic.nextLastTransition).toBe('CRITIC_GATE');
+
+		const execute = call(
+			makeRef(),
+			makeTrace({ lastTransition: critic.nextLastTransition }),
+			{
+				planBoundToSpec: true,
+				reproductionPermitted: true,
+				criticApproved: true,
+			},
+		);
+		expect(execute.nextMode).toBe('EXECUTE');
+		expect(execute.nextLastTransition).toBe('PLAN_TO_EXECUTE');
+	});
+
 	test('undefined planBoundToSpec stays transparent (legacy v2-shaped literals)', () => {
 		// A legacy caller that omits the field must not park: the reducer
 		// treats only explicit false as a binding failure (the
@@ -350,16 +418,21 @@ describe('issue #2600 — hook-level one-shot directives (spec mismatch / timeou
 		expect(readState(dir)?.lastTransition).toBe('SPEC_MISMATCH_GATE');
 	});
 
-	test('timeout: approval never resolves → fail-closed after timeout, CRITIC_GATE surfaces', async () => {
+	test('timeout: approval slower than the bound → fail-closed after timeout, CRITIC_GATE surfaces', async () => {
 		// A bound plan with an incomplete phase (real plan.json on disk) and a
 		// typed --no-repro waiver: row g (critic pending) is what applies. The
-		// hook's 100 ms bounded-approval timeout is what lets this test return
-		// at all — with a never-resolving approval, the CRITIC_GATE outcome
-		// below is only reachable through the fail-closed timeout path.
+		// seam resolves TRUE only well past the hook's 100 ms bound, so the
+		// outcome is genuinely timeout-dependent (review pr2837-r1 F4): if the
+		// bounded-approval timeout ever regressed and the hook awaited the late
+		// promise, criticApproved would flip to true, row (h) would advance the
+		// trace to PLAN_TO_EXECUTE, and BOTH assertions below would fail. A
+		// never-resolving seam cannot discriminate that way — the real loader
+		// also returns false fast on this seed, so the old shape passed even
+		// with the timeout removed.
 		const dir = await seedDir({ planSpecHash: 'auto', noReproWaiver: true });
 		hookInternals.isPlanCriticApproved = () =>
-			new Promise<boolean>(() => {
-				// never resolves
+			new Promise<boolean>((resolve) => {
+				setTimeout(() => resolve(true), 250);
 			});
 
 		const { messages } = await runHook(dir);

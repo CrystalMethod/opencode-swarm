@@ -182,6 +182,17 @@ describe('Row (d): cross-issue fail-closed guard (one-shot directive, issue #260
 		).toBe(true);
 	});
 
+	test('a mismatch arising after a later sentinel re-fires the directive (mid-trace spec swap)', () => {
+		// Review pr2837-r1 F1: suppression is one-shot per nudge (the row's own
+		// sentinel), not permanent — a spec edited to a foreign issue while the
+		// trace is parked at a later gate must re-nudge instead of silently
+		// suppressing the mismatch class this row exists to catch.
+		const t = makeTrace({ lastTransition: 'CRITIC_GATE' });
+		const r = call(makeRef({ number: 42 }), t, { specIssueNumber: 99 });
+		expect(r.nextMode).toBe('ISSUE_INGEST');
+		expect(r.nextLastTransition).toBe('SPEC_MISMATCH_GATE');
+	});
+
 	test('correct specIssueNumber does not block transitions', () => {
 		const r = call(
 			makeRef({ number: 42 }),
