@@ -92,6 +92,10 @@ describe('applyExplorerFormatSuffix', () => {
 		expect(result.errors.join('\n')).toContain(
 			'controller injects the authoritative output contract',
 		);
+		// Issue #2859 (F4): the rejection names the remediation, not just the rule.
+		expect(result.errors.join('\n')).toContain(
+			'Remove the format/template text from the lane prompt and retry',
+		);
 	});
 
 	test('applying the controller contract twice is idempotent', () => {

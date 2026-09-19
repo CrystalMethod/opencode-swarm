@@ -47,6 +47,8 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
+import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
 	collectToolRegistrationErrors,
@@ -525,7 +527,10 @@ export function _checkDuplicateSlugsFromArrays(
 }
 
 /** _internals seam for test injection — see AGENTS.md invariant #7. */
-export const _internals = { _checkDuplicateSlugsFromArrays };
+export const _internals = {
+	_checkDuplicateSlugsFromArrays,
+	resolveUserGlobalHome: resolveUserGlobalHomeDefault,
+};
 
 /**
  * Detect duplicate slugs across ALL skill mirror contract arrays.
@@ -1485,6 +1490,133 @@ export function detectRequiredCheckContractDrift(
 }
 
 // ---------------------------------------------------------------------------
+// User-global skill staleness (issue #2859 F6)
+// ---------------------------------------------------------------------------
+
+/** PR-workflow skills whose canonical copy carries a content stamp. */
+export const STAMPED_PR_WORKFLOW_SKILLS = [
+	'swarm-pr-review',
+	'swarm-pr-feedback',
+	'swarm-pr-subscribe',
+	'swarm-ci-monitor',
+] as const;
+
+export const SKILL_CONTRACT_DIGEST_KEY = 'swarm-contract-digest';
+
+/**
+ * Split a SKILL.md into its frontmatter block (fences included) and body.
+ * A file without a well-formed opening/closing fence pair has no frontmatter.
+ */
+export function splitSkillFrontmatter(content: string): {
+	frontmatter: string;
+	body: string;
+} {
+	if (!content.startsWith('---\n')) return { frontmatter: '', body: content };
+	const end = content.indexOf('\n---\n', 4);
+	if (end === -1) return { frontmatter: '', body: content };
+	return {
+		frontmatter: content.slice(0, end + 5),
+		body: content.slice(end + 5),
+	};
+}
+
+/**
+ * 12-hex content digest of a skill BODY (frontmatter excluded, line endings
+ * normalized) — stable across platforms regardless of checkout EOL settings.
+ */
+export function skillContractDigest(body: string): string {
+	const normalized = body.replace(/\r\n/g, '\n');
+	return createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 12);
+}
+
+function readSkillContractStamp(frontmatter: string): string | undefined {
+	const match = new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`, 'm').exec(
+		frontmatter.replace(/\r\n/g, '\n'),
+	);
+	return match?.[1];
+}
+
+/**
+ * Env-var-aware home resolution: os.homedir() ignores process.env entirely
+ * (see tests/helpers/isolated-test-env.ts), so the env vars are consulted
+ * FIRST to keep the detector testable against a temp HOME fixture. Production
+ * resolution matches os.homedir() semantics on every platform.
+ */
+function resolveUserGlobalHomeDefault(): string {
+	if (process.platform === 'win32') {
+		const userProfile = process.env.USERPROFILE?.trim();
+		if (userProfile) return userProfile;
+	} else {
+		const home = process.env.HOME?.trim();
+		if (home) return home;
+	}
+	return os.homedir();
+}
+
+/**
+ * Issue #2859 (F6): a stale user-global copy of a bundled skill can shadow
+ * the repository canonical with zero detection (a 10-week-old copy taught a
+ * dead output contract on the PR #2824 review run). READ-ONLY detection:
+ * compare the repo canonical body digest against any user-global copy of the
+ * same skill; warn when they diverge. User-global trees are NEVER written.
+ * Repo-side stamp rot is a warning (refresh with the stamp script); a stale
+ * user-global copy is a notice — advisory only, never blocks.
+ */
+export function detectUserGlobalSkillStaleness(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const category = 'user-global-skill-staleness';
+	const home = _internals.resolveUserGlobalHome();
+	for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
+		const relativePath = `.opencode/skills/${slug}/SKILL.md`;
+		let canonicalContent: string;
+		try {
+			canonicalContent = fs.readFileSync(path.join(root, relativePath), 'utf8');
+		} catch {
+			// Missing canonical skills are the bundled-skill detector's domain.
+			continue;
+		}
+		const { frontmatter, body } = splitSkillFrontmatter(canonicalContent);
+		const actualDigest = skillContractDigest(body);
+		const stampedDigest = readSkillContractStamp(frontmatter);
+		if (stampedDigest !== actualDigest) {
+			findings.push({
+				category,
+				severity: 'warning',
+				file: relativePath,
+				message: `stale ${SKILL_CONTRACT_DIGEST_KEY} stamp for skill '${slug}': frontmatter says ${stampedDigest ?? '<none>'}, body content hashes to ${actualDigest}; run 'bun run scripts/stamp-skill-contracts.ts --write'`,
+			});
+			continue;
+		}
+		for (const userRelative of [
+			`.opencode/skills/${slug}/SKILL.md`,
+			`.claude/skills/${slug}/SKILL.md`,
+		]) {
+			const userPath = path.join(home, userRelative);
+			if (!fs.existsSync(userPath)) continue;
+			let userContent: string;
+			try {
+				userContent = fs.readFileSync(userPath, 'utf8');
+			} catch {
+				continue;
+			}
+			const userDigest = skillContractDigest(
+				splitSkillFrontmatter(userContent).body,
+			);
+			if (userDigest === actualDigest) continue;
+			findings.push({
+				category,
+				severity: 'notice',
+				file: relativePath,
+				message: `user-global copy of skill '${slug}' is stale: ${userPath} (digest ${userDigest}) differs from the repository copy ${path.join(root, relativePath)} (digest ${actualDigest}); the repository copy is authoritative — delete the stale user-global copy`,
+			});
+		}
+	}
+	return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -1510,6 +1642,7 @@ export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['config-docs', detectConfigDocsKeysDrift],
 	['gates-docs', detectGatesConfigDrift],
 	['required-check-contract', detectRequiredCheckContractDrift],
+	['user-global-skill-staleness', detectUserGlobalSkillStaleness],
 ];
 
 /**

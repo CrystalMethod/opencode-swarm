@@ -375,6 +375,14 @@ export interface PrReviewDiscoveryLaneValidationInput {
 		reviewScope?: string;
 		checkWorkflowLane?: boolean;
 	};
+	/**
+	 * Issue #2859 (F3): latest rejected `submit_pr_review_result` message for
+	 * this lane's child session, resolved by the caller from the bounded gate
+	 * state journal. Optional — callers without gate-state access (e.g. the
+	 * revision-independent completion check) omit it and the contract-failure
+	 * message keeps its original form. Observability only.
+	 */
+	lastSubmitRejection?: string;
 }
 
 export interface PrWorkflowTransportRecoveryValidationInput {
@@ -851,6 +859,17 @@ interface PrReviewBatchCoherenceRecord {
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
 }
 
+/** One rejected `submit_pr_review_result` attempt (issue #2859 F3 journal). */
+export interface PrReviewSubmitRejectionRecord {
+	childSessionId: string;
+	laneId?: string;
+	at: number;
+	message: string;
+}
+
+/** FIFO cap for the gate-state submit-rejection journal (issue #2859 F3). */
+export const MAX_PR_REVIEW_SUBMIT_REJECTIONS = 24;
+
 export interface PrWorkflowGateState {
 	schemaVersion: 1;
 	/** Monotonic durable revision used to reject stale same-session transitions. */
@@ -934,6 +953,15 @@ export interface PrWorkflowGateState {
 	prReviewDimensionCancellations?: Partial<
 		Record<PrReviewBaseDimensionId, PrReviewDimensionCancellationRecord>
 	>;
+	/**
+	 * Bounded FIFO journal of rejected `submit_pr_review_result` attempts
+	 * (issue #2859 F3). Observability only — surfaced in the discovery
+	 * contract-failure message so the orchestrator can see WHY a lane has no
+	 * structured receipt; never consulted for receipt validity. Capped by
+	 * {@link MAX_PR_REVIEW_SUBMIT_REJECTIONS}; each entry's message is bounded
+	 * to 300 chars at write time.
+	 */
+	prReviewSubmitRejections?: PrReviewSubmitRejectionRecord[];
 	prReviewHandoffPath?: string;
 	prReviewHandoffRequired?: boolean;
 	checkoutRecovery?: PrWorkflowCheckoutRecoveryRecord;
@@ -1535,6 +1563,19 @@ const PrWorkflowGateStateSchema = z
 				PrReviewDimensionCancellationRecordSchema,
 			)
 			.optional(),
+		prReviewSubmitRejections: z
+			.array(
+				z
+					.object({
+						childSessionId: z.string().min(1).max(200),
+						laneId: z.string().min(1).max(200).optional(),
+						at: z.number(),
+						message: z.string().min(1).max(300),
+					})
+					.strict(),
+			)
+			.max(MAX_PR_REVIEW_SUBMIT_REJECTIONS)
+			.optional(),
 		prReviewArtifactBoundaries: z
 			.array(z.enum(['post_explorer', 'post_reviewer', 'post_critic']))
 			.max(3)
@@ -1822,7 +1863,90 @@ function isLivenessTerminalLaneRecord(
  * stays child-bound and carries architect provenance. Every other session
  * keeps the frozen exact-child refusal.
  */
-export async function submitPrReviewResult(
+/**
+ * Issue #2859 (F3): best-effort, fail-open journal of one rejected
+ * `submit_pr_review_result` attempt onto the lane's parent PR_REVIEW gate
+ * state. Observability only — never changes the rejection outcome, never
+ * creates gate state for a parent that has none (the pre-read outside the
+ * session-state lock means a non-gated parent gets no lock file either).
+ */
+export async function recordPrReviewSubmitRejection(
+	directory: string,
+	childSessionId: string,
+	message: string,
+): Promise<void> {
+	try {
+		const child = childSessionId.trim();
+		if (!child) return;
+		const childRead = readDelegationsDetailed(directory);
+		if (childRead.status === 'uncertain') return;
+		const record = childRead.records.find(
+			(candidate) =>
+				candidate.subagentSessionId === child &&
+				(candidate.mode === 'swarm-pr-review:base' ||
+					candidate.mode === 'swarm-pr-review:micro'),
+		);
+		const parentSessionId = record?.parentSessionId?.trim();
+		if (!parentSessionId) return;
+		// Pre-read OUTSIDE withSessionStateMutation: the mutation wrapper
+		// acquires the per-session lock file before the action runs, so a mode
+		// check inside the action alone would still create
+		// `.swarm/pr-workflow-gates/<parent>.lock` for parents who never
+		// opened a gate — lock pollution on every rejected child submit.
+		const existing = await readPrWorkflowGateStateFromDisk(
+			directory,
+			parentSessionId,
+		);
+		if (!existing || existing.mode !== 'PR_REVIEW') return;
+		const laneId = record?.laneId?.trim();
+		const bounded = message.slice(0, 300);
+		await withSessionStateMutation(directory, parentSessionId, async () => {
+			const locked = await readPrWorkflowGateStateFromDisk(
+				directory,
+				parentSessionId,
+			);
+			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const journal: PrReviewSubmitRejectionRecord[] = [
+				...(locked.prReviewSubmitRejections ?? []),
+				{
+					childSessionId: child,
+					...(laneId ? { laneId } : {}),
+					at: Date.now(),
+					message: bounded,
+				},
+			].slice(-MAX_PR_REVIEW_SUBMIT_REJECTIONS);
+			await writeStateWhileLocked(directory, {
+				...locked,
+				prReviewSubmitRejections: journal,
+				updatedAt: isoNow(),
+			});
+		});
+	} catch {
+		// Fail-open observability: journaling must never change the rejection
+		// outcome the child sees.
+	}
+}
+
+/**
+ * Issue #2859 (F3): latest journal message for a child session, or undefined.
+ * Newest wins; the journal is FIFO-capped so a long-running workflow can only
+ * ever see its most recent rejections.
+ */
+export function latestPrReviewSubmitRejectionMessage(
+	state: Pick<PrWorkflowGateState, 'prReviewSubmitRejections'>,
+	childSessionId: string,
+): string | undefined {
+	const journal = state.prReviewSubmitRejections;
+	if (!journal?.length) return undefined;
+	for (let index = journal.length - 1; index >= 0; index--) {
+		if (journal[index]?.childSessionId === childSessionId) {
+			return journal[index]?.message;
+		}
+	}
+	return undefined;
+}
+
+async function submitPrReviewResultCore(
 	directory: string,
 	childSessionId: string,
 	input: {
@@ -2063,6 +2187,40 @@ export async function submitPrReviewResult(
 		}
 		return { status: 'rejected', reason: published.reason };
 	});
+}
+
+/**
+ * Issue #2859 (F3): single wrap point over every gate-layer rejection path in
+ * `submitPrReviewResultCore` (all 15 `{ status: 'rejected' }` return sites —
+ * invalid envelope, store unreadable, exact-child selection, repair
+ * restriction, provenance/batch/lane identity, workflow binding, revision
+ * digest, generation, ownership, reducer rejection, publication failure).
+ * Journaled fail-open; the tool-layer schema rejection is journaled separately
+ * by `executeSubmitPrReviewResult` because it never reaches the gate.
+ */
+export async function submitPrReviewResult(
+	directory: string,
+	childSessionId: string,
+	input: {
+		batchId?: string;
+		laneId?: string;
+		revisionDigest: string;
+		result: PrReviewLaneResultEnvelope;
+	},
+): Promise<SubmitPrReviewResultOutcome> {
+	const outcome = await submitPrReviewResultCore(
+		directory,
+		childSessionId,
+		input,
+	);
+	if (outcome.status === 'rejected') {
+		await recordPrReviewSubmitRejection(
+			directory,
+			childSessionId,
+			outcome.reason,
+		);
+	}
+	return outcome;
 }
 
 /**
@@ -16557,6 +16715,16 @@ function workflowArtifactHasContractMarker(
 				baseSha: state.prReviewBaseSha,
 				reviewScope,
 			},
+			// Issue #2859 (F3): let the discovery contract-failure message name
+			// the child's last rejected submit attempt when one is journalled.
+			...(latestPrReviewSubmitRejectionMessage(state, record.subagentSessionId)
+				? {
+						lastSubmitRejection: latestPrReviewSubmitRejectionMessage(
+							state,
+							record.subagentSessionId,
+						),
+					}
+				: {}),
 		});
 		if (!validation.ok) {
 			if (diagnostics && diagnostics.length < MAX_BASE_COVERAGE_DIAGNOSTICS) {
@@ -16875,10 +17043,17 @@ export function validatePrReviewDiscoveryLaneCompletion(
 			input.record.prReviewLegacyTranscriptCompatibility,
 		)
 	) {
+		// Issue #2859 (F3): surface the child's LAST rejected submit attempt so
+		// the orchestrator can see WHY the lane has no receipt instead of
+		// learning it only when a lane happens to narrate it in prose.
 		return failedLaneValidation(
 			'discovery.coverage',
 			'child-bound structured receipt',
-			'missing structured receipt (legacy transcript adapter disabled)',
+			`missing structured receipt (legacy transcript adapter disabled)${
+				input.lastSubmitRejection
+					? `; last rejected submit_pr_review_result: ${input.lastSubmitRejection.slice(0, 300)}`
+					: ''
+			}`,
 		);
 	}
 	const artifactIntegrity = analyzeLaneArtifactIntegrity({

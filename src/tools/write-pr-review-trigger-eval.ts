@@ -282,7 +282,7 @@ export async function executeWritePrReviewTriggerEval(
 	}
 	if (!gateState.prReviewTriggerLedger) {
 		return failure(
-			'PR_REVIEW trigger evaluation requires the canonical ledger frozen by the first micro dispatch',
+			'PR_REVIEW trigger evaluation requires the canonical ledger frozen by the first micro dispatch — dispatch the first swarm-pr-review:micro batch with the complete trigger_evaluation parameter on dispatch_lanes_async; that dispatch freezes the ledger this tool then persists',
 		);
 	}
 	let frozenLedger: ReturnType<typeof validatePrReviewInlineTriggerLedger>;

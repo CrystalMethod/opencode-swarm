@@ -1011,6 +1011,7 @@ export const _test_exports = {
 	nextCollectPollInterval,
 	promptHash,
 	reserveCollectionLaneCallBudgets,
+	reserveConcurrentLaneCallBudgets,
 	assembleCollectionDiagnostics,
 	addLaneDiagnostic,
 	isRetryableSessionCreateFailure,
@@ -2212,6 +2213,17 @@ export async function executeCollectLaneResults(
 				? 'Collection deadline exhausted while waiting for OpenCode host calls; pending lanes remain safe to retry.'
 				: 'Collection recovered and settled all lanes despite bounded OpenCode host-call timeouts; no collection retry is required.';
 	}
+
+	// Issue #2859 (F5): a starved pending-liveness probe used to be visible only
+	// inside `pending_liveness[].degradedReason`; surface it at the top level
+	// too, ADDITIVELY (never replacing the host-timeout sentence above), so the
+	// `pending === 0` edge case still reports it.
+	const starvedProbeCount = (result.pending_liveness ?? []).filter(
+		(lane) => lane.degradedReason === 'probe-skipped-no-budget',
+	).length;
+	if (starvedProbeCount > 0) {
+		result.message = `${result.message ? `${result.message} ` : ''}${starvedProbeCount} pending-liveness probe(s) skipped for budget (probe-skipped-no-budget); lanes may be further settled than reported.`;
+	}
 	// Issue #2349: `errors` is assigned from the UNION of host-call timeouts and
 	// terminal-settle write failures. `result.message` stays keyed on
 	// `hostTimeouts` alone, so a settle failure never mislabels itself as a
@@ -2725,23 +2737,34 @@ async function collectOnce(
 	const activeRecords = records.filter(
 		(record) => record.status === 'pending' || record.status === 'running',
 	);
-	const pendingSettlements: Promise<void>[] = [];
-	for (let index = 0; index < activeRecords.length; index++) {
-		const record = activeRecords[index];
+	if (activeRecords.length === 0) return;
+	// Issue #2859 (F5): the per-lane record refresh (session.status /
+	// session.messages - and the self-contained cancel path) previously ran
+	// SEQUENTIALLY against this one absolute deadline, so slow early calls
+	// starved every later lane to a `(0ms)` budget and the pending-liveness
+	// probe degraded to probe-skipped-no-budget while lanes that had already
+	// completed looked "running" for minutes. Fetch concurrently under a small
+	// cap; ALL state-mutating processing stays sequential below, in lane order,
+	// and the cancel path stays self-contained per lane.
+	type CollectLaneFetchOutcome =
+		| {
+				kind: 'fetched';
+				readiness: Awaited<ReturnType<typeof getLaneCollectionReadiness>>;
+				messages: Awaited<ReturnType<NonNullable<SessionOps['messages']>>>;
+				laneBudgets: ReturnType<typeof reserveConcurrentLaneCallBudgets>;
+		  }
+		| { kind: 'skipped' }
+		| { kind: 'messages-error'; error: unknown };
+
+	const refreshLimit = pLimit(COLLECT_REFRESH_CONCURRENCY);
+	const fetchLaneRecord = async (
+		record: BackgroundDelegationRecord,
+	): Promise<CollectLaneFetchOutcome> => {
 		const laneLabel = record.laneId ?? record.correlationId;
-		const remainingLaneCount = activeRecords.length - index;
-		// Issue #2381: price a digest call for EVERY lane that needs a digest, even
-		// though at most one of them performs the host resolution. The others await
-		// the shared in-flight promise, and they must do so under a real budget of
-		// their own — a zero budget would make `withCollectionDeadline` throw
-		// immediately and leave every reusing lane pending, and an absent budget
-		// would let a slow resolution consume the entire collection deadline. The
-		// saving item 4 is after is one HOST CALL per (root, head), which the
-		// snapshot map already guarantees; it is not a saving in reserved time.
 		const needsRevisionDigest = Boolean(record.workspace?.prHeadSha);
-		const laneBudgets = reserveCollectionLaneCallBudgets(
+		const laneBudgets = reserveConcurrentLaneCallBudgets(
 			deadline,
-			remainingLaneCount,
+			activeRecords.length,
 			typeof session.status === 'function',
 			needsRevisionDigest,
 		);
@@ -2759,12 +2782,12 @@ async function collectOnce(
 				} catch {
 					// Preserve the old best-effort behavior for ordinary host errors, but
 					// never claim cancellation when the abort request itself timed out.
-					if (hostTimeouts.size > timeoutCount) continue;
+					if (hostTimeouts.size > timeoutCount) return { kind: 'skipped' };
 				}
 			}
 			// Issue #2045: cancellation settles through the shared exactly-once
 			// terminal claim (Task parity) instead of a bare status write. The
-			// synthetic result carries a stable identity — empty body digest — and
+			// synthetic result carries a stable identity - empty body digest - and
 			// a bounded reason so the record states why it was cancelled.
 			// Issue #2615: the cancelled record carries the 'liveness' failure
 			// class so a cancelled PR-review dimension is a typed terminal
@@ -2786,7 +2809,7 @@ async function collectOnce(
 				{},
 				_internals.now(),
 			);
-			continue;
+			return { kind: 'skipped' };
 		}
 		const readiness = await getLaneCollectionReadiness(
 			session,
@@ -2796,10 +2819,9 @@ async function collectOnce(
 			hostTimeouts,
 			laneBudgets.statusBudgetMs,
 		);
-		if (readiness === 'busy') continue;
-		let messages: Awaited<ReturnType<NonNullable<SessionOps['messages']>>>;
+		if (readiness === 'busy') return { kind: 'skipped' };
 		try {
-			messages = await withCollectionDeadline(
+			const messages = await withCollectionDeadline(
 				() =>
 					session.messages!({
 						path: { id: record.subagentSessionId },
@@ -2810,7 +2832,21 @@ async function collectOnce(
 				hostTimeouts,
 				laneBudgets.messagesBudgetMs,
 			);
+			return { kind: 'fetched', readiness, messages, laneBudgets };
 		} catch (error) {
+			return { kind: 'messages-error', error };
+		}
+	};
+	const fetched = await Promise.all(
+		activeRecords.map((record) => refreshLimit(() => fetchLaneRecord(record))),
+	);
+	const pendingSettlements: Promise<void>[] = [];
+	for (let index = 0; index < activeRecords.length; index++) {
+		const record = activeRecords[index];
+		const laneLabel = record.laneId ?? record.correlationId;
+		const outcome = fetched[index];
+		if (!outcome || outcome.kind === 'skipped') continue;
+		if (outcome.kind === 'messages-error') {
 			const messageTimeoutPrefix = `session.messages for lane "${laneLabel}" exceeded the remaining collect_lane_results budget`;
 			if (
 				![...hostTimeouts].some((entry) =>
@@ -2819,8 +2855,8 @@ async function collectOnce(
 			) {
 				// Issue #2381: a transcript-fetch TRANSPORT ERROR (as opposed to a
 				// budget timeout, which `hostTimeouts` already reports) leaves the lane
-				// pending. That is correct — a broken observer transport says nothing
-				// about the child — but it must not be SILENT. The only consumer of
+				// pending. That is correct - a broken observer transport says nothing
+				// about the child - but it must not be SILENT. The only consumer of
 				// this signal used to be the wait-deadline terminalizer, which read it
 				// to choose a failure class; deleting the terminalizer left this
 				// recording site with no reader, so the ERROR half of the issue's
@@ -2829,12 +2865,13 @@ async function collectOnce(
 					collectionResourceFailures,
 					laneLabel,
 					`session.messages transport error for lane "${laneLabel}"; lane left pending: ${safeDiagnosticCause(
-						error,
+						outcome.error,
 					)}`,
 				);
 			}
 			continue;
 		}
+		const { readiness, messages, laneBudgets } = outcome;
 		if (!messages.data) {
 			if (messages.error) {
 				// Same class: the host answered with an error payload and no
@@ -4346,6 +4383,63 @@ function reserveCollectionLaneCallBudgets(
 	};
 }
 
+/**
+ * Issue #2859 (F5): per-lane budget share for the concurrent record-refresh
+ * fan-out in `collectOnce`. Same split math as `reserveCollectionLaneCallBudgets`,
+ * but the per-lane share carries a small floor so every lane gets a real probe
+ * attempt instead of a `(0ms)` budget once earlier slow calls have consumed the
+ * shared deadline. The floor is clamped by the remaining budget (`min` with
+ * `remainingMs`), so it can never push any single call past the caller's total
+ * deadline - `withCollectionDeadline` remains the hard cap. With the fan-out
+ * running lanes concurrently, wall-clock cost is the MAX of the per-lane
+ * budgets, not their sum.
+ */
+const MIN_CONCURRENT_LANE_BUDGET_MS = 1000;
+const COLLECT_REFRESH_CONCURRENCY = 4;
+
+function reserveConcurrentLaneCallBudgets(
+	deadline: number,
+	laneCount: number,
+	hasStatusCall: boolean,
+	hasRevisionDigestCall = false,
+): {
+	laneBudgetMs: number;
+	statusBudgetMs: number;
+	messagesBudgetMs: number;
+	revisionDigestBudgetMs: number;
+} {
+	const remainingMs = Math.max(0, deadline - _internals.now());
+	if (remainingMs === 0) {
+		return {
+			laneBudgetMs: 0,
+			statusBudgetMs: 0,
+			messagesBudgetMs: 0,
+			revisionDigestBudgetMs: 0,
+		};
+	}
+	const laneBudgetMs = Math.min(
+		remainingMs,
+		Math.max(
+			MIN_CONCURRENT_LANE_BUDGET_MS,
+			Math.floor(remainingMs / Math.max(1, laneCount)),
+		),
+	);
+	const callCount = 1 + Number(hasStatusCall) + Number(hasRevisionDigestCall);
+	const statusBudgetMs = hasStatusCall
+		? Math.min(MAX_STATUS_CALL_BUDGET_MS, Math.floor(laneBudgetMs / callCount))
+		: 0;
+	const afterStatusMs = laneBudgetMs - statusBudgetMs;
+	const revisionDigestBudgetMs = hasRevisionDigestCall
+		? Math.floor(afterStatusMs / 2)
+		: 0;
+	return {
+		laneBudgetMs,
+		statusBudgetMs,
+		messagesBudgetMs: afterStatusMs - revisionDigestBudgetMs,
+		revisionDigestBudgetMs,
+	};
+}
+
 function nextCollectPollInterval(currentMs: number): number {
 	if (currentMs <= 0) return COLLECT_POLL_INTERVAL_MS;
 	return Math.min(currentMs * 2, MAX_COLLECT_POLL_INTERVAL_MS);
@@ -5493,7 +5587,7 @@ function applyExplorerFormatSuffix(
 			].find((value): value is string => value !== null);
 			if (!forbidden) return false;
 			errors.push(
-				`Lane "${lane.id}" operator prompt contains ${forbidden}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract`,
+				`Lane "${lane.id}" operator prompt contains ${forbidden}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry — the controller appends the authoritative contract automatically.`,
 			);
 			return true;
 		};

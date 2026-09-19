@@ -1,4 +1,5 @@
 ---
+swarm-contract-digest: c1572cc54760
 name: swarm-ci-monitor
 audience: swarm-plugin
 description: >

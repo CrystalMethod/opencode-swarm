@@ -1,0 +1,85 @@
+---
+issue: 2859
+title: "PR_REVIEW workflow hardening: child-blind submit rejections, collect budget starvation, bootstrap error remediation, and stale user-global skill detection"
+---
+
+## What changed
+
+Fixes the verified post-mortem fix set from the failed `/swarm pr-review` run
+against PR #2824 (issue #2859). Six findings shipped; F7 (transcript-salvage
+lever) is intentionally not new code — see the last bullet.
+
+- **`submit_pr_review_result` rejections now render the RECEIVED value.** Every
+  zod rejection carries `received <json> (<typeof>)` next to the expected-value
+  message, bounded to ~120 chars and safe on circular/unrepresentable input, so
+  a child that sent the wrong shape can self-diagnose instead of retrying blind
+  (the exact failure that discarded three lanes' reviews on PR #2824). After 3
+  consecutive rejections in one session the message appends an escalating hint.
+  The response shape `{ success, message }` is unchanged.
+- **`schemaVersion` accepts the string `"1"`.** Implemented as
+  `z.preprocess` around the literal (NOT `z.coerce.number()`, which would
+  wrongly accept `true` because `Number(true) === 1`); `2`, `"2"`, `true`, and
+  `null` still fail with the exact literal message. The arg description now
+  says "the JSON number 1 (the string `"1"` is also accepted)".
+- **Rejected submits are visible to the orchestrator.** A bounded FIFO journal
+  (24 entries, fail-open, message ≤300 chars) on the PR_REVIEW gate state
+  records both tool-layer schema rejections and every gate-layer rejection
+  (single wrap point over all 15 rejection sites). The discovery
+  contract-failure message now appends
+  `; last rejected submit_pr_review_result: <reason>` when the child session
+  has a journalled rejection, flowing to `collect_lane_results` through the
+  existing error plumbing. A parent without an active gate gets no lock file.
+- **Two bootstrap errors name the remediation.** The trigger-eval ledger error
+  now says to dispatch the first `swarm-pr-review:micro` batch with the
+  complete `trigger_evaluation` parameter, and the prompt-scrubber rejection
+  now says to remove the format/template text and retry (the scrubber itself
+  is unchanged and gains no exemption).
+- **`collect_lane_results` refreshes lanes concurrently.** The per-lane
+  `session.status`/`session.messages` refresh (and the self-contained cancel
+  path) now runs under `pLimit(4)` with a floored per-lane budget (1s floor,
+  clamped by the caller's total deadline — the deadline stays the hard cap);
+  all state-mutating processing stays sequential in lane order. Later lanes no
+  longer starve to `(0ms)` budgets when early host calls are slow, and a
+  starved pending-liveness probe is now reflected in the top-level `message`
+  (previously only inside `pending_liveness[].degradedReason`).
+- **Skill documentation: the PARTIAL-settlement recovery path.** The
+  swarm-pr-review skill now documents that base *settlement* (every lane
+  terminal — failed/cancelled lanes count) suffices to proceed: first micro
+  dispatch with the complete inline 11-row `trigger_evaluation`, then
+  `write_pr_review_trigger_eval`, validation lanes, and a PARTIAL-allowed
+  completion. The abort-by-omission on PR #2824 misread exactly this gap. The
+  `.claude`/`.agents` mirrors are thin adapter shims by design and delegate to
+  the canonical.
+- **Stale user-global skill copies are now detected.** The four PR-workflow
+  canonical skills carry a `swarm-contract-digest:` body-content stamp
+  (regenerate with `bun run scripts/stamp-skill-contracts.ts --write`), and a
+  new `user-global-skill-staleness` drift-check detector warns (advisory
+  `notice`, never blocking) when a user-global copy of a stamped skill
+  (`~/.opencode/skills/...` or `~/.claude/skills/...`) diverges from the repo
+  copy — the 10-week-stale shadowing observed in the post-mortem. Repo-side
+  stamp rot is a `warning`. The detector is READ-ONLY on user-global trees.
+- **F7 (transcript salvage lever) ships no new code, by adjudication.** The
+  opt-in lever already exists end to end and default-off: config key
+  `pr_review_legacy_transcript_compatibility`
+  (`src/config/schema.ts` → `dispatch-lanes.ts` stamps each base/micro
+  delegation record → the contract gate consumes it, literal `true` only).
+  Duplicating that wiring would be partial-wiring risk, so this change only
+  documents it (here and in the PR body). Default-on salvage remains a
+  rejected non-goal.
+
+## Why
+
+A live review run lost three lanes to schema-rejection retry loops the
+children could not self-diagnose, cancelled two settled-looking lanes after
+budget starvation misread them as running, and aborted a recoverable workflow
+because two error messages stated facts instead of actions and the recovery
+path was undocumented — while a stale user-global skill copy taught the lanes
+a dead output contract in the first place.
+
+## Notes
+
+- The drift-check `required-check-contract` error on `pr-standards.yml`
+  (`WORKFLOW_CHANGED_AFTER_CAPTURE`) is pre-existing on main and untouched by
+  this change (verified by re-running the detectors on the stashed base tree).
+- The progressive-disclosure ratchet baseline for `swarm-pr-feedback/SKILL.md`
+  moved 949 → 950: the +1 line is the new content stamp, not detail growth.

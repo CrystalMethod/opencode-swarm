@@ -339,3 +339,14 @@ one bounded retry early), then disclose, and only then is `abort_pr_workflow`
 legitimate. An operator-cancelled lane does NOT qualify — `cancel_pending` is
 a controlled act by the controller; re-dispatch the family instead of
 disclosing it.
+
+## Incident classification and parser-vs-gate proof scope (issue #2859 relocation)
+
+Classify the incident from actual user-visible harm and the first failed
+predicate, not from the number of retries or the eventual result. A successful
+post-hoc fallback is recovery evidence; it does not justify the protocol
+deviation or erase the original failure. Conversely, the candidate tool and
+the coverage gate use a shared row parser, while the gate separately verifies
+durable provenance such as batch, session, lane, role, head, digest, and
+artifact identity. Parser success therefore proves row structure only; it does
+not settle the durable coverage obligation.

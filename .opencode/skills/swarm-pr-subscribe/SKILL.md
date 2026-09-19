@@ -1,4 +1,5 @@
 ---
+swarm-contract-digest: 1f679751e34e
 name: swarm-pr-subscribe
 audience: swarm-plugin
 description: >
