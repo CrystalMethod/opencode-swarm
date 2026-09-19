@@ -111,6 +111,7 @@ import {
 	invalidateCachedArtifact,
 	readCachedParsedFile,
 } from '../utils/swarm-artifact-cache';
+import type { AutoCheckpointOutcome } from './auto-checkpoint.js';
 import {
 	appendLedgerEvent,
 	computeCurrentPlanHash,
@@ -199,6 +200,16 @@ export const _internals: {
 	commitTaskCompletion: typeof commitTaskCompletion;
 	getWorktreeMergeFailure: typeof getWorktreeMergeFailure;
 	recordTaskAttempt: typeof recordTaskAttempt;
+	/**
+	 * Issue #2582 — the checkpoint.auto_checkpoint_threshold runtime trigger,
+	 * invoked once per completed-task transition in `updateTaskStatus`. Exposed
+	 * through `_internals` (AGENTS.md invariant 7) so tests fault-inject the
+	 * non-fatal contract without mocking the module graph.
+	 */
+	maybeSaveAutoCheckpoint: (
+		directory: string,
+		plan: Plan,
+	) => Promise<AutoCheckpointOutcome>;
 } = {
 	loadPlan,
 	loadPlanJsonOnly,
@@ -218,6 +229,7 @@ export const _internals: {
 	commitTaskCompletion,
 	getWorktreeMergeFailure,
 	recordTaskAttempt,
+	maybeSaveAutoCheckpoint: defaultMaybeSaveAutoCheckpoint,
 };
 
 /** @internal Test seam for snapshot retry helper */
@@ -2728,6 +2740,20 @@ export async function isTaskSettled(
  * The migration guard in loadPlan() (plan_id identity check) prevents destructive
  * revert after a swarm rename — so this is safe even in post-migration scenarios.
  */
+/**
+ * Issue #2582 — default trigger behind `_internals.maybeSaveAutoCheckpoint`.
+ * Lazy dynamic import of the real module (the speckit-checkoff precedent): a
+ * static edge would pull the config loader + lock machinery into every
+ * plan/manager test graph.
+ */
+async function defaultMaybeSaveAutoCheckpoint(
+	directory: string,
+	plan: Plan,
+): Promise<AutoCheckpointOutcome> {
+	const { maybeSaveAutoCheckpoint } = await import('./auto-checkpoint.js');
+	return maybeSaveAutoCheckpoint(directory, plan);
+}
+
 export async function updateTaskStatus(
 	directory: string,
 	taskId: string,
@@ -3012,6 +3038,34 @@ export async function updateTaskStatus(
 					// `commitTaskCompletion`'s own try/catch.
 					criticalWarn(
 						`[plan/manager] Rule 2 auto-commit for ${taskId} threw (non-fatal): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+					);
+				}
+			}
+			// Issue #2582 — automatic checkpoint cadence. Runs after the Rule 2
+			// block so an Epic completion commit is included in the recorded
+			// SHA, and is skipped entirely for worktree-merge failures via Rule
+			// 2's early return above (a checkpoint whose HEAD excludes the
+			// completed work would mislead restore). Non-fatal, same contract
+			// as the blocks above: the durable plan write already succeeded.
+			// Advisory: a crash between savePlan and this call loses that
+			// transition's checkpoint (the settled-task guard blocks replay).
+			if (status === 'completed') {
+				try {
+					const outcome = await _internals.maybeSaveAutoCheckpoint(
+						directory,
+						updatedPlan,
+					);
+					// Skips (disabled / below cadence / no restorable HEAD) stay
+					// quiet; a failed save must reach the operator even though it
+					// never blocks the durable write.
+					if (outcome && outcome.saved === false && outcome.warning) {
+						criticalWarn(
+							`[plan/manager] auto-checkpoint for ${taskId} was not saved (non-fatal): ${outcome.warning}`,
+						);
+					}
+				} catch (checkpointErr) {
+					criticalWarn(
+						`[plan/manager] auto-checkpoint cadence trigger for ${taskId} failed (non-fatal): ${checkpointErr instanceof Error ? checkpointErr.message : String(checkpointErr)}`,
 					);
 				}
 			}

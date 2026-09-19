@@ -2004,7 +2004,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/commands/rollback.ts — lifecycle-locked checkpoint projection publication with prior-byte compensation after authoritative re-root',
 			'src/commands/reset.ts — lifecycle-locked critical projection deletion with prior-byte compensation when authority cleanup aborts',
 		],
-		readerCitations: ['src/plan/manager.ts:715 loadPlan — full-file with auto-heal + ledger-replay fallback, async; :398 loadPlanJsonOnly'],
+		readerCitations: ['src/plan/manager.ts:727 loadPlan — full-file with auto-heal + ledger-replay fallback, async; :410 loadPlanJsonOnly'],
 		schemaVersion: 'plan schema (projections of the ledger)',
 		stateClass: 'derived-rebuildable',
 		privacyClass: 'content',
