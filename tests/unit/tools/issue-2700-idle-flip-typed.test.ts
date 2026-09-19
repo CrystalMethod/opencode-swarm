@@ -20,10 +20,19 @@ import {
 } from '../../../src/background/pending-delegations';
 import { encodePrReviewWorkflowBinding } from '../../../src/background/pr-review-contract';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
+import { freezeClock } from '../../helpers/test-clock.js';
 
 const { dir, cleanup } = createSafeTestDir('swarm-tools-2700-idle-');
-afterEach(cleanup);
+let restoreClock: (() => void) | null = null;
+afterEach(() => {
+	restoreClock?.();
+	restoreClock = null;
+	cleanup();
+});
 beforeEach(() => {
+	// Whole-file freeze (FR-011): Date.now() is captured once per test so
+	// fixture timestamps and the store's staleness reads agree.
+	restoreClock = freezeClock({ fixedNow: Date.now() });
 	fs.rmSync(path.join(dir, '.swarm'), { recursive: true, force: true });
 	fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
