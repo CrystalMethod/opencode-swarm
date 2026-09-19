@@ -164,6 +164,22 @@ export interface TaskEvidence {
 		source_generation: number | null;
 		requirements_receipt_hash: string | null;
 	};
+	/**
+	 * Recorded TODO-gate scan for this task (issue #2581): the high-priority
+	 * (FIXME/HACK/XXX) count from the most recent `todo_extract` run that named
+	 * this task. Consumed by `check_gate_status` and the phase-complete
+	 * `todo_gate` gate against the `todo_gate` config. Absent when no producer
+	 * ran — consumers must treat absence as "no evidence", never as a failure.
+	 */
+	todo_scan?: TodoScanEvidence;
+}
+
+/** Shape of the `todo_scan` evidence field read by `check_gate_status`. */
+export interface TodoScanEvidence {
+	priority: string;
+	count: number;
+	details?: string[];
+	recorded_at?: string;
 }
 
 export interface ApplicableGateSet {
@@ -439,6 +455,15 @@ export interface TaskEvidenceTransaction {
 	transitionWithStatus?(
 		event: TaskWorkflowTransitionEvent,
 	): Promise<{ evidence: TaskEvidence; duplicated: boolean }>;
+	/**
+	 * Supplementary no-event write: persists `nextEvidence` (zod-validated,
+	 * atomic) without a workflow transition. Fails closed through the same
+	 * WAL fence as transitions (`assertTaskEvidenceWriteAllowed` with no
+	 * event) so a producer cannot clobber an in-flight coder settlement or
+	 * terminal commit. Optional for backward compatibility with older
+	 * transaction implementations.
+	 */
+	save?(nextEvidence: TaskEvidence): Promise<TaskEvidence>;
 }
 
 const GateEvidenceSchema = z
@@ -490,6 +515,14 @@ const TaskEvidenceSchema = z.object({
 				.string()
 				.regex(/^[a-f0-9]{64}$/)
 				.nullable(),
+		})
+		.optional(),
+	todo_scan: z
+		.object({
+			priority: z.string(),
+			count: z.number().int().min(0),
+			details: z.array(z.string()).max(200).optional(),
+			recorded_at: z.string().optional(),
 		})
 		.optional(),
 });
@@ -1297,6 +1330,16 @@ function updateEvidenceForTransition(
 					!requiredGates.includes('test_engineer')
 				: existing?.test_engineer_exempt,
 		workflow,
+		// Supplementary fields are carried forward, not rebuilt: the reducer
+		// has no event-scoped semantics for them, and dropping them here would
+		// silently erase durable markers on every transition (issue #2581 —
+		// todo_scan; the same carry fixes the pre-existing repair_provenance /
+		// requirements_state loss).
+		requirements_state: existing?.requirements_state,
+		...(existing?.repair_provenance
+			? { repair_provenance: existing.repair_provenance }
+			: {}),
+		...(existing?.todo_scan ? { todo_scan: existing.todo_scan } : {}),
 	};
 }
 
@@ -1416,6 +1459,17 @@ export async function withTaskEvidenceTransaction<T>(
 			return { evidence, duplicated };
 		};
 
+		const saveImpl = async (nextEvidence: TaskEvidence) => {
+			// Supplementary no-event write (issue #2581 producer path). The
+			// fence fails closed with no event: while a coder settlement,
+			// terminal commit, or task repair WAL owns this task's evidence,
+			// no producer may land a write the owning transition would
+			// clobber.
+			assertTaskEvidenceWriteAllowed(directory, taskId, undefined);
+			nextEvidence.taskId = taskId;
+			return persist(nextEvidence);
+		};
+
 		return callback({
 			taskId,
 			read: () => current,
@@ -1424,6 +1478,7 @@ export async function withTaskEvidenceTransaction<T>(
 				return evidence;
 			},
 			transitionWithStatus: transitionWithStatusImpl,
+			save: saveImpl,
 		});
 	});
 }
@@ -1507,6 +1562,43 @@ export async function recordGateEvidence(
 	);
 
 	telemetry.gatePassed(sessionId, gate, taskId);
+}
+
+/**
+ * Records a TODO-gate scan for a task (issue #2581 producer API). Merges
+ * `scan` into `.swarm/evidence/{taskId}.json` as a supplementary no-event
+ * write: existing gates, workflow state, and all other fields are preserved
+ * byte-for-byte; a missing file is created with a default workflow. Uses the
+ * same lock + atomic write discipline as every other flat-file writer and
+ * fails closed through `assertTaskEvidenceWriteAllowed` while a coder
+ * settlement, terminal commit, or task repair WAL owns the task's evidence.
+ */
+export async function recordTodoScanEvidence(
+	directory: string,
+	taskId: string,
+	scan: TodoScanEvidence,
+): Promise<void> {
+	assertValidTaskId(taskId);
+	await withTaskEvidenceTransaction(
+		directory,
+		taskId,
+		'todo_scan_recorded',
+		async (transaction) => {
+			const existing = transaction.read();
+			const base: TaskEvidence = existing ?? {
+				taskId,
+				required_gates: [],
+				gates: {},
+				workflow: createDefaultWorkflowMetadata(new Date().toISOString()),
+			};
+			if (!transaction.save) {
+				throw new Error(
+					`TASK_EVIDENCE_SAVE_UNAVAILABLE: transaction for task ${taskId} does not support supplementary writes`,
+				);
+			}
+			await transaction.save({ ...base, todo_scan: scan });
+		},
+	);
 }
 
 /**
