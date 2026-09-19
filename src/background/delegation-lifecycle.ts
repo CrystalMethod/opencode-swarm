@@ -58,8 +58,16 @@ import {
 	registerStaleSweepObserver,
 } from './pending-delegations.js';
 
-/** Terminal statuses a shared settle may establish (mirrors Task semantics). */
-export type DelegationTerminalStatus = 'completed' | 'error' | 'cancelled';
+/**
+ * Terminal statuses a shared settle may establish (mirrors Task semantics).
+ * `'stale'` (issue #2700) admits the eventless-abandonment settles — the idle
+ * host flip and equivalent producers — through the same typed claim.
+ */
+export type DelegationTerminalStatus =
+	| 'completed'
+	| 'error'
+	| 'cancelled'
+	| 'stale';
 
 /**
  * Why `settleDelegationTerminal` returned without a fresh claim.

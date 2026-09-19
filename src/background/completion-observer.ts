@@ -454,6 +454,11 @@ export function createBackgroundCompletionObserver(opts: {
 				// during first processing; skip re-validation to preserve scope.
 				const freshness = validateStageBWorkspace(directory, record);
 				if (freshness.stale) {
+					// INTENTIONAL-EVENTLESS: post-claim terminal→terminal flip
+					// (issue #2700 disposition) — the record already carries its
+					// typed terminal event from the claim that opened this
+					// processing; this Stage-B staleness transition establishes
+					// no new first-terminal event.
 					await appendDelegationTransition(directory, record.correlationId, {
 						status: 'stale',
 					});
@@ -874,6 +879,10 @@ async function settleCoder(
 					},
 				},
 			);
+			// INTENTIONAL-EVENTLESS: post-claim terminal→terminal flip (issue
+			// #2700 disposition) — the record's typed terminal event came from
+			// the claim that opened this coder settlement; the preserved→stale
+			// transition establishes no new first-terminal event.
 			await appendDelegationTransition(directory, record.correlationId, {
 				status: 'stale',
 			});
