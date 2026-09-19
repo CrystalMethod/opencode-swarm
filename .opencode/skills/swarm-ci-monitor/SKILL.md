@@ -1,5 +1,4 @@
 ---
-swarm-contract-digest: c1572cc54760
 name: swarm-ci-monitor
 audience: swarm-plugin
 description: >
@@ -10,6 +9,7 @@ description: >
   failure-type-specific fix recipes. This is the first skill in the repo that
   executes a merge — invoke it deliberately.
 disable-model-invocation: true
+swarm-contract-digest: c1572cc54760
 ---
 
 # Swarm CI Monitor

@@ -54,8 +54,23 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 				new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: [0-9a-f]{12}$`, 'm'),
 				stampLine,
 			)
-		: normalized.replace(/^---\n/, `---\n${stampLine}\n`);
+		: insertStampBeforeFrontmatterClose(normalized, stampLine);
 	writeFileSync(file, next, 'utf8');
 	console.log(`stamped ${slug} ${digest}${existing ? ` (was ${existing})` : ''}`);
 }
+/**
+ * Insert the stamp as the LAST frontmatter key (immediately before the
+ * closing fence): bundled-skill-runtime-closure asserts the frontmatter
+ * begins with the opening fence followed by name: and audience:, so
+ * leading insertion breaks that contract.
+ */
+function insertStampBeforeFrontmatterClose(
+	content: string,
+	stampLine: string,
+): string {
+	const close = content.indexOf('\n---\n');
+	if (close === -1) return content;
+	return content.slice(0, close) + '\n' + stampLine + content.slice(close);
+}
+
 if (drift > 0) process.exit(1);
