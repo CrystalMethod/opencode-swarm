@@ -29,6 +29,7 @@ import {
 	type BackgroundDelegationRecord,
 	type BackgroundDelegationResult,
 	type BackgroundDelegationWorkflowLaneRecovery,
+	buildTypedDelegationTerminal,
 	DEFAULT_STALE_DELEGATION_TIMEOUT_MS,
 	findByBatchIdDetailed,
 	findByCorrelationIdDetailed,
@@ -3804,10 +3805,19 @@ async function appendAsyncLaneLaunchError(
 		);
 	} else {
 		// Record never landed (start write failed): keep the legacy bare
-		// transition so the failure is still durably visible.
+		// transition so the failure is still durably visible. Issue #2700: it
+		// still carries the typed terminal event (jobId unknown — null identity
+		// material), so a partial-landing race that leaves a readable record
+		// settles typed exactly like the in-record path above.
 		await appendDelegationTransition(directory, sessionId, {
 			status: 'error',
 			result: launchErrorResult,
+			terminalResult: buildTypedDelegationTerminal(
+				{ correlationId: sessionId, jobId: null },
+				'error',
+				launchErrorResult,
+				_internals.now(),
+			),
 		});
 	}
 	cleanupAsyncLaunchSession(session, sessionId);
@@ -3986,7 +3996,9 @@ async function sweepStaleAsyncLaneRecords(
 		// pre-existing-result merge as the Task-side sweep) so the
 		// partial-base-coverage admission gate can settle a stale-swept dimension
 		// through its record.result fallback instead of refusing an untyped
-		// terminal.
+		// terminal. Issue #2700: the flip also writes its typed terminal event
+		// (same identity rules as the claim path) so the lane is never
+		// liveness-terminal without its typed result.
 		const idleLaneLabel =
 			currentAfterReadiness.laneId ?? currentAfterReadiness.correlationId;
 		const idleStaleReason = `lane ${idleLaneLabel} presumed stale: idle host session past the stale horizon`;
@@ -4003,6 +4015,12 @@ async function sweepStaleAsyncLaneRecords(
 						digest: digestText(idleStaleReason),
 						workflowLaneFailureClass: 'liveness',
 					};
+		const idleTerminal = buildTypedDelegationTerminal(
+			currentAfterReadiness,
+			'stale',
+			idleLivenessResult,
+			_internals.now(),
+		);
 		await appendDelegationTransition(
 			directory,
 			currentAfterReadiness.correlationId,
@@ -4010,6 +4028,7 @@ async function sweepStaleAsyncLaneRecords(
 				status: 'stale',
 				result: idleLivenessResult,
 				expectedCurrentStatuses: ['pending', 'running', 'ingestion_error'],
+				terminalResult: idleTerminal,
 			},
 		);
 	}

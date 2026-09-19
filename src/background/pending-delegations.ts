@@ -510,7 +510,13 @@ export interface BackgroundDelegationResult {
 export interface BackgroundTerminalResult {
 	/** Stable identity derived from trusted correlation + immutable result metadata. */
 	eventId: string;
-	status: 'completed' | 'error' | 'cancelled' | 'rejected';
+	/**
+	 * `'stale'` (issue #2700) is the typed terminal the eventless settle paths
+	 * (stale sweep, idle-host flip, parent-repair backfill) establish; the
+	 * event's status always equals the durable record status it was written
+	 * with, preserving the status-agreement invariants consumers rely on.
+	 */
+	status: 'completed' | 'error' | 'cancelled' | 'rejected' | 'stale';
 	recordedAt: number;
 	result: BackgroundDelegationResult;
 }
@@ -744,7 +750,7 @@ const WorktreeDescriptorSchema = z
 const TerminalResultSchema = z
 	.object({
 		eventId: z.string().min(1).max(256),
-		status: z.enum(['completed', 'error', 'cancelled', 'rejected']),
+		status: z.enum(['completed', 'error', 'cancelled', 'rejected', 'stale']),
 		recordedAt: z.number().int().nonnegative(),
 		result: ResultSchema,
 	})
@@ -3520,6 +3526,23 @@ export function buildPromptSnapshot(
 	};
 }
 
+/**
+ * Statuses for which the generic transition writer attaches typed terminal
+ * evidence (issue #2700): the typed-event union minus `rejected` (no producer)
+ * — `consumed` is post-terminal ingestion machinery that only the ingestion
+ * result writer establishes, never this writer.
+ */
+function isTypedTerminalStatus(
+	status: BackgroundDelegationStatus,
+): status is BackgroundDelegationStatus & BackgroundTerminalResult['status'] {
+	return (
+		status === 'completed' ||
+		status === 'error' ||
+		status === 'cancelled' ||
+		status === 'stale'
+	);
+}
+
 export async function appendDelegationTransition(
 	directory: string,
 	correlationId: string,
@@ -3530,6 +3553,13 @@ export async function appendDelegationTransition(
 		/** Test/recovery seam for replaying a persisted timestamp exactly. */
 		updatedAt?: number;
 		expectedCurrentStatuses?: readonly BackgroundDelegationStatus[];
+		/**
+		 * Issue #2700: the typed terminal event to write atomically with a
+		 * terminal status flip. Ignored when the record already carries a
+		 * `terminalResult` (the first typed event can never be erased, #2045)
+		 * or when the transition is not to a terminal status.
+		 */
+		terminalResult?: BackgroundTerminalResult;
 	},
 ): Promise<BackgroundDelegationRecord | null> {
 	const now = Date.now();
@@ -3561,21 +3591,50 @@ export async function appendDelegationTransition(
 					next = current;
 					return;
 				}
+				const effectiveUpdatedAt = transition.updatedAt ?? now;
+				// Issue #2700: a transition that establishes a terminal
+				// disposition writes the typed terminal evidence atomically with
+				// the flip — either the caller's explicit event or, when the
+				// transition result carries a failure class (the #2615 producers'
+				// shape), one derived with the same identity rules the claim
+				// path uses. A record that already carries a typed event keeps
+				// it; classless status-only transitions (post-claim
+				// terminal→terminal machinery) stay eventless by design.
+				const typedTerminal = current.terminalResult
+					? undefined
+					: isTypedTerminalStatus(transition.status)
+						? (transition.terminalResult ??
+							(transition.result?.workflowLaneFailureClass
+								? buildTypedDelegationTerminal(
+										current,
+										transition.status,
+										transition.result,
+										effectiveUpdatedAt,
+									)
+								: undefined))
+						: undefined;
 				next = {
 					...current,
 					schemaVersion: transition.result?.prReviewResultReceipt
 						? 4
-						: current.schemaVersion === 1
-							? 2
-							: current.schemaVersion,
+						: typedTerminal
+							? current.schemaVersion === 4
+								? 4
+								: 3
+							: current.schemaVersion === 1
+								? 2
+								: current.schemaVersion,
 					status: transition.status,
-					updatedAt: transition.updatedAt ?? now,
+					updatedAt: effectiveUpdatedAt,
 					...(transition.completedAt !== undefined
 						? { completedAt: transition.completedAt }
 						: transition.status === 'completed' || transition.status === 'error'
 							? { completedAt: now }
-							: {}),
+							: typedTerminal
+								? { completedAt: typedTerminal.recordedAt }
+								: {}),
 					...(transition.result ? { result: transition.result } : {}),
+					...(typedTerminal ? { terminalResult: typedTerminal } : {}),
 				};
 				appendRecord(directory, next);
 				maybeCompactDelegationsLocked(directory);
@@ -3693,6 +3752,29 @@ export async function publishPrReviewResultReceipt(
 						return;
 					}
 				}
+				// Issue #2700 (AC2): a parent-repair publish admitted onto an
+				// EVENTLESS liveness-terminal lane — the pre-#2700 sweep/idle
+				// flip shapes, including records left in legacy stores by an
+				// older plugin version — backfills the typed terminal evidence
+				// atomically with the receipt, so the record observably carries
+				// its typed result the moment the publish settles. The event
+				// mirrors the record's own terminal state and is bounded to one
+				// execution per record: a replay short-circuits to `duplicate`
+				// at the receipt check above before reaching this write again.
+				const parentRepairBackfill =
+					input.parentRepair === true &&
+					(current.status === 'cancelled' ||
+						current.status === 'stale' ||
+						current.status === 'error') &&
+					!current.terminalResult &&
+					current.result?.workflowLaneFailureClass === 'liveness'
+						? buildTypedDelegationTerminal(
+								current,
+								current.status,
+								current.result,
+								Date.now(),
+							)
+						: undefined;
 				const owned = current.ownedWorkflowLanes?.length
 					? current.ownedWorkflowLanes
 					: current.workflowLane
@@ -3737,6 +3819,12 @@ export async function publishPrReviewResultReceipt(
 						}),
 						prReviewResultReceipt: parsed.data,
 					},
+					...(parentRepairBackfill
+						? {
+								terminalResult: parentRepairBackfill,
+								completedAt: parentRepairBackfill.recordedAt,
+							}
+						: {}),
 				};
 				appendRecord(directory, next);
 				maybeCompactDelegationsLocked(directory);
@@ -3770,6 +3858,33 @@ export function buildBackgroundCompletionEventId(
 		input.resultDigest,
 	]);
 	return `bgc1:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+/**
+ * Build the typed terminal event for a settle path that establishes a terminal
+ * disposition outside the interactive claim (issue #2700): the stale sweep's
+ * under-lock flip, the generic transition writer's derivation, and the
+ * parent-repair publish backfill all construct their event here so every
+ * producer emits the byte-identical shape the claim path would have written —
+ * same eventId identity material, same status-equals-record guarantee.
+ */
+export function buildTypedDelegationTerminal(
+	record: Pick<BackgroundDelegationRecord, 'correlationId' | 'jobId'>,
+	status: BackgroundTerminalResult['status'],
+	result: BackgroundDelegationResult,
+	now: number,
+): BackgroundTerminalResult {
+	return {
+		eventId: buildBackgroundCompletionEventId({
+			correlationId: record.correlationId,
+			jobId: record.jobId,
+			status,
+			resultDigest: result.digest,
+		}),
+		status,
+		recordedAt: now,
+		result,
+	};
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
@@ -4690,6 +4805,13 @@ export async function recordDelegationIngestionResult(
 				)
 					return;
 				const updatedAt = options.now ?? Date.now();
+				// INTENTIONAL-EVENTLESS: post-terminal ingestion machinery (issue
+				// #2700 disposition) — `consumed` follows a typed `completed`
+				// claim (the record already carries its typed terminal event;
+				// this is a terminal→post-terminal transition, not a first
+				// terminal), and `ingestion_error` is a non-terminal retryable
+				// state, so neither write establishes a first terminal
+				// disposition.
 				const next: BackgroundDelegationRecord = {
 					...current,
 					schemaVersion: current.schemaVersion === 4 ? 4 : 3,
@@ -5261,11 +5383,27 @@ function sweepStaleLocked(
 					digest: createHash('sha256').update(staleReason).digest('hex'),
 					workflowLaneFailureClass: 'liveness',
 				};
+		// Issue #2700: the flip writes the typed terminal evidence atomically
+		// with the disposition — same event shape the claim path produces
+		// (shared builder, fold-monotonic clamp, schemaVersion floor) — so a
+		// swept lane is never liveness-terminal without its typed result. The
+		// sweep only visits pending/running/ingestion_error records, none of
+		// which can carry a terminalResult yet (the claim writes status and
+		// event atomically), so this can never overwrite a typed event.
+		const staleTerminal = buildTypedDelegationTerminal(
+			record,
+			'stale',
+			livenessResult,
+			now,
+		);
 		appendRecord(directory, {
 			...record,
+			schemaVersion: record.schemaVersion === 4 ? 4 : 3,
 			status: 'stale',
-			updatedAt: now,
+			updatedAt: Math.max(staleTerminal.recordedAt, record.updatedAt),
+			completedAt: staleTerminal.recordedAt,
 			result: livenessResult,
+			terminalResult: staleTerminal,
 		});
 		// #2482 / #2244: the sweep just moved an open record to a durable
 		// terminal status WITHOUT the claim path emitting the terminal event

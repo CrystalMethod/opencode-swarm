@@ -494,16 +494,16 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/hooks/pr-workflow-gate.ts',
 		],
 		writerCitations: [
-			'src/background/pending-delegations.ts:3231 appendRecord — SQLite coordination event+state transaction with post-commit JSON projection',
-			'src/background/pending-delegations.ts:1500 writeDurableFileSync — fsync+rename-with-retry for legacy checkpoint/manifest/rolled-tail compatibility',
+			'src/background/pending-delegations.ts:3237 appendRecord — SQLite coordination event+state transaction with post-commit JSON projection',
+			'src/background/pending-delegations.ts:1506 writeDurableFileSync — fsync+rename-with-retry for legacy checkpoint/manifest/rolled-tail compatibility',
 		],
 		readerCitations: [
-			'src/background/pending-delegations.ts:3120 readDelegations — SQLite authority with bounded legacy compatibility, sync',
-			'src/background/pending-delegations.ts:3135 scanDelegationsForRecovery — strict, fails closed',
+			'src/background/pending-delegations.ts:3126 readDelegations — SQLite authority with bounded legacy compatibility, sync',
+			'src/background/pending-delegations.ts:3141 scanDelegationsForRecovery — strict, fails closed',
 			'pr-workflow-session-resolver / pr-workflow-gate / init-orphan-recovery / delegation-gate worktree-collision-ownership — via readDelegations',
 		],
 		schemaVersion:
-			'RecordSchema schemaVersion 1|2|3|4; checkpoint/manifest literal 1 (:1390,:1411,:1421)',
+			'RecordSchema schemaVersion 1|2|3|4; checkpoint/manifest literal 1 (:1396,:1417,:1427)',
 		stateClass: 'authoritative',
 		privacyClass: 'metadata',
 		directFileExemption: {
@@ -519,11 +519,11 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			pattern: 'indexed (checkpoint+tail) with full-fold fallback',
 			bound: 'legacy/tail reads hard-bounded at 4 MiB (MAX_RECOVERY_LEDGER_BYTES)',
 			sync: true,
-			citation: 'src/background/pending-delegations.ts:113-118,1944',
+			citation: 'src/background/pending-delegations.ts:113-118,1950',
 		},
 		lockModel: 'withEvidenceLock agent=background on every mutation (:171-174); reads lock-free',
 		crashBehavior:
-			'torn append tolerated by lenient fold, strict recovery fails closed; manifest-gated checkpoint publication — checkpoint without manifest ignored (:1672-1684)',
+			'torn append tolerated by lenient fold, strict recovery fails closed; manifest-gated checkpoint publication — checkpoint without manifest ignored (:1678-1690)',
 		closePolicy: 'archived-only — ARCHIVE_ARTIFACTS (src/commands/close/constants.ts:75-77); deliberately NOT cleaned (cross-session store; compaction is the bounded-retention mechanism, src/commands/close/constants.ts:70-78 docblock)',
 		closeArrayMembership: {
 			'background-delegations.jsonl': 'archive-only',
@@ -532,7 +532,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 		resetPolicy: 'reset/reset-session do not delete',
 		legacyCompatibility:
-			'legacy checkpoint/ledger is validated and imported once into SQLite, then cold-archived with JSON retained as a compatibility projection (:1944)',
+			'legacy checkpoint/ledger is validated and imported once into SQLite, then cold-archived with JSON retained as a compatibility projection (:1950)',
 		issue2487Legacy: { path: '.swarm/background-delegations.jsonl (+ checkpoint and manifest)', sourceFile: 'src/background/pending-delegations.ts', tokens: ['BACKGROUND_DELEGATIONS_FILE', 'loadLegacyLedger', 'ensureDelegationCoordinationImported'], readers: ['src/background/pending-delegations.ts:loadLegacyLedger', 'src/background/pending-delegations.ts:ensureDelegationCoordinationImported'], writers: ['src/background/pending-delegations.ts:BACKGROUND_DELEGATIONS_FILE'] },
 		healthSignal: 'delegation-health artifact + #2034 recovery observations',
 		owner: '#2034 (merged)',
@@ -609,12 +609,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/background/pending-delegations.ts'],
 		writerCitations: [
-			'src/background/pending-delegations.ts:5552 writeDelegationFallback / :5603 removeDelegationFallback',
-			'src/background/pending-delegations.ts:6054 writeBackgroundCoderReservations',
+			'src/background/pending-delegations.ts:5690 writeDelegationFallback / :5741 removeDelegationFallback',
+			'src/background/pending-delegations.ts:6192 writeBackgroundCoderReservations',
 		],
 		readerCitations: [
-			'src/background/pending-delegations.ts:5407 readDelegationFallback / :5419 listDelegationFallbacks / :5453 scanDelegationFallbacksForRecovery',
-			'src/background/pending-delegations.ts:6032 scanBackgroundCoderReservationsForAdmission',
+			'src/background/pending-delegations.ts:5545 readDelegationFallback / :5557 listDelegationFallbacks / :5591 scanDelegationFallbacksForRecovery',
+			'src/background/pending-delegations.ts:6170 scanBackgroundCoderReservationsForAdmission',
 		],
 		schemaVersion: 'fallback schemaVersion 1 (:1038)',
 		stateClass: 'authoritative',
