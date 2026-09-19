@@ -1,5 +1,6 @@
 import { type Plan, resolveActivePhaseId } from '../config/plan-schema';
 import { extractContextDecisions } from '../utils/context-decisions';
+import { sanitizeContextText } from './context-sanitizer';
 import { estimateCharsForTokens } from './utils';
 
 /**
@@ -304,6 +305,17 @@ export function extractPlanCursor(
 	const maxChars = estimateCharsForTokens(maxTokens);
 	const lookaheadCount = options?.lookaheadTasks ?? 2;
 
+	// Issue #2838 review (critic-confirmed): plan.md is user-writeable content
+	// and the cursor is injected into the architect system prompt on BOTH
+	// context paths, so it must pass the shared sanitizer like every sibling
+	// injection. Sanitizing the INPUT (not the injection sites) keeps the
+	// budget report's planCursorTokens accounting exact by construction and
+	// runs before the max_tokens caps so the documented bound holds on the
+	// sanitized text.
+	if (planContent && typeof planContent === 'string') {
+		planContent = sanitizeContextText(planContent);
+	}
+
 	// Handle null/undefined/empty input
 	if (!planContent || typeof planContent !== 'string') {
 		return `[SWARM PLAN CURSOR]
@@ -543,7 +555,15 @@ No plan content available. Start by creating a .swarm/plan.md file.
 	if (output.length > maxChars) {
 		const closingMarker = '\n[/SWARM PLAN CURSOR]';
 		const cap = Math.max(0, maxChars - closingMarker.length - 4);
-		output = `${output.slice(0, cap)}${closingMarker}`;
+		let trimmed = output.slice(0, cap);
+		// Prefer cutting at a line boundary so the injected block does not end
+		// in a truncated fragment (#2838 review F7). Single-line pathological
+		// input has no earlier newline and keeps the raw slice.
+		const lastNewline = trimmed.lastIndexOf('\n');
+		if (lastNewline > 0) {
+			trimmed = trimmed.slice(0, lastNewline);
+		}
+		output = `${trimmed}${closingMarker}`;
 	}
 
 	return output;
@@ -577,12 +597,24 @@ export function resolvePlanCursorControls(
 		| null
 		| undefined,
 ): PlanCursorControls {
-	const maxTokens = planCursor?.max_tokens ?? 1500;
-	const lookaheadTasks = planCursor?.lookahead_tasks ?? 2;
+	// Number.isFinite guards (#2838 review N-001): Math.round('abc') is NaN and
+	// NaN sails through Math.min/Math.max untouched, which would silently
+	// disable the extractor's final max_tokens cap. Production configs are
+	// defended upstream by the loader's sanitizeMalformedValues; this keeps
+	// the documented clamping contract true for raw (non-zod) callers too.
+	const rawMaxTokens = Number(planCursor?.max_tokens ?? 1500);
+	const rawLookahead = Number(planCursor?.lookahead_tasks ?? 2);
 	return {
-		enabled: planCursor?.enabled ?? true,
-		maxTokens: Math.min(4000, Math.max(500, Math.round(maxTokens))),
-		lookaheadTasks: Math.min(5, Math.max(0, Math.round(lookaheadTasks))),
+		// Boolean coercion (#2838 review N-002): absent → true; truthy values
+		// (1, 'yes') → true; falsy values (false, 0, '') → false.
+		enabled:
+			planCursor?.enabled === undefined ? true : Boolean(planCursor.enabled),
+		maxTokens: Number.isFinite(rawMaxTokens)
+			? Math.min(4000, Math.max(500, Math.round(rawMaxTokens)))
+			: 1500,
+		lookaheadTasks: Number.isFinite(rawLookahead)
+			? Math.min(5, Math.max(0, Math.round(rawLookahead)))
+			: 2,
 	};
 }
 

@@ -1,3 +1,4 @@
+---
 issue: 2580
 ---
 
@@ -22,10 +23,11 @@ issue: 2580
   that is actually injected (routed through `extractPlanCursor` with the same
   controls; exactly 0 when the cursor is disabled) instead of a bespoke
   30-line/1000-char approximation that no code path ever injected.
-- Docs corrected: disabling the cursor keeps the phase header and current-task
-  context injections (the real pre-v6.13 behavior). The old claim that
-  disabling "falls back to injecting the entire plan text" described behavior
-  that never existed and is removed from README.md and docs/architecture.md.
+- Docs corrected: the old claim that disabling "falls back to injecting the
+  entire plan text" described behavior that never existed and is removed from
+  README.md and docs/architecture.md. Disabling suppresses only the cursor
+  block — the default path keeps its phase header line, and the scoring path
+  keeps its phase and current-task context candidates.
 
 ## Why
 
