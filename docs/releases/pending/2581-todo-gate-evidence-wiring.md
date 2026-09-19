@@ -1,3 +1,7 @@
+---
+issue: 2581
+---
+
 # TODO gate: wire evidence production to the configured completion gate
 
 ## What

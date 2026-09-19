@@ -171,4 +171,30 @@ describe('todo_extract todo_scan evidence recording', () => {
 		expect(scan.count).toBe(0);
 		expect(scan.details).toEqual([]);
 	});
+
+	it('records nothing when custom tags omit the high-priority class', async () => {
+		writeConfig(dir, { enabled: true });
+		// tags TODO only: the file contains FIXME/HACK, but a filtered scan
+		// cannot certify the task-level high-priority count.
+		const result = await runTool(dir, {
+			paths: path.join(dir, 'src'),
+			tags: 'TODO',
+			task_id: '3.1',
+		});
+		expect(readEvidence(dir, '3.1')).toBeNull();
+		// The scan output itself still reflects the requested filter.
+		expect(result.byPriority).toEqual({ high: 0, medium: 1, low: 0 });
+	});
+
+	it('records when custom tags include the full high-priority class', async () => {
+		writeConfig(dir, { enabled: true });
+		await runTool(dir, {
+			paths: path.join(dir, 'src'),
+			tags: 'FIXME,HACK,XXX',
+			task_id: '3.2',
+		});
+		const evidence = readEvidence(dir, '3.2');
+		const scan = evidence?.todo_scan as { count: number };
+		expect(scan.count).toBe(2);
+	});
 });

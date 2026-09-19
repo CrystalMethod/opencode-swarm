@@ -407,32 +407,44 @@ export const todo_extract: ReturnType<typeof tool> = createSwarmTool({
 		// task and the gate is enabled, record the high-priority scan as
 		// supplementary gate evidence. Recording never changes the scan
 		// output and never fails the tool: any error is debug-logged and
-		// skipped.
+		// skipped. A custom tag set that omits any of the high-priority class
+		// (FIXME/HACK/XXX) also skips recording — a filtered scan cannot
+		// certify the task-level high-priority count the gate enforces.
+		const HIGH_PRIORITY_TAGS = ['FIXME', 'HACK', 'XXX'];
+		const coversHighPriorityClass = HIGH_PRIORITY_TAGS.every((tag) =>
+			tagsSet.has(tag),
+		);
 		if (taskId && isStrictTaskId(taskId)) {
-			try {
-				const { config } = loadPluginConfigWithMeta(directory);
-				if (config.todo_gate?.enabled !== false) {
-					const highEntries = allEntries.filter(
-						(entry) => entry.priority === 'high',
-					);
-					const detailLines = highEntries
-						.slice(0, MAX_RECORDED_DETAILS)
-						.map((entry) => {
-							const relativeFile = path.relative(directory, entry.file);
-							return `${relativeFile}:${entry.line} ${entry.tag} ${entry.text}`;
-						});
-					await recordTodoScanEvidence(directory, taskId, {
-						priority: 'high',
-						count: byPriority.high,
-						details: detailLines,
-						recorded_at: new Date().toISOString(),
-					});
-				}
-			} catch (recordError) {
+			if (!coversHighPriorityClass) {
 				logger.log(
-					'todo_extract: todo_scan evidence recording skipped',
-					recordError,
+					'todo_extract: todo_scan evidence recording skipped — custom tags omit the FIXME/HACK/XXX high-priority class',
 				);
+			} else {
+				try {
+					const { config } = loadPluginConfigWithMeta(directory);
+					if (config.todo_gate?.enabled !== false) {
+						const highEntries = allEntries.filter(
+							(entry) => entry.priority === 'high',
+						);
+						const detailLines = highEntries
+							.slice(0, MAX_RECORDED_DETAILS)
+							.map((entry) => {
+								const relativeFile = path.relative(directory, entry.file);
+								return `${relativeFile}:${entry.line} ${entry.tag} ${entry.text}`;
+							});
+						await recordTodoScanEvidence(directory, taskId, {
+							priority: 'high',
+							count: byPriority.high,
+							details: detailLines,
+							recorded_at: new Date().toISOString(),
+						});
+					}
+				} catch (recordError) {
+					logger.log(
+						'todo_extract: todo_scan evidence recording skipped',
+						recordError,
+					);
+				}
 			}
 		}
 

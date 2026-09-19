@@ -171,17 +171,20 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 		}
 		directory = dirResult.directory;
 
-		// TODO-gate config (issue #2581): fail-open on load failure — this is
-		// a read-only status tool, so a broken config must not fabricate a
-		// verdict; the failure is debug-logged for diagnosis. (phase_complete
-		// parses the same config fail-closed — the asymmetry is intentional
-		// and documented in docs/configuration.md.)
+		// TODO-gate config (issue #2581). The config loader recovers a
+		// malformed config file to schema defaults, so a broken config
+		// evaluates the TODO gate with DEFAULT settings (advisory, max 0)
+		// rather than skipping it; only an unexpected loader throw skips
+		// evaluation (defensive — debug-logged). This read-only tool must
+		// not fabricate verdicts. (phase_complete parses the same config
+		// fail-closed — the asymmetry is intentional and documented in
+		// docs/configuration.md.)
 		let todoGateConfig: TodoGateConfigBlock | undefined;
 		try {
 			todoGateConfig = loadPluginConfigWithMeta(directory).config.todo_gate;
 		} catch (configError) {
 			logger.log(
-				'check_gate_status: todo_gate config load failed; TODO gate evaluation skipped',
+				'check_gate_status: todo_gate config load threw; TODO gate evaluation skipped',
 				configError,
 			);
 		}

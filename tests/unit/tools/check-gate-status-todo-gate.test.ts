@@ -220,4 +220,19 @@ describe('check_gate_status todo_gate evaluation', () => {
 			result.missing_gates.some((g) => g.includes('secretscan (BLOCKED')),
 		).toBe(true);
 	});
+	it('evaluates with recovered DEFAULT config when the config file is malformed', async () => {
+		// The config loader recovers malformed JSON to schema defaults, so
+		// the TODO gate runs with defaults (advisory, max 0) rather than
+		// being skipped (final-critic finding 1).
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.opencode', 'opencode-swarm.json'),
+			'{not valid json',
+		);
+		writeEvidence(dir, { count: 1, details: ['src/a.ts:2 FIXME x'] });
+		const result = await runTool(dir);
+		expect(result.status).toBe('all_passed');
+		expect(result.message).toContain('todo_gate');
+		expect(result.message).toContain('max_high_priority=0');
+	});
 });
