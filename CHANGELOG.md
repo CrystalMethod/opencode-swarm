@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.184.11](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.10...v7.184.11) (2026-09-19)
+
+
+### Bug Fixes
+
+* **docs:** align scoring, context-budget and PRM configuration documentation with runtime ([#2583](https://github.com/ZaxbyHub/opencode-swarm/issues/2583)) ([ff88e31](https://github.com/ZaxbyHub/opencode-swarm/commit/ff88e31d34fba83e39f05dd949bcd3f613db749b))
+* **docs:** align scoring, context-budget and PRM configuration documentation with runtime ([#2583](https://github.com/ZaxbyHub/opencode-swarm/issues/2583)) ([11d6d01](https://github.com/ZaxbyHub/opencode-swarm/commit/11d6d01c97c60e5a0e13f0405536fd95b7f0905a))
+* **docs:** enforcement pruning is best-effort toward prune_target, not a guaranteed fit ([#2583](https://github.com/ZaxbyHub/opencode-swarm/issues/2583) final-critic r2) ([8fea4d1](https://github.com/ZaxbyHub/opencode-swarm/commit/8fea4d1b0ca1d2f2515d3a1fae2248a97a5b4498))
+* **docs:** masking predicate is OR (age or size), not conjunction ([#2583](https://github.com/ZaxbyHub/opencode-swarm/issues/2583) final-critic) ([589bae9](https://github.com/ZaxbyHub/opencode-swarm/commit/589bae93770aaaa955353897a3e3fc82822df62b))
+
 ## [7.184.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.9...v7.184.10) (2026-09-19)
 
 
