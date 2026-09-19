@@ -48,12 +48,31 @@ canary above, and reruns the live-provider cases at the closing revision.
 - The controller-tool refusal texts do not name the documented row-convention
   fallback for Profile B/C operators — guidance lives in the skill text and
   the parser's format-mismatch hint (disclosed in the matrix doc).
+- NEW (re-run cohort at the rebased closing head): an intermittent
+  collect-vs-receipt-publish visibility race on the PR-review collect path
+  (#2865) — explorer lanes publish valid, exactly-bound structured receipts
+  that the collect-side validation snapshot misses, and with the legacy
+  transcript adapter disabled by default each lost race becomes a
+  discovery-contract lane failure. Pre-existing on main (both live-run build
+  cohorts affected), it exhausted the bounded retry budget on both clean-control
+  dimensions, so the clean control's truthful terminal at this revision is
+  INCOMPLETE with PARTIAL coverage (disclosed in the run record; no
+  COMPLETE-terminal clean control is claimed). Also recorded: the shipped
+  finding-disposition policy routes LOW findings to report-only (no feedback
+  handoff), and a REQUEST_CHANGES verdict can rest on the reviewer rung when
+  the critic's typed skip predicate fires (no CRITICAL/HIGH, no tagged
+  MEDIUM).
 
 ## Verification
 
 - New fixtures: 15/15 tests green per-file and in a four-file co-run
   (398 assertions), bun 1.3.14 on Windows; macOS/Linux legs claimed only
   through the PR per-file unit CI matrix.
-- Live-provider cells: three frozen cases rerun at the closing revision
-  through the real OpenCode host (verifier ALL CHECKS PASSED; host pin and
-  plugin build digest recorded per run).
+- Live-provider cells: three frozen cases re-executed at the rebased closing
+  revision (main advanced past the trace base touching the PR-review owning
+  path) through the real OpenCode host (verifier ALL CHECKS PASSED; host pin
+  and plugin build digest recorded per run). Truthful terminals: finding
+  case REQUEST_CHANGES/COMPLETE with the planted defect found; two-issue case
+  INCOMPLETE via the audited recovery abort with both planted issues
+  reviewer-confirmed and the kimi critic lanes stalled (provider
+  availability); clean control INCOMPLETE/PARTIAL (defect #2865, disclosed).
