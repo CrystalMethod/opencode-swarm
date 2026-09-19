@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
 	_internals,
@@ -144,7 +143,7 @@ describe('detectUserGlobalSkillStaleness (issue #2859 F6)', () => {
 	});
 
 	test('real repo: stamps are correct and the detector is clean on the live tree', () => {
-		const emptyHome = mkdtempSync(join(tmpdir(), 'sw2859-emptyhome-'));
+		const emptyHome = makeTempRoot('sw2859-emptyhome-');
 		tempRoots.push(emptyHome);
 		_internals.resolveUserGlobalHome = () => emptyHome;
 
