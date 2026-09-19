@@ -520,9 +520,9 @@ Context budget controls (full schema in `src/config/schema.ts`):
 | `enforce` | boolean | `true` | When `true` (default), crossing the critical threshold masks large completed tool outputs and prunes lower-priority messages in the **outgoing request** toward `prune_target`. Execution is never aborted |
 | `prune_target` | number | `0.7` | Target token usage after pruning (as a fraction of the model limit) |
 | `preserve_last_n_turns` | number | `4` | Number of recent message turns to keep intact during pruning |
-| `recent_window` | number | `10` | How many recent turns are considered for priority‑based pruning (recent tool results are not masked) |
+| `recent_window` | number | `10` | Age (in turns) beyond which a completed tool output becomes eligible for masking during enforcement; the latest `preserve_last_n_turns` turns are always protected |
 | `enforce_on_agent_switch` | boolean | `true` | Enforce a hard context reset when the active agent changes (e.g., from `explorer` to `coder`) |
-| `tool_output_mask_threshold` | number | `2000` | Character threshold (chars, not tokens): completed tool outputs longer than this — and older than `recent_window` turns — are replaced with placeholders in the outgoing request |
+| `tool_output_mask_threshold` | number | `2000` | Character threshold (chars, not tokens): during enforcement, a completed tool output in a non-protected turn is masked when it is **older than `recent_window` turns OR longer than this many characters** (either condition) |
 | `unified_injection_tokens` | number | `undefined` | Opt-in unified ceiling (tokens) for combined system-enhancer + knowledge-injector injection per turn. When set, both hooks share this budget with proportional split |
 
 ```json

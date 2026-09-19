@@ -110,3 +110,38 @@ describe('published context_budget examples validate against the schema (#2583)'
 		expect(sortedJson(parsedWeights)).not.toBe(sortedJson(weightsDefaults));
 	});
 });
+
+describe('masking-condition documentation matches the runtime predicate (#2583 final-critic)', () => {
+	// Runtime: shouldMaskToolOutput (src/hooks/context-budget.ts) masks a
+	// completed tool output in a non-protected turn when it is older than
+	// recent_window OR longer than tool_output_mask_threshold — either
+	// condition suffices. The first fix draft wrongly documented a
+	// conjunction ("longer than this — and older than recent_window");
+	// this pins the OR joiner in every surface that documents the condition.
+	const surfaces = [
+		'README.md',
+		join('docs', 'installation.md'),
+		join('docs', 'architecture.md'),
+	] as const;
+	const orJoiner =
+		/older than[^.|]*\bor\b[^.|]*longer than|longer than[^.|]*\bor\b[^.|]*older than/i;
+
+	test.each(
+		surfaces,
+	)('%s documents the masking predicate as OR, not AND', (rel) => {
+		const text = readFileSync(join(REPO_ROOT, rel), 'utf8');
+		const mentions = text
+			.split('\n')
+			.filter((line) => line.includes('tool_output_mask_threshold'));
+		// At least one line per surface must state the condition, and every
+		// line that states age+size together must join them with OR.
+		expect(mentions.length).toBeGreaterThan(0);
+		const statingAgeAndSize = mentions.filter(
+			(line) => /older than/i.test(line) && /longer than/i.test(line),
+		);
+		expect(statingAgeAndSize.length).toBeGreaterThan(0);
+		for (const line of statingAgeAndSize) {
+			expect(orJoiner.test(line)).toBe(true);
+		}
+	});
+});
