@@ -308,6 +308,9 @@ export const diff: ReturnType<typeof createSwarmTool> = createSwarmTool({
 						{
 							encoding: 'utf-8',
 							timeout: 3000,
+							// #2705: explicit bound — same 5 MiB contract as the
+							// numstat/contract/fullDiff siblings in this file.
+							maxBuffer: MAX_BUFFER_BYTES,
 							cwd: directory,
 							stdio: ['ignore', 'pipe', 'pipe'],
 						},
@@ -328,6 +331,9 @@ export const diff: ReturnType<typeof createSwarmTool> = createSwarmTool({
 				return child_process.execFileSync(gitExecutable, ['show', refPath], {
 					encoding: 'utf-8',
 					timeout: 15_000,
+					// #2705: explicit bound — same 5 MiB contract as the
+					// numstat/contract/fullDiff siblings in this file.
+					maxBuffer: MAX_BUFFER_BYTES,
 					cwd: directory,
 					stdio: ['ignore', 'pipe', 'pipe'],
 				});

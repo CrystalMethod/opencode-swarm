@@ -14,16 +14,25 @@ import {
 import { loadGateOverrides } from '../config';
 import type { BuildEvidence, EvidenceVerdict } from '../config/evidence-schema';
 import { saveEvidence } from '../evidence/manager';
-import { bunSpawn } from '../utils/bun-compat';
+import {
+	bunSpawn,
+	DEFAULT_BUN_SPAWN_MAX_BUFFER_BYTES,
+} from '../utils/bun-compat';
 import * as logger from '../utils/logger.js';
 import { createSwarmTool } from './create-tool';
 
 /**
- * DI seam (issue #2524): the tool boundary self-loads the user's gate
- * overrides; tests substitute this instead of touching the config loader.
+ * DI seam (issue #2524 for the gate override, issue #2705 for the spawn):
+ * the tool boundary self-loads the user's gate overrides and owns the build
+ * spawn; tests substitute these instead of touching the config loader or
+ * monkey-patching the `Bun.spawn` global.
  */
-export const _internals: { loadGateOverrides: typeof loadGateOverrides } = {
+export const _internals: {
+	loadGateOverrides: typeof loadGateOverrides;
+	bunSpawn: typeof bunSpawn;
+} = {
 	loadGateOverrides,
+	bunSpawn,
 };
 
 // ============ Constants ============
@@ -155,6 +164,17 @@ async function executeCommand(command: BuildCommand): Promise<BuildRun> {
 
 	const isWindows = process.platform === 'win32';
 
+	// #2705 (AGENTS.md invariant 3) — independent justification for the
+	// platform-shell command form: `discoverBuildCommands` emits shell command
+	// LINES by contract, not argv. The templates include
+	// `cmake -B build && cmake --build build` (shell operator) and
+	// `<manager> run <script>` (npm/bun script names resolved through the
+	// package manager's own shell layer), and Windows multi-token commands
+	// need `cmd /c` for `.cmd` shims. Naive whitespace-splitting would strip
+	// required shell semantics, so the platform shell is the specified
+	// interpreter — invoked through array-form spawn with input sourced from
+	// the repo-internal discovery templates plus package.json script names,
+	// never from raw user text.
 	// Parse command for spawn
 	let cmd: string[];
 	let args: string[];
@@ -173,34 +193,48 @@ async function executeCommand(command: BuildCommand): Promise<BuildRun> {
 		args = ['-c', command.command];
 	}
 
-	const result = bunSpawn([...cmd, ...args], {
+	const proc = _internals.bunSpawn([...cmd, ...args], {
 		cwd: command.cwd,
+		stdin: 'ignore',
 		stdout: 'pipe',
 		stderr: 'pipe',
 		timeout: DEFAULT_TIMEOUT_MS,
+		// Explicit at the site (#2705): same 5 MiB the wrapper enforces by
+		// default, expressed so the bound is readable here and robust to any
+		// future wrapper-default change.
+		maxBuffer: DEFAULT_BUN_SPAWN_MAX_BUFFER_BYTES,
 	});
 
 	// Read streams concurrently with process exit to avoid pipe deadlock.
 	// Previous code awaited exit implicitly then read streams — if output
 	// exceeded the OS pipe buffer (~64KB), the child blocked on write and
 	// the process never exited.
-	const [exitCode, stdout, stderr] = await Promise.all([
-		result.exited,
-		result.stdout.text(),
-		result.stderr.text(),
-	]);
+	// #2705 (invariant 3): best-effort kill after the settle — an outer
+	// timeout alone lets the awaiter proceed without aborting the child.
+	try {
+		const [exitCode, stdout, stderr] = await Promise.all([
+			proc.exited,
+			proc.stdout.text(),
+			proc.stderr.text(),
+		]);
+		const duration_ms = Date.now() - startTime;
 
-	const duration_ms = Date.now() - startTime;
-
-	return {
-		kind,
-		command: command.command,
-		cwd: command.cwd,
-		exit_code: exitCode ?? -1,
-		duration_ms,
-		stdout_tail: truncateOutput(stdout),
-		stderr_tail: truncateOutput(stderr),
-	};
+		return {
+			kind,
+			command: command.command,
+			cwd: command.cwd,
+			exit_code: exitCode ?? -1,
+			duration_ms,
+			stdout_tail: truncateOutput(stdout),
+			stderr_tail: truncateOutput(stderr),
+		};
+	} finally {
+		try {
+			proc.kill();
+		} catch {
+			// already exited
+		}
+	}
 }
 
 // ============ Main Implementation ============
