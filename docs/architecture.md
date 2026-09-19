@@ -1469,7 +1469,7 @@ Registered on `experimental.chat.messages.transform` (composed with pipeline-tra
 2. Resolves the model's context window via `resolveModelLimit` → `src/config/context-window.ts`: `context_budget.model_limits` override → the live `model.limit.context` recorded for the session by the `system.transform` hook → static fallback table → 128,000
 3. At `warn_threshold` (default 70%): injects `[CONTEXT WARNING]` message
 4. At `critical_threshold` (default 90%): injects `[CONTEXT CRITICAL]` message
-5. Hard enforcement (when `context_budget.enforce` is `true`, the default): at the critical threshold the tracker also masks large completed tool outputs (character threshold `tool_output_mask_threshold`) and prunes lower-priority messages until the outgoing request fits `prune_target` of the window. All mutation is on the outgoing request only — persisted history is never rewritten, and execution is never aborted
+5. Hard enforcement (when `context_budget.enforce` is `true`, the default): at the critical threshold the tracker also masks large completed tool outputs (character threshold `tool_output_mask_threshold`) and prunes lower-priority messages toward `prune_target` of the window (best-effort — it stops at the target or when no eligible removable message remains). All mutation is on the outgoing request only — persisted history is never rewritten, and execution is never aborted
 
 ### Compaction Enhancement
 
