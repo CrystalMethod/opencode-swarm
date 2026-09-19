@@ -80,7 +80,7 @@ function laneArtifactInput(batchId: string, text: string): ArtifactInput {
 		text,
 		artifact_status: 'ok',
 		source: 'collect_lane_results',
-		produced_at: new Date().toISOString(),
+		produced_at: '2026-09-19T00:00:00.000Z',
 	};
 }
 
