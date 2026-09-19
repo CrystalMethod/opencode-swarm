@@ -138,6 +138,11 @@ async function _defaultRecurrenceSweepReceiptExists(
 				predicates.every((p) => typeof p === 'string' && p.trim().length > 0);
 			const validDispositions =
 				Array.isArray(dispositions) &&
+				// Issue #2600 (DD-C009): non-vacuous — an empty dispositions array
+				// passes `every()` vacuously, which is indistinguishable from a sweep
+				// that never ran. A real defect class always has at least one
+				// disposition (the original defect site itself, dispositioned FIX).
+				dispositions.length > 0 &&
 				dispositions.every(
 					(d) =>
 						typeof d === 'object' &&
@@ -517,21 +522,29 @@ export async function loadPlanFromLedger(
 /**
  * Computes plan presence AND phase-completion status from a single
  * AUTHORITATIVE plan load. `planExists` reflects ledger authority, not
- * projection (`.swarm/plan.json`) existence. Returns
- * `{ planExists: false, allComplete: false }` if the plan is null/empty.
+ * projection (`.swarm/plan.json`) existence. `planSpecHash` surfaces the
+ * loaded plan's recorded `specHash` (undefined when the plan predates spec
+ * linkage) so the trace engine can bind the plan to the current spec (issue
+ * #2600). Returns `{ planExists: false, allComplete: false, planSpecHash:
+ * undefined }` if the plan is null/empty.
  */
 export async function readPlanPhaseStatus(directory: string): Promise<{
 	planExists: boolean;
 	allComplete: boolean;
+	planSpecHash: string | undefined;
 }> {
 	const plan = await _internals.loadPlanFromLedger(directory);
 	if (!plan || plan.phases.length === 0) {
-		return { planExists: false, allComplete: false };
+		return { planExists: false, allComplete: false, planSpecHash: undefined };
 	}
 	const allComplete = plan.phases.every((phase) =>
 		isPhaseComplete(phase.status),
 	);
-	return { planExists: true, allComplete };
+	return {
+		planExists: true,
+		allComplete,
+		planSpecHash: typeof plan.specHash === 'string' ? plan.specHash : undefined,
+	};
 }
 
 /**

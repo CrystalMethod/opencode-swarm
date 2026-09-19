@@ -28,6 +28,7 @@ import {
 	record_recurrence_sweep,
 } from '../../../src/tools/record-recurrence-sweep';
 import { TOOL_NAMES } from '../../../src/tools/tool-names.js';
+import { computeSpecHash } from '../../../src/utils/spec-hash';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 function makeTempDir(): string {
@@ -277,8 +278,13 @@ describe('trace hook residual-B gates (issue #2131)', () => {
 	test('missing review receipt → one-shot REVIEW_GATE directive; then quiet', async () => {
 		writePrereqs(dir);
 		writeTraceState(dir);
-		hookInternals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		hookInternals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			// Issue #2600: bind the plan to the on-disk spec so the binding gate
+			// passes and these suites exercise their own gates.
+			planSpecHash: (await computeSpecHash(dir)) ?? undefined,
+		});
 		hookInternals.isPlanCriticApproved = () => Promise.resolve(true);
 
 		const hook = createIssueTraceHook({}, dir, 50);
@@ -303,8 +309,13 @@ describe('trace hook residual-B gates (issue #2131)', () => {
 	test('review approved, sweep missing → one-shot RECURRENCE_GATE directive', async () => {
 		writePrereqs(dir);
 		writeTraceState(dir);
-		hookInternals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		hookInternals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			// Issue #2600: bind the plan to the on-disk spec so the binding gate
+			// passes and these suites exercise their own gates.
+			planSpecHash: (await computeSpecHash(dir)) ?? undefined,
+		});
 		hookInternals.isPlanCriticApproved = () => Promise.resolve(true);
 		fs.writeFileSync(
 			path.join(dir, '.swarm', 'implementation-review.json'),
@@ -349,8 +360,13 @@ describe('trace hook residual-B gates (issue #2131)', () => {
 	test('both receipts present → commit-pr handoff fires', async () => {
 		writePrereqs(dir);
 		writeTraceState(dir);
-		hookInternals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		hookInternals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			// Issue #2600: bind the plan to the on-disk spec so the binding gate
+			// passes and these suites exercise their own gates.
+			planSpecHash: (await computeSpecHash(dir)) ?? undefined,
+		});
 		hookInternals.isPlanCriticApproved = () => Promise.resolve(true);
 		fs.writeFileSync(
 			path.join(dir, '.swarm', 'implementation-review.json'),

@@ -20,6 +20,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getPlanLedgerStateReadOnly } from '../plan/ledger-sqlite';
 import { error as _logErrorImpl } from '../utils/logger.js';
+import { computeSpecHash } from '../utils/spec-hash';
 import { isPlanCriticApproved } from './delegation-gate';
 import { computeNextMode } from './issue-trace-reducer';
 import {
@@ -59,6 +60,7 @@ export const _internals = {
 	isPlanCriticApproved,
 	getPlanLedgerState: getPlanLedgerStateReadOnly,
 	logError: _logErrorImpl,
+	computeSpecHash,
 	// Exposed through the DI seam so the cache fingerprint can be tested
 	// without driving the full issue-trace state machine.
 	boundedApprovalCheck: (directory: string, timeoutMs: number) =>
@@ -77,7 +79,12 @@ let cachedPhaseStatus: {
 	dir: string;
 	planJsonSize: number;
 	planJsonMtime: number;
-	result: { planExists: boolean; allComplete: boolean };
+	ledgerRevision: string | null;
+	result: {
+		planExists: boolean;
+		allComplete: boolean;
+		planSpecHash: string | undefined;
+	};
 } | null = null;
 
 // ── Bounded approval check ────────────────────────────────────────
@@ -166,6 +173,7 @@ async function boundedApprovalCheck(
 async function cachedReadPlanPhaseStatus(directory: string): Promise<{
 	planExists: boolean;
 	allComplete: boolean;
+	planSpecHash: string | undefined;
 }> {
 	const planJsonPath = path.join(directory, '.swarm', 'plan.json');
 	let currentSize = -1;
@@ -178,19 +186,41 @@ async function cachedReadPlanPhaseStatus(directory: string): Promise<{
 		// No plan.json — size/mtime stay -1; a cache populated at -1 still reflects
 		// "no projection", and is invalidated when plan.json appears.
 	}
+	// Ledger revision as a second fingerprint component (review pr2837-r1 F5):
+	// plan.json's size+mtime alone cannot see a ledger append that crashed
+	// before the plan.json write, so a stale planSpecHash could survive and
+	// mis-inform the binding gate. The probe is the same read-only
+	// getPlanLedgerState the approval cache already pays for each cycle. An
+	// unreadable authority suspends caching (fresh read every cycle) so a
+	// broken DB can never pin a stale value.
+	let ledgerRevision: string | null;
+	try {
+		const state = _internals.getPlanLedgerState(directory);
+		ledgerRevision = state
+			? `ledger:${state.lastSeq}:${state.lastEventHash ?? ''}:${state.updatedAt}`
+			: 'no-ledger';
+	} catch {
+		ledgerRevision = null;
+	}
 	if (
 		cachedPhaseStatus &&
 		cachedPhaseStatus.dir === directory &&
 		cachedPhaseStatus.planJsonSize === currentSize &&
-		cachedPhaseStatus.planJsonMtime === currentMtime
+		cachedPhaseStatus.planJsonMtime === currentMtime &&
+		cachedPhaseStatus.ledgerRevision !== null &&
+		cachedPhaseStatus.ledgerRevision === ledgerRevision
 	) {
 		return cachedPhaseStatus.result;
 	}
 	const result = await _internals.readPlanPhaseStatus(directory);
+	if (ledgerRevision === null) {
+		return result;
+	}
 	cachedPhaseStatus = {
 		dir: directory,
 		planJsonSize: currentSize,
 		planJsonMtime: currentMtime,
+		ledgerRevision,
 		result,
 	};
 	return result;
@@ -221,6 +251,22 @@ export function createIssueTraceHook(
 
 				// Authoritative plan presence + phase status (cached).
 				const phaseStatus = await cachedReadPlanPhaseStatus(directory);
+
+				// Plan↔spec binding (issue #2600): the loaded plan is bound iff its
+				// recorded specHash equals the CURRENT effective spec's hash — the
+				// same hash `save_plan` captures at save time. A missing planSpecHash
+				// (pre-spec-linkage plan) or a mismatch is a foreign/unverifiable
+				// plan: fail closed (false) so the reducer parks the trace before
+				// EXECUTE instead of running a plan authored for another issue.
+				// Only computed when a plan exists (the reducer evaluates the
+				// binding row solely on the plan-exists path).
+				let _planBoundToSpec: boolean | undefined;
+				if (phaseStatus.planExists) {
+					const currentSpecHash = await _internals.computeSpecHash(directory);
+					_planBoundToSpec =
+						currentSpecHash !== null &&
+						currentSpecHash === phaseStatus.planSpecHash;
+				}
 
 				// 4. Bounded await for critic approval (configurable timeout, fail-closed)
 				const _criticApproved = await boundedApprovalCheck(
@@ -291,6 +337,7 @@ export function createIssueTraceHook(
 						recurrenceSweepVerified: _recurrenceSweepVerified,
 						traceValidationVerified: _traceValidationVerified,
 						mergeApprovalObserved: _mergeApprovalObserved,
+						planBoundToSpec: _planBoundToSpec,
 					},
 				});
 

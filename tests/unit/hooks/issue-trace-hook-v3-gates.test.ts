@@ -22,6 +22,7 @@ import {
 	isGuidanceCarrier,
 	messageTextOf,
 } from '../../../src/hooks/system-guidance-carrier';
+import { computeSpecHash } from '../../../src/utils/spec-hash';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let tmpDir: string;
@@ -93,8 +94,13 @@ function writeResidualBReceipts(): void {
 
 function completePlan(): void {
 	_internals.isPlanCriticApproved = () => Promise.resolve(true);
-	_internals.readPlanPhaseStatus = () =>
-		Promise.resolve({ planExists: true, allComplete: true });
+	_internals.readPlanPhaseStatus = async () => ({
+		planExists: true,
+		allComplete: true,
+		// Issue #2600: the plan is bound to the on-disk spec so the binding gate
+		// passes and these suites exercise their own gates.
+		planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+	});
 }
 
 async function runHook(): Promise<{

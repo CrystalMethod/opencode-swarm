@@ -27,6 +27,7 @@ import { executeRecordIssueReproduction } from '../../../src/tools/record-issue-
 import { executeRecordMergeApproval } from '../../../src/tools/record-merge-approval';
 import { executeRecordRecurrenceSweep } from '../../../src/tools/record-recurrence-sweep';
 import { executeRecordTraceValidation } from '../../../src/tools/record-trace-validation';
+import { computeSpecHash } from '../../../src/utils/spec-hash';
 
 export const JOURNEY_ISSUE = 2564;
 export const PR_HEAD = '0123456789abcdef0123456789abcdef01234567';
@@ -127,7 +128,16 @@ export function createJourneyProject(): JourneyProject {
 			);
 		},
 		saveJourneyPlan: async (phaseStatus, taskStatus) => {
-			await savePlan(dir, planV(phaseStatus, taskStatus) as never);
+			// Issue #2600: mirror what the real save_plan tool captures — the
+			// plan records the specHash of the effective spec it was authored
+			// against, so the trace engine can bind the plan to the current
+			// spec. Always through computeSpecHash (the same hash the engine
+			// recomputes), never a hand-rolled hash.
+			const specHash = await computeSpecHash(dir);
+			await savePlan(dir, {
+				...planV(phaseStatus, taskStatus),
+				...(specHash !== null ? { specHash } : {}),
+			} as never);
 		},
 		approveCritic: () => {
 			ensureAgentSession(JOURNEY_SESSION, 'architect');

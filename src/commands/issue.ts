@@ -233,48 +233,68 @@ export function handleIssueCommand(directory: string, args: string[]): string {
 		};
 	}
 
-	const traceState = {
-		issueNumber: issueInfo.number,
-		lastTransition: null as string | null,
-		status: 'in_progress' as const,
-	};
+	// Issue #2600 (DD-C005): trace state describes a workflow the engine only
+	// drives when --trace was passed (the hook returns early for non-trace
+	// references). A non-trace invocation persists ONLY the issue reference and
+	// leaves any pre-existing trace-state untouched — no misleading
+	// `in_progress` record for a workflow that cannot run.
+	const traceState = parsed.trace
+		? {
+				issueNumber: issueInfo.number,
+				lastTransition: null as string | null,
+				status: 'in_progress' as const,
+			}
+		: null;
 
-	// Two-artifact transactional write with rollback
+	// Transactional write with rollback. Trace invocations write both artifacts
+	// (state first, reference second; state rolls back to its prior content on
+	// failure). Non-trace invocations write the reference only.
 	let oldTraceState: string | null = null;
-	try {
-		oldTraceState = _internals.readFileSync(
-			path.join(swarmDir, 'issue-trace-state.json'),
-			'utf-8',
-		);
-	} catch {
-		/* absent — first time */
+	if (traceState) {
+		try {
+			oldTraceState = _internals.readFileSync(
+				path.join(swarmDir, 'issue-trace-state.json'),
+				'utf-8',
+			);
+		} catch {
+			/* absent — first time */
+		}
 	}
 
 	try {
 		_internals.mkdirSync(swarmDir, { recursive: true }); // drift-test:exempt — .swarm/ root bootstrap for issue persistence
-		atomicWriteFileSync(
-			swarmDir,
-			'issue-trace-state.json',
-			JSON.stringify(traceState, null, 2),
-		);
+		if (traceState) {
+			atomicWriteFileSync(
+				swarmDir,
+				'issue-trace-state.json',
+				JSON.stringify(traceState, null, 2),
+			);
+		}
 		atomicWriteFileSync(
 			swarmDir,
 			'issue-reference.json',
 			JSON.stringify(issueReference, null, 2),
 		);
 	} catch (e) {
-		// Rollback trace-state to previous state
-		if (oldTraceState !== null) {
-			try {
-				atomicWriteFileSync(swarmDir, 'issue-trace-state.json', oldTraceState);
-			} catch {
-				/* restore failed */
-			}
-		} else {
-			try {
-				_internals.unlinkSync(path.join(swarmDir, 'issue-trace-state.json'));
-			} catch {
-				/* unlink failed */
+		// Rollback trace-state to previous state (trace invocations only —
+		// non-trace invocations never wrote it)
+		if (traceState) {
+			if (oldTraceState !== null) {
+				try {
+					atomicWriteFileSync(
+						swarmDir,
+						'issue-trace-state.json',
+						oldTraceState,
+					);
+				} catch {
+					/* restore failed */
+				}
+			} else {
+				try {
+					_internals.unlinkSync(path.join(swarmDir, 'issue-trace-state.json'));
+				} catch {
+					/* unlink failed */
+				}
 			}
 		}
 		// Clean up any partially-written issue-reference.json
