@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.184.9](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.8...v7.184.9) (2026-09-19)
+
+
+### Bug Fixes
+
+* **hooks:** harden plan-cursor per post-merge review of [#2838](https://github.com/ZaxbyHub/opencode-swarm/issues/2838) ([6286b04](https://github.com/ZaxbyHub/opencode-swarm/commit/6286b0427da71e52814f6ea016ee2d268b553ab2))
+* **hooks:** harden plan-cursor per post-merge review of [#2838](https://github.com/ZaxbyHub/opencode-swarm/issues/2838) ([1f1602e](https://github.com/ZaxbyHub/opencode-swarm/commit/1f1602e3b9879fdba8087a2bc3b1dafeb5204d6a))
+* **workflow:** bind the issue trace to its loaded plan and surface silent trace stalls ([#2600](https://github.com/ZaxbyHub/opencode-swarm/issues/2600)) ([e400ec9](https://github.com/ZaxbyHub/opencode-swarm/commit/e400ec931afb9d92e5ae25792b8ca098b114a3d5))
+* **workflow:** re-arm trace gates on mid-flight spec changes; close review findings ([1ee17f3](https://github.com/ZaxbyHub/opencode-swarm/commit/1ee17f3e6cf96811a88198eab54cd086553c6094))
+
 ## [7.184.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.7...v7.184.8) (2026-09-18)
 
 
