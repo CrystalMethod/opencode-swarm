@@ -517,12 +517,12 @@ Context budget controls (full schema in `src/config/schema.ts`):
 | `model_limits` | object | `{}` | Token limit OVERRIDES per model, keyed by `"<provider>/<model>"`, `"<model>"`, or `"default"`. Empty by default so the live model context window (`model.limit.context`, reported by the OpenCode host) is used; set an entry only to impose a SMALLER working budget than the real window. |
 | `max_injection_tokens` | number | `4000` | Maximum tokens for system prompt injection. Priority‑ordered: phase → task → decisions → agent context |
 | `tracked_agents` | string[] | `["architect"]` | List of agents whose messages count toward the budget |
-| `enforce` | boolean | `true` | When `true` the system will abort or truncate messages that exceed the critical threshold |
+| `enforce` | boolean | `true` | When `true` (default), crossing the critical threshold masks large completed tool outputs and prunes lower-priority messages in the **outgoing request** toward `prune_target`. Execution is never aborted |
 | `prune_target` | number | `0.7` | Target token usage after pruning (as a fraction of the model limit) |
 | `preserve_last_n_turns` | number | `4` | Number of recent message turns to keep intact during pruning |
-| `recent_window` | number | `10` | How many recent turns are considered for priority‑based pruning |
+| `recent_window` | number | `10` | Age (in turns) beyond which a completed tool output becomes eligible for masking during enforcement; the latest `preserve_last_n_turns` turns are always protected |
 | `enforce_on_agent_switch` | boolean | `true` | Enforce a hard context reset when the active agent changes (e.g., from `explorer` to `coder`) |
-| `tool_output_mask_threshold` | number | `2000` | Minimum token count at which tool output is masked/truncated to stay within the budget |
+| `tool_output_mask_threshold` | number | `2000` | Character threshold (chars, not tokens): during enforcement, a completed tool output in a non-protected turn is masked when it is **older than `recent_window` turns OR longer than this many characters** (either condition) |
 | `unified_injection_tokens` | number | `undefined` | Opt-in unified ceiling (tokens) for combined system-enhancer + knowledge-injector injection per turn. When set, both hooks share this budget with proportional split |
 
 ```json
@@ -573,9 +573,9 @@ Monitor and warn about context window usage:
 ### How It Works
 
 1. On each message transform, total tokens are estimated across all message parts
-2. Token estimation uses a conservative ratio: `chars × 0.33`
-3. When usage exceeds `warn_threshold`: `[CONTEXT WARNING: ~N% used. Consider summarizing to .swarm/context.md]`
-4. When usage exceeds `critical_threshold`: `[CONTEXT CRITICAL: ~N% used. Offload details immediately]`
+2. Token estimation uses the canonical estimator (`estimateTokens`, a conservative `chars × 0.33` ratio); provider-reported usage, when available for the turn, is authoritative instead
+3. When usage exceeds `warn_threshold`: `[CONTEXT WARNING: ~N% used. Consider summarizing to .swarm/context.md]` (prepended to the current user message on every turn above the threshold)
+4. When usage exceeds `critical_threshold`: `[CONTEXT CRITICAL: ~N% used. Offload details immediately]` — and, when `enforce` is `true` (the default), the guard additionally masks large completed tool outputs and prunes lower-priority messages in the **outgoing request** toward `prune_target`. Persisted history and on-disk tool results are never modified; execution is never aborted.
 
 ---
 

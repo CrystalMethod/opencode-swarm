@@ -1456,7 +1456,7 @@ The context pruning system now incorporates several new controls introduced in v
 - **Provider‑aware model limits** – the context window is resolved per model through the single derivation in `src/config/context-window.ts`: an explicit `context_budget.model_limits` override first, then the live `model.limit.context` the OpenCode host reports for the active provider/model pair, then a static fallback table, then a last-resort constant. Because the host's model catalog is keyed `providers[providerID].models[modelID]`, provider-specific caps are already reflected in the live value.
 - **Priority‑based pruning tiers** – messages are classified using the `MessagePriority` tiers (CRITICAL, HIGH, MEDIUM, LOW, DISPOSABLE). Lower‑priority messages are removed first when the token budget is exceeded.
 - **Agent‑switch enforcement** – when `enforce_on_agent_switch` is true, a hard context reset is triggered whenever the active agent changes (e.g., from `explorer` to `coder`).
-- **Tool‑output masking** – large tool outputs are masked/truncated once they exceed `tool_output_mask_threshold` tokens, preventing budget overruns.
+- **Tool‑output masking** – during enforcement, a completed tool output in a turn not protected by `preserve_last_n_turns` is masked when it is older than the `recent_window` **or** longer than `tool_output_mask_threshold` **characters** (either condition suffices; `shouldMaskToolOutput` in `src/hooks/context-budget.ts`), preventing budget overruns. Masking, like pruning below, mutates only the outgoing request — persisted history and stored tool results are never rewritten.
 
 These enhancements work together to keep the architect’s context within limits while preserving the most important information.
 
@@ -1465,10 +1465,11 @@ Context pruning manages the architect's context window to prevent overflow.
 ### Token Budget Tracker
 
 Registered on `experimental.chat.messages.transform` (composed with pipeline-tracker):
-1. Estimates total tokens across all message parts using `estimateTokens()`
+1. Estimates total tokens across all message parts using `estimateTokens()` — the canonical flat estimator (~0.33 tokens/char); provider-reported usage, when available, is authoritative instead
 2. Resolves the model's context window via `resolveModelLimit` → `src/config/context-window.ts`: `context_budget.model_limits` override → the live `model.limit.context` recorded for the session by the `system.transform` hook → static fallback table → 128,000
 3. At `warn_threshold` (default 70%): injects `[CONTEXT WARNING]` message
 4. At `critical_threshold` (default 90%): injects `[CONTEXT CRITICAL]` message
+5. Hard enforcement (when `context_budget.enforce` is `true`, the default): at the critical threshold the tracker also masks large completed tool outputs (character threshold `tool_output_mask_threshold`) and prunes lower-priority messages toward `prune_target` of the window (best-effort — it stops at the target or when no eligible removable message remains). All mutation is on the outgoing request only — persisted history is never rewritten, and execution is never aborted
 
 ### Compaction Enhancement
 
