@@ -258,9 +258,15 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		);
 		const record = findByBatchId(dir, 'batch-pc-5')[0];
 		expect(record.status).toBe('stale');
-		// The flip is claim-less by design — the typed class must ride
-		// record.result, the exact surface the admission fallback reads (#2615).
-		expect(record.terminalResult).toBeUndefined();
+		// The typed class still rides record.result — the exact surface the
+		// admission fallback reads (#2615) — and, since #2700, the flip also
+		// writes the typed terminal event atomically with the disposition (no
+		// eventless-terminal window).
+		expect(record.result?.workflowLaneFailureClass).toBe('liveness');
+		expect(record.terminalResult?.status).toBe('stale');
+		expect(record.terminalResult?.result.workflowLaneFailureClass).toBe(
+			'liveness',
+		);
 		expect(record.result?.workflowLaneFailureClass).toBe('liveness');
 		expect(record.result?.error).toMatch(/presumed stale/i);
 	});
