@@ -4,6 +4,7 @@ import {
 	recordPrReviewSubmitRejection,
 	submitPrReviewResult,
 } from '../hooks/pr-workflow-gate.js';
+import { canonicalRootKeyFresh } from '../utils/canonical-root.js';
 import { createSwarmTool } from './create-tool.js';
 
 // Issue #2859 (F2): the string form "1" is accepted and normalized to the JSON
@@ -101,7 +102,11 @@ const SUBMIT_REJECTION_HINT_THRESHOLD = 3;
 const consecutiveSubmitRejections = new Map<string, number>();
 
 function submitRejectionKey(directory: string, sessionID: string): string {
-	return `${directory}\u0000${sessionID}`;
+	// Canonical project-root key: two lexical spellings of one project must
+	// share one rejection counter (path-identity contract, canonical-root.ts).
+	return (
+		`${canonicalRootKeyFresh(directory)}` + String.fromCharCode(0) + sessionID
+	);
 }
 
 function noteSubmitRejection(directory: string, sessionID: string): number {
