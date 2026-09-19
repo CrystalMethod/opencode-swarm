@@ -13,13 +13,17 @@ evidence, and no phase-completion path could warn or block. This wires the full
 producer → evidence → consumer path (#2581, audit finding CONFIG-F-03):
 
 - **Producer**: `todo_extract` accepts an optional `task_id` (N.M format).
-  When provided and `todo_gate.enabled` is not `false`, the scan records its
-  high-priority (FIXME/HACK/XXX) count as a `todo_scan` field in
-  `.swarm/evidence/{task_id}.json` — priority, count, per-entry `file:line`
-  details (capped at 50, labeled when truncated), and a `recorded_at`
-  timestamp. The scan output itself is unchanged; recording never fails the
-  tool. `todo_extract` is now also granted to the `coder` agent so the repair
-  path is actionable where the comments are introduced.
+  When provided, `todo_gate.enabled` is not `false`, AND the invocation's tag
+  set covers the full high-priority class (`FIXME,HACK,XXX` — the default tag
+  set always qualifies), the scan records its high-priority count as a
+  `todo_scan` field in `.swarm/evidence/{task_id}.json` — priority, count,
+  per-entry `file:line` details (capped at 50, labeled when truncated), and a
+  `recorded_at` timestamp. A custom `tags` filter that omits any of
+  FIXME/HACK/XXX skips recording (debug-logged) — a filtered scan cannot
+  certify the task-level high-priority count the gate enforces. The scan
+  output itself is unchanged; recording never fails the tool. `todo_extract`
+  is now also granted to the `coder` agent so the repair path is actionable
+  where the comments are introduced.
 - **Evidence schema**: `TaskEvidence` (TS + zod) carries the optional
   `todo_scan` field, and `updateEvidenceForTransition` now carries
   supplementary fields (`todo_scan`, and the previously-dropped
@@ -32,9 +36,10 @@ producer → evidence → consumer path (#2581, audit finding CONFIG-F-03):
 - **Consumer `check_gate_status`**: applies the configured threshold to the
   recorded evidence. Above threshold → advisory line in `message` (default), or
   `status: incomplete` + a `todo_gate (BLOCKED — N high-priority TODOs exceed
-  max M)` missing-gate entry when `block_on_threshold: true`. Config-load
-  failure skips TODO evaluation (debug-logged) instead of fabricating a
-  verdict.
+  max M)` missing-gate entry when `block_on_threshold: true`. A malformed
+  config file is recovered by the config loader to schema defaults, so the
+  TODO gate is evaluated with DEFAULT settings (advisory, max 0) rather than
+  skipped; only an unexpected loader error skips evaluation (debug-logged).
 - **Consumer `phase_complete`**: a new `todo_gate` standard preflight gate
   evaluates every phase task's recorded evidence — warns (advisory) or blocks
   (with the per-entry `file:line` evidence and a recovery step naming
