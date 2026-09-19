@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
+import { loadPluginConfigWithMeta } from '../config/index.js';
 import { isSecretscanEvidence, loadEvidence } from '../evidence/manager.js';
 import type { TaskEvidence } from '../gate-evidence.js';
 import {
@@ -15,6 +16,9 @@ import {
 	readCurrentTaskDeclaredFiles,
 	TASK_WORKFLOW_SCHEMA_MARKER,
 } from '../gate-evidence.js';
+import type { TodoGateConfigBlock } from '../todo/todo-gate.js';
+import { evaluateTodoGate } from '../todo/todo-gate.js';
+import * as logger from '../utils/logger.js';
 import { isStrictTaskId } from '../validation/task-id';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
@@ -166,6 +170,21 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 			return JSON.stringify(errorResult, null, 2);
 		}
 		directory = dirResult.directory;
+
+		// TODO-gate config (issue #2581): fail-open on load failure — this is
+		// a read-only status tool, so a broken config must not fabricate a
+		// verdict; the failure is debug-logged for diagnosis. (phase_complete
+		// parses the same config fail-closed — the asymmetry is intentional
+		// and documented in docs/configuration.md.)
+		let todoGateConfig: TodoGateConfigBlock | undefined;
+		try {
+			todoGateConfig = loadPluginConfigWithMeta(directory).config.todo_gate;
+		} catch (configError) {
+			logger.log(
+				'check_gate_status: todo_gate config load failed; TODO gate evaluation skipped',
+				configError,
+			);
+		}
 
 		// Validate task_id
 		if (!taskIdInput) {
@@ -355,10 +374,27 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 			// Evidence loading failures should not break the tool
 		}
 
-		// Check for todo_scan field in evidence (advisory only)
+		// Apply the configured TODO gate to the recorded todo_scan evidence
+		// (issue #2581). Advisory when block_on_threshold is false; a
+		// todo_gate (BLOCKED — ...) missing-gate entry + incomplete status
+		// when true — the same shape the secretscan path above uses.
 		const todoScan = evidenceData.todo_scan as
 			| { priority: string; count: number; details?: string[] }
 			| undefined;
+		const todoVerdict = evaluateTodoGate(todoScan, todoGateConfig);
+		if (todoVerdict.status === 'exceeded') {
+			if (todoVerdict.blocked) {
+				missingGates.push(
+					`todo_gate (BLOCKED — ${todoVerdict.count} high-priority TODOs exceed max ${todoVerdict.max})`,
+				);
+				if (status === 'all_passed') {
+					status = 'incomplete';
+				}
+				message = `BLOCKED: TODO gate threshold exceeded. ${todoVerdict.message} ${message}`;
+			} else {
+				message += ` Advisory: todo_gate threshold exceeded — ${todoVerdict.count} high-priority TODOs (FIXME/HACK/XXX) exceed max_high_priority=${todoVerdict.max}.`;
+			}
+		}
 
 		// Durable workflow lifecycle diagnostics. A task whose workflow store
 		// sits at coder_delegated with no pre_check gate proof is wedged: every

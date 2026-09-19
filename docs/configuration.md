@@ -1170,15 +1170,20 @@ closed. Neither outcome preserves an active structured review.
 
 ### todo_gate
 
-Controls the TODO gate that warns about new high-priority TODO/FIXME/HACK comments introduced during a phase.
+Controls the TODO gate that warns about or blocks high-priority TODO/FIXME/HACK/XXX comments recorded as task gate evidence.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable the TODO gate |
-| `max_high_priority` | number | `0` | Maximum allowed new high-priority TODOs (FIXME/HACK/XXX) before warning. `0` means warn on any occurrence. Set to `-1` to disable the threshold check. |
+| `enabled` | boolean | `true` | Enable/disable the TODO gate (producer recording and both consumers) |
+| `max_high_priority` | number | `0` | Maximum allowed high-priority TODOs (FIXME/HACK/XXX) before warning. `0` means warn on any occurrence. Set to `-1` to disable the threshold check. |
 | `block_on_threshold` | boolean | `false` | If `true`, block phase completion when the threshold is exceeded. If `false`, the gate is advisory only (warns but does not block). |
 
-The TODO gate scans for new `TODO`, `FIXME`, and `HACK` comments introduced in the current phase and compares the count against `max_high_priority`. The count is included in the `todo_scan` field returned by the `check_gate_status` tool.
+**How it works:**
+
+- **Producer:** `todo_extract` accepts an optional `task_id` (N.M format). When provided and `todo_gate.enabled` is not `false`, the scan records its high-priority (FIXME/HACK/XXX) count as a `todo_scan` field in `.swarm/evidence/{task_id}.json` (priority, count, per-entry `file:line` details capped at 50, and a `recorded_at` timestamp). The evidence is a point-in-time snapshot of the scanned paths — re-run `todo_extract` with the same `task_id` after resolving comments to refresh it.
+- **Consumer `check_gate_status`:** the recorded count is returned in the `todo_scan` field and compared against `max_high_priority`. When the count exceeds the threshold, the tool appends an advisory line to `message` (default), or with `block_on_threshold: true` marks the task `incomplete` with a `todo_gate (BLOCKED — N high-priority TODOs exceed max M)` missing-gate entry. If the config fails to load, this read-only tool skips TODO evaluation (debug-logged) rather than fabricating a verdict — unlike `phase_complete`, which fails closed on config parse errors.
+- **Consumer `phase_complete`:** the `todo_gate` preflight gate evaluates the recorded `todo_scan` evidence of every task in the phase. With the threshold exceeded it warns (advisory) or blocks (with `block_on_threshold: true`) phase completion, listing the recorded `file:line` evidence and a repair step (resolve or remove the listed comments, or adjust the `todo_gate` config, then re-run `todo_extract` with the `task_id` to refresh the evidence). The gate is bypassed under an active Turbo policy like the other standard gates.
+- **No producer, no gate:** when no task carries `todo_scan` evidence, neither consumer warns or blocks — a gate cannot act without an available producer. `enabled: false` disables recording and both consumers entirely.
 
 ### skillPropagation
 

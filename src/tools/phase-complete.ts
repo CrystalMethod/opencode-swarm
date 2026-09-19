@@ -102,6 +102,7 @@ import {
 	runHallucinationGate,
 	runMutationGate,
 	runPhaseCouncilGate,
+	runTodoGateGate,
 } from './phase-complete/gates/index.js';
 import {
 	collectPhaseGateReport,
@@ -136,6 +137,7 @@ export const phaseCompletePreflightInternals = {
 	runArchitectureSupervisorGate,
 	runFinalReviewGate,
 	runFinalCouncilGate,
+	runTodoGateGate,
 };
 
 /**
@@ -580,6 +582,7 @@ export async function executePhaseComplete(
 				'hallucination',
 				'mutation',
 				'phase_council',
+				'todo_gate',
 				'architecture_supervisor',
 				'final_review',
 				'final_council',
@@ -865,6 +868,11 @@ export async function executePhaseComplete(
 			id: 'phase_council',
 			actor: 'architect',
 			run: () => phaseCompletePreflightInternals.runPhaseCouncilGate(gateCtx),
+		},
+		{
+			id: 'todo_gate',
+			actor: 'coder',
+			run: () => phaseCompletePreflightInternals.runTodoGateGate(gateCtx),
 		},
 	];
 	for (const spec of standardGateSpecs) {

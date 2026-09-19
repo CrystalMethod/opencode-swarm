@@ -205,8 +205,9 @@ export const TOOL_METADATA = {
 		},
 	},
 	todo_extract: {
-		description: 'structured TODO/FIXME extraction',
-		agents: ['architect', 'researcher', 'docs', 'explorer'],
+		description:
+			'structured TODO/FIXME extraction; with task_id, records the high-priority count as todo_scan gate evidence',
+		agents: ['architect', 'researcher', 'docs', 'explorer', 'coder'],
 		prWorkflow: {
 			modes: ['PR_REVIEW', 'PR_FEEDBACK'],
 			capability: 'observe',

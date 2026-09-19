@@ -2,12 +2,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
+import { loadPluginConfigWithMeta } from '../config/index.js';
+import { recordTodoScanEvidence } from '../gate-evidence.js';
 import { escapeRegex } from '../utils';
+import * as logger from '../utils/logger.js';
+import { isStrictTaskId } from '../validation/task-id';
 import { createSwarmTool } from './create-tool';
 
 // ============ Constants ============
 const MAX_TEXT_LENGTH = 200;
 const MAX_FILE_SIZE_BYTES = 1024 * 1024; // 1MB per file
+/** Cap on evidence detail lines recorded per task (issue #2581). */
+const MAX_RECORDED_DETAILS = 50;
 
 // Supported file extensions (text-based source files only)
 const SUPPORTED_EXTENSIONS = new Set([
@@ -232,7 +238,7 @@ function parseTodoComments(
 // ============ Tool Definition ============
 export const todo_extract: ReturnType<typeof tool> = createSwarmTool({
 	description:
-		'Scan the codebase for TODO/FIXME/HACK/XXX/WARN/NOTE comments. Returns JSON with count by priority and sorted entries. Useful for identifying pending tasks and code issues.',
+		'Scan the codebase for TODO/FIXME/HACK/XXX/WARN/NOTE comments. Returns JSON with count by priority and sorted entries. Useful for identifying pending tasks and code issues. When task_id is provided and the todo_gate config is enabled (default), the high-priority scan is also recorded as todo_scan gate evidence for that task, consumed by check_gate_status and the phase-complete todo_gate gate.',
 	args: {
 		paths: z
 			.string()
@@ -244,16 +250,28 @@ export const todo_extract: ReturnType<typeof tool> = createSwarmTool({
 			.describe(
 				'Comma-separated tags to search for (default: TODO,FIXME,HACK,XXX,WARN,NOTE)',
 			),
+		task_id: z
+			.string()
+			.regex(
+				/^\d+\.\d+(\.\d+)*$/,
+				'Task ID must be in N.M or N.M.P format (e.g., "1.1", "2.3.1")',
+			)
+			.optional()
+			.describe(
+				'Optional task ID (N.M format). When provided and todo_gate is enabled, the high-priority (FIXME/HACK/XXX) count is recorded as todo_scan gate evidence in .swarm/evidence/{task_id}.json',
+			),
 	},
 	async execute(args: unknown, directory: string): Promise<string> {
 		// Safe args extraction
 		let paths: string | undefined;
 		let tags: string | undefined;
+		let taskId: string | undefined;
 		try {
 			if (args && typeof args === 'object') {
 				const obj = args as Record<string, unknown>;
 				paths = typeof obj.paths === 'string' ? obj.paths : undefined;
 				tags = typeof obj.tags === 'string' ? obj.tags : undefined;
+				taskId = typeof obj.task_id === 'string' ? obj.task_id : undefined;
 			}
 		} catch {
 			// Malicious getter threw
@@ -384,6 +402,39 @@ export const todo_extract: ReturnType<typeof tool> = createSwarmTool({
 			byPriority,
 			entries: allEntries,
 		};
+
+		// TODO-gate evidence producer (issue #2581): when the caller names a
+		// task and the gate is enabled, record the high-priority scan as
+		// supplementary gate evidence. Recording never changes the scan
+		// output and never fails the tool: any error is debug-logged and
+		// skipped.
+		if (taskId && isStrictTaskId(taskId)) {
+			try {
+				const { config } = loadPluginConfigWithMeta(directory);
+				if (config.todo_gate?.enabled !== false) {
+					const highEntries = allEntries.filter(
+						(entry) => entry.priority === 'high',
+					);
+					const detailLines = highEntries
+						.slice(0, MAX_RECORDED_DETAILS)
+						.map((entry) => {
+							const relativeFile = path.relative(directory, entry.file);
+							return `${relativeFile}:${entry.line} ${entry.tag} ${entry.text}`;
+						});
+					await recordTodoScanEvidence(directory, taskId, {
+						priority: 'high',
+						count: byPriority.high,
+						details: detailLines,
+						recorded_at: new Date().toISOString(),
+					});
+				}
+			} catch (recordError) {
+				logger.log(
+					'todo_extract: todo_scan evidence recording skipped',
+					recordError,
+				);
+			}
+		}
 
 		return JSON.stringify(result, null, 2);
 	},
