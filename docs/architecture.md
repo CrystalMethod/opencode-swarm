@@ -638,9 +638,12 @@ All three controls are honored on both context‑injection paths (the default
 injection path and the opt‑in `context_budget.scoring` ranking path) and in the
 context‑budget report's token accounting, through one shared resolver
 (`resolvePlanCursorControls`, src/hooks/extractors.ts — issue #2580).
-Disabling (`"enabled": false`) suppresses the cursor block while keeping the
-phase header and current‑task context injections — the pre‑v6.13 behavior; the
-full plan text is never injected in its place.
+Disabling (`"enabled": false`) suppresses the cursor block; the remaining
+injections are unchanged — on the default path that is the phase header line,
+and on the scoring path the phase and current‑task context candidates. The
+full plan text is never injected in its place. When the cursor exceeds
+`max_tokens` and the compact rebuild kicks in, lookahead is reduced to one
+task and earlier phases collapse to one‑line summaries.
 
 ### Tool Output Truncation (v6.13)
 

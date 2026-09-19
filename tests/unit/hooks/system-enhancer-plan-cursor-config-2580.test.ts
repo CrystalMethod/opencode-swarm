@@ -180,6 +180,11 @@ describe('system-enhancer plan_cursor config (#2580) — Path A (non-scoring)', 
 					expect(defBlock).not.toBeNull();
 					expect(zeroBlock).not.toBeNull();
 					expect(zeroBlock).not.toBe(defBlock);
+					// Pin the configured value, not just a differential (#2838
+					// review F3): lookahead 0 → zero lookahead lines; default
+					// 2 → exactly two (fixture has 4 pending tasks in phase 4).
+					expect((zeroBlock!.match(/- Next:/g) ?? []).length).toBe(0);
+					expect((defBlock!.match(/- Next:/g) ?? []).length).toBe(2);
 				},
 			);
 		});
@@ -197,6 +202,9 @@ describe('system-enhancer plan_cursor config (#2580) — Path A (non-scoring)', 
 					expect(defBlock).not.toBeNull();
 					expect(smallBlock).not.toBeNull();
 					expect(smallBlock!.length).toBeLessThan(defBlock!.length);
+					// Pin the documented upper bound, not just a differential
+					// (#2838 review F3).
+					expect(estimateTokens(smallBlock!)).toBeLessThanOrEqual(500);
 				},
 			);
 		});
@@ -240,6 +248,10 @@ describe('system-enhancer plan_cursor config (#2580) — Path B (scoring)', () =
 					expect(defBlock).not.toBeNull();
 					expect(zeroBlock).not.toBeNull();
 					expect(zeroBlock).not.toBe(defBlock);
+					// Pin the configured value, not just a differential (#2838
+					// review F3).
+					expect((zeroBlock!.match(/- Next:/g) ?? []).length).toBe(0);
+					expect((defBlock!.match(/- Next:/g) ?? []).length).toBe(2);
 				},
 			);
 		});
@@ -257,9 +269,24 @@ describe('system-enhancer plan_cursor config (#2580) — Path B (scoring)', () =
 					expect(defBlock).not.toBeNull();
 					expect(smallBlock).not.toBeNull();
 					expect(smallBlock!.length).toBeLessThan(defBlock!.length);
+					// Pin the documented upper bound, not just a differential
+					// (#2838 review F3).
+					expect(estimateTokens(smallBlock!)).toBeLessThanOrEqual(500);
 				},
 			);
 		});
+	});
+
+	it('suppresses the cursor with enabled:false even when a valid plan.json exists (#2838 review F3 combo)', async () => {
+		await withFreshRun(
+			pathBConfig({ enabled: false }),
+			'b-disabled-planjson',
+			true,
+			async (system) => {
+				expect(cursorBlock(system)).toBeNull();
+				expect(system.join('\n')).toContain('[SWARM CONTEXT] Current phase:');
+			},
+		);
 	});
 });
 

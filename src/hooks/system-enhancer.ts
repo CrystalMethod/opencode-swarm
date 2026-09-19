@@ -2396,8 +2396,13 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 					// else-branch read alone left the scoring path with NO
 					// cursor candidate for any real workspace shape. Read
 					// plan.md in both branches (planReadCache dedupes the I/O)
-					// so the candidate can never be silently dropped.
-					if (!planContentForCursor) {
+					// so the candidate can never be silently dropped. The
+					// enabled gate is resolved FIRST (#2838 review F6) so a
+					// disabled cursor never triggers the read at all.
+					const planCursorControls_b = resolvePlanCursorControls(
+						config.plan_cursor,
+					);
+					if (planCursorControls_b.enabled && !planContentForCursor) {
 						planContentForCursor = await readSwarmFileAsync(
 							directory,
 							'plan.md',
@@ -2437,10 +2442,8 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 					// plan_cursor controls as Path A (enabled gate, DISCOVER
 					// gate, maxTokens/lookaheadTasks pass-through), so
 					// disabled/default/enabled behave identically on both
-					// context paths.
-					const planCursorControls_b = resolvePlanCursorControls(
-						config.plan_cursor,
-					);
+					// context paths. planCursorControls_b is resolved above,
+					// before the plan.md read (#2838 review F6).
 					if (
 						planCursorControls_b.enabled &&
 						mode_b !== 'DISCOVER' &&
