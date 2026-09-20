@@ -379,6 +379,7 @@ export const WRITER_CLASSIFICATION: Readonly<
 	'src/evidence/phase-participation.ts': 'migrated',
 	'src/memory/reflection-service.ts': 'migrated',
 	'src/scope/scope-persistence.ts': 'migrated',
+	'src/background/stage-b-dispatch-binding-store.ts': 'migrated',
 	'src/services/skill-consolidation.ts': 'migrated',
 	'src/services/skill-evaluator.ts': 'migrated',
 	// mixed .swarm/.opencode-skill destinations — delegates to the any-root

@@ -110,6 +110,7 @@ export async function handleResetCommand(
 			'plan-ledger.jsonl',
 			...filesToReset,
 			'summaries',
+			'stage-b-dispatch-bindings',
 		]);
 		if (backup.backupDir && backup.copied.length > 0) {
 			const rel = path.relative(directory, backup.backupDir);
@@ -239,6 +240,24 @@ export async function handleResetCommand(
 		// stopped or never started. Failing open here keeps the reset path
 		// usable even when the automation manager is in an unexpected state.
 		results.push('- ⏭️ Background automation not running (skipped)');
+	}
+
+	// Issue #2829: durable Stage B dispatch-generation bindings are a
+	// directory tree — cleaned recursively like summaries/, never via the
+	// per-file filesToReset loop (unlinkSync would fail on a directory).
+	try {
+		const stageBBindingPath = validateSwarmPath(
+			directory,
+			'stage-b-dispatch-bindings',
+		);
+		if (_internals.existsSync(stageBBindingPath)) {
+			_internals.rmSync(stageBBindingPath, { recursive: true, force: true });
+			results.push('- ✅ Deleted stage-b-dispatch-bindings/ directory');
+		} else {
+			results.push('- ⏭️ stage-b-dispatch-bindings/ not found (skipped)');
+		}
+	} catch {
+		results.push('- ❌ Failed to delete stage-b-dispatch-bindings/');
 	}
 
 	// Clean up summaries directory

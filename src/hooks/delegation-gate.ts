@@ -17,6 +17,11 @@ import type {
 } from '../background/pending-delegations.js';
 import { buildBackgroundCoderReservationId } from '../background/pending-delegations.js';
 import {
+	deleteStageBDispatchBindings,
+	readStageBDispatchBindings,
+	recordStageBDispatchBindings,
+} from '../background/stage-b-dispatch-binding-store.js';
+import {
 	captureWorkspaceSnapshotAsync,
 	changedFilesSinceSnapshotAsync,
 } from '../background/workspace-snapshot.js';
@@ -3393,6 +3398,9 @@ const maintainBackgroundDelegationsForDispatch: typeof import('../background/pen
  * that test mutations on this object propagate to the extracted module.
  */
 export const _internals = {
+	recordStageBDispatchBindings,
+	readStageBDispatchBindings,
+	deleteStageBDispatchBindings,
 	resolveEvidenceTaskId,
 	resolveDelegatedPlanTaskId,
 	describeCoderScopeFailure,
@@ -3506,7 +3514,7 @@ function warnStageBSettlementDropped(
 	const { taskId, agent, reasonClass, drops } = params;
 	const restartNote =
 		reasonClass === 'unbound'
-			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; it cannot be reconstructed after a restart.'
+			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; no durable binding was found for this dispatch, so it cannot be reconstructed.'
 			: '';
 	// The dedupe token leads the message by advisory-queue convention (#1976):
 	// pushAdvisory's keyed dedupe matches on key-presence in queued messages.
@@ -3589,7 +3597,10 @@ export function createDelegationGateHook(
 	}) => Promise<void>;
 	sessionEnded: (sessionID: string, includeOwnedChildren?: boolean) => void;
 	backgroundCompletionClaimed: (record: BackgroundDelegationRecord) => void;
-	abortDeniedSettlementForCall: (callID: string) => Promise<void>;
+	abortDeniedSettlementForCall: (
+		callID: string,
+		sessionID?: string,
+	) => Promise<void>;
 } {
 	// Initialize durable worktree merge-back status before any coders dispatch
 	initDurableStatusPath(directory);
@@ -3931,6 +3942,7 @@ export function createDelegationGateHook(
 	};
 	const rememberStageBDispatchGenerations = (
 		callID: string,
+		sessionID: string | undefined,
 		generations: Map<string, number>,
 	): void => {
 		if (
@@ -3943,6 +3955,28 @@ export function createDelegationGateHook(
 			);
 		}
 		stageBDispatchGenerationsByCallID.set(callID, generations);
+		// Issue #2829: durable twin of the in-memory binding. NON-FATAL by
+		// design — the in-memory map remains the primary fence; the durable
+		// record only ADDS post-restart reconstruction (which still feeds the
+		// existing expectedGeneration fence, invariant 9). A transient fs
+		// failure degrades to today's behavior (drop-on-restart) rather than
+		// failing a working dispatch. Bounded: one small JSON write + rename
+		// under a 50 ms overrun guard, debug-gated warn only (AGENTS #1/#3/#10).
+		const durableStart = Date.now();
+		const persisted = _internals.recordStageBDispatchBindings(directory, {
+			sessionID: sessionID ?? '',
+			callID,
+			bindings: [...generations.entries()].map(([taskId, generation]) => ({
+				taskId,
+				generation,
+			})),
+		});
+		const durableElapsed = Date.now() - durableStart;
+		if (!persisted || durableElapsed > 50) {
+			logger.log(
+				`[delegation-gate] Stage B durable binding write for call ${callID}: persisted=${persisted} elapsedMs=${durableElapsed}`,
+			);
+		}
 	};
 	const releasePrelaunchBackgroundCoderReservation = async (
 		callID: string,
@@ -4054,6 +4088,7 @@ export function createDelegationGateHook(
 		clearCoderTaskChangeContext(callID);
 		begunCoderSettlementsByCallID.delete(callID);
 		stageBDispatchGenerationsByCallID.delete(callID);
+		deleteStageBDispatchBindings(directory, record.parentSessionId, callID);
 		stageBRouteSlotByCallID.delete(callID);
 		gateDispatchPrimaryTaskByCallID.delete(callID);
 		stageBDispatchContextByCallID.delete(callID);
@@ -4769,7 +4804,11 @@ export function createDelegationGateHook(
 					},
 				);
 				if (consumed) {
-					rememberStageBDispatchGenerations(input.callID, generations);
+					rememberStageBDispatchGenerations(
+						input.callID,
+						input.sessionID,
+						generations,
+					);
 					gateDispatchPrimaryTaskByCallID.set(input.callID, null);
 					stageBDispatchContextByCallID.set(input.callID, {
 						taskIds: new Set(generations.keys()),
@@ -4849,7 +4888,11 @@ export function createDelegationGateHook(
 						},
 					);
 					if (consumed) {
-						rememberStageBDispatchGenerations(input.callID, generations);
+						rememberStageBDispatchGenerations(
+							input.callID,
+							input.sessionID,
+							generations,
+						);
 						gateDispatchPrimaryTaskByCallID.set(input.callID, resolvedTaskId);
 						stageBDispatchContextByCallID.set(input.callID, {
 							taskIds: new Set(generations.keys()),
@@ -4885,7 +4928,11 @@ export function createDelegationGateHook(
 					);
 				}
 			}
-			rememberStageBDispatchGenerations(input.callID, generations);
+			rememberStageBDispatchGenerations(
+				input.callID,
+				input.sessionID,
+				generations,
+			);
 			gateDispatchPrimaryTaskByCallID.set(input.callID, resolvedTaskId);
 			stageBDispatchContextByCallID.set(input.callID, {
 				taskIds: new Set(generations.keys()),
@@ -6014,6 +6061,11 @@ export function createDelegationGateHook(
 				if (backgroundRecordDurable) {
 					clearCoderTaskChangeContext(input.callID);
 					stageBDispatchGenerationsByCallID.delete(input.callID);
+					deleteStageBDispatchBindings(
+						directory,
+						input.sessionID ?? '',
+						input.callID,
+					);
 					gateDispatchPrimaryTaskByCallID.delete(input.callID);
 					stageBDispatchContextByCallID.delete(input.callID);
 					if (storedArgs !== undefined) deleteStoredInputArgs(input.callID);
@@ -6399,9 +6451,38 @@ export function createDelegationGateHook(
 											continue;
 										if (!attributionResult.verdicts.has(taskId)) continue;
 										const eligibleState = state as EligibleState;
-										const launchGeneration = stageBDispatchGenerationsByCallID
+										let launchGeneration = stageBDispatchGenerationsByCallID
 											.get(input.callID)
 											?.get(taskId);
+										if (launchGeneration === undefined) {
+											// Issue #2829: the in-memory binding is missing (the
+											// usual cause is a plugin reload or host restart between
+											// dispatch and settlement — it is process-local).
+											// Reconstruct from the durable twin BEFORE dropping:
+											// the reconstructed generation feeds the SAME
+											// expectedGeneration fence below, so a stale binding
+											// still dies on TASK_WORKFLOW_GENERATION_MISMATCH
+											// (invariant 9 — never the reverse); a missing/invalid
+											// durable record keeps today's fail-closed drop.
+											const durable = _internals.readStageBDispatchBindings(
+												directory,
+												input.sessionID,
+												input.callID,
+											);
+											const reconstructed = durable?.bindings.find(
+												(b) => b.taskId === taskId,
+											)?.generation;
+											if (
+												reconstructed !== undefined &&
+												Number.isInteger(reconstructed) &&
+												reconstructed >= 0
+											) {
+												launchGeneration = reconstructed;
+												logger.log(
+													`[delegation-gate] reconstructed Stage B binding for ${taskId} from durable store (call ${input.callID}, generation ${reconstructed}) — fencing proceeds as in-process`,
+												);
+											}
+										}
 										if (launchGeneration === undefined) {
 											logger.warn(
 												`[delegation-gate] ignoring unbound Stage B settlement for ${taskId} from call ${input.callID}`,
@@ -6957,6 +7038,11 @@ export function createDelegationGateHook(
 							// with the success-path deletes below.
 							if (!coderSettlementCommitted) {
 								stageBDispatchGenerationsByCallID.delete(input.callID);
+								deleteStageBDispatchBindings(
+									directory,
+									input.sessionID ?? '',
+									input.callID,
+								);
 								gateDispatchPrimaryTaskByCallID.delete(input.callID);
 								deleteStoredInputArgs(input.callID);
 							}
@@ -7014,6 +7100,11 @@ export function createDelegationGateHook(
 				}
 
 				stageBDispatchGenerationsByCallID.delete(input.callID);
+				deleteStageBDispatchBindings(
+					directory,
+					input.sessionID ?? '',
+					input.callID,
+				);
 				stageBRouteSlotByCallID.delete(input.callID);
 				gateDispatchPrimaryTaskByCallID.delete(input.callID);
 				stageBDispatchContextByCallID.delete(input.callID);
@@ -7478,7 +7569,10 @@ ${warningLines.join('\n')}`;
 		 * callID bookkeeping — an abort that throws must not leave a louder
 		 * in-process CODER_DISPATCH_IN_PROGRESS wedge behind.
 		 */
-		abortDeniedSettlementForCall: async (callID: string): Promise<void> => {
+		abortDeniedSettlementForCall: async (
+			callID: string,
+			sessionID?: string,
+		): Promise<void> => {
 			// Reviewer/test-engineer reservations do not create a coder settlement,
 			// so the early return below must still drain their call-scoped route
 			// bindings. Otherwise a denied dispatch can strand the only slot and make
@@ -7515,6 +7609,12 @@ ${warningLines.join('\n')}`;
 				clearCoderTaskChangeContext(callID);
 				clearPublishedScopeBindings(callID);
 				stageBDispatchGenerationsByCallID.delete(callID);
+				// Issue #2829: evict the durable twin too when the owner session is
+				// known; without it the TTL prune collects the record (a denied
+				// dispatch never produces a child settlement).
+				if (sessionID) {
+					deleteStageBDispatchBindings(directory, sessionID, callID);
+				}
 				gateDispatchPrimaryTaskByCallID.delete(callID);
 				deleteStoredInputArgs(callID);
 			}

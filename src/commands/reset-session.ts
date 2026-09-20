@@ -460,6 +460,33 @@ export async function handleResetSessionCommand(
 			'⚠️ Knowledge gate obligations not released: no session context on this invocation',
 		);
 	}
+
+	// Issue #2829: evict this session's durable Stage B dispatch-generation
+	// bindings (the store keys records by sha256(sessionID); only the invoking
+	// session's subtree is removed — other sessions' pending settlements keep
+	// their reconstruction path). Skipped when no session context exists.
+	if (sessionID) {
+		try {
+			const { createHash } = await import('node:crypto');
+			const { existsSync, rmSync } = await import('node:fs');
+			const sessionSlice = createHash('sha256')
+				.update(sessionID)
+				.digest('hex')
+				.slice(0, 24);
+			const sessionBindingDir = validateSwarmPath(
+				directory,
+				`stage-b-dispatch-bindings/${sessionSlice}`,
+			);
+			if (existsSync(sessionBindingDir)) {
+				rmSync(sessionBindingDir, { recursive: true, force: true });
+				results.push('✅ Deleted stage-b-dispatch-bindings for this session');
+			}
+		} catch {
+			results.push(
+				'⚠️ Stage B durable bindings not cleared (best-effort; TTL prune collects them)',
+			);
+		}
+	}
 	swarmState.gateDenialCounts.clear();
 	swarmState.currentCriticalShownIds.clear();
 	results.push('✅ Cleared in-memory knowledge gate denial state');
