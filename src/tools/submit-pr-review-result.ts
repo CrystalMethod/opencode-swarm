@@ -1,11 +1,23 @@
 import { z } from 'zod';
 import { PrReviewLaneResultEnvelopeSchema } from '../background/pr-review-contract.js';
-import { submitPrReviewResult } from '../hooks/pr-workflow-gate.js';
+import {
+	recordPrReviewSubmitRejection,
+	submitPrReviewResult,
+} from '../hooks/pr-workflow-gate.js';
+import { canonicalRootKeyFresh } from '../utils/canonical-root.js';
 import { createSwarmTool } from './create-tool.js';
 
+// Issue #2859 (F2): the string form "1" is accepted and normalized to the JSON
+// number 1 via preprocess, which keeps the inner literal's exact rejection
+// message ("Invalid input: expected 1") and its literal output type. A plain
+// z.coerce.number() is deliberately NOT used here: coercion maps true -> 1
+// (Number(true) === 1), which would accept schemaVersion: true. Only "1" is
+// normalized; 2, "2", true, and null reach the literal unchanged and fail.
 const SubmitPrReviewResultArgsSchema = z
 	.object({
-		schemaVersion: z.literal(1),
+		schemaVersion: z
+			.preprocess((value) => (value === '1' ? 1 : value), z.literal(1))
+			.describe('the JSON number 1 (the string "1" is also accepted)'),
 		batchId: z.string().trim().min(1).max(120).optional(),
 		laneId: z.string().trim().min(1).max(120).optional(),
 		revisionDigest: z
@@ -15,6 +27,122 @@ const SubmitPrReviewResultArgsSchema = z
 		result: PrReviewLaneResultEnvelopeSchema,
 	})
 	.strict();
+
+// Issue #2859 (F1): a rejection that names only the expected value is
+// indistinguishable to the child from what it believes it sent ("expected 1"
+// renders identically for "1", 2, "2", true, and null), so blind retry is the
+// rational child response. Render the RECEIVED value, bounded.
+export const RECEIVED_VALUE_RENDER_LIMIT = 120;
+// PR #2863 review (PRR-003): each received value is bounded above, but the
+// joined issue list was not. An adversarial multi-issue payload could hand
+// the child a multi-KB rejection, defeating F1 self-diagnosis; cap the
+// total child-visible message with an explicit truncation note.
+const MAX_FORMATTED_ISSUE_MESSAGE_CHARS = 2_000;
+
+function resolveReceivedValue(
+	args: unknown,
+	path: readonly PropertyKey[],
+): unknown {
+	let current: unknown = args;
+	for (const key of path) {
+		if (current === null || typeof current !== 'object') return undefined;
+		current = (current as Record<PropertyKey, unknown>)[key];
+	}
+	return current;
+}
+
+function renderReceivedValue(value: unknown): string {
+	const typeofLabel = typeof value;
+	if (value === undefined) return 'received undefined';
+	let rendered: string;
+	try {
+		rendered = JSON.stringify(value) ?? 'null';
+	} catch {
+		return `received <unrepresentable> (${typeofLabel})`;
+	}
+	if (rendered.length > RECEIVED_VALUE_RENDER_LIMIT) {
+		rendered = `${rendered.slice(0, RECEIVED_VALUE_RENDER_LIMIT)}…`;
+	}
+	return `received ${rendered} (${typeofLabel})`;
+}
+
+const UNRECOGNIZED_KEY_PATTERN = /Unrecognized key: "([^"]*)"/;
+
+function formatSubmitValidationIssues(
+	args: unknown,
+	issues: z.ZodIssue[],
+): string {
+	const joined = issues
+		.map((issue) => {
+			const pathLabel = issue.path.length > 0 ? issue.path.join('.') : '(root)';
+			let receivedSource: unknown;
+			let haveReceivedSource = false;
+			if (issue.path.length > 0) {
+				receivedSource = resolveReceivedValue(args, issue.path);
+				haveReceivedSource = true;
+			} else {
+				// Strict-mode unknown keys carry an empty path; the message already
+				// names the key, so resolve that key's value for the received clause.
+				const key = UNRECOGNIZED_KEY_PATTERN.exec(issue.message)?.[1];
+				if (key !== undefined && args !== null && typeof args === 'object') {
+					receivedSource = (args as Record<string, unknown>)[key];
+					haveReceivedSource = true;
+				}
+			}
+			const received = haveReceivedSource
+				? ` (${renderReceivedValue(receivedSource)})`
+				: '';
+			return `${pathLabel}: ${issue.message}${received}`;
+		})
+		.join('; ');
+	if (joined.length <= MAX_FORMATTED_ISSUE_MESSAGE_CHARS) {
+		return joined;
+	}
+	return `${joined.slice(0, MAX_FORMATTED_ISSUE_MESSAGE_CHARS)}… [truncated: ${issues.length} validation issue(s) exceed the ${MAX_FORMATTED_ISSUE_MESSAGE_CHARS}-char diagnostic budget; fix the first listed issue(s) and resubmit]`;
+}
+
+/**
+ * Issue #2859 (F1): per-child consecutive-rejection counter that drives the
+ * escalating hint. Keyed by directory + child session; bounded FIFO per
+ * AGENTS.md invariant 8 (same eviction pattern as pr-event-delivery.ts).
+ */
+const MAX_TRACKED_SUBMIT_SESSIONS = 128;
+const SUBMIT_REJECTION_HINT_THRESHOLD = 3;
+const consecutiveSubmitRejections = new Map<string, number>();
+
+function submitRejectionKey(directory: string, sessionID: string): string {
+	// Canonical project-root key: two lexical spellings of one project must
+	// share one rejection counter (path-identity contract, canonical-root.ts).
+	return (
+		`${canonicalRootKeyFresh(directory)}` + String.fromCharCode(0) + sessionID
+	);
+}
+
+function noteSubmitRejection(directory: string, sessionID: string): number {
+	const key = submitRejectionKey(directory, sessionID);
+	const next = (consecutiveSubmitRejections.get(key) ?? 0) + 1;
+	consecutiveSubmitRejections.set(key, next);
+	while (consecutiveSubmitRejections.size > MAX_TRACKED_SUBMIT_SESSIONS) {
+		const oldest = consecutiveSubmitRejections.keys().next().value;
+		if (oldest === undefined) break;
+		consecutiveSubmitRejections.delete(oldest);
+	}
+	return next;
+}
+
+function clearSubmitRejections(directory: string, sessionID: string): void {
+	consecutiveSubmitRejections.delete(submitRejectionKey(directory, sessionID));
+}
+
+export const _test_exports = {
+	resolveReceivedValue,
+	renderReceivedValue,
+	formatSubmitValidationIssues,
+	noteSubmitRejection,
+	clearSubmitRejections,
+	MAX_TRACKED_SUBMIT_SESSIONS,
+	SUBMIT_REJECTION_HINT_THRESHOLD,
+};
 
 export async function executeSubmitPrReviewResult(
 	args: unknown,
@@ -31,11 +159,19 @@ export async function executeSubmitPrReviewResult(
 		});
 	}
 	if (!parsed.success) {
-		return JSON.stringify({
-			success: false,
-			message: `Invalid PR-review result: ${parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ')}`,
-		});
+		const count = noteSubmitRejection(directory, childSessionId);
+		const hint =
+			count >= SUBMIT_REJECTION_HINT_THRESHOLD
+				? ` — ${count} consecutive rejections: re-read the tool schema; do NOT resubmit the same payload shape.`
+				: '';
+		const message = `Invalid PR-review result: ${formatSubmitValidationIssues(args, parsed.error.issues)}${hint}`;
+		// Issue #2859 (F3): journal the enriched rejection so the orchestrator
+		// can see why the lane ended contract-failed without a receipt.
+		// Fail-open; never changes this rejection outcome.
+		await recordPrReviewSubmitRejection(directory, childSessionId, message);
+		return JSON.stringify({ success: false, message });
 	}
+	clearSubmitRejections(directory, childSessionId);
 	const outcome = await submitPrReviewResult(directory, childSessionId, {
 		...(parsed.data.batchId ? { batchId: parsed.data.batchId } : {}),
 		...(parsed.data.laneId ? { laneId: parsed.data.laneId } : {}),

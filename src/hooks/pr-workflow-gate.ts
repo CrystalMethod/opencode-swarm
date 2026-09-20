@@ -375,6 +375,14 @@ export interface PrReviewDiscoveryLaneValidationInput {
 		reviewScope?: string;
 		checkWorkflowLane?: boolean;
 	};
+	/**
+	 * Issue #2859 (F3): latest rejected `submit_pr_review_result` message for
+	 * this lane's child session, resolved by the caller from the bounded gate
+	 * state journal. Optional — callers without gate-state access (e.g. the
+	 * revision-independent completion check) omit it and the contract-failure
+	 * message keeps its original form. Observability only.
+	 */
+	lastSubmitRejection?: string;
 }
 
 export interface PrWorkflowTransportRecoveryValidationInput {
@@ -851,6 +859,17 @@ interface PrReviewBatchCoherenceRecord {
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
 }
 
+/** One rejected `submit_pr_review_result` attempt (issue #2859 F3 journal). */
+export interface PrReviewSubmitRejectionRecord {
+	childSessionId: string;
+	laneId?: string;
+	at: number;
+	message: string;
+}
+
+/** FIFO cap for the gate-state submit-rejection journal (issue #2859 F3). */
+export const MAX_PR_REVIEW_SUBMIT_REJECTIONS = 24;
+
 export interface PrWorkflowGateState {
 	schemaVersion: 1;
 	/** Monotonic durable revision used to reject stale same-session transitions. */
@@ -934,6 +953,15 @@ export interface PrWorkflowGateState {
 	prReviewDimensionCancellations?: Partial<
 		Record<PrReviewBaseDimensionId, PrReviewDimensionCancellationRecord>
 	>;
+	/**
+	 * Bounded FIFO journal of rejected `submit_pr_review_result` attempts
+	 * (issue #2859 F3). Observability only — surfaced in the discovery
+	 * contract-failure message so the orchestrator can see WHY a lane has no
+	 * structured receipt; never consulted for receipt validity. Capped by
+	 * {@link MAX_PR_REVIEW_SUBMIT_REJECTIONS}; each entry's message is bounded
+	 * to 300 chars at write time.
+	 */
+	prReviewSubmitRejections?: PrReviewSubmitRejectionRecord[];
 	prReviewHandoffPath?: string;
 	prReviewHandoffRequired?: boolean;
 	checkoutRecovery?: PrWorkflowCheckoutRecoveryRecord;
@@ -1535,6 +1563,19 @@ const PrWorkflowGateStateSchema = z
 				PrReviewDimensionCancellationRecordSchema,
 			)
 			.optional(),
+		prReviewSubmitRejections: z
+			.array(
+				z
+					.object({
+						childSessionId: z.string().min(1).max(200),
+						laneId: z.string().min(1).max(200).optional(),
+						at: z.number(),
+						message: z.string().min(1).max(300),
+					})
+					.strict(),
+			)
+			.max(MAX_PR_REVIEW_SUBMIT_REJECTIONS)
+			.optional(),
 		prReviewArtifactBoundaries: z
 			.array(z.enum(['post_explorer', 'post_reviewer', 'post_critic']))
 			.max(3)
@@ -1822,7 +1863,108 @@ function isLivenessTerminalLaneRecord(
  * stays child-bound and carries architect provenance. Every other session
  * keeps the frozen exact-child refusal.
  */
-export async function submitPrReviewResult(
+/**
+ * Issue #2859 (F3): best-effort, fail-open journal of one rejected
+ * `submit_pr_review_result` attempt onto the lane's parent PR_REVIEW gate
+ * state. Observability only — never changes the rejection outcome, never
+ * creates gate state for a parent that has none (the pre-read outside the
+ * session-state lock means a non-gated parent gets no lock file either).
+ */
+export async function recordPrReviewSubmitRejection(
+	directory: string,
+	childSessionId: string,
+	message: string,
+): Promise<void> {
+	try {
+		const child = childSessionId.trim();
+		if (!child) return;
+		const childRead = readDelegationsDetailed(directory);
+		if (childRead.status === 'uncertain') return;
+		const record = childRead.records.find(
+			(candidate) =>
+				candidate.subagentSessionId === child &&
+				(candidate.mode === 'swarm-pr-review:base' ||
+					candidate.mode === 'swarm-pr-review:micro'),
+		);
+		const parentSessionId = record?.parentSessionId?.trim();
+		if (!parentSessionId) return;
+		// Pre-read OUTSIDE withSessionStateMutation: the mutation wrapper
+		// acquires the per-session lock file before the action runs, so a mode
+		// check inside the action alone would still create
+		// `.swarm/pr-workflow-gates/<parent>.lock` for parents who never
+		// opened a gate — lock pollution on every rejected child submit.
+		const existing = await readPrWorkflowGateStateFromDisk(
+			directory,
+			parentSessionId,
+		);
+		if (!existing || existing.mode !== 'PR_REVIEW') return;
+		const laneId = record?.laneId?.trim();
+		// PR #2863 review (PRR-002): apply the same redaction as
+		// boundPublicationDiagnostic — the message embeds child-controlled
+		// payload fragments, so URL-embedded credentials and secret-shaped
+		// strings must not persist durably in the gate-state journal.
+		const bounded = redactSecrets(
+			message.replace(
+				PUBLICATION_URL_CREDENTIALS_PATTERN,
+				'$1[REDACTED:url_credentials]@',
+			),
+		).slice(0, 300);
+		await withSessionStateMutation(directory, parentSessionId, async () => {
+			const locked = await readPrWorkflowGateStateFromDisk(
+				directory,
+				parentSessionId,
+			);
+			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const prior = locked.prReviewSubmitRejections ?? [];
+			// PR #2863 review (PRR-015): a hostile child looping the SAME invalid
+			// payload produces byte-identical messages; skip the append when the
+			// child's newest entry is identical so retry loops cannot amplify
+			// gate-state writes (the diagnostic is already journalled).
+			const newestForChild = prior
+				.filter((entry) => entry.childSessionId === child)
+				.at(-1);
+			if (newestForChild?.message === bounded) return;
+			const journal: PrReviewSubmitRejectionRecord[] = [
+				...prior,
+				{
+					childSessionId: child,
+					...(laneId ? { laneId } : {}),
+					at: Date.now(),
+					message: bounded,
+				},
+			].slice(-MAX_PR_REVIEW_SUBMIT_REJECTIONS);
+			await writeStateWhileLocked(directory, {
+				...locked,
+				prReviewSubmitRejections: journal,
+				updatedAt: isoNow(),
+			});
+		});
+	} catch {
+		// Fail-open observability: journaling must never change the rejection
+		// outcome the child sees.
+	}
+}
+
+/**
+ * Issue #2859 (F3): latest journal message for a child session, or undefined.
+ * Newest wins; the journal is FIFO-capped so a long-running workflow can only
+ * ever see its most recent rejections.
+ */
+export function latestPrReviewSubmitRejectionMessage(
+	state: Pick<PrWorkflowGateState, 'prReviewSubmitRejections'>,
+	childSessionId: string,
+): string | undefined {
+	const journal = state.prReviewSubmitRejections;
+	if (!journal?.length) return undefined;
+	for (let index = journal.length - 1; index >= 0; index--) {
+		if (journal[index]?.childSessionId === childSessionId) {
+			return journal[index]?.message;
+		}
+	}
+	return undefined;
+}
+
+async function submitPrReviewResultCore(
 	directory: string,
 	childSessionId: string,
 	input: {
@@ -2063,6 +2205,40 @@ export async function submitPrReviewResult(
 		}
 		return { status: 'rejected', reason: published.reason };
 	});
+}
+
+/**
+ * Issue #2859 (F3): single wrap point over every gate-layer rejection path in
+ * `submitPrReviewResultCore` (all 15 `{ status: 'rejected' }` return sites —
+ * invalid envelope, store unreadable, exact-child selection, repair
+ * restriction, provenance/batch/lane identity, workflow binding, revision
+ * digest, generation, ownership, reducer rejection, publication failure).
+ * Journaled fail-open; the tool-layer schema rejection is journaled separately
+ * by `executeSubmitPrReviewResult` because it never reaches the gate.
+ */
+export async function submitPrReviewResult(
+	directory: string,
+	childSessionId: string,
+	input: {
+		batchId?: string;
+		laneId?: string;
+		revisionDigest: string;
+		result: PrReviewLaneResultEnvelope;
+	},
+): Promise<SubmitPrReviewResultOutcome> {
+	const outcome = await submitPrReviewResultCore(
+		directory,
+		childSessionId,
+		input,
+	);
+	if (outcome.status === 'rejected') {
+		await recordPrReviewSubmitRejection(
+			directory,
+			childSessionId,
+			outcome.reason,
+		);
+	}
+	return outcome;
 }
 
 /**
@@ -2600,6 +2776,14 @@ export interface PrWorkflowPendingLaneLiveness {
 		| 'advisory-unavailable'
 		| 'probe-skipped-no-budget';
 }
+/**
+ * The degradedReason value emitted when the pending-liveness probe budget
+ * was already exhausted so no probe ran at all (issue #2815). Shared with
+ * the collect-side counter/message so the string has one source of truth
+ * (PR #2863 review PRR-007).
+ */
+export const PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON =
+	'probe-skipped-no-budget' as const;
 
 /**
  * Bounded, fail-open liveness advisory for still-pending async lanes
@@ -2665,7 +2849,7 @@ export async function collectPrWorkflowPendingLaneLiveness(
 			// the child sessions (issue #2815: the shared label invited
 			// orchestrators to read a budget artifact as a host failure).
 			return pastThreshold.map((record) =>
-				degraded(record, 'probe-skipped-no-budget'),
+				degraded(record, PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON),
 			);
 		}
 		const probe = await probePrWorkflowLaneSessionStatusTypes(
@@ -12948,6 +13132,11 @@ export const _test_exports = {
 	classifyPrReviewCircuitSignal,
 	minimumConsolidatedLaneCover,
 	analyzePrReviewBatchRecordIntegrity,
+	// Issue #2859 (F3/F-001): the rejection-journal join lives inside this
+	// composer — it is the sole consumer of
+	// latestPrReviewSubmitRejectionMessage — so the integration test drives it
+	// directly and deleting the lastSubmitRejection spread fails the suite.
+	workflowArtifactHasContractMarker,
 	MAX_COVER_UNIVERSE_BITS,
 	// Exposed so a regression test can assert the coverage verdict and the
 	// candidate-id extraction agree on the same artifact — the split-brain that
@@ -16541,6 +16730,12 @@ function workflowArtifactHasContractMarker(
 			state.mode === 'PR_REVIEW' && state.prReviewBaseSha && state.prHeadSha
 				? `complete PR diff ${state.prReviewBaseSha}...${state.prHeadSha}`
 				: undefined;
+		// PR #2863 review (PRR-008/Copilot): evaluate the bounded journal scan
+		// once instead of twice (condition + value).
+		const lastSubmitRejection = latestPrReviewSubmitRejectionMessage(
+			state,
+			record.subagentSessionId,
+		);
 		const validation = validatePrReviewDiscoveryLaneCompletion({
 			record,
 			result: record.result!,
@@ -16557,6 +16752,9 @@ function workflowArtifactHasContractMarker(
 				baseSha: state.prReviewBaseSha,
 				reviewScope,
 			},
+			// Issue #2859 (F3): let the discovery contract-failure message name
+			// the child's last rejected submit attempt when one is journalled.
+			...(lastSubmitRejection ? { lastSubmitRejection } : {}),
 		});
 		if (!validation.ok) {
 			if (diagnostics && diagnostics.length < MAX_BASE_COVERAGE_DIAGNOSTICS) {
@@ -16875,10 +17073,17 @@ export function validatePrReviewDiscoveryLaneCompletion(
 			input.record.prReviewLegacyTranscriptCompatibility,
 		)
 	) {
+		// Issue #2859 (F3): surface the child's LAST rejected submit attempt so
+		// the orchestrator can see WHY the lane has no receipt instead of
+		// learning it only when a lane happens to narrate it in prose.
 		return failedLaneValidation(
 			'discovery.coverage',
 			'child-bound structured receipt',
-			'missing structured receipt (legacy transcript adapter disabled)',
+			`missing structured receipt (legacy transcript adapter disabled)${
+				input.lastSubmitRejection
+					? `; last rejected submit_pr_review_result: ${input.lastSubmitRejection.slice(0, 300)}`
+					: ''
+			}`,
 		);
 	}
 	const artifactIntegrity = analyzeLaneArtifactIntegrity({

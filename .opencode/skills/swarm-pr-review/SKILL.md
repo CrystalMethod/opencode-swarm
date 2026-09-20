@@ -3,6 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
+swarm-contract-digest: 96af70854748
 ---
 
 # /swarm-pr-review
@@ -595,19 +596,8 @@ For each new commit on the remote (identified by comparing `headRefOid` /
 
 ### Example: parallel swarm superseded local fix work
 
-```
-PARALLEL WORK CHECK (pre-fix):
-- Branch: copilot/fix-legacy-hive-data-migration
-- Local HEAD: 3c04997c fix: resolve PR #1238 review findings
-- Remote HEAD: 79d7ec64 fix(knowledge-migrator): harden legacy migration loop
-- Diverged: yes (remote is 2 commits ahead with more comprehensive fix)
-- New commits on remote: 2
-- Parallel swarm work detected: yes (different author)
-- Decision: abandon-use-remote
-- Rationale: Remote added 17 unit tests + try/catch error handling that
-  surpassed my planned batch-rewrite. Verified by re-running the test suite:
-  remote has 25/25 passing, my local plan would have produced 9/9.
-```
+See `references/parallel-work-example.md` for the worked PARALLEL WORK CHECK
+transcript (remote supersession, abandon-use-remote decision).
 
 ---
 
@@ -987,6 +977,21 @@ For ANY lane that failed (either mode):
 4. **Terminal report kinds (issue #2383):** all six dimensions covered → `COMPLETE` (verdict may be APPROVE, REQUEST_CHANGES, or INCOMPLETE); at least one covered → `PARTIAL` (verdict must be REQUEST_CHANGES or INCOMPLETE; validated findings from covered dimensions remain publishable); zero covered → `NO_COVERAGE` (skip the findings ladder entirely, call `complete_pr_workflow` with `report_verdict: "INCOMPLETE"` directly — the completion returns a truthful operational report with per-dimension reasons and never claims a code-quality review). A still-live lane blocks settlement: poll, cancel explicitly with `cancel_pending`, or let the presumed-stale sweep settle it first.
 5. Under Profile A, when the bind/checkout path itself is genuinely unreachable or the workflow is publication-armed and exact publication cannot proceed, use the bounded recovery exits: `abort_pr_workflow` with `mode: "PR_REVIEW"`, `kind: "recovery"`, and a non-empty one-line `reason` for an unrecoverable unbound/bound gate, or `kind: "armed_recovery"` (issue #2383) for a publication-armed wedge — then `prepare_pr_workflow_checkout` with `operation: "restore"`. Abort remains a recovery tool for the genuinely unrecoverable, never a shortcut past a settleable coverage obligation.
 
+### PARTIAL-settlement recovery (all lanes terminal)
+
+Base settlement requires every launched lane to be TERMINAL — settled, failed,
+or explicitly cancelled — NOT full coverage. With partial coverage (at least one
+dimension covered), the review proceeds instead of aborting: dispatch the FIRST
+`swarm-pr-review:micro` batch with the complete 11-row `trigger_evaluation`
+parameter inline on `dispatch_lanes_async` (that dispatch freezes the canonical
+ledger), persist it with `write_pr_review_trigger_eval`, run the validation
+lanes, then finish with `complete_pr_workflow` carrying the verdict PARTIAL
+coverage allows (REQUEST_CHANGES or INCOMPLETE — never APPROVE). The
+NO_COVERAGE short-circuit applies only at zero coverage. A
+`write_pr_review_trigger_eval` rejection saying the canonical ledger is missing
+means the first micro dispatch has not frozen it yet — supply the inline
+parameter; it is not a deadlock.
+
 ### Contract-failure diagnosis and recovery
 
 Under Profile A, `dispatch_lanes_async` adds the authoritative
@@ -1003,14 +1008,9 @@ three independent input layers: the header schema, data-row values, and tool
 argument shape. A correct header does not repair an invalid severity or lane
 value, and correct row data does not repair malformed dispatch JSON. Benign shape defects (evidence pipes, marker rows, verdict-row pipes, a header re-emitted as a data row) are auto-repaired and recorded as salvage — never a retry reason alone; the `parse_lane_candidates` receipt discloses them as `repair_kinds`, and a `[CLEAN]` attestation discredited beside a same-lane `[CANDIDATE]` row as `clean_attestation_salvaged` + `clean_attestation_salvage_reason` (the parse SUCCEEDS and the attestation still supplies no coverage) (contract and fidelity boundaries: `references/lane-output-recoverability.md`).
 
-Classify the incident from actual user-visible harm and the first failed
-predicate, not from the number of retries or the eventual result. A successful
-post-hoc fallback is recovery evidence; it does not justify the protocol
-deviation or erase the original failure. Conversely, the candidate tool and
-the coverage gate use a shared row parser, while the gate separately verifies
-durable provenance such as batch, session, lane, role, head, digest, and
-artifact identity. Parser success therefore proves row structure only; it does
-not settle the durable coverage obligation.
+Classify incidents from actual user-visible harm and the first failed predicate; the shared
+row parser proves row structure only, a post-hoc fallback is recovery evidence, and the
+gate separately verifies durable provenance (see `references/lane-output-recoverability.md`).
 
 If a controller denial omits the failed predicate, expected contract, or lane
 identity, record that as an opacity defect and escalate it with the preserved

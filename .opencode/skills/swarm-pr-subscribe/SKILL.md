@@ -7,6 +7,7 @@ description: >
   babysit, or autofix a PR until merge, or when a <pr-activity> wake message or
   [pr-monitor:...] advisory arrives for a subscribed PR. Owns event triage
   (fix / ask / skip), bounded-retry escalation, and terminal-state cleanup.
+swarm-contract-digest: 1f679751e34e
 ---
 
 # Swarm PR Subscribe
