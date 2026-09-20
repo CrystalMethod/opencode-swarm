@@ -47,7 +47,6 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash } from 'node:crypto';
 import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
@@ -1501,43 +1500,23 @@ export const STAMPED_PR_WORKFLOW_SKILLS = [
 	'swarm-ci-monitor',
 ] as const;
 
-export const SKILL_CONTRACT_DIGEST_KEY = 'swarm-contract-digest';
-
-/**
- * Split a SKILL.md into its frontmatter block (fences included) and body.
- * A file without a well-formed opening/closing fence pair has no frontmatter.
- */
-export function splitSkillFrontmatter(content: string): {
-	frontmatter: string;
-	body: string;
-} {
-	if (!content.startsWith('---\n')) return { frontmatter: '', body: content };
-	const end = content.indexOf('\n---\n', 4);
-	if (end === -1) return { frontmatter: '', body: content };
-	return {
-		frontmatter: content.slice(0, end + 5),
-		body: content.slice(end + 5),
-	};
-}
-
-/**
- * 12-hex content digest of a skill BODY (frontmatter excluded, line endings
- * normalized) — stable across platforms regardless of checkout EOL settings.
- */
-export function skillContractDigest(body: string): string {
-	const normalized = body.replace(/\r\n/g, '\n');
-	return createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 12);
-}
-
-function readSkillContractStamp(frontmatter: string): string | undefined {
-	// String.match rather than RegExp.exec: the SAST callee-binding
-	// classifier (issue #2300) flags an unresolved .exec member call as
-	// exec-like and requires manual review.
-	const match = frontmatter
-		.replace(/\r\n/g, '\n')
-		.match(new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`, 'm'));
-	return match?.[1];
-}
+// Issue #2601: the digest primitives live in the shared src module so the
+// runtime verification (src/services/pr-workflow-skill-contract.ts) and this
+// dev-time detector can never disagree. Re-exported here for the existing
+// consumers (scripts/stamp-skill-contracts.ts and the #2859 test suites);
+// readSkillContractStamp stays file-local (no consumer needs it via this
+// module's surface).
+import {
+	readSkillContractStamp,
+	SKILL_CONTRACT_DIGEST_KEY,
+	skillContractDigest,
+	splitSkillFrontmatter,
+} from '../src/config/skill-contract-digest.js';
+export {
+	SKILL_CONTRACT_DIGEST_KEY,
+	skillContractDigest,
+	splitSkillFrontmatter,
+};
 
 /**
  * Env-var-aware home resolution: os.homedir() ignores process.env entirely
@@ -1619,6 +1598,59 @@ export function detectUserGlobalSkillStaleness(
 	return findings;
 }
 
+/**
+ * Issue #2601: the `.swarm/bundled-skills/<slug>` installed copies are the
+ * surface MODE entry actually loads, but until now nothing compared their
+ * content against the shipped canonical (the bundled-skill detector above
+ * validates registry shape only). A stale installed copy is what an
+ * auto-resumed session executes. READ-ONLY detection over the worktree's
+ * local runtime tree: absent surface stays silent (CI checkouts have no
+ * `.swarm/`), a stale copy is a WARNING so `--enforce` blocks on it — the
+ * runtime activation/wake verification (src/services/pr-workflow-skill-contract.ts)
+ * heals the copy; this detector is the dev-time backstop that names it.
+ */
+export function detectBundledSkillStaleness(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const category = 'bundled-skill-staleness';
+	for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
+		const canonicalRelative = `.opencode/skills/${slug}/SKILL.md`;
+		let canonicalContent: string;
+		try {
+			canonicalContent = fs.readFileSync(
+				path.join(root, canonicalRelative),
+				'utf8',
+			);
+		} catch {
+			continue;
+		}
+		const canonicalDigest = skillContractDigest(
+			splitSkillFrontmatter(canonicalContent).body,
+		);
+		const installedRelative = `.swarm/bundled-skills/${slug}/SKILL.md`;
+		const installedPath = path.join(root, installedRelative);
+		if (!fs.existsSync(installedPath)) continue;
+		let installedContent: string;
+		try {
+			installedContent = fs.readFileSync(installedPath, 'utf8');
+		} catch {
+			continue;
+		}
+		const installedDigest = skillContractDigest(
+			splitSkillFrontmatter(installedContent).body,
+		);
+		if (installedDigest === canonicalDigest) continue;
+		findings.push({
+			category,
+			severity: 'warning',
+			file: installedRelative,
+			message: `installed bundled copy of skill '${slug}' is stale: ${installedPath} (digest ${installedDigest}) differs from the shipped canonical ${path.join(root, canonicalRelative)} (digest ${canonicalDigest}); re-run any /swarm command or restart the host to re-sync, or delete the stale .swarm/bundled-skills/${slug} directory`,
+		});
+	}
+	return findings;
+}
+
 // ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
@@ -1646,6 +1678,7 @@ export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['gates-docs', detectGatesConfigDrift],
 	['required-check-contract', detectRequiredCheckContractDrift],
 	['user-global-skill-staleness', detectUserGlobalSkillStaleness],
+	['bundled-skill-staleness', detectBundledSkillStaleness],
 ];
 
 /**

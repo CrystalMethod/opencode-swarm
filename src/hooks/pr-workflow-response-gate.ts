@@ -5,6 +5,10 @@ import {
 	readPrFeedbackMonitorQueue,
 } from '../background/pr-feedback-event-queue.js';
 import { appendCoreEventSync } from '../events/core-events.js';
+import {
+	ensurePrWorkflowSkillContractsFresh,
+	SKILL_CONTRACT_WAKE_BUDGET_MS,
+} from '../services/pr-workflow-skill-contract.js';
 import { log } from '../utils';
 import {
 	cancelPrWorkflowPluginWake,
@@ -14,6 +18,7 @@ import {
 	observePrWorkflowAutoWakeEvent,
 } from './pr-workflow-auto-wake.js';
 import {
+	appendPrWorkflowSkillContractAdvisories,
 	type PrReviewDepthTier,
 	readPrWorkflowGateState,
 } from './pr-workflow-gate.js';
@@ -32,12 +37,16 @@ export const _internals: {
 	readPrFeedbackMonitorQueue: typeof readPrFeedbackMonitorQueue;
 	observePrWorkflowAutoWakeEvent: typeof observePrWorkflowAutoWakeEvent;
 	scanDelegationsForRecovery: typeof scanDelegationsForRecovery;
+	// Issue #2601: seam for the wake-path skill-contract verification so
+	// fake-timer wake suites can stub the real (fs-bound) verifier.
+	ensurePrWorkflowSkillContractsFresh: typeof ensurePrWorkflowSkillContractsFresh;
 } = {
 	readPrWorkflowGateState,
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 	observePrWorkflowAutoWakeEvent,
 	scanDelegationsForRecovery,
+	ensurePrWorkflowSkillContractsFresh,
 };
 
 /**
@@ -1351,6 +1360,36 @@ export function createPrWorkflowResponseGate(options: {
 				queuedMonitorEvents.length > 0
 					? `\n${formatQueuedMonitorEventsText(queuedMonitorEvents)}`
 					: '';
+			// Issue #2601: close the auto-resume bundled-staleness window. This
+			// path re-enters MODE without a command, so the command-path sync
+			// never runs here — the init-time sync is fail-open and may predate
+			// a plugin update. Bounded, fail-open verification heals the bundled
+			// copy, records advisories on the durable state, and surfaces a
+			// bounded advisory block to the architect. Steady state (clean host)
+			// leaves the prompt byte-identical to the pre-#2601 text
+			// (AGENTS.md invariant 10).
+			const skillContractAdvisories =
+				await _internals.ensurePrWorkflowSkillContractsFresh(
+					options.directory,
+					state.mode,
+					{
+						budgetMs: SKILL_CONTRACT_WAKE_BUDGET_MS,
+					},
+				);
+			if (skillContractAdvisories.length > 0) {
+				await appendPrWorkflowSkillContractAdvisories(
+					options.directory,
+					sessionID,
+					skillContractAdvisories,
+				);
+			}
+			const skillContractAdvisoryText =
+				skillContractAdvisories.length === 0
+					? ''
+					: `\n[skill-contract advisory] ${skillContractAdvisories
+							.slice(0, 4)
+							.map((advisory) => advisory.slice(0, 500))
+							.join('\n[skill-contract advisory] ')}`;
 			const promptStartTime = now();
 			finalBoundary.lastObservedAt = promptStartTime;
 			if (shouldDeferBoundaryWake(finalBoundary, promptStartTime)) {
@@ -1377,7 +1416,7 @@ export function createPrWorkflowResponseGate(options: {
 									suspended: false,
 									suspendedReason: undefined,
 									maxConsecutive: maxConsecutive,
-								})}\nDo not stop or summarize. Inspect the durable gate, dispatch or collect the next missing required lane, and continue until complete_pr_workflow succeeds. If the bind/checkout path is genuinely unreachable, call abort_pr_workflow instead of looping.${queuedMonitorText}`,
+								})}\nDo not stop or summarize. Inspect the durable gate, dispatch or collect the next missing required lane, and continue until complete_pr_workflow succeeds. If the bind/checkout path is genuinely unreachable, call abort_pr_workflow instead of looping.${queuedMonitorText}${skillContractAdvisoryText}`,
 							},
 						],
 					},

@@ -5,6 +5,7 @@ import { _test_exports as workflowInternals } from '../../../src/hooks/pr-workfl
 import {
 	createPrWorkflowResponseGate,
 	DEFAULT_TOTAL_WAKE_CEILINGS,
+	_internals as responseGateInternals,
 } from '../../../src/hooks/pr-workflow-response-gate.js';
 import {
 	idleEventFor,
@@ -166,4 +167,18 @@ describe('resolveTotalWakeCeiling — regression: invalid totalWakeCeiling falls
 		expect(result.suspended).toBe(true);
 		expect(result.wakes).toBe(4);
 	});
+});
+
+// Issue #2601: stub the wake-path skill-contract verifier (fs-bound) so
+// fake-timer wake assertions stay deterministic; clean-host result is [].
+const __originalSkillContractVerifier =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
+beforeEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
+});
+
+afterEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		__originalSkillContractVerifier;
 });
