@@ -146,7 +146,7 @@ interface Leg {
 	receipt: ReturnType<typeof buildReceipt>;
 }
 
-async function seedOpenLaneWithPublishedReceipt(): Promise<Leg> {
+async function seedOpenLane(publish: boolean): Promise<Leg> {
 	const suffix = `l${legIndex}`;
 	const leg: Leg = {
 		batchId: `claim-refusal-batch-${suffix}`,
@@ -182,6 +182,7 @@ async function seedOpenLaneWithPublishedReceipt(): Promise<Leg> {
 		generation: 1,
 	});
 	expect(recorded).not.toBeNull();
+	if (!publish) return leg;
 	const published = await publishPrReviewResultReceipt(directory, {
 		parentSessionId: PARENT,
 		childSessionId: leg.child,
@@ -194,6 +195,14 @@ async function seedOpenLaneWithPublishedReceipt(): Promise<Leg> {
 	});
 	expect(published.status).toBe('recorded');
 	return leg;
+}
+
+async function seedOpenLaneWithPublishedReceipt(): Promise<Leg> {
+	return seedOpenLane(true);
+}
+
+async function seedOpenLaneWithoutPublishedReceipt(): Promise<Leg> {
+	return seedOpenLane(false);
 }
 
 function staleTerminal(args: {
@@ -342,5 +351,94 @@ describe('claim-point refusal of stale-decision contract terminals (#2865)', () 
 		const lane = findByCorrelationId(directory, leg.child);
 		expect(lane?.status === 'pending' || lane?.status === 'running').toBe(true);
 		expect(lane?.result?.prReviewResultReceipt).toBeDefined();
+	});
+});
+
+describe('claim-first interleaving: a publish after a won claim settles the lane (#2865)', () => {
+	// Scenario shared by these legs: the receipt is NOT published first — the
+	// stale error/contract terminal claim wins the lock outright (the guard
+	// cannot fire because no receipt exists under the lock at claim time), and
+	// the child's exactly-bound publish arrives afterwards.
+	async function claimStaleTerminalFirst(leg: Leg) {
+		const claimed = await claimTerminalResult(
+			directory,
+			leg.child,
+			staleTerminal({
+				child: leg.child,
+				error: MISSING_RECEIPT_ERROR,
+				failureClass: 'contract',
+			}),
+		);
+		expect(claimed?.disposition).toBe('claimed');
+		const lane = findByCorrelationId(directory, leg.child);
+		expect(lane?.status).toBe('error');
+		expect(lane?.result?.prReviewResultReceipt).toBeUndefined();
+		return lane!;
+	}
+
+	async function publishLegReceipt(leg: Leg, receiptOverride?: unknown) {
+		return publishPrReviewResultReceipt(directory, {
+			parentSessionId: PARENT,
+			childSessionId: leg.child,
+			batchId: leg.batchId,
+			laneId: leg.laneId,
+			expectedWorkflowInstanceId: WORKFLOW_INSTANCE,
+			expectedWorkflowRevision: WORKFLOW_REVISION,
+			expectedBaseSha: BASE_SHA,
+			receipt: (receiptOverride ?? leg.receipt) as never,
+		});
+	}
+
+	test('an exactly-bound receipt admitted after the won claim settles the record completed', async () => {
+		const leg = await seedOpenLaneWithoutPublishedReceipt();
+		await claimStaleTerminalFirst(leg);
+		const published = await publishLegReceipt(leg);
+		expect(published.status).toBe('recorded');
+		const lane = findByCorrelationId(directory, leg.child);
+		expect(lane?.status).toBe('completed');
+		expect(lane?.terminalResult?.status).toBe('completed');
+		expect(lane?.terminalResult?.result.prReviewResultReceipt).toBeDefined();
+		expect(lane?.terminalResult?.result.error).toBeUndefined();
+		expect(
+			lane?.terminalResult?.result.workflowLaneFailureClass,
+		).toBeUndefined();
+		// Idempotent: a replay of the same publish is a duplicate, not a flip.
+		const replay = await publishLegReceipt(leg);
+		expect(replay.status).toBe('duplicate');
+		const after = findByCorrelationId(directory, leg.child);
+		expect(after?.status).toBe('completed');
+	});
+
+	test('a non-binding receipt never flips the stale terminal (identity conflict)', async () => {
+		const leg = await seedOpenLaneWithoutPublishedReceipt();
+		await claimStaleTerminalFirst(leg);
+		const foreign = {
+			...leg.receipt,
+			baseSha: 'f'.repeat(40),
+		} as never;
+		const published = await publishLegReceipt(leg, foreign);
+		expect(published.status).toBe('conflict');
+		const lane = findByCorrelationId(directory, leg.child);
+		expect(lane?.status).toBe('error');
+		expect(lane?.terminalResult?.result.prReviewResultReceipt).toBeUndefined();
+	});
+
+	test('a publish onto an error/liveness terminal is still rejected (parent-repair lever unchanged)', async () => {
+		const leg = await seedOpenLaneWithoutPublishedReceipt();
+		const claimed = await claimTerminalResult(
+			directory,
+			leg.child,
+			staleTerminal({
+				child: leg.child,
+				error: 'lane presumed stale by the 30-minute sweep',
+				failureClass: 'liveness',
+			}),
+		);
+		expect(claimed?.disposition).toBe('claimed');
+		const published = await publishLegReceipt(leg);
+		expect(published.status).toBe('terminal');
+		const lane = findByCorrelationId(directory, leg.child);
+		expect(lane?.status).toBe('error');
+		expect(lane?.result?.prReviewResultReceipt).toBeUndefined();
 	});
 });

@@ -3730,6 +3730,24 @@ export async function publishPrReviewResultReceipt(
 					}
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): an `error` terminal
+				// with workflowLaneFailureClass 'contract' whose decision never
+				// saw ANY receipt can only be a stale-snapshot settlement —
+				// the collect settle path is the sole producer of that shape
+				// and always includes its snapshot's receipt in the result
+				// when it had one. When the terminal claim won the lock before
+				// the child's publish landed, the publish is the child's
+				// genuine exactly-bound settlement; admit it below (the
+				// immutable-identity checks still gate the write) so the lane
+				// settles on its receipt instead of losing the dimension to
+				// transport ordering.
+				const staleContractTerminalForReceipt =
+					current.status === 'error' &&
+					!current.result?.prReviewResultReceipt &&
+					!current.terminalResult?.result.prReviewResultReceipt &&
+					(current.terminalResult?.result.workflowLaneFailureClass ===
+						'contract' ||
+						current.result?.workflowLaneFailureClass === 'contract');
 				if (current.status !== 'pending' && current.status !== 'running') {
 					// Issue #2585 (AC13): the architect-parent repair lever may
 					// publish onto a liveness-terminal lane ONLY when the submission
@@ -3744,7 +3762,10 @@ export async function publishPrReviewResultReceipt(
 						(current.terminalResult?.result.workflowLaneFailureClass ===
 							'liveness' ||
 							current.result?.workflowLaneFailureClass === 'liveness');
-					if (!livenessTerminalForParentRepair) {
+					if (
+						!livenessTerminalForParentRepair &&
+						!staleContractTerminalForReceipt
+					) {
 						outcome = {
 							status: 'terminal',
 							reason: `delegation is already ${current.status}`,
@@ -3807,6 +3828,43 @@ export async function publishPrReviewResultReceipt(
 					};
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): the admitted publish
+				// supersedes the stale-decision terminal — the record settles
+				// `completed` on the exactly-bound receipt, mirroring the
+				// terminal the settle path would have written had its snapshot
+				// observed the receipt. The stale error text and contract class
+				// are dropped from the persisted result so the folded record
+				// never carries a settlement verdict next to the receipt that
+				// contradicts it. Idempotent: a replay short-circuits to
+				// `duplicate` at the receipt check above; the new eventId
+				// differs from the refused error terminal's (status+digest
+				// identity), and the fold is last-wins.
+				const staleContractAdmissionResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
+				delete staleContractAdmissionResult.error;
+				delete staleContractAdmissionResult.workflowLaneFailureClass;
+				const staleContractAdmission =
+					staleContractTerminalForReceipt === true
+						? buildTypedDelegationTerminal(
+								current,
+								'completed',
+								staleContractAdmissionResult,
+								Date.now(),
+							)
+						: undefined;
+				if (staleContractAdmission) {
+					logger.warn(
+						`[background] publishPrReviewResultReceipt: admitting receipt onto stale-decision ` +
+							`contract terminal for correlationId=${input.parentSessionId}/${input.childSessionId} ` +
+							`lane=${input.laneId}; record settles completed on the exactly-bound receipt`,
+					);
+				}
 				const next: BackgroundDelegationRecord = {
 					...current,
 					schemaVersion: 4,
@@ -3823,6 +3881,13 @@ export async function publishPrReviewResultReceipt(
 						? {
 								terminalResult: parentRepairBackfill,
 								completedAt: parentRepairBackfill.recordedAt,
+							}
+						: {}),
+					...(staleContractAdmission
+						? {
+								status: 'completed',
+								terminalResult: staleContractAdmission,
+								completedAt: staleContractAdmission.recordedAt,
 							}
 						: {}),
 				};
