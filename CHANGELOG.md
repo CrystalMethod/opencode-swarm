@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.184.13](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.12...v7.184.13) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pr-review:** child-blind submit rejections, collect budget starvation, bootstrap error remediation, stale skill detection ([#2859](https://github.com/ZaxbyHub/opencode-swarm/issues/2859)) ([a483fb2](https://github.com/ZaxbyHub/opencode-swarm/commit/a483fb25d7d182852669440a2be10293573e8606))
+* **pr-review:** resolve 9 swarm-pr-review findings on [#2863](https://github.com/ZaxbyHub/opencode-swarm/issues/2863) ([2c2922d](https://github.com/ZaxbyHub/opencode-swarm/commit/2c2922d02848aa5daad7c9d01f4c675c066bde33))
+
 ## [7.184.12](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.11...v7.184.12) (2026-09-19)
 
 
