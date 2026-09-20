@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.184.16](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.15...v7.184.16) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pr-review:** settle discovery lanes on mid-pass and claim-first receipt publishes ([#2865](https://github.com/ZaxbyHub/opencode-swarm/issues/2865)) ([f8aa218](https://github.com/ZaxbyHub/opencode-swarm/commit/f8aa218ffd92e03b04ceb72e862f6f72dd58ddfd))
+
 ## [7.184.15](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.14...v7.184.15) (2026-09-20)
 
 
