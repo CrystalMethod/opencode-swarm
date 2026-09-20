@@ -1899,15 +1899,33 @@ export async function recordPrReviewSubmitRejection(
 		);
 		if (!existing || existing.mode !== 'PR_REVIEW') return;
 		const laneId = record?.laneId?.trim();
-		const bounded = message.slice(0, 300);
+		// PR #2863 review (PRR-002): apply the same redaction as
+		// boundPublicationDiagnostic — the message embeds child-controlled
+		// payload fragments, so URL-embedded credentials and secret-shaped
+		// strings must not persist durably in the gate-state journal.
+		const bounded = redactSecrets(
+			message.replace(
+				PUBLICATION_URL_CREDENTIALS_PATTERN,
+				'$1[REDACTED:url_credentials]@',
+			),
+		).slice(0, 300);
 		await withSessionStateMutation(directory, parentSessionId, async () => {
 			const locked = await readPrWorkflowGateStateFromDisk(
 				directory,
 				parentSessionId,
 			);
 			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const prior = locked.prReviewSubmitRejections ?? [];
+			// PR #2863 review (PRR-015): a hostile child looping the SAME invalid
+			// payload produces byte-identical messages; skip the append when the
+			// child's newest entry is identical so retry loops cannot amplify
+			// gate-state writes (the diagnostic is already journalled).
+			const newestForChild = prior
+				.filter((entry) => entry.childSessionId === child)
+				.at(-1);
+			if (newestForChild?.message === bounded) return;
 			const journal: PrReviewSubmitRejectionRecord[] = [
-				...(locked.prReviewSubmitRejections ?? []),
+				...prior,
 				{
 					childSessionId: child,
 					...(laneId ? { laneId } : {}),
@@ -2758,6 +2776,14 @@ export interface PrWorkflowPendingLaneLiveness {
 		| 'advisory-unavailable'
 		| 'probe-skipped-no-budget';
 }
+/**
+ * The degradedReason value emitted when the pending-liveness probe budget
+ * was already exhausted so no probe ran at all (issue #2815). Shared with
+ * the collect-side counter/message so the string has one source of truth
+ * (PR #2863 review PRR-007).
+ */
+export const PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON =
+	'probe-skipped-no-budget' as const;
 
 /**
  * Bounded, fail-open liveness advisory for still-pending async lanes
@@ -2823,7 +2849,7 @@ export async function collectPrWorkflowPendingLaneLiveness(
 			// the child sessions (issue #2815: the shared label invited
 			// orchestrators to read a budget artifact as a host failure).
 			return pastThreshold.map((record) =>
-				degraded(record, 'probe-skipped-no-budget'),
+				degraded(record, PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON),
 			);
 		}
 		const probe = await probePrWorkflowLaneSessionStatusTypes(
@@ -16699,6 +16725,12 @@ function workflowArtifactHasContractMarker(
 			state.mode === 'PR_REVIEW' && state.prReviewBaseSha && state.prHeadSha
 				? `complete PR diff ${state.prReviewBaseSha}...${state.prHeadSha}`
 				: undefined;
+		// PR #2863 review (PRR-008/Copilot): evaluate the bounded journal scan
+		// once instead of twice (condition + value).
+		const lastSubmitRejection = latestPrReviewSubmitRejectionMessage(
+			state,
+			record.subagentSessionId,
+		);
 		const validation = validatePrReviewDiscoveryLaneCompletion({
 			record,
 			result: record.result!,
@@ -16717,14 +16749,7 @@ function workflowArtifactHasContractMarker(
 			},
 			// Issue #2859 (F3): let the discovery contract-failure message name
 			// the child's last rejected submit attempt when one is journalled.
-			...(latestPrReviewSubmitRejectionMessage(state, record.subagentSessionId)
-				? {
-						lastSubmitRejection: latestPrReviewSubmitRejectionMessage(
-							state,
-							record.subagentSessionId,
-						),
-					}
-				: {}),
+			...(lastSubmitRejection ? { lastSubmitRejection } : {}),
 		});
 		if (!validation.ok) {
 			if (diagnostics && diagnostics.length < MAX_BASE_COVERAGE_DIAGNOSTICS) {

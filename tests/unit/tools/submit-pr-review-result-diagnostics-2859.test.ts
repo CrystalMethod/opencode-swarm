@@ -244,16 +244,25 @@ describe('submit_pr_review_result schemaVersion coercion — regression: string 
 describe('consecutive-rejection tracker eviction (issue #2859 F1, AGENTS.md §8)', () => {
 	test('FIFO eviction keeps the map bounded at MAX_TRACKED_SUBMIT_SESSIONS', () => {
 		const directory = canonicalTmpDir();
-		for (let index = 0; index < MAX_TRACKED_SUBMIT_SESSIONS + 8; index++) {
-			noteSubmitRejection(directory, `session-${index}`);
+		// PR #2863 review (PRR-005): remove every inserted key at the end so
+		// the module-level Map carries no residue into later tests sharing
+		// this process (batched local runs; CI is per-file).
+		try {
+			for (let index = 0; index < MAX_TRACKED_SUBMIT_SESSIONS + 8; index++) {
+				noteSubmitRejection(directory, `session-${index}`);
+			}
+			// The oldest 8 sessions were evicted in insertion order: re-noting
+			// an evicted session starts a fresh count at 1 rather than
+			// continuing it.
+			expect(noteSubmitRejection(directory, 'session-0')).toBe(1);
+			expect(noteSubmitRejection(directory, 'session-7')).toBe(1);
+			// A surviving (recent) session continues its count.
+			const survivor = `session-${MAX_TRACKED_SUBMIT_SESSIONS + 7}`;
+			expect(noteSubmitRejection(directory, survivor)).toBe(2);
+		} finally {
+			for (let index = 0; index < MAX_TRACKED_SUBMIT_SESSIONS + 8; index++) {
+				clearSubmitRejections(directory, `session-${index}`);
+			}
 		}
-		// The oldest 8 sessions were evicted in insertion order: re-noting an
-		// evicted session starts a fresh count at 1 rather than continuing it.
-		expect(noteSubmitRejection(directory, 'session-0')).toBe(1);
-		expect(noteSubmitRejection(directory, 'session-7')).toBe(1);
-		// A surviving (recent) session continues its count.
-		const survivor = `session-${MAX_TRACKED_SUBMIT_SESSIONS + 7}`;
-		expect(noteSubmitRejection(directory, survivor)).toBe(2);
-		clearSubmitRejections(directory, survivor);
 	});
 });

@@ -124,26 +124,39 @@ describe('reserveConcurrentLaneCallBudgets floor math (issue #2859 F5)', () => {
 		expect(zero.laneBudgetMs).toBe(0);
 		expect(zero.statusBudgetMs).toBe(0);
 		expect(zero.messagesBudgetMs).toBe(0);
+
+		// PR #2863 review (BOT-3): remaining BELOW the floor with laneCount
+		// above the concurrency cap — the floor must clamp to the remaining
+		// budget, never exceed it.
+		const tiny = reserve(10_900, 12, true);
+		expect(tiny.laneBudgetMs).toBe(900);
+		expect(tiny.statusBudgetMs).toBeGreaterThan(0);
+		expect(tiny.statusBudgetMs).toBeLessThanOrEqual(900);
 	});
 });
 
 describe('collect_lane_results concurrent record refresh — regression: sequential starvation (F5)', () => {
 	test('all lanes get their probe attempt and the refresh wall-clock is the max, not the sum', async () => {
-		// 6 lanes x 150ms status latency under a 5s budget. Sequential
-		// refresh costs ~6*150=900ms; concurrent (cap 4) ~2 waves ~300ms.
-		// Assertion margin: pass < 700ms (2x the expected concurrent cost),
-		// fail on the sequential implementation at ~900ms.
-		statusDelayMs = 150;
+		// PR #2863 review (PRR-004): the discriminator must be STRUCTURAL, not
+		// timing-only. 6 lanes x 300ms status latency under a 1600ms budget:
+		// a SEQUENTIAL refresh needs 6*300=1800ms > 1600ms, so the last
+		// lane(s) hit a zero/under-budget probe and are skipped — statusCalls
+		// < 6 deterministically. The CONCURRENT refresh costs 2 waves x
+		// 300ms = 600ms (2.7x budget margin under CI load) and probes all 6.
+		// elapsedMs stays as a loose secondary (< 1500ms) only.
+		statusDelayMs = 300;
 		await recordLanes(6);
 		const startedAt = performance.now();
 		const result = (await executeCollectLaneResults(
-			{ batch_id: 'batch-2859', wait: false, timeout_ms: 5000 },
+			{ batch_id: 'batch-2859', wait: false, timeout_ms: 1600 },
 			directory,
 		)) as { pending?: number };
 		const elapsedMs = performance.now() - startedAt;
 		expect(result.pending).toBeGreaterThan(0);
+		// Under sequential refresh this is < 6 (starved lanes never get a
+		// status call); under the concurrent fan-out all 6 are probed.
 		expect(statusCalls).toBe(6);
-		expect(elapsedMs).toBeLessThan(700);
+		expect(elapsedMs).toBeLessThan(1500);
 	}, 20_000);
 
 	test('a starved pending-liveness probe surfaces in the top-level message', async () => {

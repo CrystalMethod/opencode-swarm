@@ -125,6 +125,33 @@ describe('recordPrReviewSubmitRejection via the tool layer (issue #2859 F3)', ()
 		expect(journal[0].message.length).toBeLessThanOrEqual(300);
 	});
 
+	test('a URL-credential-bearing rejection message is redacted in the journal (PRR-002)', async () => {
+		const directory = canonicalMkdtemp('sw2859-f3e-');
+		await writePendingDelegation(directory);
+		writeGateState(directory);
+
+		// The child embeds a credential-bearing URL in the offending field;
+		// the journal must persist the redacted form (boundPublicationDiagnostic
+		// precedent), never the raw secret.
+		const raw = await executeSubmitPrReviewResult(
+			{
+				schemaVersion: 1,
+				revisionDigest: 'https://user:supertoken@host.example.com/x',
+				result: { schemaVersion: 1 },
+			},
+			directory,
+			{ sessionID: CHILD },
+		);
+		const outcome = JSON.parse(raw) as { success: boolean; message: string };
+		expect(outcome.success).toBeFalse();
+		expect(outcome.message).toContain('supertoken');
+
+		const journal = readJournal(directory);
+		expect(journal).toHaveLength(1);
+		expect(journal[0].message).not.toContain('supertoken');
+		expect(journal[0].message).toContain('[REDACTED:url_credentials]@');
+	});
+
 	test('no gate state (and no lock file) is created when the parent never opened a gate', async () => {
 		const directory = canonicalMkdtemp('sw2859-f3b-');
 		await writePendingDelegation(directory);

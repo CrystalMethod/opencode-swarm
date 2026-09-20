@@ -94,6 +94,7 @@ import {
 	PR_REVIEW_BASE_DIMENSION_IDS,
 	PR_REVIEW_BASE_LANE_FLOORS,
 	PR_REVIEW_MICRO_LANE_FLOORS,
+	PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON,
 	type PrReviewDepthTier,
 	PrReviewResilienceCircuitOpenError,
 	PrReviewResilienceRetryExhaustedError,
@@ -2219,10 +2220,11 @@ export async function executeCollectLaneResults(
 	// too, ADDITIVELY (never replacing the host-timeout sentence above), so the
 	// `pending === 0` edge case still reports it.
 	const starvedProbeCount = (result.pending_liveness ?? []).filter(
-		(lane) => lane.degradedReason === 'probe-skipped-no-budget',
+		(lane) =>
+			lane.degradedReason === PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON,
 	).length;
 	if (starvedProbeCount > 0) {
-		result.message = `${result.message ? `${result.message} ` : ''}${starvedProbeCount} pending-liveness probe(s) skipped for budget (probe-skipped-no-budget); lanes may be further settled than reported.`;
+		result.message = `${result.message ? `${result.message} ` : ''}${starvedProbeCount} pending-liveness probe(s) skipped for budget (${PR_WORKFLOW_PROBE_SKIPPED_NO_BUDGET_REASON}); lanes may be further settled than reported.`;
 	}
 	// Issue #2349: `errors` is assigned from the UNION of host-call timeouts and
 	// terminal-settle write failures. `result.message` stays keyed on
@@ -2770,7 +2772,6 @@ async function collectOnce(
 		);
 		if (cancelPending) {
 			if (typeof session.abort === 'function') {
-				const timeoutCount = hostTimeouts.size;
 				try {
 					await withCollectionDeadline(
 						() => session.abort!({ path: { id: record.subagentSessionId } }),
@@ -2782,7 +2783,20 @@ async function collectOnce(
 				} catch {
 					// Preserve the old best-effort behavior for ordinary host errors, but
 					// never claim cancellation when the abort request itself timed out.
-					if (hostTimeouts.size > timeoutCount) return { kind: 'skipped' };
+					// PR #2863 review (PRR-001): attribute by membership of THIS lane's
+					// own timeout diagnostic. The pre-fix sequential loop could use a
+					// hostTimeouts.size delta, but under the concurrent fan-out another
+					// lane's timeout inflates the shared set between capture and check,
+					// misclassifying an ordinary abort error as a timeout and skipping
+					// the cancellation settle.
+					const abortTimeoutPrefix = `session.abort for lane session "${record.subagentSessionId}" exceeded`;
+					if (
+						[...hostTimeouts].some((entry) =>
+							entry.startsWith(abortTimeoutPrefix),
+						)
+					) {
+						return { kind: 'skipped' };
+					}
 				}
 			}
 			// Issue #2045: cancellation settles through the shared exactly-once

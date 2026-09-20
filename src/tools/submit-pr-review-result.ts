@@ -33,6 +33,11 @@ const SubmitPrReviewResultArgsSchema = z
 // renders identically for "1", 2, "2", true, and null), so blind retry is the
 // rational child response. Render the RECEIVED value, bounded.
 const RECEIVED_VALUE_RENDER_LIMIT = 120;
+// PR #2863 review (PRR-003): each received value is bounded above, but the
+// joined issue list was not. An adversarial multi-issue payload could hand
+// the child a multi-KB rejection, defeating F1 self-diagnosis; cap the
+// total child-visible message with an explicit truncation note.
+const MAX_FORMATTED_ISSUE_MESSAGE_CHARS = 2_000;
 
 function resolveReceivedValue(
 	args: unknown,
@@ -67,7 +72,7 @@ function formatSubmitValidationIssues(
 	args: unknown,
 	issues: z.ZodIssue[],
 ): string {
-	return issues
+	const joined = issues
 		.map((issue) => {
 			const pathLabel = issue.path.length > 0 ? issue.path.join('.') : '(root)';
 			let receivedSource: unknown;
@@ -90,6 +95,10 @@ function formatSubmitValidationIssues(
 			return `${pathLabel}: ${issue.message}${received}`;
 		})
 		.join('; ');
+	if (joined.length <= MAX_FORMATTED_ISSUE_MESSAGE_CHARS) {
+		return joined;
+	}
+	return `${joined.slice(0, MAX_FORMATTED_ISSUE_MESSAGE_CHARS)}… [truncated: ${issues.length} validation issue(s) exceed the ${MAX_FORMATTED_ISSUE_MESSAGE_CHARS}-char diagnostic budget; fix the first listed issue(s) and resubmit]`;
 }
 
 /**
