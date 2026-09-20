@@ -143,10 +143,8 @@ beforeEach(() => {
 	);
 	process.env.SWARM_SKIP_SPEC_GATE = '1';
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
-	// PRR-002: the loader deep-merges the developer's real user config; keep
-	// unset keys (max_retention etc.) deterministic across machines.
-	isolatedEnv = createIsolatedTestEnv();
-	// m-c-004 safety net: capture console so no test can leak output.
+	// m-c-004/F9 safety net: capture console BEFORE anything that can throw,
+	// so afterEach can never restore undefined console methods.
 	consoleCapture = [];
 	originalConsoleWarn = console.warn;
 	originalConsoleLog = console.log;
@@ -156,6 +154,9 @@ beforeEach(() => {
 	console.log = (...args: unknown[]) => {
 		consoleCapture.push(args.map(String).join(' '));
 	};
+	// PRR-002: the loader deep-merges the developer's real user config; keep
+	// unset keys (max_retention etc.) deterministic across machines.
+	isolatedEnv = createIsolatedTestEnv();
 });
 
 afterEach(() => {
