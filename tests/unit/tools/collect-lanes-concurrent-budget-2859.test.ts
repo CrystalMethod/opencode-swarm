@@ -140,10 +140,13 @@ describe('collect_lane_results concurrent record refresh — regression: sequent
 		// PR #2863 review (PRR-004): the discriminator must be STRUCTURAL, not
 		// timing-only. 6 lanes x 300ms status latency under a 1600ms budget:
 		// a SEQUENTIAL refresh needs 6*300=1800ms > 1600ms, so the last
-		// lane(s) hit a zero/under-budget probe and are skipped — statusCalls
-		// < 6 deterministically. The CONCURRENT refresh costs 2 waves x
-		// 300ms = 600ms (2.7x budget margin under CI load) and probes all 6.
-		// elapsedMs stays as a loose secondary (< 1500ms) only.
+		// lane(s) hit a zero/under-budget probe and are skipped — the
+		// SEQUENTIAL wall-clock alone (>= 1600ms) violates the elapsedMs
+		// bound below, while the CONCURRENT refresh costs 2 waves x 300ms =
+		// 600ms (2.7x budget margin under CI load) and completes all lanes.
+		// statusCalls counts INVOCATIONS (the mock increments synchronously),
+		// so it is 6 under both implementations and is asserted only as a
+		// "every lane was attempted" sanity pin, not as the discriminator.
 		statusDelayMs = 300;
 		await recordLanes(6);
 		const startedAt = performance.now();
@@ -153,9 +156,10 @@ describe('collect_lane_results concurrent record refresh — regression: sequent
 		)) as { pending?: number };
 		const elapsedMs = performance.now() - startedAt;
 		expect(result.pending).toBeGreaterThan(0);
-		// Under sequential refresh this is < 6 (starved lanes never get a
-		// status call); under the concurrent fan-out all 6 are probed.
 		expect(statusCalls).toBe(6);
+		// Load-bearing discriminator: a sequential refresh (>= 1600ms of
+		// status work alone) exceeds this bound; the concurrent fan-out
+		// finishes in ~600ms with 2.5x margin.
 		expect(elapsedMs).toBeLessThan(1500);
 	}, 20_000);
 

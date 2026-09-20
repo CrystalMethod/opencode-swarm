@@ -125,6 +125,39 @@ describe('recordPrReviewSubmitRejection via the tool layer (issue #2859 F3)', ()
 		expect(journal[0].message.length).toBeLessThanOrEqual(300);
 	});
 
+	test('identical consecutive rejection messages are deduped in the journal (PRR-015)', async () => {
+		const directory = canonicalMkdtemp('sw2859-f3f-');
+		await writePendingDelegation(directory);
+		writeGateState(directory);
+
+		const args = {
+			schemaVersion: '2',
+			revisionDigest: 'd'.repeat(64),
+			result: { schemaVersion: 1 },
+		};
+		// First rejection: journaled.
+		await executeSubmitPrReviewResult(args, directory, { sessionID: CHILD });
+		expect(readJournal(directory)).toHaveLength(1);
+		// Second IDENTICAL rejection: byte-identical message → deduped (a
+		// hostile retry loop cannot amplify gate-state writes).
+		await executeSubmitPrReviewResult(args, directory, { sessionID: CHILD });
+		expect(readJournal(directory)).toHaveLength(1);
+		// A DIFFERENT rejection (a distinct offending field whose issue text
+		// differs within the 300-char journal window) appends a new entry —
+		// observability is preserved for genuinely new information. Note a
+		// new VALID digest ('e'.repeat(64)) would not count as different: the
+		// digest issue disappears and the difference falls outside the
+		// 300-char bound, so dedup correctly suppresses it.
+		await executeSubmitPrReviewResult(
+			{ ...args, revisionDigest: 'ZZZ' },
+			directory,
+			{ sessionID: CHILD },
+		);
+		const journal = readJournal(directory);
+		expect(journal).toHaveLength(2);
+		expect(journal[0].message).not.toBe(journal[1].message);
+	});
+
 	test('a URL-credential-bearing rejection message is redacted in the journal (PRR-002)', async () => {
 		const directory = canonicalMkdtemp('sw2859-f3e-');
 		await writePendingDelegation(directory);
