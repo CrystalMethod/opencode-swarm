@@ -20,6 +20,7 @@ import {
 	activatePrWorkflow,
 	appendPrWorkflowSkillContractAdvisories,
 	readPrWorkflowGateState,
+	_test_exports as workflowInternals,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import { _internals as contractInternals } from '../../../src/services/pr-workflow-skill-contract.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
@@ -185,10 +186,35 @@ describe('activation persists skill-contract advisories (issue #2601)', () => {
 			fx.project,
 			'act-2601-failopen',
 		);
-		// The fail-open advisory is returned by the helper and persisted.
-		expect(
-			persisted?.skillContractAdvisories?.length ?? 0,
-		).toBeGreaterThanOrEqual(0);
+		// The fail-open advisory is returned by the helper and persisted:
+		// assert the exact observable outcome, not a tautology (PRR-004).
+		expect(persisted?.skillContractAdvisories).toHaveLength(1);
+		expect(persisted?.skillContractAdvisories?.[0]).toContain(
+			'skill-contract verification failed (fail-open)',
+		);
+	});
+});
+
+describe('gate-state schema advisory cap (issue #2601 PRR-009)', () => {
+	test('schema rejects 9 advisories and accepts the capped 8', () => {
+		const baseState = {
+			schemaVersion: 1,
+			sessionID: 'schema-cap-session',
+			mode: 'PR_REVIEW',
+			activatedAt: '2026-09-20T00:00:00.000Z',
+			updatedAt: '2026-09-20T00:00:00.000Z',
+		};
+		const advisory = (n: number) => `advisory-${n}`;
+		const eight = workflowInternals.parseGateState({
+			...baseState,
+			skillContractAdvisories: Array.from({ length: 8 }, (_, i) => advisory(i)),
+		});
+		expect(eight.success).toBe(true);
+		const nine = workflowInternals.parseGateState({
+			...baseState,
+			skillContractAdvisories: Array.from({ length: 9 }, (_, i) => advisory(i)),
+		});
+		expect(nine.success).toBe(false);
 	});
 });
 

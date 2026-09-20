@@ -252,3 +252,17 @@ describe('PR workflow response-gate idle/status ordering races', () => {
 		});
 	}
 });
+
+// Issue #2601: stub the wake-path skill-contract verifier (fs-bound) so
+// fake-timer wake assertions stay deterministic; clean-host result is [].
+const __originalSkillContractVerifier =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
+beforeEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
+});
+
+afterEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		__originalSkillContractVerifier;
+});

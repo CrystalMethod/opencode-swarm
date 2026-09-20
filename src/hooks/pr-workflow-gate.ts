@@ -206,7 +206,10 @@ import type {
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
-import { ensurePrWorkflowSkillContractsFresh } from '../services/pr-workflow-skill-contract.js';
+import {
+	ensurePrWorkflowSkillContractsFresh,
+	MAX_SKILL_CONTRACT_ADVISORIES,
+} from '../services/pr-workflow-skill-contract.js';
 import { swarmState } from '../state.js';
 import { getPrWorkflowToolCapability } from '../tools/tool-metadata.js';
 import { sameProjectRoot } from '../utils/canonical-root.js';
@@ -1503,7 +1506,10 @@ const PrWorkflowGateStateSchema = z
 		mode: z.enum(['PR_REVIEW', 'PR_FEEDBACK']),
 		activatedAt: z.string().min(1),
 		updatedAt: z.string().min(1),
-		skillContractAdvisories: z.array(z.string().min(1)).max(8).optional(),
+		skillContractAdvisories: z
+			.array(z.string().min(1))
+			.max(MAX_SKILL_CONTRACT_ADVISORIES)
+			.optional(),
 		prHeadSha: z.string().min(1).optional(),
 		prReviewBaseRef: z.string().min(1).optional(),
 		prReviewBaseSha: z.string().min(1).optional(),
@@ -1852,7 +1858,7 @@ export async function appendPrWorkflowSkillContractAdvisories(
 			const current = existing.skillContractAdvisories ?? [];
 			const merged = [...current];
 			for (const advisory of advisories) {
-				if (merged.length >= 8) break;
+				if (merged.length >= MAX_SKILL_CONTRACT_ADVISORIES) break;
 				if (!merged.includes(advisory)) merged.push(advisory);
 			}
 			if (merged.length === current.length) return;
@@ -13189,6 +13195,9 @@ export async function completePrWorkflow(
 }
 
 export const _test_exports = {
+	// Issue #2601 (PRR-009): direct codec access so tests can pin the
+	// skillContractAdvisories schema cap independently of the append guard.
+	parseGateState: (data: unknown) => PrWorkflowGateStateSchema.safeParse(data),
 	// Issue #2382: the text-signature classifier was replaced by the typed
 	// circuit-signal classifier (durable structured evidence only). Exposed so
 	// the provider-terminal / ignored-reason classification can be asserted

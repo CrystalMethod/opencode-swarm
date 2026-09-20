@@ -19,6 +19,7 @@ import {
 import {
 	_internals,
 	ensurePrWorkflowSkillContractsFresh,
+	nearestPackageRootFrom,
 } from '../../../src/services/pr-workflow-skill-contract.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
@@ -287,5 +288,48 @@ describe('ensurePrWorkflowSkillContractsFresh (issue #2601)', () => {
 		// The stamp was written by the independent stamping script; equality
 		// here pins the shared digest implementation to the shipped contract.
 		expect(skillContractDigest(body)).toBe(readSkillContractStamp(frontmatter));
+	});
+
+	test('package-root walk resolves BOTH module layouts (issue #2601 PRR-001)', () => {
+		// Bundle-shaped: the module executes from <pkg>/dist/index.js, one
+		// level below the package root. Source-shaped: src/services/, two
+		// levels deep. The old '..','..' arithmetic was only correct for the
+		// source shape; the walk must resolve the package root for both.
+		const pkg = makeTempRoot('sw2601-bunpkg-');
+		fs.writeFileSync(path.join(pkg, 'package.json'), '{}', 'utf8');
+		fs.mkdirSync(path.join(pkg, 'dist'), { recursive: true });
+		fs.mkdirSync(path.join(pkg, 'src', 'services'), { recursive: true });
+		expect(nearestPackageRootFrom(path.join(pkg, 'dist'))).toBe(pkg);
+		expect(nearestPackageRootFrom(path.join(pkg, 'src', 'services'))).toBe(pkg);
+		// A layout with no package.json ancestor is undefined (fail-open
+		// fallback territory), and the walk is bounded.
+		const orphan = makeTempRoot('sw2601-orphan-');
+		expect(nearestPackageRootFrom(orphan)).toBeUndefined();
+	});
+
+	test('seam default resolves home from the platform env var (issue #2601 PRR-008)', () => {
+		// Restore the DEFAULT resolver: this suite's beforeEach points the
+		// seam at a temp home, which would bypass the env-var branch under
+		// test.
+		_internals.resolveUserGlobalHome = originalInternals.resolveUserGlobalHome;
+		const originalUserProfile = process.env.USERPROFILE;
+		const originalHome = process.env.HOME;
+		try {
+			if (process.platform === 'win32') {
+				process.env.USERPROFILE = 'E:/sw2601-fake-profile';
+				delete process.env.HOME;
+				expect(_internals.resolveUserGlobalHome()).toBe(
+					'E:/sw2601-fake-profile',
+				);
+			} else {
+				process.env.HOME = '/sw2601-fake-home';
+				expect(_internals.resolveUserGlobalHome()).toBe('/sw2601-fake-home');
+			}
+		} finally {
+			if (originalUserProfile === undefined) delete process.env.USERPROFILE;
+			else process.env.USERPROFILE = originalUserProfile;
+			if (originalHome === undefined) delete process.env.HOME;
+			else process.env.HOME = originalHome;
+		}
 	});
 });

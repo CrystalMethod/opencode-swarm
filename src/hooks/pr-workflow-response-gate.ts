@@ -37,12 +37,16 @@ export const _internals: {
 	readPrFeedbackMonitorQueue: typeof readPrFeedbackMonitorQueue;
 	observePrWorkflowAutoWakeEvent: typeof observePrWorkflowAutoWakeEvent;
 	scanDelegationsForRecovery: typeof scanDelegationsForRecovery;
+	// Issue #2601: seam for the wake-path skill-contract verification so
+	// fake-timer wake suites can stub the real (fs-bound) verifier.
+	ensurePrWorkflowSkillContractsFresh: typeof ensurePrWorkflowSkillContractsFresh;
 } = {
 	readPrWorkflowGateState,
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 	observePrWorkflowAutoWakeEvent,
 	scanDelegationsForRecovery,
+	ensurePrWorkflowSkillContractsFresh,
 };
 
 /**
@@ -1364,13 +1368,14 @@ export function createPrWorkflowResponseGate(options: {
 			// bounded advisory block to the architect. Steady state (clean host)
 			// leaves the prompt byte-identical to the pre-#2601 text
 			// (AGENTS.md invariant 10).
-			const skillContractAdvisories = await ensurePrWorkflowSkillContractsFresh(
-				options.directory,
-				state.mode,
-				{
-					budgetMs: SKILL_CONTRACT_WAKE_BUDGET_MS,
-				},
-			);
+			const skillContractAdvisories =
+				await _internals.ensurePrWorkflowSkillContractsFresh(
+					options.directory,
+					state.mode,
+					{
+						budgetMs: SKILL_CONTRACT_WAKE_BUDGET_MS,
+					},
+				);
 			if (skillContractAdvisories.length > 0) {
 				await appendPrWorkflowSkillContractAdvisories(
 					options.directory,

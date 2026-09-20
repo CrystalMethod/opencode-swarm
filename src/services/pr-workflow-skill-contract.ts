@@ -41,7 +41,35 @@ export const SKILL_CONTRACT_ACTIVATION_BUDGET_MS = 2_000;
  */
 export const SKILL_CONTRACT_WAKE_BUDGET_MS = 750;
 
-const MAX_ADVISORIES = 8;
+/**
+ * Shared advisory cap: the service's return bound, the gate-state schema's
+ * `.max()`, and the append guard all derive from this one constant (a desync
+ * would make the CAS writer's parse throw and silently drop advisories).
+ */
+export const MAX_SKILL_CONTRACT_ADVISORIES = 8;
+
+const MAX_ADVISORIES = MAX_SKILL_CONTRACT_ADVISORIES;
+
+/**
+ * Nearest ancestor of `startDir` containing a package.json, bounded walk.
+ *
+ * Module-relative `'..'` arithmetic is NOT bundle-safe (Copilot review on
+ * PR #2875): this module is inlined into `dist/index.js` by the plugin
+ * build, so at runtime `import.meta.url` points ONE level below the package
+ * root (`dist/`), while in source form it sits two levels deep
+ * (`src/services/`). Walking up to the nearest package.json yields the
+ * package root in both layouts.
+ */
+export function nearestPackageRootFrom(startDir: string): string | undefined {
+	let current = startDir;
+	for (let depth = 0; depth < 8; depth += 1) {
+		if (fs.existsSync(path.join(current, 'package.json'))) return current;
+		const parent = path.dirname(current);
+		if (parent === current) return undefined;
+		current = parent;
+	}
+	return undefined;
+}
 
 /**
  * Test seams (AGENTS.md invariant 7: `_internals` DI over `mock.module`).
@@ -56,8 +84,15 @@ export const _internals: {
 		quiet: boolean,
 	) => Promise<void>;
 } = {
-	resolvePackageRoot: () =>
-		path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..'),
+	resolvePackageRoot: () => {
+		const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+		return (
+			nearestPackageRootFrom(moduleDir) ??
+			// Fail-open fallback for layouts without a package.json ancestor
+			// (the pre-bundle-aware source arithmetic).
+			path.resolve(moduleDir, '..', '..')
+		);
+	},
 	/**
 	 * Env-var-aware home resolution: os.homedir() ignores process.env
 	 * entirely, so the env vars are consulted FIRST to keep the user-global
@@ -157,8 +192,12 @@ export async function ensurePrWorkflowSkillContractsFresh(
 			}
 			materialized = readBodyDigestOrNull(installedPath) === canonicalDigest;
 			if (!materialized) {
+				// Kept under the wake prompt's 500-char per-advisory render cap
+				// even with long global-root/project paths (PR #2875 F5): the
+				// digest is omitted here because the missing-copy case does
+				// not need it, and the repair clause leads.
 				emit(
-					`bundled skill '${slug}' is missing from this project and could not be materialized: ${installedPath} was not found and the bounded re-sync from the shipped canonical ${canonicalPath} (digest ${canonicalDigest}) did not restore it — the architect's MODE instructions reference that exact path; re-run the /swarm pr-review or /swarm pr-feedback command, or restart the host to re-sync .swarm/bundled-skills`,
+					`bundled skill '${slug}' is missing and could not be materialized: ${installedPath} was not found; the bounded re-sync from the shipped canonical ${canonicalPath} did not restore it — re-run the /swarm pr-review or /swarm pr-feedback command, or restart the host`,
 				);
 			}
 		} else if (installedBefore !== canonicalDigest) {

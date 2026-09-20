@@ -16,6 +16,8 @@ import {
 	activatePrWorkflow,
 	_test_exports as gateInternals,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { _internals as skillContractInternals } from '../../../src/services/pr-workflow-skill-contract.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 let directory = '';
 const originalReadPrWorkflowGateState = _internals.readPrWorkflowGateState;
@@ -33,6 +35,26 @@ function abortEvent(sessionID: string) {
 function idleEvent(sessionID: string) {
 	return { type: 'session.idle', properties: { sessionID } };
 }
+
+// Issue #2601 review (F2): the activation/wake paths now verify skill
+// contracts, including a read of the user-global home; isolate that seam so
+// the developer machine's real home cannot perturb these suites.
+const isolatedSkillContractHome = { current: '' };
+const originalSkillContractHome = skillContractInternals.resolveUserGlobalHome;
+
+beforeEach(() => {
+	isolatedSkillContractHome.current = canonicalMkdtemp('sw2601-home-');
+	skillContractInternals.resolveUserGlobalHome = () =>
+		isolatedSkillContractHome.current;
+});
+
+afterEach(async () => {
+	skillContractInternals.resolveUserGlobalHome = originalSkillContractHome;
+	await fs.rm(isolatedSkillContractHome.current, {
+		recursive: true,
+		force: true,
+	});
+});
 
 beforeEach(() => {
 	directory = realpathSync(

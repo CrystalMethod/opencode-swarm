@@ -1503,7 +1503,9 @@ export const STAMPED_PR_WORKFLOW_SKILLS = [
 // Issue #2601: the digest primitives live in the shared src module so the
 // runtime verification (src/services/pr-workflow-skill-contract.ts) and this
 // dev-time detector can never disagree. Re-exported here for the existing
-// consumers (scripts/stamp-skill-contracts.ts and the #2859 test suites).
+// consumers (scripts/stamp-skill-contracts.ts and the #2859 test suites);
+// readSkillContractStamp stays file-local (no consumer needs it via this
+// module's surface).
 import {
 	readSkillContractStamp,
 	SKILL_CONTRACT_DIGEST_KEY,

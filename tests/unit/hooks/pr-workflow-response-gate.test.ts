@@ -14,9 +14,9 @@ import {
 	_test_exports as workflowInternals,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import { createPrWorkflowResponseGate } from '../../../src/hooks/pr-workflow-response-gate.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { _internals as skillContractInternals } from '../../../src/services/pr-workflow-skill-contract.js';
 import { writeAuthoritativePrWorkflowState } from '../../helpers/pr-workflow-state-authority.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 let directory = '';
 

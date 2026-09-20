@@ -3,7 +3,10 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { _test_exports as autoWakeInternals } from '../../../src/hooks/pr-workflow-auto-wake.js';
 import { _test_exports as workflowInternals } from '../../../src/hooks/pr-workflow-gate.js';
-import { createPrWorkflowResponseGate } from '../../../src/hooks/pr-workflow-response-gate.js';
+import {
+	createPrWorkflowResponseGate,
+	_internals as responseGateInternals,
+} from '../../../src/hooks/pr-workflow-response-gate.js';
 import {
 	idleEventFor,
 	makeTempDir,
@@ -191,4 +194,18 @@ describe('pr_workflow_wake_suspended audit event — regression: exactly one eve
 		await gate.textComplete({ sessionID: 'write-fail-session' }, output);
 		expect(output.text).toContain('total wake budget for this workflow');
 	});
+});
+
+// Issue #2601: stub the wake-path skill-contract verifier (fs-bound) so
+// fake-timer wake assertions stay deterministic; clean-host result is [].
+const __originalSkillContractVerifier =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
+beforeEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
+});
+
+afterEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		__originalSkillContractVerifier;
 });
