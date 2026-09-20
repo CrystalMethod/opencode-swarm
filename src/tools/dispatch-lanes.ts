@@ -3588,7 +3588,7 @@ async function settleCollectedLane(args: {
 	// transcript feeds knowledge ACK/verdict reconciliation, and the claimed
 	// record emits the cost + trajectory observations the Task path produces
 	// through its tool.execute hooks.
-	await settleDelegationTerminal(
+	const settleOutcome = await settleDelegationTerminal(
 		directory,
 		record,
 		{ status: terminalStatus, result: prospectiveResult },
@@ -3599,6 +3599,19 @@ async function settleCollectedLane(args: {
 		},
 		_internals.now(),
 	);
+	// Issue #2865 review (PRR-004): a refused stale-decision claim surfaces as
+	// `not_open` (the record is still open), which previously ended this pass
+	// silently — the receipt-bearing lane would sit pending with no stated
+	// reason until the next pass settled it. Diagnostics describe CURRENT
+	// state and are cleared when a later pass settles the lane, so this stays
+	// bounded and accurate for any claim that did not land.
+	if (settleOutcome.kind === 'not_open') {
+		addLaneDiagnostic(
+			settleFailureLogs,
+			laneLabel,
+			`terminal settle claim did not land for lane "${laneLabel}"; record still open — left for the next collection pass`,
+		);
+	}
 }
 
 /**
