@@ -1,0 +1,19 @@
+# PR-review explorer lanes no longer lose dimensions to the collect-vs-receipt-publish race
+
+Issue #2865.
+
+## What
+
+- A PR-review base/micro discovery lane whose child published a valid, exactly-bound structured receipt to the durable delegation record **during** the parent's collect pass no longer terminally fails with `PR_REVIEW_DISCOVERY_CONTRACT_INVALID … missing structured receipt`. Previously the collect-side validation decided from the pass-entry record snapshot, so a receipt that landed after the snapshot (but before the lane's sequential settle) was invisible: the lane settled `error`/`contract` while the same durable record carried the receipt, retries re-ran the same race, and — when the bounded retry budget exhausted — the dimension flipped `FAILED(lane_failure/contract)` and the review ended `INCOMPLETE (PARTIAL)` despite correct child behavior (a clean-control 2-line docs PR could not reproduce a truthful terminal).
+- The collect path now re-reads the lane's durable record once when a discovery validation fails without a receipt in the prospective result, and settles on a receipt that has appeared (`settleCollectedLane`, src/tools/dispatch-lanes.ts).
+- The delegation store now refuses — at the claim linearization point, under the store lock — an `error` terminal with `workflowLaneFailureClass: "contract"` whose result lacks a receipt the record provably holds (`claimTerminalResult`, src/background/pending-delegations.ts). That signature can only arise from a stale-snapshot decision (the collect settle path is the sole producer of error+`contract` terminals and always includes its snapshot's receipt in the result when it had one; a "mismatched structured receipt" rejection carries the receipt and is never refused). A refused claim leaves the record open; the next collection pass re-reads records at entry and settles the lane on the now-visible receipt. The self-contradicting terminal state (missing-receipt error next to a valid receipt in the same record) is now unpersistable at any publish-vs-claim ordering.
+- Genuine receipt-less lanes keep failing the discovery contract exactly as before; exactly-once claim/publish semantics, launch-error (`resource`), stale/cancel (`liveness`), and reviewer/critic verdict lanes are untouched. The repair is bounded: one extra ledger read on the failure path and at most one extra collection pass in the residual window.
+
+## Why
+
+The issue's durable evidence showed terminal records carrying both the missing-receipt contract error and the valid child-bound receipt in the same record, across two independent build cohorts (7.184.9-era and 7.184.11-era main), with a clean-control review ending `INCOMPLETE` because the race lost on every retry attempt for both explorer dimensions. PR #2863's hardening (same error string) addressed child-blind submit rejections and collect budget starvation, not this transport-ordering race.
+
+## Verification
+
+- New regression suites: `tests/unit/tools/dispatch-lanes-collect-receipt-race-2865.test.ts` (mid-pass publish settles `completed`; pre-published receipt control; receipt-less lane still errors) and `tests/unit/background/pending-delegations-claim-refusal-2865.test.ts` (refusal + record stays open; re-settle-with-receipt claims normally; mismatched-receipt and `liveness` negatives never refused; `settleDelegationTerminal` classifies the refused claim as `not_open`).
+- Issue-tracer trace `2865-collect-receipt-publish-race`: six frozen acceptance checks (C1-C6, independent check author, anchor receipt published on the issue); C1/C2 RED at base 25f844565 and GREEN at the fix; C3-C6 preserving checks GREEN before and after; per-layer revert/mutation probes confirm each check discriminates its own layer.

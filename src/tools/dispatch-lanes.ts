@@ -3403,21 +3403,57 @@ async function settleCollectedLane(args: {
 				collectExpectedIdentity = undefined;
 			}
 		}
-		const validation = validatePrReviewDiscoveryLaneCompletion({
+		const expectedValidation: Parameters<
+			typeof validatePrReviewDiscoveryLaneCompletion
+		>[0]['expected'] = {
+			mode: record.mode,
+			workflowLane: record.workflowLane ?? '',
+			ownedWorkflowLanes: record.ownedWorkflowLanes,
+			prHeadSha: record.workspace?.prHeadSha ?? '',
+			gitHead: record.workspace?.gitHead ?? '',
+			revisionDigest: collectedRevisionDigest ?? '',
+			reviewScope: record.workspace?.scope ?? undefined,
+			...(collectExpectedIdentity ?? {}),
+		};
+		let validation = validatePrReviewDiscoveryLaneCompletion({
 			record,
 			result: prospectiveResult,
 			artifact,
-			expected: {
-				mode: record.mode,
-				workflowLane: record.workflowLane ?? '',
-				ownedWorkflowLanes: record.ownedWorkflowLanes,
-				prHeadSha: record.workspace?.prHeadSha ?? '',
-				gitHead: record.workspace?.gitHead ?? '',
-				revisionDigest: collectedRevisionDigest ?? '',
-				reviewScope: record.workspace?.scope ?? undefined,
-				...(collectExpectedIdentity ?? {}),
-			},
+			expected: expectedValidation,
 		});
+		if (!validation.ok && !prospectiveResult.prReviewResultReceipt) {
+			// Issue #2865: the validation above decided from this collect pass's
+			// entry-time record snapshot (findByBatchIdDetailed at invocation
+			// start / the previous poll). The child's exactly-once receipt
+			// publish can land in the window between that snapshot and this
+			// settle, so a lane that genuinely settled would otherwise be
+			// terminally failed with "missing structured receipt" while the
+			// durable record — which the terminal claim itself re-reads under
+			// lock — already holds its receipt. Re-read the lane's record once
+			// and re-validate when a receipt has appeared. An `uncertain` read
+			// changes nothing: settle on the stale verdict, as before.
+			const freshRead = findByCorrelationIdDetailed(
+				directory,
+				record.correlationId,
+			);
+			const freshReceipt =
+				freshRead.status === 'ok'
+					? (freshRead.value?.result?.prReviewResultReceipt ??
+						freshRead.value?.terminalResult?.result.prReviewResultReceipt)
+					: undefined;
+			if (freshReceipt) {
+				prospectiveResult = {
+					...prospectiveResult,
+					prReviewResultReceipt: freshReceipt,
+				};
+				validation = validatePrReviewDiscoveryLaneCompletion({
+					record,
+					result: prospectiveResult,
+					artifact,
+					expected: expectedValidation,
+				});
+			}
+		}
 		if (validation.ok && validation.salvaged?.length) {
 			// Persist the repair on the durable ledger: a salvaged lane is
 			// accepted, so nothing downstream would otherwise record that its

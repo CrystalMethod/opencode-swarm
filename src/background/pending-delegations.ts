@@ -4104,6 +4104,32 @@ export async function claimTerminalResult(
 				if (current.status !== 'pending' && current.status !== 'running') {
 					return;
 				}
+				// Issue #2865: refuse to persist an error/`contract` terminal
+				// whose result lacks a receipt the record provably holds at
+				// claim time. That signature can only arise from a settlement
+				// decision made on a stale record snapshot (the single producer
+				// of an error+`contract` terminal is the PR-review collect
+				// path, which includes its snapshot's receipt in the result
+				// whenever the snapshot had one — a "mismatched structured
+				// receipt" rejection carries the receipt and never reaches this
+				// guard because the merge below is then a no-op). Refusing
+				// leaves the record open, so the next collection pass — which
+				// re-reads records at entry — settles the lane on the now
+				// visible receipt instead of persisting the self-contradicting
+				// terminal state (error says "missing structured receipt" while
+				// the receipt sits in the same record).
+				if (
+					normalizedResult !== parsedTerminal.data.result &&
+					parsedTerminal.data.status === 'error' &&
+					parsedTerminal.data.result.workflowLaneFailureClass === 'contract'
+				) {
+					logger.warn(
+						`[background] claimTerminalResult: refusing stale-decision contract terminal for ` +
+							`correlationId=${correlationId}; a structured receipt is already recorded on the open record; ` +
+							`lane left open for the next collection pass`,
+					);
+					return;
+				}
 
 				let coderSettlement = current.coderSettlement;
 				if (current.normalizedAgent === 'coder' && !coderSettlement) {
