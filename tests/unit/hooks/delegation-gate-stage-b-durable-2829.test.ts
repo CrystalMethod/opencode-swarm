@@ -208,6 +208,52 @@ describe("crash-window: no durable binding (or a partial one) keeps today's drop
 		expect(evidence?.gates?.test_engineer).toBeUndefined();
 	});
 
+	it('a tampered record with a malformed generation never reaches the fence (unbound drop)', async () => {
+		const sessionID = 'sess-2829-tamper';
+		tempDir = makeTempDir('dg-2829-tamper-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		await seedReviewerApproved(tempDir, 'tamper');
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set(TASK_ID, 'reviewer_run');
+		session.currentTaskId = TASK_ID;
+		const callID = 'call-2829-tamper';
+		const hook = createDelegationGateHook(durableTestConfig(), tempDir);
+
+		// Tamper: a structurally valid JSON record whose generation is -1 for
+		// the task (round-2 review finding 2 — the store's read-side shape
+		// validation must fail the record closed before the gate's
+		// reconstruction ever sees it).
+		const recordPath = storeInternals.recordPath(tempDir, sessionID, callID);
+		fs.mkdirSync(path.dirname(recordPath), { recursive: true });
+		fs.writeFileSync(
+			recordPath,
+			JSON.stringify({
+				schemaVersion: 1,
+				sessionID,
+				callID,
+				recordedAt: Date.now(),
+				bindings: [{ taskId: TASK_ID, generation: -1 }],
+			}),
+		);
+
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID,
+				args: testEngineerArgs(),
+			},
+			{ output: `[TESTED] | task-${TASK_ID} | PASS | all checks green` },
+		);
+
+		const advisories = settlementDropAdvisories(sessionID);
+		expect(unboundAdvisory(advisories)).toContain(MARKER);
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
+		const evidence = await readTaskEvidence(tempDir, TASK_ID);
+		expect(evidence?.gates?.test_engineer).toBeUndefined();
+	});
+
 	it('a truncated on-disk record never validates (read fail-closed to unbound)', async () => {
 		const sessionID = 'sess-2829-trunc';
 		tempDir = makeTempDir('dg-2829-trunc-');

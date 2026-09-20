@@ -110,8 +110,7 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 		// Fresh clock still reads it.
 		expect(readStageBDispatchBindings(dir, SESSION, CALL)).not.toBeNull();
 	});
-
-	it('per-taskId lookup is per-task: malformed entries fall through without invalidating the record', () => {
+	it('per-taskId lookup is per-task; a tampered malformed entry fails the WHOLE record closed', () => {
 		recordStageBDispatchBindings(dir, {
 			sessionID: SESSION,
 			callID: CALL,
@@ -130,20 +129,23 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 			5,
 		);
 		expect(record?.bindings.find((b) => b.taskId === '9.9')).toBeUndefined();
-		// Malformed per-task entry (injected on disk): not-present for THAT task.
+		// Tampered per-task entry (injected on disk): the read-side shape
+		// validation fails the whole record closed (round-2 review finding 2 —
+		// the gate's reconstruction must never see a corrupt generation).
 		const p = recordPathFor(SESSION, CALL);
 		const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as {
 			bindings: Array<{ taskId: string; generation: number }>;
 		};
 		raw.bindings.push({ taskId: '1.4', generation: -1 });
 		fs.writeFileSync(p, JSON.stringify(raw));
-		const record2 = readStageBDispatchBindings(dir, SESSION, CALL);
-		expect(record2).not.toBeNull();
-		expect(record2?.bindings.find((b) => b.taskId === '1.4')?.generation).toBe(
-			-1,
-		);
-		// The gate-side guard (delegation-gate) rejects non-integer/negative
-		// reconstructions individually — the store keeps the record valid.
+		expect(readStageBDispatchBindings(dir, SESSION, CALL)).toBeNull();
+		// Same for a non-integer generation.
+		raw.bindings[raw.bindings.length - 1] = {
+			taskId: '1.4',
+			generation: 1.5,
+		};
+		fs.writeFileSync(p, JSON.stringify(raw));
+		expect(readStageBDispatchBindings(dir, SESSION, CALL)).toBeNull();
 	});
 
 	it('deleteStageBDispatchBindings is idempotent and removes the record', () => {

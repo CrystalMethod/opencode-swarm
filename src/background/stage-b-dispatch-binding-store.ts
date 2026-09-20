@@ -47,6 +47,10 @@ export const MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR = 128;
 export const MAX_STAGE_B_BINDING_SESSION_DIRS = 128;
 export const STAGE_B_BINDING_MAX_BYTES = 64 * 1024;
 export const STAGE_B_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
+/** Cross-session sweep cadence: the per-write cost stays bounded to the owning session dir. */
+export const STAGE_B_BINDING_SWEEP_INTERVAL_MS = 60_000;
+
+let lastSweepCompletedAt: number | undefined;
 
 const WINDOWS_RESERVED = new Set([
 	'CON',
@@ -129,7 +133,7 @@ export function recordStageBDispatchBindings(
 		callID: string;
 		bindings: ReadonlyArray<StageBDispatchBinding>;
 	},
-	options: { nowMs?: () => number } = {},
+	options: { nowMs?: () => number; forceSweep?: boolean } = {},
 ): boolean {
 	const { sessionID, callID } = entry;
 	if (
@@ -163,7 +167,20 @@ export function recordStageBDispatchBindings(
 	try {
 		const target = recordPath(directory, sessionID, callID);
 		atomicWriteSwarmFileSync(target, JSON.stringify(record));
-		pruneStore(directory, nowMs());
+		// Per-dispatch cost stays bounded (review finding 3): only the OWNING
+		// session's directory is stat'd/pruned on every write; the
+		// cross-session sweep is throttled to at most one pass per sweep
+		// interval. Both are injectable via nowMs for deterministic tests.
+		pruneSessionDir(directory, sessionID, nowMs());
+		const now = nowMs();
+		if (
+			options.forceSweep ||
+			lastSweepCompletedAt === undefined ||
+			now - lastSweepCompletedAt >= STAGE_B_BINDING_SWEEP_INTERVAL_MS
+		) {
+			lastSweepCompletedAt = now;
+			pruneStore(directory, now);
+		}
 		return true;
 	} catch {
 		return false;
@@ -220,6 +237,24 @@ export function readStageBDispatchBindings(
 		) {
 			return null;
 		}
+		// Per-entry shape validation: a tampered on-disk record carrying a
+		// malformed binding (non-integer or negative generation, empty taskId)
+		// yields null here — the read-side defense, so the gate's
+		// reconstruction never sees a corrupt generation. (The write path
+		// already filters these; whole-record null keeps the failure loud
+		// instead of per-task silent not-present.)
+		if (
+			!parsed.bindings.every(
+				(b) =>
+					b &&
+					typeof b.taskId === 'string' &&
+					b.taskId.length > 0 &&
+					Number.isInteger(b.generation) &&
+					b.generation >= 0,
+			)
+		) {
+			return null;
+		}
 		const nowMs = options.nowMs ?? Date.now;
 		if (
 			typeof parsed.recordedAt !== 'number' ||
@@ -267,6 +302,12 @@ export function deleteStageBDispatchBindings(
  * cap) + cross-session-dir cap (LRU by newest record) + TTL staleness.
  * Called opportunistically after each record; never throws into the caller.
  */
+/**
+ * Cross-session sweep: TTL prune every session dir + the 128-dir LRU
+ * ceiling. Throttled to STAGE_B_BINDING_SWEEP_INTERVAL_MS per process
+ * (review finding 3: the per-dispatch path stays bounded to the owning
+ * session's directory). Never throws into the caller.
+ */
 export function pruneStore(directory: string, nowMs: number): void {
 	const storeRoot = validateSwarmPath(directory, STAGE_B_BINDINGS_DIR);
 	let sessionDirs: string[];
@@ -277,58 +318,17 @@ export function pruneStore(directory: string, nowMs: number): void {
 	} catch {
 		return;
 	}
-	let survivors: Array<{ name: string; newest: number }> = [];
+	const survivors: Array<{ name: string; newest: number }> = [];
 	for (const dir of sessionDirs) {
-		const dirPath = path.join(storeRoot, dir);
-		let files: string[];
-		try {
-			files = readdirSync(dirPath).filter((f) => f.endsWith('.json'));
-		} catch {
-			continue;
-		}
-		const stamped: Array<{ file: string; mtime: number }> = [];
-		for (const file of files) {
-			const fp = path.join(dirPath, file);
-			try {
-				stamped.push({ file: fp, mtime: statSync(fp).mtimeMs });
-			} catch {
-				// unreadable — leave it to TTL
-			}
-		}
-		const fresh = stamped.filter(
-			(s) => nowMs - s.mtime <= STAGE_B_BINDING_TTL_MS,
-		);
-		for (const stale of stamped.filter(
-			(s) => nowMs - s.mtime > STAGE_B_BINDING_TTL_MS,
-		)) {
-			try {
-				rmSync(stale.file, { force: true });
-			} catch {
-				// best-effort
-			}
-		}
-		if (fresh.length > MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR) {
-			const ordered = fresh.sort((a, b) => a.mtime - b.mtime);
-			for (const old of ordered.slice(
-				0,
-				fresh.length - MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR,
-			)) {
-				try {
-					rmSync(old.file, { force: true });
-				} catch {
-					// best-effort
-				}
-			}
-		}
-		const newest = fresh.reduce((max, s) => Math.max(max, s.mtime), 0);
-		survivors.push({ name: dirPath, newest });
+		const pruned = pruneDirEntries(path.join(storeRoot, dir), nowMs);
+		if (pruned) survivors.push({ name: pruned.dirPath, newest: pruned.newest });
 	}
-	survivors = survivors.filter((s) => s.newest > 0);
-	if (survivors.length > MAX_STAGE_B_BINDING_SESSION_DIRS) {
-		const ordered = survivors.sort((a, b) => a.newest - b.newest);
+	const live = survivors.filter((s) => s.newest > 0);
+	if (live.length > MAX_STAGE_B_BINDING_SESSION_DIRS) {
+		const ordered = live.sort((a, b) => a.newest - b.newest);
 		for (const old of ordered.slice(
 			0,
-			survivors.length - MAX_STAGE_B_BINDING_SESSION_DIRS,
+			live.length - MAX_STAGE_B_BINDING_SESSION_DIRS,
 		)) {
 			try {
 				rmSync(old.name, { recursive: true, force: true });
@@ -339,8 +339,72 @@ export function pruneStore(directory: string, nowMs: number): void {
 	}
 }
 
+/** TTL + per-session file-cap prune of ONE session directory (the per-write path). */
+export function pruneSessionDir(
+	directory: string,
+	sessionID: string,
+	nowMs: number,
+): { dirPath: string; newest: number } | null {
+	let dirPath: string;
+	try {
+		dirPath = path.dirname(recordPath(directory, sessionID, 'prune-probe'));
+	} catch {
+		return null;
+	}
+	return pruneDirEntries(dirPath, nowMs);
+}
+
+function pruneDirEntries(
+	dirPath: string,
+	nowMs: number,
+): { dirPath: string; newest: number } | null {
+	let files: string[];
+	try {
+		files = readdirSync(dirPath).filter((f) => f.endsWith('.json'));
+	} catch {
+		return null;
+	}
+	const stamped: Array<{ file: string; mtime: number }> = [];
+	for (const file of files) {
+		const fp = path.join(dirPath, file);
+		try {
+			stamped.push({ file: fp, mtime: statSync(fp).mtimeMs });
+		} catch {
+			// unreadable — leave it to TTL
+		}
+	}
+	const fresh = stamped.filter(
+		(s) => nowMs - s.mtime <= STAGE_B_BINDING_TTL_MS,
+	);
+	for (const stale of stamped.filter(
+		(s) => nowMs - s.mtime > STAGE_B_BINDING_TTL_MS,
+	)) {
+		try {
+			rmSync(stale.file, { force: true });
+		} catch {
+			// best-effort
+		}
+	}
+	if (fresh.length > MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR) {
+		const ordered = fresh.sort((a, b) => a.mtime - b.mtime);
+		for (const old of ordered.slice(
+			0,
+			fresh.length - MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR,
+		)) {
+			try {
+				rmSync(old.file, { force: true });
+			} catch {
+				// best-effort
+			}
+		}
+	}
+	const newest = fresh.reduce((max, s) => Math.max(max, s.mtime), 0);
+	return { dirPath, newest };
+}
+
 export const _internals = {
 	recordPath,
 	sessionDirName,
 	pruneStore,
+	pruneSessionDir,
 };
