@@ -402,11 +402,19 @@ describe('claim-first interleaving: a publish after a won claim settles the lane
 		expect(
 			lane?.terminalResult?.result.workflowLaneFailureClass,
 		).toBeUndefined();
+		// The folded record's own result must be sanitized too: downstream
+		// consumers project record.result.* (the collect lane projection), so
+		// a stale contract error next to the receipt would re-introduce the
+		// self-contradicting state one level down (final-critic round 2).
+		expect(lane?.result?.error).toBeUndefined();
+		expect(lane?.result?.workflowLaneFailureClass).toBeUndefined();
+		expect(lane?.result?.prReviewResultReceipt).toBeDefined();
 		// Idempotent: a replay of the same publish is a duplicate, not a flip.
 		const replay = await publishLegReceipt(leg);
 		expect(replay.status).toBe('duplicate');
 		const after = findByCorrelationId(directory, leg.child);
 		expect(after?.status).toBe('completed');
+		expect(after?.result?.error).toBeUndefined();
 	});
 
 	test('a non-binding receipt never flips the stale terminal (identity conflict)', async () => {

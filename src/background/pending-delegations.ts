@@ -3865,18 +3865,26 @@ export async function publishPrReviewResultReceipt(
 							`lane=${input.laneId}; record settles completed on the exactly-bound receipt`,
 					);
 				}
+				const ordinaryPublishResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
 				const next: BackgroundDelegationRecord = {
 					...current,
 					schemaVersion: 4,
 					updatedAt: Date.now(),
-					result: {
-						...(current.result ?? {
-							chars: 0,
-							truncated: false,
-							digest: createHash('sha256').update('').digest('hex'),
-						}),
-						prReviewResultReceipt: parsed.data,
-					},
+					// On claim-first admission the folded record's own result is
+					// the sanitized receipt-bearing result — the stale error
+					// text and contract class must not survive next to the
+					// receipt (downstream consumers project record.result.*).
+					// Every other publish path keeps the ordinary result.
+					result: staleContractAdmission
+						? staleContractAdmissionResult
+						: ordinaryPublishResult,
 					...(parentRepairBackfill
 						? {
 								terminalResult: parentRepairBackfill,
