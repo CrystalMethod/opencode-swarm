@@ -3730,6 +3730,34 @@ export async function publishPrReviewResultReceipt(
 					}
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): an `error` terminal
+				// with workflowLaneFailureClass 'contract' that PASSED
+				// record-result integrity and failed only at the receipt branch
+				// is a stale-snapshot settlement — the collect settle path is
+				// the sole producer of that shape and always includes its
+				// snapshot's receipt in the result when it had one. Terminals
+				// that failed record-result integrity (degraded/empty output,
+				// missing digest) are genuine typed contract failures and are
+				// NOT admitted. When the terminal claim won the lock before
+				// the child's publish landed, the publish is the child's
+				// genuine exactly-bound settlement; admit it below (the
+				// immutable-identity checks still gate the write) so the lane
+				// settles on its receipt instead of losing the dimension to
+				// transport ordering.
+				const staleContractResult =
+					current.terminalResult?.result.workflowLaneFailureClass === 'contract'
+						? current.terminalResult?.result
+						: current.result?.workflowLaneFailureClass === 'contract'
+							? current.result
+							: undefined;
+				const staleContractTerminalForReceipt =
+					current.status === 'error' &&
+					!current.result?.prReviewResultReceipt &&
+					!current.terminalResult?.result.prReviewResultReceipt &&
+					staleContractResult !== undefined &&
+					staleContractResult.outputDegraded !== true &&
+					(staleContractResult.chars ?? 0) > 0 &&
+					!!staleContractResult.digest;
 				if (current.status !== 'pending' && current.status !== 'running') {
 					// Issue #2585 (AC13): the architect-parent repair lever may
 					// publish onto a liveness-terminal lane ONLY when the submission
@@ -3744,7 +3772,10 @@ export async function publishPrReviewResultReceipt(
 						(current.terminalResult?.result.workflowLaneFailureClass ===
 							'liveness' ||
 							current.result?.workflowLaneFailureClass === 'liveness');
-					if (!livenessTerminalForParentRepair) {
+					if (
+						!livenessTerminalForParentRepair &&
+						!staleContractTerminalForReceipt
+					) {
 						outcome = {
 							status: 'terminal',
 							reason: `delegation is already ${current.status}`,
@@ -3807,22 +3838,74 @@ export async function publishPrReviewResultReceipt(
 					};
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): the admitted publish
+				// supersedes the stale-decision terminal — the record settles
+				// `completed` on the exactly-bound receipt, mirroring the
+				// terminal the settle path would have written had its snapshot
+				// observed the receipt. The stale error text and contract class
+				// are dropped from the persisted result so the folded record
+				// never carries a settlement verdict next to the receipt that
+				// contradicts it. Idempotent: a replay short-circuits to
+				// `duplicate` at the receipt check above; the new eventId
+				// differs from the refused error terminal's (status+digest
+				// identity), and the fold is last-wins.
+				const staleContractAdmissionResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
+				delete staleContractAdmissionResult.error;
+				delete staleContractAdmissionResult.workflowLaneFailureClass;
+				const staleContractAdmission =
+					staleContractTerminalForReceipt === true
+						? buildTypedDelegationTerminal(
+								current,
+								'completed',
+								staleContractAdmissionResult,
+								Date.now(),
+							)
+						: undefined;
+				if (staleContractAdmission) {
+					logger.warn(
+						`[background] publishPrReviewResultReceipt: admitting receipt onto stale-decision ` +
+							`contract terminal for correlationId=${input.parentSessionId}/${input.childSessionId} ` +
+							`lane=${input.laneId}; record settles completed on the exactly-bound receipt`,
+					);
+				}
+				const ordinaryPublishResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
 				const next: BackgroundDelegationRecord = {
 					...current,
 					schemaVersion: 4,
 					updatedAt: Date.now(),
-					result: {
-						...(current.result ?? {
-							chars: 0,
-							truncated: false,
-							digest: createHash('sha256').update('').digest('hex'),
-						}),
-						prReviewResultReceipt: parsed.data,
-					},
+					// On claim-first admission the folded record's own result is
+					// the sanitized receipt-bearing result — the stale error
+					// text and contract class must not survive next to the
+					// receipt (downstream consumers project record.result.*).
+					// Every other publish path keeps the ordinary result.
+					result: staleContractAdmission
+						? staleContractAdmissionResult
+						: ordinaryPublishResult,
 					...(parentRepairBackfill
 						? {
 								terminalResult: parentRepairBackfill,
 								completedAt: parentRepairBackfill.recordedAt,
+							}
+						: {}),
+					...(staleContractAdmission
+						? {
+								status: 'completed',
+								terminalResult: staleContractAdmission,
+								completedAt: staleContractAdmission.recordedAt,
 							}
 						: {}),
 				};
@@ -4055,6 +4138,14 @@ export interface TerminalClaim {
  *
  * A different event for an already-claimed correlation is rejected. Replays of the
  * same event receive an explicit resume/retry disposition from durable state.
+ *
+ * This function is the FIRST terminal writer for a correlation. It is not the
+ * only one: `publishPrReviewResultReceipt`'s issue #2865 claim-first admission
+ * deliberately supersedes a provably-stale error/`contract` terminal with a
+ * completed receipt-backed terminal under separate rules (and a later claim of
+ * a different event here is rejected and counted as a late terminal in the
+ * delegation-health artifact — an operator-visible audit counter, with no
+ * alerting threshold attached).
  */
 export async function claimTerminalResult(
 	directory: string,
@@ -4102,6 +4193,41 @@ export async function claimTerminalResult(
 					return;
 				}
 				if (current.status !== 'pending' && current.status !== 'running') {
+					return;
+				}
+				// Issue #2865: refuse to persist an error/`contract` terminal
+				// whose result lacks a receipt the record provably holds at
+				// claim time. That signature arises from a settlement decision
+				// made on a stale record snapshot: the single producer of an
+				// error+`contract` terminal is the PR-review collect path, and
+				// a terminal that PASSED record-result integrity (not degraded,
+				// non-empty content, digest present) and carries no receipt in
+				// its result failed at the receipt branch only — the
+				// stale-snapshot shape (a "mismatched structured receipt"
+				// rejection carries the receipt and never reaches this guard
+				// because the merge below is then a no-op; degraded/empty
+				// content-integrity failures keep their typed class and are
+				// persisted normally). Refusing leaves the record open, so the
+				// next collection pass — which re-reads records at entry —
+				// settles the lane on the now visible receipt instead of
+				// persisting the self-contradicting terminal state (error says
+				// "missing structured receipt" while the receipt sits in the
+				// same record).
+				const staleContractIncoming =
+					parsedTerminal.data.status === 'error' &&
+					parsedTerminal.data.result.workflowLaneFailureClass === 'contract' &&
+					parsedTerminal.data.result.outputDegraded !== true &&
+					(parsedTerminal.data.result.chars ?? 0) > 0 &&
+					!!parsedTerminal.data.result.digest;
+				if (
+					normalizedResult !== parsedTerminal.data.result &&
+					staleContractIncoming
+				) {
+					logger.warn(
+						`[background] claimTerminalResult: refusing stale-decision contract terminal for ` +
+							`correlationId=${correlationId}; a structured receipt is already recorded on the open record; ` +
+							`lane left open for the next collection pass`,
+					);
 					return;
 				}
 

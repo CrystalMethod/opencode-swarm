@@ -458,6 +458,36 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Maps to AGENTS.md:** invariants 8 (bounded session state) and 10
   (host-order, in-place chat/system message contracts).
 
+### Issue #2865 — Terminal settlement decided from a stale durable-record snapshot
+
+- **Symptom:** the PR-review collect path built its discovery validation
+  inputs from the pass-entry delegation-record snapshot. A child lane's
+  exactly-once structured receipt could land on the durable record *during*
+  the pass (between the snapshot and the lane's sequential settle), so a
+  correctly-settled lane terminally failed `missing structured receipt` while
+  `claimTerminalResult`'s receipt merge persisted the same receipt next to
+  the error — a self-contradicting terminal record. Retries re-ran the race;
+  exhausted retry budgets turned settled dimensions `FAILED(contract)` and
+  clean-control reviews `INCOMPLETE (PARTIAL)`.
+- **Fix applied:** three layers so every publish-vs-claim ordering of a real
+  receipt settles the lane on it: (1) settle-time fresh re-read +
+  re-validation when a discovery validation fails without a receipt;
+  (2) `claimTerminalResult` refuses an `error`/`contract` terminal whose
+  result lacks a receipt the record holds, leaving it open for the next pass;
+  (3) `publishPrReviewResultReceipt` admits an exactly-bound receipt onto
+  such a provably-stale terminal, settling `completed` with the stale
+  error/class dropped from both result levels. The refusal/admission
+  signature is scoped to terminals that PASSED record-result integrity and
+  failed only at the receipt branch (`outputDegraded !== true`, non-empty
+  `chars`, `digest` present) — degraded/empty content-integrity failures keep
+  their typed class and are never admitted or refused.
+- **Invariant:** a terminal settlement decision must read the durable record
+  at the decision point (or guard the linearization point); never decide from
+  an in-memory snapshot of a field the terminal write itself re-reads under
+  the store lock. Guardrail: `tests/unit/background/pending-delegations-claim-refusal-2865.test.ts`.
+- **Maps to AGENTS.md:** invariant 9 (guardrails/retry — bounded, action-local,
+  exactly-once semantics preserved).
+
 
 ## Invariants — anti-pattern, required pattern, verification
 
