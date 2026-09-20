@@ -206,6 +206,7 @@ import type {
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
+import { ensurePrWorkflowSkillContractsFresh } from '../services/pr-workflow-skill-contract.js';
 import { swarmState } from '../state.js';
 import { getPrWorkflowToolCapability } from '../tools/tool-metadata.js';
 import { sameProjectRoot } from '../utils/canonical-root.js';
@@ -880,6 +881,13 @@ export interface PrWorkflowGateState {
 	mode: PrWorkflowMode;
 	activatedAt: string;
 	updatedAt: string;
+	/**
+	 * Skill-contract advisories recorded at activation (and appended by the
+	 * auto-resume wake path) when a stale installed copy of the mode's stamped
+	 * skill was detected — each names the stale path and the canonical source
+	 * (issue #2601). Purely diagnostic: detection never gates activation.
+	 */
+	skillContractAdvisories?: string[];
 	prHeadSha?: string;
 	prReviewBaseRef?: string;
 	prReviewBaseSha?: string;
@@ -1495,6 +1503,7 @@ const PrWorkflowGateStateSchema = z
 		mode: z.enum(['PR_REVIEW', 'PR_FEEDBACK']),
 		activatedAt: z.string().min(1),
 		updatedAt: z.string().min(1),
+		skillContractAdvisories: z.array(z.string().min(1)).max(8).optional(),
 		prHeadSha: z.string().min(1).optional(),
 		prReviewBaseRef: z.string().min(1).optional(),
 		prReviewBaseSha: z.string().min(1).optional(),
@@ -1773,6 +1782,15 @@ export async function activatePrWorkflow(
 			const initialHead = options.prHeadSha
 				? await assertCurrentCheckoutHead(directory, options.prHeadSha, mode)
 				: undefined;
+			// Issue #2601: on first activation for the session, verify the mode's
+			// stamped skill contract and heal the bundled copy before the gate
+			// becomes loadable. Bounded and fail-open — staleness detection
+			// never gates activation (an advisory is recorded on the state).
+			// Idempotent re-activation returns above without re-running this.
+			const skillContractAdvisories = await ensurePrWorkflowSkillContractsFresh(
+				directory,
+				mode,
+			);
 			const timestamp = isoNow();
 			const feedbackTargetUrl =
 				mode === 'PR_FEEDBACK' && options.prUrl
@@ -1793,6 +1811,9 @@ export async function activatePrWorkflow(
 				mode,
 				activatedAt: timestamp,
 				updatedAt: timestamp,
+				...(skillContractAdvisories.length > 0
+					? { skillContractAdvisories }
+					: {}),
 				...(initialHead ? { prHeadSha: initialHead } : {}),
 				...(feedbackTargetUrl
 					? { prFeedbackTargetUrl: feedbackTargetUrl }
@@ -1801,6 +1822,49 @@ export async function activatePrWorkflow(
 			return writeStateWhileLocked(directory, nextState);
 		}),
 	);
+}
+
+/**
+ * Issue #2601: append skill-contract advisories detected by the auto-resume
+ * wake path onto the durable gate state, independent of activation-time
+ * persistence. Read-modify-write under the session-state mutation lock with
+ * the same CAS writer activation uses; string-equality dedupe; capped at 8.
+ * Fail-open by design: a concurrent gate transition (BLOCKED from the CAS
+ * writer), a missing state, or any error drops the append silently — the
+ * advisory was already surfaced through `advisoryWarn` by the detector, and
+ * an advisory-record failure must never break the gate.
+ */
+export async function appendPrWorkflowSkillContractAdvisories(
+	directory: string,
+	sessionID: string,
+	advisories: string[],
+): Promise<void> {
+	if (advisories.length === 0) return;
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	if (!normalizedSessionID) return;
+	await withSessionStateMutation(directory, normalizedSessionID, async () => {
+		try {
+			const existing = await readPrWorkflowGateStateFromDisk(
+				directory,
+				normalizedSessionID,
+			);
+			if (!existing) return;
+			const current = existing.skillContractAdvisories ?? [];
+			const merged = [...current];
+			for (const advisory of advisories) {
+				if (merged.length >= 8) break;
+				if (!merged.includes(advisory)) merged.push(advisory);
+			}
+			if (merged.length === current.length) return;
+			await writeStateWhileLocked(directory, {
+				...existing,
+				skillContractAdvisories: merged,
+				updatedAt: isoNow(),
+			});
+		} catch {
+			// Fail-open: see the doc comment above.
+		}
+	});
 }
 
 export async function readPrWorkflowGateState(

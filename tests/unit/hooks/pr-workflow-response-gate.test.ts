@@ -14,22 +14,36 @@ import {
 	_test_exports as workflowInternals,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import { createPrWorkflowResponseGate } from '../../../src/hooks/pr-workflow-response-gate.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+import { _internals as skillContractInternals } from '../../../src/services/pr-workflow-skill-contract.js';
 import { writeAuthoritativePrWorkflowState } from '../../helpers/pr-workflow-state-authority.js';
 
 let directory = '';
+
+// Issue #2601: the wake path now verifies skill contracts, including the
+// user-global arm that reads the resolved home. The developer machine's real
+// home carries stale copies (a true positive in production, noise here), and
+// an advisory append bumps the durable revision the wake-budget tests pin —
+// so this suite isolates the home seam like every other ambient surface.
+let isolatedHome = '';
+const originalSkillContractHome = skillContractInternals.resolveUserGlobalHome;
 
 beforeEach(() => {
 	directory = realpathSync(
 		mkdtempSync(path.join(os.tmpdir(), 'pr-response-gate-')),
 	);
+	isolatedHome = canonicalMkdtemp('pr-response-gate-home-');
+	skillContractInternals.resolveUserGlobalHome = () => isolatedHome;
 	workflowInternals.resetTrackedStateCache();
 	autoWakeInternals.reset();
 });
 
 afterEach(async () => {
+	skillContractInternals.resolveUserGlobalHome = originalSkillContractHome;
 	workflowInternals.resetTrackedStateCache();
 	autoWakeInternals.reset();
 	await fs.rm(directory, { recursive: true, force: true });
+	await fs.rm(isolatedHome, { recursive: true, force: true });
 });
 
 /** Write a raw gate-state record with a specific revision so tests can
