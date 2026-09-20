@@ -12,10 +12,19 @@ import * as child_process from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeProjectDb } from '../../../src/db/project-db.js';
-import { buildAutoCheckpointLabel } from '../../../src/plan/auto-checkpoint.js';
+import {
+	_internals as autoCheckpointInternals,
+	buildAutoCheckpointLabel,
+	maybeSaveAutoCheckpoint,
+} from '../../../src/plan/auto-checkpoint.js';
+import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
+const ORIGINAL_LOADER = autoCheckpointInternals.loadPluginConfigWithMeta;
+const ORIGINAL_SPAWN_SYNC = autoCheckpointInternals.spawnSync;
+
 let tempDir: string;
+let isolatedEnv: { cleanup: () => void } | undefined;
 
 const IDENTITY = {
 	swarm: 'auto-checkpoint-2582',
@@ -105,10 +114,18 @@ beforeEach(() => {
 		'utf-8',
 	);
 	process.env.SWARM_SKIP_SPEC_GATE = '1';
+	isolatedEnv = createIsolatedTestEnv();
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
 });
 
 afterEach(() => {
+	autoCheckpointInternals.loadPluginConfigWithMeta = ORIGINAL_LOADER;
+	autoCheckpointInternals.spawnSync = ORIGINAL_SPAWN_SYNC;
+	try {
+		isolatedEnv?.cleanup();
+	} catch {
+		// best-effort
+	}
 	delete process.env.SWARM_SKIP_SPEC_GATE;
 	delete process.env.SWARM_SKIP_GATE_SELECTION;
 	try {
@@ -338,5 +355,130 @@ describe('auto-checkpoint label collisions (#2582)', () => {
 		expect(outcome.skipReason).not.toBe('already_current');
 		expect(outcome.label).toBe(baseLabel);
 		expect(readCheckpointEntries()).toHaveLength(2);
+	});
+
+	test('a config loader throw falls back to defaults and still saves (PRR-003)', async () => {
+		gitInit(tempDir);
+		autoCheckpointInternals.loadPluginConfigWithMeta = () => {
+			throw new Error('injected loader failure');
+		};
+		// Defaults apply: threshold 3 with a 2-completed plan → below boundary.
+		const below = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		expect(below.saved).toBe(false);
+		expect(below.skipReason).toBe('below_threshold');
+		// A 3-completed plan crosses the default-3 boundary and saves.
+		const three = {
+			...IDENTITY,
+			phases: [
+				{
+					id: 1,
+					name: 'Phase One',
+					status: 'pending',
+					tasks: [
+						{ id: '1.1', status: 'completed' },
+						{ id: '1.2', status: 'completed' },
+						{ id: '1.3', status: 'completed' },
+					],
+				},
+			],
+		} as never;
+		const onBoundary = await maybeSaveAutoCheckpoint(tempDir, three);
+		expect(onBoundary.saved).toBe(true);
+		expect(onBoundary.label).toMatch(/-003$/);
+	});
+
+	test('a throwing git spawn skips with no_restorable_head (t-c-005)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		autoCheckpointInternals.spawnSync = () => {
+			throw new Error('injected spawn failure');
+		};
+		const outcome = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		expect(outcome.saved).toBe(false);
+		expect(outcome.skipReason).toBe('no_restorable_head');
+		expect(readCheckpointEntries()).toHaveLength(0);
+	});
+
+	test('non-hex rev-parse output is rejected (t-c-004)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		autoCheckpointInternals.spawnSync = (() => ({
+			status: 0,
+			stdout: 'definitely-not-a-sha',
+			stderr: '',
+		})) as unknown as typeof autoCheckpointInternals.spawnSync;
+		const outcome = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		expect(outcome.saved).toBe(false);
+		expect(outcome.skipReason).toBe('no_restorable_head');
+		expect(readCheckpointEntries()).toHaveLength(0);
+	});
+
+	test('a non-array checkpoints log is tolerated and the base label saves (PRR-005)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		fs.writeFileSync(
+			path.join(tempDir, '.swarm', 'checkpoints.json'),
+			JSON.stringify({ version: 1, checkpoints: { bad: true } }),
+			'utf-8',
+		);
+		const outcome = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		expect(outcome.saved).toBe(true);
+		expect(outcome.label).toBe(buildAutoCheckpointLabel(IDENTITY, 2));
+		expect(readCheckpointEntries()).toHaveLength(1);
+	});
+
+	test('generations beyond 20 are family and the next free one saves (PRR-001/PRR-004)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: {
+				enabled: true,
+				auto_checkpoint_threshold: 1,
+				max_retention: 30,
+			},
+		});
+		const baseLabel = buildAutoCheckpointLabel(IDENTITY, 2);
+		const oldSha = '0'.repeat(40);
+		const familyLabels: EntryLike[] = [];
+		for (let generation = 1; generation <= 21; generation++) {
+			const label =
+				generation === 1 ? baseLabel : `${baseLabel}-g${generation}`;
+			familyLabels.push({
+				label,
+				sha: oldSha,
+				timestamp: '2026-01-01T00:00:00.000Z',
+			});
+		}
+		seedLog(familyLabels);
+		const outcome = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		// No exhaustion cap: the next free generation (-g22) saves.
+		expect(outcome.saved).toBe(true);
+		expect(outcome.label).toBe(`${baseLabel}-g22`);
+		expect(readCheckpointEntries()).toHaveLength(22);
+	});
+
+	test('zero-padded -g01 is not family (t-c-010)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		const head = gitRun(tempDir, ['rev-parse', 'HEAD']).trim();
+		const baseLabel = buildAutoCheckpointLabel(IDENTITY, 2);
+		seedLog([
+			{
+				label: `${baseLabel}-g01`,
+				sha: head,
+				timestamp: '2026-01-01T00:00:00.000Z',
+			},
+		]);
+		// '01' normalizes to generation 1 (< 2): not family, base stays free.
+		const g01 = await maybeSaveAutoCheckpoint(tempDir, completedPlan());
+		expect(g01.saved).toBe(true);
+		expect(g01.label).toBe(baseLabel);
 	});
 });
