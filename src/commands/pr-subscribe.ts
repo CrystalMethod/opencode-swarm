@@ -21,6 +21,12 @@
 
 import { subscribe } from '../background/pr-subscriptions.js';
 import { loadPluginConfig } from '../config/loader.js';
+import {
+	detectForgeFromUrl,
+	type ForgeContext,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
+import { detectGitRemote } from './_shared/url-security.js';
 import { looksLikePrRef, resolveCanonicalPrUrl } from './pr-ref.js';
 
 /**
@@ -31,6 +37,23 @@ import { looksLikePrRef, resolveCanonicalPrUrl } from './pr-ref.js';
  * (`sessionID::repoFullName::prNumber`) already exists, the existing record
  * is returned without duplication.
  */
+/**
+ * Lazily resolve the configured forge context (see pr-ref.ts); consulted
+ * only when shape detection cannot answer.
+ */
+function loadConfiguredForgeContext(
+	directory: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function handlePrSubscribeCommand(
 	directory: string,
 	args: string[],
@@ -91,6 +114,13 @@ export async function handlePrSubscribeCommand(
 
 	const repoFullName = `${prInfo.owner}/${prInfo.repo}`;
 	const prUrl = prInfo.prUrl;
+	// #2733: for a configured generic self-hosted GitLab host, persist the
+	// declaration the URL was validated against so the durable store reloads
+	// config-free (shape-detected gitlab hosts need no declaration).
+	const forge =
+		detectForgeFromUrl(prUrl) === null
+			? loadConfiguredForgeContext(directory)
+			: undefined;
 
 	try {
 		const config = _internals.loadPluginConfig(directory);
@@ -110,6 +140,9 @@ export async function handlePrSubscribeCommand(
 			repoFullName,
 			prUrl,
 			maxSubscriptions: prMonitorConfig?.max_subscriptions,
+			...(forge?.provider === 'gitlab'
+				? { forge: { provider: 'gitlab' as const, host: forge.host } }
+				: {}),
 		});
 
 		const deliveryMode =

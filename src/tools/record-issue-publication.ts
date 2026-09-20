@@ -13,19 +13,39 @@
  */
 
 import { z } from 'zod';
+import { detectGitRemote } from '../commands/_shared/url-security.js';
+import { loadPluginConfig } from '../config/loader.js';
 import { validateSwarmPath } from '../hooks/utils';
-import { isForgePrUrl } from '../providers/forge-provider.js';
+import {
+	type ForgeContext,
+	isForgePrUrl,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
 import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
+
+/**
+ * Lazily resolve the configured forge context (see pr-ref.ts); only
+ * consulted when the prUrl is not shape-valid on its own.
+ */
+function loadConfiguredForgeContext(
+	directory: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 const RecordIssuePublicationArgsSchema = z
 	.object({
 		issueNumber: z.number().int().min(1),
 		prNumber: z.number().int().min(1),
-		prUrl: z.string().url().refine(isForgePrUrl, {
-			message:
-				'prUrl must be a canonical PR URL (GitHub https://github.com/<owner>/<repo>/pull/<number> or GitLab https://<gitlab-host>/<owner>/<repo>/-/merge_requests/<number>)',
-		}),
+		prUrl: z.string().url(),
 		headSha: z.string().min(1).optional(),
 	})
 	.strict();
@@ -44,6 +64,23 @@ export async function executeRecordIssuePublication(
 		});
 	}
 	const { issueNumber, prNumber, prUrl, headSha } = parsed.data;
+
+	// #2733: prUrl is valid on its own shape (github / gitlab.com / gitlab.*),
+	// or against the project's configured forge declaration (a generic
+	// self-hosted GitLab host declared via forge.base_url). The schema cannot
+	// know the project config, so the configured check lives here; the URL
+	// guards (HTTPS-only, private/IDN rejection) all still apply inside
+	// isForgePrUrl.
+	if (!isForgePrUrl(prUrl)) {
+		const configured = loadConfiguredForgeContext(directory);
+		if (!(configured && isForgePrUrl(prUrl, configured))) {
+			return JSON.stringify({
+				success: false,
+				message:
+					'Invalid publication receipt: prUrl must be a canonical PR URL (GitHub https://github.com/<owner>/<repo>/pull/<number> or GitLab https://<gitlab-host>/<owner>/<repo>/-/merge_requests/<number>)',
+			});
+		}
+	}
 
 	const receipt: Record<string, unknown> = {
 		published: true,

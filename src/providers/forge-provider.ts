@@ -89,9 +89,14 @@ export function isGitLabIndicatingHost(host: string): boolean {
 	return lower === GITLAB_PUBLIC_HOST || lower.startsWith('gitlab.');
 }
 
-/** True when the URL string is a canonical PR URL of either provider shape. */
-export function isForgePrUrl(url: string): boolean {
-	return canonicalForgePrUrl(url) !== null;
+/**
+ * True when the URL string is a canonical PR URL of either provider shape.
+ * A `configured` context (declared via `forge.base_url`) additionally
+ * authorizes exactly that generic self-hosted GitLab host — every guard in
+ * canonicalForgePrUrl still applies to the URL itself.
+ */
+export function isForgePrUrl(url: string, configured?: ForgeContext): boolean {
+	return canonicalForgePrUrl(url, configured) !== null;
 }
 
 /**
@@ -111,6 +116,10 @@ export function detectForgeFromUrl(
 		if (parsed.protocol !== 'https:') return null;
 		const host = parsed.hostname.toLowerCase();
 		if (hasNonAsciiHostname(host) || hasPunycodeLabel(host)) return null;
+		// Defense in depth (review round 4): private/localhost hosts are
+		// rejected even when a configured declaration names them, so a
+		// tampered .swarm record cannot smuggle one past the read validators.
+		if (isPrivateHost(parsed)) return null;
 		if (host === GITHUB_CANONICAL_HOST) {
 			return { provider: 'github', host };
 		}
@@ -290,6 +299,15 @@ export function canonicalForgePrUrl(
 		const url = new URL(value);
 		if (url.protocol !== 'https:') return null;
 		const host = url.hostname.toLowerCase();
+		// Defense in depth (review rounds 4 + final-critic round 3): the
+		// IDN/punycode and private-host guards apply to EVERY branch,
+		// including the configured-host branch — a tampered durable record
+		// declaring a punycode or private/localhost host never canonicalizes
+		// (write-path guards already prevent legitimate declarations from ever
+		// being such; this closes tampered reads and keeps this validator
+		// consistent with detectForgeFromUrl).
+		if (hasNonAsciiHostname(host) || hasPunycodeLabel(host)) return null;
+		if (isPrivateHost(url)) return null;
 
 		if (host === GITHUB_CANONICAL_HOST) {
 			const m = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);

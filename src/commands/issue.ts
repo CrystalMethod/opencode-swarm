@@ -324,6 +324,12 @@ export function handleIssueCommand(directory: string, args: string[]): string {
 		owner: issueInfo.owner,
 		repo: issueInfo.repo,
 		number: issueInfo.number,
+		// #2733: persist the forge declaration for a configured generic
+		// self-hosted GitLab host so recovery validation is config-free.
+		...(issueInfo.forge.provider === 'gitlab' &&
+		!issueInfo.forge.host.startsWith('gitlab.')
+			? { forge: issueInfo.forge }
+			: {}),
 		timestamp: new Date().toISOString(),
 		flags: {
 			...(parsed.plan && { plan: true }),

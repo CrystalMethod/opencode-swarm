@@ -338,6 +338,12 @@ export interface SubscribeInput {
 	prNumber: number;
 	repoFullName: string;
 	prUrl: string;
+	/**
+	 * #2733: the configured forge declaration this prUrl was validated
+	 * against (present only for generic self-hosted GitLab hosts). Persisted
+	 * with the record so reload validation is config-free.
+	 */
+	forge?: { provider: 'gitlab'; host: string };
 	/** Max active subscriptions allowed (for limit enforcement). */
 	maxSubscriptions?: number;
 }
@@ -353,10 +359,19 @@ const RecordSchema = z
 				/^[^/\s]+(?:\/[^/\s]+)+$/,
 				'Must be owner/repo format (GitLab nested namespaces allowed)',
 			),
-		prUrl: z.string().min(1).refine(isForgePrUrl, {
-			message:
-				'Must be a valid PR URL (GitHub /pull/N or GitLab /-/merge_requests/N)',
-		}),
+		prUrl: z.string().min(1),
+		/**
+		 * Provider metadata persisted WITH the record (#2733): a generic
+		 * self-hosted GitLab host is valid only when the record carries the
+		 * configured declaration it was validated against, making reload
+		 * config-free (the metadata travels with the durable record).
+		 */
+		forge: z
+			.object({
+				provider: z.literal('gitlab'),
+				host: z.string().min(1),
+			})
+			.optional(),
 		headRefOid: z.string().optional(),
 		lastCheckedAt: z.number(),
 		lastCommentId: z.string().optional(),
@@ -375,7 +390,28 @@ const RecordSchema = z
 		customFailureThreshold: z.number().int().min(0).optional(),
 		customCooldownSeconds: z.number().int().min(0).optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((record, ctx) => {
+		// #2733: prUrl is shape-valid on its own (github/gitlab.com/gitlab.*),
+		// or valid against the forge declaration persisted with the record
+		// (a configured generic self-hosted host). No declaration, no pass.
+		if (isForgePrUrl(record.prUrl)) return;
+		if (
+			record.forge &&
+			isForgePrUrl(record.prUrl, {
+				provider: record.forge.provider,
+				host: record.forge.host,
+			})
+		) {
+			return;
+		}
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			path: ['prUrl'],
+			message:
+				'Must be a valid PR URL (GitHub /pull/N or GitLab /-/merge_requests/N)',
+		});
+	});
 
 // ---------------------------------------------------------------------------
 // Checkpoint schema (issue #2042 Required 1)
@@ -3407,6 +3443,7 @@ export async function subscribe(
 					prNumber: input.prNumber,
 					repoFullName: input.repoFullName,
 					prUrl: input.prUrl,
+					...(input.forge ? { forge: input.forge } : {}),
 					lastCheckedAt: now,
 					isWatching: true,
 					hasUnaddressedEvents: false,
@@ -3457,6 +3494,7 @@ export async function subscribe(
 				prNumber: input.prNumber,
 				repoFullName: input.repoFullName,
 				prUrl: input.prUrl,
+				...(input.forge ? { forge: input.forge } : {}),
 				lastCheckedAt: now,
 				isWatching: true,
 				hasUnaddressedEvents: false,

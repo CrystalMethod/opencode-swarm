@@ -205,3 +205,166 @@ describe('GitLab monitor honest reporting (#2733 final-critic fix)', () => {
 afterEach(() => {
 	cleanupEnv();
 });
+
+describe('durable-path forge declarations (#2733 final-critic round 2)', () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) {
+			fs.rmSync(d, { recursive: true, force: true });
+		}
+	});
+
+	test('subscribe() persists a configured generic-host MR with its forge declaration (no stubs)', async () => {
+		const { subscribe } = await import(
+			'../../../src/background/pr-subscriptions'
+		);
+		const dir = makeConfiguredProject('https://git.example.internal');
+		dirs.push(dir);
+		const record = await subscribe(dir, {
+			sessionID: 'sess-durable',
+			prNumber: 42,
+			repoFullName: 'team/proj',
+			prUrl: 'https://git.example.internal/team/proj/-/merge_requests/42',
+			forge: { provider: 'gitlab', host: 'git.example.internal' },
+		});
+		expect(record.status).toBe('active');
+		expect(record.prUrl).toBe(
+			'https://git.example.internal/team/proj/-/merge_requests/42',
+		);
+	});
+
+	test('subscribe() still rejects a generic-host MR with NO declaration (fail closed)', async () => {
+		const { subscribe } = await import(
+			'../../../src/background/pr-subscriptions'
+		);
+		const dir = makeUnconfiguredProject();
+		dirs.push(dir);
+		await expect(
+			subscribe(dir, {
+				sessionID: 'sess-durable',
+				prNumber: 42,
+				repoFullName: 'team/proj',
+				prUrl: 'https://git.example.internal/team/proj/-/merge_requests/42',
+			}),
+		).rejects.toThrow(/Invalid subscription record/);
+	});
+
+	test('subscribe() rejects a forge declaration that does not match the prUrl host', async () => {
+		const { subscribe } = await import(
+			'../../../src/background/pr-subscriptions'
+		);
+		const dir = makeUnconfiguredProject();
+		dirs.push(dir);
+		await expect(
+			subscribe(dir, {
+				sessionID: 'sess-durable',
+				prNumber: 42,
+				repoFullName: 'team/proj',
+				prUrl: 'https://other.example.net/team/proj/-/merge_requests/42',
+				forge: { provider: 'gitlab', host: 'git.example.internal' },
+			}),
+		).rejects.toThrow(/Invalid subscription record/);
+	});
+
+	test('record_issue_publication accepts a configured generic-host MR end-to-end (real execute)', async () => {
+		const { executeRecordIssuePublication } = await import(
+			'../../../src/tools/record-issue-publication'
+		);
+		const dir = makeConfiguredProject('https://git.example.internal');
+		dirs.push(dir);
+		const response = await executeRecordIssuePublication(
+			{
+				issueNumber: 9,
+				prNumber: 42,
+				prUrl: 'https://git.example.internal/team/proj/-/merge_requests/42',
+			},
+			dir,
+		);
+		const parsed = JSON.parse(response) as {
+			success?: boolean;
+			message?: string;
+		};
+		expect(parsed.message ?? '').not.toContain('Invalid publication receipt');
+	});
+
+	test('record_issue_publication still rejects a generic-host MR without config', async () => {
+		const { executeRecordIssuePublication } = await import(
+			'../../../src/tools/record-issue-publication'
+		);
+		const dir = makeUnconfiguredProject();
+		dirs.push(dir);
+		const response = await executeRecordIssuePublication(
+			{
+				issueNumber: 9,
+				prNumber: 42,
+				prUrl: 'https://git.example.internal/team/proj/-/merge_requests/42',
+			},
+			dir,
+		);
+		expect(response).toContain('Invalid publication receipt');
+	});
+
+	test('issue ingestion round-trips: configured reference writes AND reads back (recovery)', async () => {
+		const { readIssueReference } = await import(
+			'../../../src/hooks/issue-trace-state'
+		);
+		const dir = makeConfiguredProject('https://git.example.internal');
+		dirs.push(dir);
+		const out = handleIssueCommand(dir, [
+			'https://git.example.internal/team/proj/-/issues/7',
+		]);
+		expect(out).toContain(
+			'issue="https://git.example.internal/team/proj/-/issues/7"',
+		);
+		const recovered = readIssueReference(dir);
+		expect(recovered).not.toBeNull();
+		expect(recovered?.url).toBe(
+			'https://git.example.internal/team/proj/-/issues/7',
+		);
+	});
+});
+
+describe('declared-host read-path hardening (#2733 review round 4)', () => {
+	test('a private-host declaration never authorizes its URL (tampered-record defense)', async () => {
+		const { subscribe } = await import(
+			'../../../src/background/pr-subscriptions'
+		);
+		const dir = makeUnconfiguredProject();
+		await expect(
+			subscribe(dir, {
+				sessionID: 'sess-tamper',
+				prNumber: 42,
+				repoFullName: 'team/proj',
+				prUrl: 'https://localhost/team/proj/-/merge_requests/42',
+				forge: { provider: 'gitlab', host: 'localhost' },
+			}),
+		).rejects.toThrow(/Invalid subscription record/);
+	});
+
+	test('an http URL with a matching declaration is rejected (scheme guard holds)', async () => {
+		const { isForgePrUrl } = await import(
+			'../../../src/providers/forge-provider'
+		);
+		expect(
+			isForgePrUrl('http://git.example.internal/team/p/-/merge_requests/1', {
+				provider: 'gitlab',
+				host: 'git.example.internal',
+			}),
+		).toBe(false);
+	});
+
+	test('a punycode URL with a matching declaration is rejected (IDN guard holds)', async () => {
+		const { isForgePrUrl } = await import(
+			'../../../src/providers/forge-provider'
+		);
+		expect(
+			isForgePrUrl(
+				'https://xn--gitlb-7ve.acme.test/team/p/-/merge_requests/1',
+				{
+					provider: 'gitlab',
+					host: 'xn--gitlb-7ve.acme.test',
+				},
+			),
+		).toBe(false);
+	});
+});
