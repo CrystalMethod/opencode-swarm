@@ -130,7 +130,26 @@ export async function handlePrSubscribeCommand(
 			'conflicts and resolutions, merge/close, and (off by default)',
 			'CI success. Each event type is gated by its notify_* flag.',
 			deliveryLine,
-		].join('\n');
+		]
+			.concat(
+				// Honest capability reporting (issue #2733, AC7): for GitLab MRs
+				// the monitor cannot yet deliver events (glab-backed polling is
+				// tracked as #2882). The subscription IS recorded (reference
+				// storage, gates, and publication flows operate on GitLab
+				// refs), but the user must be told monitoring is unavailable
+				// rather than promised events.
+				prUrl.includes('/-/merge_requests/')
+					? [
+							'',
+							'Note: live monitoring is NOT AVAILABLE for GitLab merge',
+							'requests yet — glab-backed polling is tracked as issue #2882.',
+							'The subscription is recorded and PR reference/gate/',
+							'publication workflows operate on this MR, but no CI/comment/',
+							'review events will be delivered until that lands.',
+						]
+					: [],
+			)
+			.join('\n');
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return [`Error: Failed to subscribe to ${prUrl}`, '', message].join('\n');

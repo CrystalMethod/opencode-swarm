@@ -61,7 +61,10 @@ export interface ForgeResourceRef extends ForgeContext {
 export interface ProviderSelectionInput {
 	config?: {
 		provider?: 'github' | 'gitlab' | 'auto';
+		/** camelCase form (frozen-check binding). */
 		baseUrl?: string;
+		/** snake_case form — the plugin config schema key (`forge.base_url`). */
+		base_url?: string;
 	};
 	remotes: string[];
 }
@@ -94,9 +97,15 @@ export function isForgePrUrl(url: string): boolean {
 /**
  * Shape-based provider detection from any https URL. github.com → github;
  * gitlab.com or a `gitlab.`-prefixed host → gitlab with that host; anything
- * else → null (a generic self-hosted host requires explicit configuration).
+ * else → null unless the host matches a `configured` context (issue #2733:
+ * `forge.base_url` declares a generic self-hosted GitLab instance, and the
+ * declared host is then authorized exactly as gitlab.com is — it is NOT a
+ * trust whitelist: every URL guard still applies).
  */
-export function detectForgeFromUrl(url: string): ForgeContext | null {
+export function detectForgeFromUrl(
+	url: string,
+	configured?: ForgeContext,
+): ForgeContext | null {
 	try {
 		const parsed = new URL(url);
 		if (parsed.protocol !== 'https:') return null;
@@ -108,10 +117,28 @@ export function detectForgeFromUrl(url: string): ForgeContext | null {
 		if (isGitLabIndicatingHost(host)) {
 			return { provider: 'gitlab', host };
 		}
+		if (
+			configured &&
+			configured.provider === 'gitlab' &&
+			host === configured.host
+		) {
+			return { provider: 'gitlab', host };
+		}
 		return null;
 	} catch {
 		return null;
 	}
+}
+
+function isConfiguredGitLabHost(
+	host: string,
+	configured?: ForgeContext,
+): boolean {
+	return (
+		configured !== undefined &&
+		configured.provider === 'gitlab' &&
+		host === configured.host
+	);
 }
 
 const GITLAB_PROJECT_PATH_PATTERN =
@@ -128,6 +155,7 @@ const GITLAB_PROJECT_PATH_PATTERN =
 export function matchForgeResourceUrl(
 	url: string,
 	resource: 'issues' | 'pull',
+	configured?: ForgeContext,
 ): ForgeResourceRef | null {
 	// Raw-string control-character guard: the WHATWG URL parser
 	// percent-encodes C0 bytes in the pathname, so checking the parsed
@@ -159,7 +187,10 @@ export function matchForgeResourceUrl(
 		return { provider: 'github', host, owner: m[1], repo: m[2], number };
 	}
 
-	if (isGitLabIndicatingHost(host)) {
+	if (
+		isGitLabIndicatingHost(host) ||
+		isConfiguredGitLabHost(host, configured)
+	) {
 		const resourceSegment = resource === 'pull' ? 'merge_requests' : 'issues';
 		const m = parsed.pathname.match(GITLAB_PROJECT_PATH_PATTERN);
 		if (!m || m[3] !== resourceSegment) return null;
@@ -251,7 +282,10 @@ export function buildIssueUrl(
  * lowercased, trailing slash dropped). Null for anything that is not an
  * https PR/MR URL of a recognized provider host.
  */
-export function canonicalForgePrUrl(value: string): string | null {
+export function canonicalForgePrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
 	try {
 		const url = new URL(value);
 		if (url.protocol !== 'https:') return null;
@@ -265,7 +299,10 @@ export function canonicalForgePrUrl(value: string): string | null {
 			return `github.com/${m[1].toLowerCase()}/${m[2].toLowerCase()}/pull/${number}`;
 		}
 
-		if (isGitLabIndicatingHost(host)) {
+		if (
+			isGitLabIndicatingHost(host) ||
+			isConfiguredGitLabHost(host, configured)
+		) {
 			const m = url.pathname.match(
 				/^\/(.+)\/([^/]+)\/-\/merge_requests\/(\d+)\/?$/,
 			);
@@ -304,6 +341,36 @@ export function getProviderCapabilities(
 	};
 }
 
+/**
+ * Production adapter: resolve the active forge context from the plugin
+ * config's `forge` section (schema keys: provider, base_url) plus the
+ * observed git remotes. Returns null when no context can be determined —
+ * callers fall back to config-free shape detection (GitHub behavior
+ * unchanged). Used lazily by the command surface ONLY when shape detection
+ * cannot answer (generic-host URLs / ambiguous bare numbers), so ordinary
+ * GitHub usage performs zero extra I/O.
+ */
+export function resolveForgeContextFromPluginConfig(
+	pluginConfig:
+		| { forge?: { provider?: string; base_url?: string } }
+		| undefined,
+	remotes: string[],
+): ForgeContext | null {
+	if (!pluginConfig?.forge) return null;
+	const forge = pluginConfig.forge;
+	const provider =
+		forge.provider === 'github' ||
+		forge.provider === 'gitlab' ||
+		forge.provider === 'auto'
+			? forge.provider
+			: undefined;
+	const selection = resolveProviderSelection({
+		config: { provider, baseUrl: forge.base_url },
+		remotes,
+	});
+	return selection.ok ? selection.context : null;
+}
+
 function invalidBaseUrlError(reason: string): string {
 	return `Invalid forge.base_url (${reason}) — provider config rejected; base_url must be an HTTPS URL on a public, ASCII host and is never a trust whitelist.`;
 }
@@ -334,8 +401,9 @@ export function resolveProviderSelection(
 	const remotes = input.remotes;
 
 	let baseUrlHost: string | undefined;
-	if (input.config?.baseUrl !== undefined) {
-		const raw = input.config.baseUrl.trim();
+	const rawBaseUrl = input.config?.baseUrl ?? input.config?.base_url;
+	if (rawBaseUrl !== undefined) {
+		const raw = rawBaseUrl.trim();
 		let parsed: URL;
 		try {
 			parsed = new URL(raw);

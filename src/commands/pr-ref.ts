@@ -19,11 +19,14 @@
  * GHE/proxy bare-number resolution.
  */
 
+import { loadPluginConfig } from '../config/loader.js';
 import {
 	buildPrUrl,
+	detectForgeFromUrl,
 	type ForgeContext,
 	matchForgeResourceUrl,
 	parseForgeRemoteUrl,
+	resolveForgeContextFromPluginConfig,
 } from '../providers/forge-provider.js';
 import {
 	_internals,
@@ -76,6 +79,26 @@ export interface ResolvedPrRef extends ParsedPr {
 	context: ForgeContext;
 }
 
+/**
+ * Lazily resolve the CONFIGURED forge context (plugin config `forge` section +
+ * origin remote). Only consulted when config-free shape detection cannot
+ * answer (generic-host full URLs, or bare numbers whose remote host is not
+ * forge-indicating) — ordinary GitHub usage never loads config here, so
+ * GitHub behavior and latency are unchanged (issue #2733 final-critic fix).
+ */
+function loadConfiguredForgeContext(
+	directory?: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory ?? process.cwd());
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 function bareNumberContext(
 	cwd?: string,
 ): { ctx: ForgeContext; owner: string; repo: string } | null {
@@ -89,6 +112,24 @@ function bareNumberContext(
 	const forge = parseForgeRemoteUrl(remoteUrl);
 	if (forge) {
 		return { ctx: forge, owner: forge.owner, repo: forge.repo };
+	}
+
+	// Configured-context fallback (issue #2733): a generic-host remote on a
+	// project whose `forge` config declares a GitLab instance resolves in
+	// that context (host preserved for canonical MR URLs).
+	const configured = loadConfiguredForgeContext(cwd);
+	if (configured?.provider === 'gitlab') {
+		const generic = remoteUrl.match(/^https:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/i);
+		if (generic && generic[1].toLowerCase() === configured.host) {
+			const segments = generic[2]
+				.split('/')
+				.filter((x) => x.length > 0 && x !== '.git');
+			if (segments.length >= 2) {
+				const repo = segments[segments.length - 1];
+				const owner = segments.slice(0, -1).join('/');
+				return { ctx: configured, owner, repo };
+			}
+		}
 	}
 
 	// Legacy fallback (unchanged): GitHub-shaped remotes and GHE/proxy hosts
@@ -136,7 +177,11 @@ export function resolvePrRef(
 	}
 
 	if (/^https:\/\//i.test(input)) {
-		const forge = matchForgeResourceUrl(input, 'pull');
+		const forge = matchForgeResourceUrl(
+			input,
+			'pull',
+			detectForgeFromUrl(input) ? undefined : loadConfiguredForgeContext(cwd),
+		);
 		if (forge && forge.provider === 'gitlab') {
 			return {
 				context: { provider: forge.provider, host: forge.host },
@@ -287,7 +332,16 @@ export function resolvePrCommandInput(
 		resolved.repo,
 		resolved.number,
 	);
-	const result = validateAndSanitizeUrl(prUrl);
+	// A configured generic GitLab host must be authorized at validation too
+	// (shape detection alone would reject it); the derived context IS the
+	// declaration, so passing it is authorization by configuration, not a
+	// whitelist bypass — every guard still applies.
+	const urlContext =
+		resolved.context.provider === 'gitlab' &&
+		!resolved.context.host.startsWith('gitlab.')
+			? resolved.context
+			: undefined;
+	const result = validateAndSanitizeGithubUrl(prUrl, 'pull', urlContext);
 	if ('error' in result) {
 		return { error: result.error };
 	}

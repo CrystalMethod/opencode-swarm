@@ -1,5 +1,8 @@
 import * as child_process from 'node:child_process';
-import { matchForgeResourceUrl } from '../../providers/forge-provider.js';
+import {
+	type ForgeContext,
+	matchForgeResourceUrl,
+} from '../../providers/forge-provider.js';
 import {
 	containsControlCharacters,
 	hasNonAsciiHostname,
@@ -115,6 +118,7 @@ export function sanitizeErrorEcho(raw: string, maxLength: number = 80): string {
 export function validateAndSanitizeGithubUrl(
 	rawUrl: string,
 	resource: 'issues' | 'pull',
+	configured?: ForgeContext,
 ): ValidationResult {
 	const sanitized = sanitizeUrl(rawUrl);
 
@@ -137,7 +141,7 @@ export function validateAndSanitizeGithubUrl(
 			return { error: 'Private or localhost URLs are not allowed' };
 		}
 
-		const matched = matchForgeResourceUrl(sanitized, resource);
+		const matched = matchForgeResourceUrl(sanitized, resource, configured);
 		if (!matched) {
 			return {
 				error:

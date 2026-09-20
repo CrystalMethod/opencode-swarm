@@ -18,7 +18,10 @@ import {
 	type PRStatusResult,
 	type ReviewStateResult,
 } from '../git/pr';
-import { detectForgeFromUrl } from '../providers/forge-provider.js';
+import {
+	detectForgeFromUrl,
+	getProviderCapabilities,
+} from '../providers/forge-provider.js';
 import { advisoryWarn } from '../services/warning-buffer';
 import { log, error as logError } from '../utils';
 import { resolveGlabExecutable } from '../utils/glab-executable.js';
@@ -519,13 +522,21 @@ export class PrMonitorWorker {
 	): Promise<void> {
 		const correlationId = sub.correlationId;
 
-		// Honest capability reporting (issue #2733): GitHub's gh CLI synthesizes
-		// statusCheckRollup/reviewDecision/mergeStateStatus; GitLab's MR API does
-		// not, and glab-backed MR polling is tracked as a follow-up. Skip the
-		// gh poll cycle for GitLab MR subscriptions with an explicit unavailable
-		// marker instead of running polls that cannot serve the subscription
-		// (which would fabricate error-loop circuit-breaker churn).
-		if (detectForgeFromUrl(sub.prUrl)?.provider === 'gitlab') {
+		// Honest capability reporting (issue #2733): getProviderCapabilities is
+		// the decision source. GitHub's gh CLI synthesizes
+		// statusCheckRollup/reviewDecision/mergeStateStatus; GitLab's MR API
+		// does not, and glab-backed MR polling is tracked as follow-up #2882.
+		// A subscription whose provider cannot serve ANY of the three
+		// synthesized fields cannot be polled by the gh pipeline at all — skip
+		// with an explicit unavailable marker instead of running polls that
+		// would fabricate error-loop circuit-breaker churn.
+		const forgeContext = detectForgeFromUrl(sub.prUrl);
+		if (
+			forgeContext &&
+			!getProviderCapabilities(forgeContext.provider).statusCheckRollup &&
+			!getProviderCapabilities(forgeContext.provider).reviewDecision &&
+			!getProviderCapabilities(forgeContext.provider).mergeStateStatus
+		) {
 			// Production wiring for the glab resolver (bounded, lazy, cached —
 			// at most one probe cycle per process): report whether a usable
 			// glab binary exists so the unavailable marker is diagnostic, not
