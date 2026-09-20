@@ -12,10 +12,20 @@ import * as child_process from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeProjectDb } from '../../../src/db/project-db.js';
-import { buildAutoCheckpointLabel } from '../../../src/plan/auto-checkpoint.js';
+import { tryAcquireLock } from '../../../src/parallel/file-locks.js';
+import {
+	_internals as autoCheckpointInternals,
+	buildAutoCheckpointLabel,
+	maybeSaveAutoCheckpoint,
+} from '../../../src/plan/auto-checkpoint.js';
+import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
+const ORIGINAL_LOADER = autoCheckpointInternals.loadPluginConfigWithMeta;
+const ORIGINAL_SPAWN_SYNC = autoCheckpointInternals.spawnSync;
+
 let tempDir: string;
+let isolatedEnv: { cleanup: () => void } | undefined;
 
 const IDENTITY = {
 	swarm: 'auto-checkpoint-2582',
@@ -105,10 +115,18 @@ beforeEach(() => {
 		'utf-8',
 	);
 	process.env.SWARM_SKIP_SPEC_GATE = '1';
+	isolatedEnv = createIsolatedTestEnv();
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
 });
 
 afterEach(() => {
+	autoCheckpointInternals.loadPluginConfigWithMeta = ORIGINAL_LOADER;
+	autoCheckpointInternals.spawnSync = ORIGINAL_SPAWN_SYNC;
+	try {
+		isolatedEnv?.cleanup();
+	} catch {
+		// best-effort
+	}
 	delete process.env.SWARM_SKIP_SPEC_GATE;
 	delete process.env.SWARM_SKIP_GATE_SELECTION;
 	try {

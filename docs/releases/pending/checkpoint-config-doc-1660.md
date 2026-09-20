@@ -15,6 +15,10 @@ The field had no schema-level description. Operators configuring checkpoint.auto
 
 ## Behavior / compatibility
 
-- No behavior change. The default (3), type (number), and validation bounds (min(1).max(20)) are unchanged.
+- As of this fragment's original scope (#1660 documentation-only): no behavior change. The default (3), type (number), and validation bounds (min(1).max(20)) are unchanged.
 - Existing checkpoint configurations are preserved with no migration required.
 - Existing checkpoint tests pass unmodified (SC-007).
+- Update (#2864 hardening): the trigger is now implemented, so this fragment's
+  original "No behavior change" statement no longer holds for
+  `auto_checkpoint_threshold` — see `2864-auto-checkpoint-hardening.md` and the
+  #2582 trigger semantics (automatic checkpoints at cadence multiples).

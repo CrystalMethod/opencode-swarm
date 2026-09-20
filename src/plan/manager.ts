@@ -2869,8 +2869,10 @@ export async function updateTaskStatus(
 			// here for the same reason as the Rule 2 auto-commit below — BOTH
 			// writers of task status route through this function, and the
 			// `update_task_status` tool is NOT the only one. The council APPROVE
-			// fast-path completes a task via `advanceTaskStateAndPersist`
-			// (src/state.ts) from `delegation-gate.ts`, with no tool call at all.
+			// fast-path surfaces an advisory (src/hooks/delegation-gate.ts) that
+			// directs the agent to call `update_task_status` — so its completions
+			// still arrive through the tool entry below. (`advanceTaskStateAndPersist`
+			// itself throws for 'complete'; do not re-dispatch through it.)
 			// Recording in the tool alone logged the council gate's FAILURE but
 			// never its PASS, so `getRunMemorySummary` reported completed tasks as
 			// "Still failing" forever — worse than recording nothing.
@@ -2943,9 +2945,9 @@ export async function updateTaskStatus(
 			// `update_task_status` tool) because BOTH callers route through
 			// this function:
 			//
-			//   - `executeUpdateTaskStatus` (the tool entry).
-			//   - `advanceTaskStateAndPersist` (the council/reviewer/test_engineer
-			//     completion path in `src/hooks/delegation-gate.ts`).
+			//   - `executeUpdateTaskStatus` (the tool entry; the council/
+			//     reviewer/test_engineer paths in `src/hooks/delegation-gate.ts`
+			//     surface advisories that drive agents to this same tool).
 			//
 			// Hooking here covers every legitimate completion in one place,
 			// closing the silent-bypass holes (sessionless callers, sub-agent
@@ -3048,7 +3050,9 @@ export async function updateTaskStatus(
 			// completed work would mislead restore). Non-fatal, same contract
 			// as the blocks above: the durable plan write already succeeded.
 			// Advisory: a crash between savePlan and this call loses that
-			// transition's checkpoint (the settled-task guard blocks replay).
+			// transition's checkpoint; a settled-task replay (completed ->
+			// completed) is instead absorbed quietly by the trigger's
+			// same-family SHA idempotency check, not by the status guard.
 			if (status === 'completed') {
 				try {
 					const outcome = await _internals.maybeSaveAutoCheckpoint(

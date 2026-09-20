@@ -53,6 +53,22 @@ function enumerateCheckpointKeys(schema: unknown): string[] {
 	return [...keys];
 }
 
+/**
+ * Conservative comment strip so docblock prose can never satisfy the reader
+ * proxy: removes block comments and whole-line `//` comments. Intentionally
+ * does NOT strip trailing `//` comments or string contents — that could only
+ * remove genuine reader evidence, never fabricate it, and keeps the scan
+ * robust against `//` inside string literals.
+ */
+function stripComments(source: string): string {
+	const withoutBlock = source.replace(/\/\*[\s\S]*?\*\//g, '');
+	const kept: string[] = [];
+	for (const line of withoutBlock.split('\n')) {
+		if (!line.trimStart().startsWith('//')) kept.push(line);
+	}
+	return kept.join('\n');
+}
+
 function readerPattern(key: string): RegExp {
 	if (key.length >= 8 && key.includes('_')) {
 		return new RegExp(`\\b${key}\\b`);
@@ -101,7 +117,7 @@ describe('checkpoint config consumption guardrail (#2582)', () => {
 		const contents = new Map<string, string>();
 		for (const file of files) {
 			try {
-				contents.set(file, fs.readFileSync(file, 'utf-8'));
+				contents.set(file, stripComments(fs.readFileSync(file, 'utf-8')));
 			} catch {
 				// Unreadable files carry no reader evidence.
 			}
@@ -116,5 +132,21 @@ describe('checkpoint config consumption guardrail (#2582)', () => {
 			if (!hasReader) inertKeys.push(key);
 		}
 		expect(inertKeys).toEqual([]);
+	});
+
+	test('a comment-only mention does not satisfy the guardrail (comment text is stripped)', () => {
+		// PRR-011: the docblocks in src/plan/auto-checkpoint.ts and
+		// src/plan/manager.ts mention key names; a reader-deleting refactor
+		// that left only comments must FAIL here, not pass vacuously.
+		const commentOnly = [
+			'/**',
+			' * Runtime consumer for checkpoint.auto_checkpoint_threshold.',
+			' */',
+			'export function noop(): void {}',
+		].join('\n');
+		const stripped = stripComments(commentOnly);
+		for (const key of enumerateCheckpointKeys(CheckpointConfigSchema)) {
+			expect(readerPattern(key).test(stripped)).toBe(false);
+		}
 	});
 });
