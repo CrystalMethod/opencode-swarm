@@ -424,7 +424,11 @@ export async function executeWritePrReviewTriggerEval(
 		// its findings exist and `publishPrReviewResultReceipt` refuses normal
 		// resubmission onto terminal lanes, so disclosing it dead would strand
 		// real findings behind a mislabel. Fail closed on provenance instead
-		// so the operator reconciles the receipt.
+		// so the operator reconciles the receipt. This snapshot check is a
+		// short-circuit only — the load-bearing authority is the fresh re-read
+		// below the admission branch, which re-evaluates the full predicate
+		// (including the receipt cross-check) against the store as of the
+		// decision moment.
 		const laneAlreadySubmittedReceipt =
 			!!record?.result?.prReviewResultReceipt ||
 			!!record?.terminalResult?.result.prReviewResultReceipt;
