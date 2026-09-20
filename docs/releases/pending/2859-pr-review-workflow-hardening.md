@@ -57,7 +57,11 @@ lever) is intentionally not new code — see the last bullet.
   `notice`, never blocking) when a user-global copy of a stamped skill
   (`~/.opencode/skills/...` or `~/.claude/skills/...`) diverges from the repo
   copy — the 10-week-stale shadowing observed in the post-mortem. Repo-side
-  stamp rot is a `warning`. The detector is READ-ONLY on user-global trees.
+  stamp rot is a `warning` — and because drift-check runs with `--enforce` in
+  CI (`drift-check.yml`) and in the local `check:pre-push` battery, every
+  `warning` **blocks**: this change therefore introduces a new CI-blocking
+  condition (regenerate stamps after editing these skills' bodies). The
+  detector is READ-ONLY on user-global trees.
 - **F7 (transcript salvage lever) ships no new code, by adjudication.** The
   opt-in lever already exists end to end and default-off: config key
   `pr_review_legacy_transcript_compatibility`

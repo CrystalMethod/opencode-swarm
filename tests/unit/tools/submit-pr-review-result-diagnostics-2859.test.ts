@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
 	_test_exports,
 	executeSubmitPrReviewResult,
+	RECEIVED_VALUE_RENDER_LIMIT,
 } from '../../../src/tools/submit-pr-review-result.js';
 import { canonicalTmpDir } from '../../helpers/tmpdir.js';
 
@@ -128,6 +129,10 @@ describe('submit_pr_review_result rejection diagnostics — regression: child-bl
 			await executeSubmitPrReviewResult(
 				{
 					schemaVersion: 1,
+					// N-6 (PR #2863 review): the oversized value is the ACTUAL
+					// fixture character, so the run-length assertions below
+					// exercise the real emitted text, not a vacuous wrong-char
+					// probe.
 					revisionDigest: 'y'.repeat(5000),
 					result: validEnvelope(),
 				},
@@ -136,7 +141,13 @@ describe('submit_pr_review_result rejection diagnostics — regression: child-bl
 			),
 		);
 		expect(result.message?.length ?? 0).toBeLessThan(800);
-		expect(result.message).not.toContain('x'.repeat(121));
+		// The rendered value is truncated at RECEIVED_VALUE_RENDER_LIMIT with a
+		// trailing ellipsis, so no run longer than the limit can survive.
+		expect(result.message).not.toContain(
+			'y'.repeat(RECEIVED_VALUE_RENDER_LIMIT + 1),
+		);
+		expect(result.message).toContain('y'.repeat(16));
+		expect(result.message).toContain('…');
 	});
 
 	test('a circular sibling value never throws and stays bounded', async () => {

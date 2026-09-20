@@ -32,7 +32,7 @@ const SubmitPrReviewResultArgsSchema = z
 // indistinguishable to the child from what it believes it sent ("expected 1"
 // renders identically for "1", 2, "2", true, and null), so blind retry is the
 // rational child response. Render the RECEIVED value, bounded.
-const RECEIVED_VALUE_RENDER_LIMIT = 120;
+export const RECEIVED_VALUE_RENDER_LIMIT = 120;
 // PR #2863 review (PRR-003): each received value is bounded above, but the
 // joined issue list was not. An adversarial multi-issue payload could hand
 // the child a multi-KB rejection, defeating F1 self-diagnosis; cap the

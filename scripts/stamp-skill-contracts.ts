@@ -55,6 +55,17 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 				stampLine,
 			)
 		: insertStampBeforeFrontmatterClose(normalized, stampLine);
+	// N-3 (PR #2863 review): a skill without a frontmatter fence made the
+	// helper return the input unchanged and the loop still wrote it and
+	// reported `stamped` — a false success. Fail closed instead so the next
+	// check run keeps flagging the slug instead of silently "fixing" it.
+	if (!existing && next === normalized) {
+		console.error(
+			`skipped ${slug}: no frontmatter fence; stamp not inserted (fix the SKILL.md frontmatter)`,
+		);
+		drift += 1;
+		continue;
+	}
 	writeFileSync(file, next, 'utf8');
 	console.log(`stamped ${slug} ${digest}${existing ? ` (was ${existing})` : ''}`);
 }

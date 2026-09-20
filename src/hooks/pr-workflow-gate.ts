@@ -13132,6 +13132,11 @@ export const _test_exports = {
 	classifyPrReviewCircuitSignal,
 	minimumConsolidatedLaneCover,
 	analyzePrReviewBatchRecordIntegrity,
+	// Issue #2859 (F3/F-001): the rejection-journal join lives inside this
+	// composer — it is the sole consumer of
+	// latestPrReviewSubmitRejectionMessage — so the integration test drives it
+	// directly and deleting the lastSubmitRejection spread fails the suite.
+	workflowArtifactHasContractMarker,
 	MAX_COVER_UNIVERSE_BITS,
 	// Exposed so a regression test can assert the coverage verdict and the
 	// candidate-id extraction agree on the same artifact — the split-brain that
