@@ -30,6 +30,7 @@ import {
 	startAgentSession,
 } from '../../../src/state';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
+import { withFrozenClock } from '../../helpers/test-clock.js';
 import {
 	drainRehydrations,
 	fullConfig,
@@ -232,7 +233,7 @@ describe("crash-window: no durable binding (or a partial one) keeps today's drop
 				schemaVersion: 1,
 				sessionID,
 				callID,
-				recordedAt: Date.now(),
+				recordedAt: withFrozenClock(() => Date.now()),
 				bindings: [{ taskId: TASK_ID, generation: -1 }],
 			}),
 		);

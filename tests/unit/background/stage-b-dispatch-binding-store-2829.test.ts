@@ -105,7 +105,7 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 			callID: CALL,
 			bindings: [{ taskId: '1.1', generation: 1 }],
 		});
-		const stale = () => Date.now() + STAGE_B_BINDING_TTL_MS + 1;
+		const stale = () => 4102444800000; // 2100-01-01T00:00:00Z — far past TTL of any record written now
 		expect(
 			readStageBDispatchBindings(dir, SESSION, CALL, { nowMs: stale }),
 		).toBeNull();
@@ -185,7 +185,7 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 
 	it('bounded prune: per-session file cap evicts oldest beyond the cap', () => {
 		// Write cap+1 records with increasing mtimes into one session dir.
-		const now = Date.now();
+		const now = 4102444800000; // fixed future epoch: TTL-expired from these records' mtimes
 		for (let i = 0; i <= MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR; i++) {
 			const ok = recordStageBDispatchBindings(dir, {
 				sessionID: SESSION,
