@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.184.15](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.14...v7.184.15) (2026-09-20)
+
+
+### Bug Fixes
+
+* **plan:** resolve post-merge review findings on the auto_checkpoint_threshold trigger ([#2864](https://github.com/ZaxbyHub/opencode-swarm/issues/2864)) ([c27d24e](https://github.com/ZaxbyHub/opencode-swarm/commit/c27d24e9b091027f14375da0e17b52f441ff80c0))
+
 ## [7.184.14](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.13...v7.184.14) (2026-09-20)
 
 
