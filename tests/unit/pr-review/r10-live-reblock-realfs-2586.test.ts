@@ -6,7 +6,6 @@ import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
 	claimTerminalResult,
 	findByBatchId,
-	findByCorrelationId,
 } from '../../../src/background/pending-delegations.js';
 import { PR_REVIEW_BASE_DIMENSION_IDS } from '../../../src/background/pr-review-contract.js';
 import {
@@ -20,7 +19,6 @@ import {
 	PR_REVIEW_REQUIRED_MICRO_LANE_IDS,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import { _internals as dispatchInternals } from '../../../src/tools/dispatch-lanes.js';
-import { _internals as triggerInternals } from '../../../src/tools/write-pr-review-trigger-eval.js';
 import { bunSpawn } from '../../../src/utils/bun-compat.js';
 import { createIssue2469HostClient } from '../../helpers/issue-2469-registered-host.js';
 import { bootKnowledgeHost } from '../../helpers/knowledge-real-host.js';
@@ -28,6 +26,7 @@ import {
 	artifactRecord,
 	reviewedRow,
 } from '../../helpers/pr-review-artifact-fixtures.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { initializeGitRepository } from '../helpers/git-repository.js';
 
@@ -87,18 +86,9 @@ async function gitRun(args: string[]): Promise<string> {
 	}
 }
 
-async function removeTempDir(): Promise<void> {
+function removeTempDir(): void {
 	closeAllProjectDbs();
-	for (let attempt = 0; attempt < 5; attempt++) {
-		try {
-			await fs.rm(directory, { recursive: true, force: true });
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== 'EBUSY' && code !== 'ENOTEMPTY') throw error;
-			await new Promise((resolve) => setTimeout(resolve, 20));
-		}
-	}
+	safeRmRecursive(directory);
 }
 
 function promptField(prompt: string, name: string): string {
@@ -108,6 +98,12 @@ function promptField(prompt: string, name: string): string {
 }
 
 async function finishLane(record: ReturnType<typeof findByBatchId>[number]) {
+	const prompt = deliveredPrompts.get(record.subagentSessionId);
+	if (!prompt) {
+		throw new Error(
+			`missing rendered child prompt for lane ${record.laneId ?? record.subagentSessionId}`,
+		);
+	}
 	const header =
 		record.mode === 'swarm-pr-review:micro'
 			? CANDIDATE_HEADERS.micro_lane
@@ -128,10 +124,7 @@ async function finishLane(record: ReturnType<typeof findByBatchId>[number]) {
 		workflowLane: record.workflowLane,
 		prHeadSha: headSha,
 		gitHead: headSha,
-		revisionDigest: promptField(
-			deliveredPrompts.get(record.subagentSessionId) ?? '',
-			'revision_digest',
-		),
+		revisionDigest: promptField(prompt, 'revision_digest'),
 		scope: record.workspace?.scope ?? undefined,
 		source: 'collect_lane_results',
 		text,

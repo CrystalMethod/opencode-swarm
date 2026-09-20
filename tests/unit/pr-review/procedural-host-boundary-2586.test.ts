@@ -19,6 +19,7 @@ import {
 } from '../../../src/tools/dispatch-lanes.js';
 import { executeWritePrReviewArtifact } from '../../../src/tools/write-pr-review-artifact.js';
 import { artifactRecord } from '../../helpers/pr-review-artifact-fixtures.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 /**
@@ -96,17 +97,8 @@ function baseParseFlags(expectedLane: string): ParseFlags {
 	};
 }
 
-async function removeTempDir(): Promise<void> {
-	for (let attempt = 0; attempt < 5; attempt++) {
-		try {
-			await fs.rm(directory, { recursive: true, force: true });
-			return;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== 'EBUSY' && code !== 'ENOTEMPTY') throw error;
-			await new Promise((resolve) => setTimeout(resolve, 20));
-		}
-	}
+function removeTempDir(): void {
+	safeRmRecursive(directory);
 }
 
 /**

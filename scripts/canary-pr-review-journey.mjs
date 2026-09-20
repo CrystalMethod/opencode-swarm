@@ -82,6 +82,11 @@ if (!process.argv.slice(2).includes('--deterministic')) {
 			'no live model transport configured: set SWARM_PR_REVIEW_JOURNEY_CANARY_SERVER (or OPENCODE_SERVER_URL). A project config file is not transport evidence.',
 		);
 	}
+	if (!/^https?:\/\//i.test(serverUrlRaw)) {
+		unavailable(
+			`live server URL must use http(s): got ${serverUrlRaw}`,
+		);
+	}
 	const serverUrl = serverUrlRaw.replace(/\/+$/, '');
 
 	// ---- Verify the live server is actually reachable (bounded) -------------
@@ -138,6 +143,7 @@ function buildDist() {
 			cwd: repoRoot,
 			stdio: ['ignore', 'pipe', 'pipe'],
 			timeout: 180_000,
+			killSignal: 'SIGKILL',
 			windowsHide: true,
 			env: { ...process.env },
 		});
@@ -243,7 +249,9 @@ try {
 		);
 	}
 } finally {
-	// Cleanup runs BEFORE exit: process.exit() skips finally blocks (#2666).
+	// Cleanup runs here, and process.exit(exitCode) below fires only AFTER this
+	// finally completes — the gated legs above exit(3/4/5) before this block is
+	// ever entered, so nothing here is skipped (the #2666 ordering note).
 	for (const [key, value] of savedEnv) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;

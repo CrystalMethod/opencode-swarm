@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import * as fs from 'node:fs/promises';
 import { CANDIDATE_HEADERS } from '../../../src/background/candidate-contract.js';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
@@ -25,6 +24,7 @@ import {
 	artifactRecord,
 	reviewedRow,
 } from '../../helpers/pr-review-artifact-fixtures.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { initializeGitRepository } from '../helpers/git-repository.js';
 
@@ -384,16 +384,7 @@ afterEach(async () => {
 	Object.assign(dispatchInternals, originalDispatch);
 	Object.assign(triggerInternals, originalTrigger);
 	closeAllProjectDbs();
-	for (let attempt = 0; attempt < 5; attempt++) {
-		try {
-			await fs.rm(directory, { recursive: true, force: true });
-			break;
-		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code !== 'EBUSY' && code !== 'ENOTEMPTY') throw error;
-			await new Promise((resolve) => setTimeout(resolve, 20));
-		}
-	}
+	safeRmRecursive(directory);
 });
 
 describe('r09 resilience off/on (issue 2586, AC2/R09)', () => {

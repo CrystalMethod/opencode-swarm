@@ -61,7 +61,10 @@ canary above, and reruns the live-provider cases at the closing revision.
   finding-disposition policy routes LOW findings to report-only (no feedback
   handoff), and a REQUEST_CHANGES verdict can rest on the reviewer rung when
   the critic's typed skip predicate fires (no CRITICAL/HIGH, no tagged
-  MEDIUM).
+  MEDIUM). Related teardown hardening: the review also migrated this PR's own
+  fixtures — and the pre-existing Windows-flaky
+  close-active-state-unlink-retry teardown (#2866 class) — to the repo's
+  safeRmRecursive EBUSY-retry helper.
 
 ## Verification
 

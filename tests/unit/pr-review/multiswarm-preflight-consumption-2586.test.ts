@@ -8,16 +8,20 @@
  * the delegation gate hook's toolBefore on the controller's Task dispatch —
  * that is the surface where the lane-agent model admission contract lives
  * (src/hooks/delegation-gate.ts swarm-agent preflight, wired for `Task`).
- * PR-review lane agents (explorer/reviewer/critic — the read-only lane role
- * set in src/tools/dispatch-lanes.ts) are dispatched by the controller as
- * Task calls with swarm-prefixed subagent_type values, so this fixture drives
- * the exact same real integration surface (createDelegationGateHook +
- * toolBefore), with PR-review lane roles, PR-review lane ids from the
+ * This fixture simulates that Task-shaped dispatch (createDelegationGateHook +
+ * toolBefore) with PR-review lane roles, PR-review lane ids from the
  * canonical base-dimension contract, and lane-prompt shapes from the
- * dispatch-lanes lane schema. The `dispatch_lanes_async` internal child
- * sessions ride host session.create/promptAsync (no tool.execute.before
- * Task interception), so the gate Task preflight IS the lane-agent model
- * admission surface. No preflight logic is recreated here.
+ * dispatch-lanes lane schema, so it exercises the same real admission
+ * contract a Task-carried lane dispatch would hit. Production note: read-only
+ * PR-review lane agents (explorer/reviewer/critic — the lane role set in
+ * src/tools/dispatch-lanes.ts) are dispatched by the controller via
+ * `dispatch_lanes_async`, whose internal child sessions ride host
+ * session.create/promptAsync and never pass tool.execute.before — the
+ * dispatch-time model admission for that path is a disclosed gap; the
+ * init-time runModelPreflight covers the same enabled prefixed selections at
+ * warning level, and only a Task-carried dispatch (e.g. the reviewer/test
+ * re-entry carve-out) reaches the hook exercised here. No preflight logic is
+ * recreated here.
  *
  * Legs:
  * - RESOLVED: both swarms' prefixed PR-review lane agents whose final
@@ -34,7 +38,6 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import * as fs from 'node:fs';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import { getAgentConfigs } from '../../../src/agents';
 import { PR_REVIEW_BASE_DIMENSION_IDS } from '../../../src/background/pr-review-contract';
@@ -42,6 +45,7 @@ import type { PluginConfig } from '../../../src/config';
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { invalidateProviderCatalogCache } from '../../../src/services/model-preflight';
 import { resetSwarmState, swarmState } from '../../../src/state';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function catalogClient(
@@ -123,7 +127,7 @@ describe('issue #2586 — multi-swarm PR-review lane dispatch consumes the #2680
 	afterEach(() => {
 		resetSwarmState();
 		invalidateProviderCatalogCache();
-		fs.rmSync(tempDir, { recursive: true, force: true });
+		safeRmRecursive(tempDir);
 	});
 
 	test('[AC10] resolvable prefixed lane models in both swarms proceed on the PR-review base-lane dispatch path', async () => {
@@ -198,10 +202,13 @@ describe('issue #2586 — multi-swarm PR-review lane dispatch consumes the #2680
 		// The model-preflight denial fires BEFORE the reviewer ACCEPTANCE gate,
 		// so the typed class must lead the message (preflight precedence on the
 		// lane dispatch path).
-		const error = (await outcome.catch(
-			(caught: unknown) => caught,
-		)) as unknown as Error;
-		expect(error.message.startsWith('SWARM_AGENT_MODEL_UNRESOLVED')).toBe(true);
+		const caught = await outcome.catch((rejection: unknown) => rejection);
+		if (!(caught instanceof Error)) {
+			throw new Error('expected toolBefore to reject with an Error');
+		}
+		expect(caught.message.startsWith('SWARM_AGENT_MODEL_UNRESOLVED')).toBe(
+			true,
+		);
 	});
 
 	test('[AC10] a prefixed PR-review critic lane keeps the PLAN_CRITIC_MODEL_UNRESOLVED identity', async () => {
@@ -212,7 +219,7 @@ describe('issue #2586 — multi-swarm PR-review lane dispatch consumes the #2680
 			tempDir,
 			registeredAgents,
 		);
-		const error = (await hook
+		const caught = await hook
 			.toolBefore(
 				{ tool: 'Task', sessionID: 'architect-1', callID: 'critic-call-1' },
 				{
@@ -225,12 +232,17 @@ describe('issue #2586 — multi-swarm PR-review lane dispatch consumes the #2680
 					},
 				},
 			)
-			.catch((caught: unknown) => caught)) as unknown as Error;
-		expect(error.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')).toBe(true);
-		expect(error.message).toContain('mega_critic');
-		expect(error.message).toContain('ghost/broken-critic');
+			.catch((rejection: unknown) => rejection);
+		if (!(caught instanceof Error)) {
+			throw new Error('expected toolBefore to reject with an Error');
+		}
+		expect(caught.message.startsWith('PLAN_CRITIC_MODEL_UNRESOLVED')).toBe(
+			true,
+		);
+		expect(caught.message).toContain('mega_critic');
+		expect(caught.message).toContain('ghost/broken-critic');
 		// The critic denial must NOT carry the non-critic class name.
-		expect(error.message).not.toContain('SWARM_AGENT_MODEL_UNRESOLVED');
+		expect(caught.message).not.toContain('SWARM_AGENT_MODEL_UNRESOLVED');
 	});
 
 	test('[AC10] an unreachable catalog fails open — a lane dispatch is never denied by catalog unavailability alone', async () => {
