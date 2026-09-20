@@ -246,6 +246,13 @@ export type PrReviewEvent =
 			type: 'coverage_finalization_requested';
 			settlement: PrReviewCoverageSettlementInput;
 			requestedVerdict?: PrReviewReportVerdict;
+			/**
+			 * Issue #2840: true when the durable trigger-eval receipt discloses a
+			 * coverage degradation (dead family or coverage-quality). A disclosed
+			 * degradation makes the review DEGRADED_DISCLOSED — the verdict matrix
+			 * below must reject APPROVE even for a COMPLETE settlement.
+			 */
+			disclosedDegradation?: boolean;
 	  }
 	| {
 			type: 'critic_result_recorded';
@@ -290,6 +297,9 @@ export type PrReviewTransitionRejectionCode =
 	| 'live_lane_blocks_coverage'
 	| 'partial_coverage_cannot_approve'
 	| 'no_coverage_requires_incomplete'
+	// Issue #2840: a disclosed coverage degradation (dead family) makes the
+	// review DEGRADED_DISCLOSED; it can never emit APPROVE.
+	| 'degraded_disclosure_cannot_approve'
 	| 'critic_required_unfulfilled'
 	| 'stale_foreign_authorization'
 	| 'stale_generation_result'

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type BigIntStats, type Dirent, readFileSync, statSync } from 'node:fs';
+import { type BigIntStats, type Dirent, readFileSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SessionStatus } from '@opencode-ai/sdk';
@@ -52,13 +52,15 @@ import {
 } from '../background/pr-review-contract.js';
 import {
 	PR_REVIEW_REQUIRED_TRIGGER_IDS,
-	PR_REVIEW_TRIGGER_RECEIPT_MAX_BYTES,
 	type PrReviewInlineTriggerRow,
 	PrReviewInlineTriggerRowSchema,
-	parsePrReviewTriggerReceipt,
 	prReviewTriggerLedgerDigest,
 	validatePrReviewInlineTriggerLedger,
 } from '../background/pr-review-trigger-contract.js';
+import {
+	prReviewReceiptHasCoverageDegradations,
+	readPrReviewTriggerReceiptForGate,
+} from '../background/pr-review-trigger-receipt-reader.js';
 import {
 	type RevisionDigestResult,
 	resolveCommitCountSince,
@@ -11325,9 +11327,19 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	);
 	const authority = await readAuthoritativeFindingPolicy(directory, state);
 	const findings = authority.policyFindings;
+	// Issue #2840: the report projection must carry the same degradation
+	// downgrade the completion gates enforce — a disclosed coverage degradation
+	// (dead family) excludes APPROVE from the reported permitted verdicts.
+	const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
+		directory,
+		state.prReviewTriggerEvalPath,
+	);
 	const permittedVerdicts = allowedPrReviewReportVerdicts(
 		settlement.kind,
 		findings,
+		{
+			disclosedCoverageDegradation: disclosedDegradation,
+		},
 	);
 	const policyProjection = evaluateFinalFindingPolicy({
 		policyVersion: FINDING_POLICY_VERSION,
@@ -12720,6 +12732,17 @@ export async function completePrWorkflow(
 			state,
 			ctx.revisionDigest,
 		);
+		// Issue #2840: the durable trigger-eval receipt's disclosed coverage
+		// degradations (dead family or coverage-quality) downgrade the verdict
+		// matrix at EVERY decision point below — a disclosed degradation makes
+		// the review DEGRADED_DISCLOSED and it can never emit APPROVE, even
+		// with all six base dimensions settled COMPLETE. Unset receipt path ⇒
+		// no degradation (no fs read); a corrupt-present receipt throws BLOCKED
+		// exactly like the inventory pass.
+		const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
+			directory,
+			state.prReviewTriggerEvalPath,
+		);
 		// Issue #2512: coverage finalization is REDUCER-OWNED — the adapter
 		// dispatches `coverage_finalization_requested` and maps the typed
 		// rejections to the operator-facing BLOCKED messages the inline checks
@@ -12738,6 +12761,7 @@ export async function completePrWorkflow(
 					liveDimensions: finalizationSettlement.liveDimensions,
 				},
 				requestedVerdict: verdict,
+				disclosedDegradation,
 			});
 			if (outcome.status === 'applied') return;
 			const { code } = outcome.rejection;
@@ -12756,9 +12780,18 @@ export async function completePrWorkflow(
 					`BLOCKED: PR_REVIEW NO_COVERAGE completion must report verdict INCOMPLETE; got "${verdict}". A zero-coverage report never approves and never claims a code-quality review.`,
 				);
 			}
+			// Issue #2840: name the degradation in the operator-facing message —
+			// the generic fall-through's allowed-list formatting is reserved for
+			// rejections whose vocabulary the coverage kind alone explains.
+			if (code === 'degraded_disclosure_cannot_approve') {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
+				);
+			}
 			const allowedList = allowedPrReviewReportVerdicts(
 				finalizationSettlement.kind,
 				[],
+				{ disclosedCoverageDegradation: disclosedDegradation },
 			).join(' | ');
 			throw new Error(
 				`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion allows report_verdict ${allowedList}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
@@ -12821,7 +12854,9 @@ export async function completePrWorkflow(
 			// Coverage-only preflight has no finding-policy artifact yet.  Pass an
 			// explicit empty set so the policy API cannot silently fall back to an
 			// omitted-findings compatibility path.
-			const preAllowed = allowedPrReviewReportVerdicts(settlement.kind, []);
+			const preAllowed = allowedPrReviewReportVerdicts(settlement.kind, [], {
+				disclosedCoverageDegradation: disclosedDegradation,
+			});
 			if (!preAllowed.includes(verdict)) {
 				throw new Error(
 					`BLOCKED: PR_REVIEW ${settlement.kind} completion allows report_verdict ${preAllowed.join(' | ')}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
@@ -12849,6 +12884,7 @@ export async function completePrWorkflow(
 			const policyAllowed = allowedPrReviewReportVerdicts(
 				ready.settlement.kind,
 				finalFindingAuthority.policyFindings,
+				{ disclosedCoverageDegradation: disclosedDegradation },
 			);
 			if (!policyAllowed.includes(verdict)) {
 				throw new Error(
@@ -15086,33 +15122,17 @@ function derivePrReviewCandidateInventory(
 	}
 	const degradedSourceKeys = new Set<string>();
 	if (state.prReviewTriggerEvalPath) {
-		const triggerPath = validateSwarmPath(
+		// Issue #2840: the bounded receipt read (path validation, byte cap,
+		// JSON + strict receipt parse, BLOCKED on corrupt-present) is shared
+		// with the verdict path through pr-review-trigger-receipt-reader.ts.
+		const receiptRead = readPrReviewTriggerReceiptForGate(
 			directory,
 			state.prReviewTriggerEvalPath,
 		);
-		let triggerArtifact: unknown;
-		try {
-			const triggerStat = statSync(triggerPath);
-			if (
-				!triggerStat.isFile() ||
-				triggerStat.size > PR_REVIEW_TRIGGER_RECEIPT_MAX_BYTES
-			) {
-				throw new Error('trigger evaluation artifact exceeds its read bound');
-			}
-			triggerArtifact = JSON.parse(readFileSync(triggerPath, 'utf-8'));
-		} catch {
+		const receipt = 'noReceipt' in receiptRead ? null : receiptRead.receipt;
+		if (!receipt) {
 			throw new Error(
 				'BLOCKED: PR_REVIEW trigger evaluation artifact is missing or invalid',
-			);
-		}
-		let receipt: ReturnType<typeof parsePrReviewTriggerReceipt>;
-		try {
-			receipt = parsePrReviewTriggerReceipt(triggerArtifact);
-		} catch (error) {
-			throw new Error(
-				`BLOCKED: PR_REVIEW trigger evaluation is invalid: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
 			);
 		}
 		for (const row of receipt.matchedRows) {

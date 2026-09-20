@@ -384,6 +384,23 @@ export function reducePrReviewEvent(
 						`a zero-coverage review must report INCOMPLETE, not ${verdict}`,
 					);
 				}
+				// Issue #2840: a disclosed coverage degradation (dead family or
+				// coverage-quality) makes the review DEGRADED_DISCLOSED even when
+				// all six base dimensions settled COMPLETE — the micro-family axis
+				// is invisible to `kind`, so the flag is the reducer's only view
+				// of it. Such a review may request changes or declare itself
+				// incomplete; it can never approve.
+				if (
+					settlement.kind === 'COMPLETE' &&
+					event.disclosedDegradation === true &&
+					verdict === 'APPROVE'
+				) {
+					return rejected(
+						state,
+						'degraded_disclosure_cannot_approve',
+						'a disclosed coverage degradation (dead family) can never emit APPROVE; report REQUEST_CHANGES with the disclosed degradation or INCOMPLETE',
+					);
+				}
 			}
 			// No persist_state effect: the transition mutates no state; the
 			// completion adapter persists at its own terminal clear.
