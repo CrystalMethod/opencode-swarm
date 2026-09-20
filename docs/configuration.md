@@ -125,6 +125,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `automation` | object | — | Background automation mode and per-feature toggles (v6.7 background-first rollout). |
 | `knowledge` | object | — | Two-tier cross-project knowledge base (v6.17). |
 | `memory` | object | — | Swarm memory substrate — disabled by default so existing flows are unchanged. |
+| `forge` | object | — | Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733). |
 | `observability` | object | — | Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485). |
 | `learning` | object | — | Learning subsystem: real-time admission, PRM persistence, dedup sweep (issue #1821). |
 | `consensus` | object | — | Consensus mining over completed run evidence (issue #1821). |

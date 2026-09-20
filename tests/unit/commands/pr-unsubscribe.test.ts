@@ -37,6 +37,9 @@ afterEach(() => {
 	_internals.buildCorrelationId = savedInternals.buildCorrelationId;
 	_internals.parsePrRef = savedInternals.parsePrRef;
 	_internals.looksLikePrRef = savedInternals.looksLikePrRef;
+	// (#2733 seam evolution) the handler resolves refs through
+	// _internals.resolveCanonicalPrUrl; restore it alongside the rest.
+	_internals.resolveCanonicalPrUrl = savedInternals.resolveCanonicalPrUrl;
 });
 
 // ---------------------------------------------------------------------------
@@ -67,11 +70,14 @@ describe('handlePrUnsubscribeCommand', () => {
 		expect(result).toContain('not-a-pr-ref');
 	});
 
-	test('3. Unresolvable PR ref (looksLikePrRef=true but parsePrRef=null) → returns resolution error', async () => {
+	test('3. Unresolvable PR ref (looksLikePrRef=true but resolveCanonicalPrUrl=null) → returns resolution error', async () => {
 		// looksLikePrRef returns true (looks like a PR ref)
 		mockLooksLikePrRef.mockReturnValueOnce(true);
-		// but parsePrRef returns null (could not resolve it)
-		mockParsePrRef.mockReturnValueOnce(null);
+		// but the canonical resolver returns null (could not resolve it).
+		// (#2733 sanctioned seam evolution: the handler routes through
+		// _internals.resolveCanonicalPrUrl, not parsePrRef — stubbing
+		// parsePrRef alone no longer drives this error path.)
+		_internals.resolveCanonicalPrUrl = () => null;
 
 		const result = await handlePrUnsubscribeCommand(
 			DIRECTORY,

@@ -21,7 +21,7 @@
 
 import { subscribe } from '../background/pr-subscriptions.js';
 import { loadPluginConfig } from '../config/loader.js';
-import { looksLikePrRef, parsePrRef } from './pr-ref.js';
+import { looksLikePrRef, resolveCanonicalPrUrl } from './pr-ref.js';
 
 /**
  * Subscribe the current session to PR monitoring notifications.
@@ -53,7 +53,7 @@ export async function handlePrSubscribeCommand(
 	}
 
 	const refToken = rest[0];
-	const prInfo = parsePrRef(refToken, directory);
+	const prInfo = resolveCanonicalPrUrl(refToken, directory);
 
 	if (!prInfo) {
 		if (looksLikePrRef(refToken)) {
@@ -90,7 +90,7 @@ export async function handlePrSubscribeCommand(
 	}
 
 	const repoFullName = `${prInfo.owner}/${prInfo.repo}`;
-	const prUrl = `https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`;
+	const prUrl = prInfo.prUrl;
 
 	try {
 		const config = _internals.loadPluginConfig(directory);

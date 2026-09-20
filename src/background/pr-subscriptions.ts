@@ -61,6 +61,7 @@ import {
 import { withEvidenceLock } from '../evidence/lock.js';
 import { observeStoreHealth } from '../health/learning-health.js';
 import { validateSwarmPath } from '../hooks/utils.js';
+import { isForgePrUrl } from '../providers/forge-provider.js';
 import { telemetry } from '../telemetry.js';
 import { log } from '../utils';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write.js';
@@ -348,14 +349,14 @@ const RecordSchema = z
 		prNumber: z.number().int().positive(),
 		repoFullName: z
 			.string()
-			.regex(/^[^/]+\/[^/]+$/, 'Must be owner/repo format'),
-		prUrl: z
-			.string()
-			.min(1)
 			.regex(
-				/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/,
-				'Must be a valid GitHub PR URL',
+				/^[^/\s]+(?:\/[^/\s]+)+$/,
+				'Must be owner/repo format (GitLab nested namespaces allowed)',
 			),
+		prUrl: z.string().min(1).refine(isForgePrUrl, {
+			message:
+				'Must be a valid PR URL (GitHub /pull/N or GitLab /-/merge_requests/N)',
+		}),
 		headRefOid: z.string().optional(),
 		lastCheckedAt: z.number(),
 		lastCommentId: z.string().optional(),

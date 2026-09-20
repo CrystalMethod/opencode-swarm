@@ -1879,6 +1879,26 @@ export const ObservabilityConfigSchema = z.object({
 
 export type ObservabilityConfig = z.infer<typeof ObservabilityConfigSchema>;
 
+export const ForgeConfigSchema = z.object({
+	/**
+	 * Forge provider selection for the PR/issue command surface (issue #2733).
+	 * 'auto' (default) derives the provider from the git remote; explicit
+	 * 'github' or 'gitlab' overrides auto-detection. Ambiguous remotes fail
+	 * closed and require an explicit selection.
+	 */
+	provider: z.enum(['github', 'gitlab', 'auto']).default('auto'),
+	/**
+	 * GitLab instance base URL override for self-hosted instances (e.g.
+	 * https://gitlab.example.com). NOT a trust whitelist: the value passes
+	 * through the same HTTPS-only / non-private / ASCII-host guards as any
+	 * forge URL and never bypasses a security control. Only meaningful for
+	 * GitLab; combining it with provider 'github' is a configuration error.
+	 */
+	base_url: z.string().url().optional(),
+});
+
+export type ForgeConfig = z.infer<typeof ForgeConfigSchema>;
+
 export const MemoryConfigSchema = z.object({
 	/** Enable Swarm memory tools and local memory storage. Default: false. */
 	enabled: z.boolean().default(false),
@@ -4017,6 +4037,13 @@ export const PluginConfigSchema = z.object({
 	// Swarm memory substrate. Disabled by default so existing flows are unchanged.
 	memory: MemoryConfigSchema.optional().describe(
 		'Swarm memory substrate — disabled by default so existing flows are unchanged.',
+	),
+
+	// Forge provider selection for the PR/issue command surface (issue #2733).
+	// Optional with safe defaults: absent = 'auto' provider detection; GitHub
+	// behavior is unchanged when the section is omitted.
+	forge: ForgeConfigSchema.optional().describe(
+		'Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733).',
 	),
 
 	// Remote OTLP/OpenInference observability export (issue #2485). Opt-in;

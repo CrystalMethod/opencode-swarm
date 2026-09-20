@@ -18,6 +18,7 @@
 
 import { subscribe } from '../background/pr-subscriptions.js';
 import type { PrMonitorConfig } from '../config/schema.js';
+import { buildPrUrl, detectForgeFromUrl } from '../providers/forge-provider.js';
 import { log } from '../utils';
 import { getStoredInputArgs } from './guardrails/stored-input-args';
 import { normalizeToolNameLowerCase } from './normalize-tool-name';
@@ -28,6 +29,14 @@ const MAX_OUTPUT_SCAN_BYTES = 64 * 1024;
 /** First GitHub PR URL in the output. */
 const PR_URL_PATTERN =
 	/https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/(\d+)/;
+
+/**
+ * First GitLab MR URL in the output (`glab mr create` prints the web URL).
+ * The owner may be a nested namespace path; the host is gitlab.com or any
+ * `gitlab.`-prefixed self-hosted instance (issue #2733).
+ */
+const MR_URL_PATTERN =
+	/https:\/\/(gitlab\.com|gitlab\.[A-Za-z0-9.-]+)\/([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*)\/([A-Za-z0-9_.-]+)\/-\/merge_requests\/(\d+)/;
 
 export interface PrAutoSubscribeHook {
 	toolAfter: (
@@ -53,25 +62,52 @@ export const _internals: {
 };
 
 /**
- * Extract `{ repoFullName, prNumber, prUrl }` from the first GitHub PR URL
- * in the given text, or null when none is present. The returned prUrl is
- * re-canonicalized from the captures so it always satisfies the
- * subscription store's strict URL schema.
+ * Extract `{ repoFullName, prNumber, prUrl }` from the first GitHub PR or
+ * GitLab MR URL in the given text, or null when none is present. The returned
+ * prUrl is re-canonicalized from the captures (provider-aware: github
+ * `/pull/N`, gitlab `/-/merge_requests/N` with the matched host) so it always
+ * satisfies the subscription store's URL schema.
  */
 export function extractPrUrl(
 	text: string,
 ): { repoFullName: string; prNumber: number; prUrl: string } | null {
-	const match = PR_URL_PATTERN.exec(text.slice(0, MAX_OUTPUT_SCAN_BYTES));
-	if (!match) return null;
-	const owner = match[1];
-	const repo = match[2];
-	const prNumber = Number.parseInt(match[3], 10);
-	if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
-	return {
-		repoFullName: `${owner}/${repo}`,
-		prNumber,
-		prUrl: `https://github.com/${owner}/${repo}/pull/${prNumber}`,
-	};
+	const slice = text.slice(0, MAX_OUTPUT_SCAN_BYTES);
+
+	const ghMatch = PR_URL_PATTERN.exec(slice);
+	if (ghMatch) {
+		const owner = ghMatch[1];
+		const repo = ghMatch[2];
+		const prNumber = Number.parseInt(ghMatch[3], 10);
+		if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
+		return {
+			repoFullName: `${owner}/${repo}`,
+			prNumber,
+			prUrl: buildPrUrl(
+				{ provider: 'github', host: 'github.com' },
+				owner,
+				repo,
+				prNumber,
+			),
+		};
+	}
+
+	const glMatch = MR_URL_PATTERN.exec(slice);
+	if (glMatch) {
+		const host = glMatch[1].toLowerCase();
+		const owner = glMatch[2];
+		const repo = glMatch[3];
+		const prNumber = Number.parseInt(glMatch[4], 10);
+		if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
+		const context = detectForgeFromUrl(`https://${host}/${owner}/${repo}`);
+		if (!context) return null;
+		return {
+			repoFullName: `${owner}/${repo}`,
+			prNumber,
+			prUrl: buildPrUrl(context, owner, repo, prNumber),
+		};
+	}
+
+	return null;
 }
 
 /**

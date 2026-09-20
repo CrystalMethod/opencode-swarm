@@ -1636,6 +1636,14 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 			break;
 		}
 
+		case 'forge': {
+			// #2733 forge provider selection: object shape at the doctor layer;
+			// value semantics (enum/URL guards, fail-closed selection) are
+			// enforced by ForgeConfigSchema and resolveProviderSelection.
+			emitObjectTypeMismatch('forge', value, findings);
+			break;
+		}
+
 		case 'design_docs': {
 			emitObjectTypeMismatch('design_docs', value, findings);
 			break;

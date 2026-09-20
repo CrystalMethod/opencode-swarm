@@ -205,6 +205,7 @@ import type {
 	PrReviewEvent,
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
+import { canonicalForgePrUrl } from '../providers/forge-provider.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
 import {
 	ensurePrWorkflowSkillContractsFresh,
@@ -11357,22 +11358,10 @@ export async function readPrReviewFinalFindingPolicyForReport(
 }
 
 function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com'
-		) {
-			return null;
-		}
-		const matched = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (!matched) return null;
-		const prNumber = Number(matched[3]);
-		if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
-		return `github.com/${matched[1].toLowerCase()}/${matched[2].toLowerCase()}/pull/${prNumber}`;
-	} catch {
-		return null;
-	}
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body.
+	return canonicalForgePrUrl(value);
 }
 
 function assertMatchingPrReviewFeedbackConsent(

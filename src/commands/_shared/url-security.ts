@@ -1,16 +1,26 @@
 import * as child_process from 'node:child_process';
+import { matchForgeResourceUrl } from '../../providers/forge-provider.js';
+import {
+	containsControlCharacters,
+	hasNonAsciiHostname,
+	isIPv4ZeroNetwork,
+	isIpv4MappedPrivateHost,
+	isPrivateHost,
+} from '../../providers/host-guards.js';
 import { mergeEnvForChild } from '../../utils/bun-compat';
 import { resolveGitExecutable } from '../../utils/git-executable.js';
 
+// Host/URL-component guards live in src/providers/host-guards.ts since issue
+// #2733 (shared with the forge provider layer without a circular import);
+// re-exported here so this module's public API is unchanged.
+export {
+	containsControlCharacters,
+	isIPv4ZeroNetwork,
+	isIpv4MappedPrivateHost,
+	isPrivateHost,
+};
+
 export const MAX_URL_LEN = 2048;
-const IPV4_PRIVATE = /^10\./;
-const IPV4_LOOPBACK = /^127\./;
-const IPV4_LINK_LOCAL = /^169\.254\./;
-const IPV4_PRIVATE_172 = /^172\.(1[6-9]|2\d|3[0-1])\./;
-const IPV4_PRIVATE_192 = /^192\.168\./;
-const IPV4_ZERO_NETWORK = /^0\./;
-const IPV6_LINK_LOCAL = /^fe80:/i;
-const IPV6_UNIQUE_LOCAL = /^f[cd][0-9a-f]{2}:/i;
 
 export type ValidationResult = { sanitized: string } | { error: string };
 
@@ -89,98 +99,18 @@ export function sanitizeErrorEcho(raw: string, maxLength: number = 80): string {
 	return `${collapsed.slice(0, maxLength)}…`;
 }
 
-export function containsControlCharacters(value: string): boolean {
-	for (const ch of value) {
-		const cp = ch.codePointAt(0);
-		if (cp !== undefined && (cp <= 0x1f || cp === 0x7f)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 /**
- * Returns true if the hostname contains any non-ASCII code point (IDN
- * homograph protection).
- */
-function hasNonAsciiHostname(hostname: string): boolean {
-	for (const ch of hostname) {
-		const cp = ch.codePointAt(0);
-		if (cp !== undefined && cp > 0x7f) return true;
-	}
-	return false;
-}
-
-export function isIpv4MappedPrivateHost(inner: string): boolean {
-	if (
-		IPV4_PRIVATE.test(inner) ||
-		IPV4_LOOPBACK.test(inner) ||
-		IPV4_LINK_LOCAL.test(inner) ||
-		IPV4_PRIVATE_172.test(inner) ||
-		IPV4_PRIVATE_192.test(inner) ||
-		IPV4_ZERO_NETWORK.test(inner)
-	) {
-		return true;
-	}
-
-	const firstSegment = inner.split(':', 1)[0];
-	if (!firstSegment) return false;
-	const firstWord = Number.parseInt(firstSegment, 16);
-	if (!Number.isFinite(firstWord)) return false;
-
-	return (
-		(firstWord >= 0x0000 && firstWord <= 0x00ff) ||
-		(firstWord >= 0x0a00 && firstWord <= 0x0aff) ||
-		(firstWord >= 0x7f00 && firstWord <= 0x7fff) ||
-		firstWord === 0xa9fe ||
-		(firstWord >= 0xac10 && firstWord <= 0xac1f) ||
-		firstWord === 0xc0a8
-	);
-}
-
-/**
- * Blocklist of private/localhost hostnames and IP ranges.
- */
-export function isPrivateHost(url: URL): boolean {
-	const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-
-	if (
-		host === 'localhost' ||
-		host === '::1' ||
-		host === '0.0.0.0' ||
-		IPV4_LOOPBACK.test(host) ||
-		IPV4_ZERO_NETWORK.test(host)
-	) {
-		return true;
-	}
-
-	if (host.startsWith('localhost') || host === 'localhost.com') {
-		return true;
-	}
-
-	if (
-		IPV4_PRIVATE.test(host) ||
-		IPV4_LINK_LOCAL.test(host) ||
-		IPV4_PRIVATE_172.test(host) ||
-		IPV4_PRIVATE_192.test(host) ||
-		IPV6_LINK_LOCAL.test(host) ||
-		IPV6_UNIQUE_LOCAL.test(host)
-	) {
-		return true;
-	}
-
-	if (host.startsWith('::ffff:')) {
-		const inner = host.slice(7);
-		if (isIpv4MappedPrivateHost(inner)) {
-			return true;
-		}
-	}
-
-	return false;
-}
-
-/**
- * Validate and sanitize a GitHub URL for a specific resource kind.
+ * Validate and sanitize a forge resource URL for a specific resource kind.
+ *
+ * Provider-aware since issue #2733: accepts GitHub issue/PR URLs
+ * (`https://github.com/owner/repo/issues|pull/N`) and GitLab issue/MR URLs
+ * (`https://<gitlab-host>/owner/repo/-/issues|merge_requests/N`, where the
+ * owner may be a nested namespace path and the host is gitlab.com or any
+ * `gitlab.`-prefixed self-hosted instance). Every security control applies
+ * identically to both providers and to every origin: HTTPS-only, IDN
+ * (non-ASCII) host rejection, private/localhost host rejection, credential
+ * stripping, bounded URL length, and control-character sanitization — the
+ * shared guards in src/providers/host-guards.ts.
  */
 export function validateAndSanitizeGithubUrl(
 	rawUrl: string,
@@ -207,15 +137,13 @@ export function validateAndSanitizeGithubUrl(
 			return { error: 'Private or localhost URLs are not allowed' };
 		}
 
-		const githubPattern = new RegExp(
-			`^https:\\/\\/github\\.com\\/([^/]+)\\/([^/]+)\\/${resource}\\/([0-9]+)\\/?$`,
-		);
-		if (!githubPattern.test(sanitized)) {
+		const matched = matchForgeResourceUrl(sanitized, resource);
+		if (!matched) {
 			return {
 				error:
 					resource === 'issues'
-						? 'URL must be a GitHub issue URL (https://github.com/owner/repo/issues/N)'
-						: 'URL must be a GitHub pull request URL (https://github.com/owner/repo/pull/N)',
+						? 'URL must be a GitHub issue URL (https://github.com/owner/repo/issues/N) or a GitLab issue URL (https://<gitlab-host>/owner/repo/-/issues/N)'
+						: 'URL must be a GitHub pull request URL (https://github.com/owner/repo/pull/N) or a GitLab merge request URL (https://<gitlab-host>/owner/repo/-/merge_requests/N)',
 			};
 		}
 
@@ -268,6 +196,11 @@ export function detectGitRemote(
 
 /**
  * Parse owner/repo from a git remote URL.
+ *
+ * GitHub-specific HTTPS/SSH forms plus an any-host path fallback (the
+ * fallback preserves the documented GHE/proxy bare-number resolution). For
+ * host-aware parsing that preserves the instance host and GitLab nested
+ * namespaces, use `parseForgeRemoteUrl` in src/providers/forge-provider.ts.
  */
 export function parseGitRemoteUrl(
 	remoteUrl: string,
@@ -307,8 +240,4 @@ export function parseGitRemoteUrl(
 	}
 
 	return null;
-}
-
-export function isIPv4ZeroNetwork(host: string): boolean {
-	return IPV4_ZERO_NETWORK.test(host);
 }

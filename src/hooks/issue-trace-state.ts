@@ -24,6 +24,7 @@ import * as path from 'node:path';
 
 import type { Plan } from '../config/plan-schema';
 import { loadPlan } from '../plan/manager';
+import { detectForgeFromUrl } from '../providers/forge-provider.js';
 import type {
 	IssueReference,
 	TraceState,
@@ -342,7 +343,7 @@ function isPhaseComplete(status: string | undefined): boolean {
 function isValidIssueReference(obj: unknown): obj is IssueReference {
 	if (typeof obj !== 'object' || obj === null) return false;
 	const o = obj as Record<string, unknown>;
-	if (typeof o.url !== 'string' || !o.url.startsWith('https://github.com/'))
+	if (typeof o.url !== 'string' || detectForgeFromUrl(o.url) === null)
 		return false;
 	return (
 		typeof o.owner === 'string' &&

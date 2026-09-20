@@ -18,8 +18,10 @@ import {
 	type PRStatusResult,
 	type ReviewStateResult,
 } from '../git/pr';
+import { detectForgeFromUrl } from '../providers/forge-provider.js';
 import { advisoryWarn } from '../services/warning-buffer';
 import { log, error as logError } from '../utils';
+import { resolveGlabExecutable } from '../utils/glab-executable.js';
 import { type AutomationEventType, getGlobalEventBus } from './event-bus';
 import {
 	isPrSubscriptionCapacityError,
@@ -516,6 +518,29 @@ export class PrMonitorWorker {
 		isProbe = false,
 	): Promise<void> {
 		const correlationId = sub.correlationId;
+
+		// Honest capability reporting (issue #2733): GitHub's gh CLI synthesizes
+		// statusCheckRollup/reviewDecision/mergeStateStatus; GitLab's MR API does
+		// not, and glab-backed MR polling is tracked as a follow-up. Skip the
+		// gh poll cycle for GitLab MR subscriptions with an explicit unavailable
+		// marker instead of running polls that cannot serve the subscription
+		// (which would fabricate error-loop circuit-breaker churn).
+		if (detectForgeFromUrl(sub.prUrl)?.provider === 'gitlab') {
+			// Production wiring for the glab resolver (bounded, lazy, cached —
+			// at most one probe cycle per process): report whether a usable
+			// glab binary exists so the unavailable marker is diagnostic, not
+			// just a skip.
+			const glabBinary = resolveGlabExecutable();
+			const glabStatus =
+				glabBinary === 'glab'
+					? 'glab binary not resolved (bare-name fallback)'
+					: `glab binary resolved at ${glabBinary}`;
+			log(
+				'[PrMonitorWorker] GitLab MR monitoring unavailable: glab-backed polling is not wired yet (issue #2882); skipping gh poll for this subscription',
+				{ correlationId, glabStatus },
+			);
+			return;
+		}
 
 		// Initialize or retrieve circuit-breaker state from subscription snapshot
 		if (!this.circuitBreakerMap.has(correlationId) && sub.errorCount > 0) {

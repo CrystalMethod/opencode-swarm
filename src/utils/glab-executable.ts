@@ -1,50 +1,29 @@
 /**
- * Single source of truth for "what absolute path do we invoke for gh" — the
- * gh twin of `resolveGitExecutable()` in `src/utils/git-executable.ts`
- * (issue #2476 AC1 / source issue #2262).
+ * Single source of truth for "what absolute path do we invoke for glab" — the
+ * glab twin of `src/utils/gh-executable.ts` (issue #2733, GitLab provider).
  *
- * The pre-fix resolver (`resolveGhBinaryCandidates` in
- * `src/tools/gh-evidence.ts` + `resolveExecutableFromPath`) put the bare
- * name FIRST, so a full PATH scan for `gh` beat every ProgramFiles absolute
- * candidate; accepted any stat-able regular file (a 20-byte text file named
- * gh.exe passed); and had no `gh --version` behavioral probe, no budget, and
- * no cache. That matters MORE than the git case: `gh` runs with the user's
- * GitHub token, so a hijack is credential theft in addition to code
- * execution.
+ * Built to the SAME contract as the gh resolver (the maintainer-verified shape
+ * for this feature, and issue #2262/#2476's hardening for gh):
  *
- * Contract (mirrors git-executable.ts; deviations called out inline):
- *
- *   1. explicit override — the `OPENCODE_SWARM_GH_BINARY` env var ONLY.
- *      There is deliberately NO config-file `gh.binary` key: the config path
- *      is the attack surface `enforceGitBinaryProvenance` exists to strip
- *      for git, and gh never had one. Env-only keeps every override
- *      user-controlled by construction.
- *   2. platform absolute candidates (win32 ProgramFiles/LOCALAPPDATA — the
- *      set `resolveGhBinaryCandidates` already knew — plus darwin/linux
- *      install locations, which the old resolver lacked entirely);
- *   3. ALL PATH matches for `gh` (win32: `.exe`/`.cmd`/`.bat` variants);
- *   4. bare `'gh'` LAST, unprobed, so a host that works via plain PATH
- *      lookup never regresses.
+ *   1. explicit override — the `OPENCODE_SWARM_GLAB_BINARY` env var ONLY
+ *      (no config-file key; env-only keeps every override user-controlled);
+ *   2. platform absolute candidates first;
+ *   3. ALL PATH matches for `glab` (win32: `.exe`/`.cmd`/`.bat` variants);
+ *   4. bare `'glab'` LAST, unprobed.
  *
  * Each non-bare candidate must be ABSOLUTE and is validated once with
- * `gh --version` (bounded, explicit cwd) whose output must match
- * GH_VERSION_PATTERN — exit 0 alone does not accept a candidate. NOT AN
- * ANTI-TAMPERING CONTROL (a hostile program can print `gh version 2.x`); it
- * stops ACCIDENTS — a non-gh that merely exits 0, a broken shim. The
- * trust-boundary control is that no repository-controlled value can name a
- * candidate at all (env-only override).
+ * `glab --version` whose output must match GLAB_VERSION_PATTERN
+ * (`glab version 1.65.0 (...)` — https://docs.gitlab.com/cli). Same
+ * accident-not-attacker contract as the gh probe.
  *
- * Bounded probing (AGENTS.md invariant 1): per-probe timeout 250 ms, total
- * first-resolution budget 1000 ms. gh resolution is LAZY (tool/ghExec call
- * paths, never plugin init), so the sync API below is sufficient — there is
- * no init-path need for an async variant.
- *
- * NEVER throws: both non-accepting outcomes (budget exhausted, every
- * candidate rejected) return the bare `'gh'` fallback, memoized with a 60 s
- * TTL so a host that installs gh mid-session recovers (same rationale as
- * git-executable.ts — a slash-less spawn does not resolve against the PATH
- * this module enumerates, so "gh is missing" is not a state this resolver
- * may report).
+ * Bounded probing mirrors gh exactly (enforced by
+ * tests/unit/utils/forge-executable-parity.test.ts): per-probe timeout 250 ms,
+ * total first-resolution budget 1000 ms, negative-cache TTL 60 s. Resolution
+ * is LAZY (never plugin init) and NEVER throws — both non-accepting outcomes
+ * return the bare `'glab'` fallback so a host that works via plain PATH
+ * lookup never regresses. The probe/candidate machinery is one
+ * parameterized core so the glab twin cannot silently drift from the gh
+ * discipline it must track.
  */
 import { type SpawnSyncReturns, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -53,31 +32,24 @@ import * as path from 'node:path';
 import { advisoryWarn } from '../services/warning-buffer.js';
 
 /** Env var escape hatch — a blocked user can set this without editing files. */
-export const GH_BINARY_ENV_VAR = 'OPENCODE_SWARM_GH_BINARY';
+export const GLAB_BINARY_ENV_VAR = 'OPENCODE_SWARM_GLAB_BINARY';
 
-const PER_PROBE_TIMEOUT_MS = 250;
-const TOTAL_BUDGET_MS = 1000;
-const NEGATIVE_CACHE_TTL_MS = 60_000;
-const BARE_GH = 'gh';
+export const PER_PROBE_TIMEOUT_MS = 250;
+export const TOTAL_BUDGET_MS = 1000;
+export const NEGATIVE_CACHE_TTL_MS = 60_000;
+
+const BARE_GLAB = 'glab';
 const PROBE_MAX_BUFFER_BYTES = 64 * 1024;
 const PROBE_OUTPUT_EXCERPT_CHARS = 60;
-
-/**
- * Budget/TTL constants exported for the gh↔glab resolver parity ratchet
- * (tests/unit/utils/forge-executable-parity.test.ts, issue #2733): the glab
- * twin must track the gh hardening, and the ratchet enforces identical probe
- * bounds so a future gh hardening cannot land without its glab mirror.
- */
-export { PER_PROBE_TIMEOUT_MS, TOTAL_BUDGET_MS, NEGATIVE_CACHE_TTL_MS };
 
 const WINDOWS_PATH_EXTENSIONS = ['.exe', '.cmd', '.bat'];
 
 /**
- * `gh --version` prints `gh version 2.74.0 (2025-...)` — a fixed format
- * string in gh's own root command. Same accident-not-attacker contract as
- * `GIT_VERSION_PATTERN` (see git-executable.ts); anchored to the first line.
+ * `glab --version` prints `glab version 1.65.0 (...)` — a fixed format string
+ * in glab's own root command. Anchored to the first line, like
+ * `GH_VERSION_PATTERN`.
  */
-export const GH_VERSION_PATTERN = /^gh version \d+\.\d+/;
+export const GLAB_VERSION_PATTERN = /^glab version \d+\.\d+/;
 
 function excerptProbeOutput(raw: string): string {
 	return raw
@@ -86,20 +58,20 @@ function excerptProbeOutput(raw: string): string {
 		.trim();
 }
 
-export type GhResolutionCandidateSource = 'override' | 'platform' | 'path';
+export type GlabResolutionCandidateSource = 'override' | 'platform' | 'path';
 
-export interface GhResolutionAttempt {
-	source: GhResolutionCandidateSource;
+export interface GlabResolutionAttempt {
+	source: GlabResolutionCandidateSource;
 	candidate: string;
 	accepted: boolean;
 	/** Rejection reason; absent when `accepted` is true. */
 	reason?: string;
 }
 
-export interface GhResolutionDescription {
+export interface GlabResolutionDescription {
 	resolved: boolean;
 	resolvedPath?: string;
-	attempts: GhResolutionAttempt[];
+	attempts: GlabResolutionAttempt[];
 	overrideValue?: string;
 }
 
@@ -113,34 +85,32 @@ interface CacheFallback {
 }
 type CacheEntry = CacheSuccess | CacheFallback;
 
-/** Module state — lazy, memoized on first call (AGENTS.md invariant 1).
- * Bounded: success cache holds ONE entry per process; the fallback cache
- * expires after NEGATIVE_CACHE_TTL_MS; lastAttempts is replaced wholesale
- * each probe cycle and bounded by the candidate-list length. */
+/** Module state — lazy, memoized on first call; same bounds as gh. */
 let cache: CacheEntry | null = null;
-let lastAttempts: GhResolutionAttempt[] = [];
+let lastAttempts: GlabResolutionAttempt[] = [];
 let cacheGeneration = 0;
 
 /**
- * Windows install locations, kept in one place so the legacy
- * `resolveGhBinaryCandidates` export in gh-evidence.ts can share the set.
- * Paths are built with native separators via path.join by the caller.
+ * Windows install locations for glab (same ProgramFiles/LOCALAPPDATA layout
+ * gh uses, under a `GitLab CLI` directory).
  */
-export function windowsGhAbsoluteCandidates(env: NodeJS.ProcessEnv): string[] {
+export function windowsGlabAbsoluteCandidates(
+	env: NodeJS.ProcessEnv,
+): string[] {
 	const candidates: string[] = [];
 	const push = (...parts: string[]): void => {
 		const candidate = path.join(...parts);
 		if (!candidates.includes(candidate)) candidates.push(candidate);
 	};
 	if (env.ProgramFiles) {
-		push(env.ProgramFiles, 'GitHub CLI', 'gh.exe');
+		push(env.ProgramFiles, 'GitLab CLI', 'glab.exe');
 	}
 	if (env['ProgramFiles(x86)']) {
-		push(env['ProgramFiles(x86)'], 'GitHub CLI', 'gh.exe');
+		push(env['ProgramFiles(x86)'], 'GitLab CLI', 'glab.exe');
 	}
 	if (env.LOCALAPPDATA) {
-		push(env.LOCALAPPDATA, 'GitHub CLI', 'gh.exe');
-		push(env.LOCALAPPDATA, 'Programs', 'GitHub CLI', 'gh.exe');
+		push(env.LOCALAPPDATA, 'GitLab CLI', 'glab.exe');
+		push(env.LOCALAPPDATA, 'Programs', 'GitLab CLI', 'glab.exe');
 	}
 	return candidates;
 }
@@ -150,13 +120,13 @@ function platformCandidates(
 	env: NodeJS.ProcessEnv,
 ): string[] {
 	if (platform === 'win32') {
-		return windowsGhAbsoluteCandidates(env);
+		return windowsGlabAbsoluteCandidates(env);
 	}
 	if (platform === 'darwin') {
-		return ['/opt/homebrew/bin/gh', '/usr/local/bin/gh', '/usr/bin/gh'];
+		return ['/opt/homebrew/bin/glab', '/usr/local/bin/glab', '/usr/bin/glab'];
 	}
 	// linux and other POSIX platforms
-	return ['/usr/bin/gh', '/usr/local/bin/gh', '/bin/gh'];
+	return ['/usr/bin/glab', '/usr/local/bin/glab', '/bin/glab'];
 }
 
 function isAbsoluteForPlatform(
@@ -178,7 +148,7 @@ function joinDirAndName(
 	return trimmed ? `${trimmed}${sep}${name}` : `${sep}${name}`;
 }
 
-/** ALL PATH matches for `gh` — not just the first hit. */
+/** ALL PATH matches for `glab` — not just the first hit. */
 function pathCandidates(platform: NodeJS.Platform): string[] {
 	const pathValue = _internals.env().PATH ?? '';
 	if (!pathValue) return [];
@@ -187,8 +157,8 @@ function pathCandidates(platform: NodeJS.Platform): string[] {
 		.filter(Boolean);
 	const names =
 		platform === 'win32'
-			? [...WINDOWS_PATH_EXTENSIONS.map((ext) => `gh${ext}`), 'gh']
-			: ['gh'];
+			? [...WINDOWS_PATH_EXTENSIONS.map((ext) => `glab${ext}`), 'glab']
+			: ['glab'];
 	const out: string[] = [];
 	for (const dir of dirs) {
 		for (const name of names) {
@@ -200,12 +170,12 @@ function pathCandidates(platform: NodeJS.Platform): string[] {
 }
 
 function envOverride(): string | undefined {
-	const raw = _internals.env()[GH_BINARY_ENV_VAR];
+	const raw = _internals.env()[GLAB_BINARY_ENV_VAR];
 	return raw && raw.trim() !== '' ? raw : undefined;
 }
 
 interface Candidate {
-	source: GhResolutionCandidateSource;
+	source: GlabResolutionCandidateSource;
 	path: string;
 }
 
@@ -282,18 +252,18 @@ function probeCandidate(
 				: `signal ${result.signal ?? 'unknown'}`;
 		return {
 			accepted: false,
-			reason: `gh --version returned ${statusDescription}`,
+			reason: `glab --version returned ${statusDescription}`,
 		};
 	}
 
 	const versionOutput = (result.stdout ?? '').toString().trim();
-	if (!GH_VERSION_PATTERN.test(versionOutput)) {
+	if (!GLAB_VERSION_PATTERN.test(versionOutput)) {
 		const excerpt = excerptProbeOutput(versionOutput);
 		return {
 			accepted: false,
 			reason: excerpt
-				? `not gh: --version printed "${excerpt}"`
-				: 'not gh: --version printed nothing',
+				? `not glab: --version printed "${excerpt}"`
+				: 'not glab: --version printed nothing',
 		};
 	}
 	return { accepted: true };
@@ -307,7 +277,7 @@ type ProbeCycleResult =
 function probeCycle(
 	candidates: Candidate[],
 	platform: NodeJS.Platform,
-	attempts: GhResolutionAttempt[],
+	attempts: GlabResolutionAttempt[],
 ): ProbeCycleResult {
 	const start = _internals.now();
 	let budgetExceeded = false;
@@ -325,10 +295,10 @@ function probeCycle(
 			reason: result.accepted ? undefined : result.reason,
 		});
 		if (candidate.source === 'override' && !result.accepted) {
-			// Parity with git-executable.ts (PRR-006): a rejected operator
+			// Parity with gh-executable.ts (PRR-006): a rejected operator
 			// override must not fall through silently.
 			advisoryWarn(
-				`[opencode-swarm] ${GH_BINARY_ENV_VAR} override "${candidate.path}" is unusable (${result.reason}); falling back to automatic gh resolution.`,
+				`[opencode-swarm] ${GLAB_BINARY_ENV_VAR} override "${candidate.path}" is unusable (${result.reason}); falling back to automatic glab resolution.`,
 			);
 		}
 		if (result.accepted) {
@@ -351,14 +321,13 @@ function readCache(): CacheEntry | null {
 
 function applyProbeResult(
 	result: ProbeCycleResult,
-	attempts: GhResolutionAttempt[],
+	attempts: GlabResolutionAttempt[],
 	generation: number,
 ): string {
 	if (generation !== cacheGeneration) {
 		// Stale cycle (cache reset mid-probe): hand the caller what WAS
-		// validated, leave cache/lastAttempts untouched — mirrors
-		// git-executable.ts's abandoned-probe guard.
-		return result.outcome === 'accepted' ? result.path : BARE_GH;
+		// validated, leave cache/lastAttempts untouched.
+		return result.outcome === 'accepted' ? result.path : BARE_GLAB;
 	}
 	lastAttempts = attempts;
 	if (result.outcome === 'accepted') {
@@ -369,20 +338,20 @@ function applyProbeResult(
 		kind: 'fallback',
 		expiresAt: _internals.now() + NEGATIVE_CACHE_TTL_MS,
 	};
-	return BARE_GH;
+	return BARE_GLAB;
 }
 
 /**
- * Resolve the gh executable to invoke. Lazy, memoized, bounded by
+ * Resolve the glab executable to invoke. Lazy, memoized, bounded by
  * TOTAL_BUDGET_MS, never throws. Returns a validated absolute path or the
- * bare `'gh'` fallback.
+ * bare `'glab'` fallback.
  */
-export function resolveGhExecutable(): string {
+export function resolveGlabExecutable(): string {
 	const cached = readCache();
-	if (cached) return cached.kind === 'success' ? cached.path : BARE_GH;
+	if (cached) return cached.kind === 'success' ? cached.path : BARE_GLAB;
 
 	const platform = _internals.platform();
-	const attempts: GhResolutionAttempt[] = [];
+	const attempts: GlabResolutionAttempt[] = [];
 	const generation = cacheGeneration;
 	const candidates = buildCandidates(platform);
 
@@ -391,7 +360,7 @@ export function resolveGhExecutable(): string {
 }
 
 /** Exported for tests; clears the memoized cache (and bumps the generation). */
-export function resetGhExecutableCache(): void {
+export function resetGlabExecutableCache(): void {
 	cache = null;
 	lastAttempts = [];
 	cacheGeneration++;
@@ -400,16 +369,14 @@ export function resetGhExecutableCache(): void {
 /**
  * TEST-ONLY seam — NOT a production API, do not call from `src/`. Pre-seeds
  * the resolver cache with an explicit "success" entry so
- * `resolveGhExecutable()` returns `value` with zero probe spawns. Distinct
- * from gh-evidence.ts's `__seedGhBinaryForTests` (which pins only that
- * wrapper's legacy layer): neither bypasses the other.
+ * `resolveGlabExecutable()` returns `value` with zero probe spawns.
  */
-export function __seedGhExecutableForTests(value: string): void {
+export function __seedGlabExecutableForTests(value: string): void {
 	cache = { kind: 'success', path: value };
 }
 
 /** Diagnostic surface: candidates tried in the most recent probe cycle. */
-export function describeGhResolution(): GhResolutionDescription {
+export function describeGlabResolution(): GlabResolutionDescription {
 	const cached = cache;
 	return {
 		resolved: cached?.kind === 'success',
@@ -420,7 +387,7 @@ export function describeGhResolution(): GhResolutionDescription {
 }
 
 /**
- * DI seam for testability (repo convention — see git-executable.ts).
+ * DI seam for testability (repo convention — see gh-executable.ts).
  * `platform`/`env` let tests drive every platform branch regardless of the
  * host OS; `now` makes the TTL and budget deterministically testable.
  */

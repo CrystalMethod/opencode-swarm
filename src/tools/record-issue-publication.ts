@@ -14,6 +14,7 @@
 
 import { z } from 'zod';
 import { validateSwarmPath } from '../hooks/utils';
+import { isForgePrUrl } from '../providers/forge-provider.js';
 import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
 
@@ -21,13 +22,10 @@ const RecordIssuePublicationArgsSchema = z
 	.object({
 		issueNumber: z.number().int().min(1),
 		prNumber: z.number().int().min(1),
-		prUrl: z
-			.string()
-			.url()
-			.regex(
-				/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/,
-				'prUrl must be a canonical GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>)',
-			),
+		prUrl: z.string().url().refine(isForgePrUrl, {
+			message:
+				'prUrl must be a canonical PR URL (GitHub https://github.com/<owner>/<repo>/pull/<number> or GitLab https://<gitlab-host>/<owner>/<repo>/-/merge_requests/<number>)',
+		}),
 		headSha: z.string().min(1).optional(),
 	})
 	.strict();
@@ -88,7 +86,7 @@ export async function executeRecordIssuePublication(
 export const record_issue_publication: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Record that the traced issue has been published (PR created/updated) so the /swarm issue --trace workflow can reach its terminal published state. The trace stops at publication_handoff (the commit-pr directive) until this receipt is observed — publication_handoff is NOT "issue resolved". commit-pr calls this after the PR is created/updated. Supply the traced issue number, the exact PR number, the canonical GitHub PR URL, and (optionally) the published HEAD sha. The receipt is issue-bound.',
+			'Record that the traced issue has been published (PR created/updated) so the /swarm issue --trace workflow can reach its terminal published state. The trace stops at publication_handoff (the commit-pr directive) until this receipt is observed — publication_handoff is NOT "issue resolved". commit-pr calls this after the PR is created/updated. Supply the traced issue number, the exact PR number, the canonical PR URL (GitHub or GitLab), and (optionally) the published HEAD sha. The receipt is issue-bound.',
 		args: {
 			issueNumber: RecordIssuePublicationArgsSchema.shape.issueNumber,
 			prNumber: RecordIssuePublicationArgsSchema.shape.prNumber,

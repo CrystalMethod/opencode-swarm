@@ -4,6 +4,7 @@ import {
 	detectGitRemote,
 	looksLikePrRef,
 	parsePrRef,
+	resolveCanonicalPrUrl,
 	resolvePrCommandInput,
 } from '../../../src/commands/pr-ref';
 
@@ -160,5 +161,106 @@ describe('looksLikePrRef', () => {
 		expect(looksLikePrRef('owner/repo#abc')).toBe(false);
 		expect(looksLikePrRef('[MODE:')).toBe(false);
 		expect(looksLikePrRef('12.5')).toBe(false);
+	});
+});
+
+// ── GitLab MR references (issue #2733) ───────────────────────────────
+
+describe('parsePrRef — GitLab MR URLs (#2733)', () => {
+	test('parses a gitlab.com MR URL', () => {
+		expect(
+			parsePrRef('https://gitlab.com/acme/app/-/merge_requests/155'),
+		).toEqual({ owner: 'acme', repo: 'app', number: 155 });
+	});
+
+	test('keeps a nested namespace owner intact on a self-hosted host', () => {
+		// GitLab project path `ops/infra/platform/tools` → owner is the
+		// namespace path `ops/infra/platform`, repo is `tools` (C3-06 shape).
+		expect(
+			parsePrRef(
+				'https://gitlab.acme.test/ops/infra/platform/tools/-/merge_requests/7',
+			),
+		).toEqual({ owner: 'ops/infra/platform', repo: 'tools', number: 7 });
+	});
+
+	test('resolves a bare number against a self-hosted gitlab origin remote', () => {
+		_internals.spawnSync = (() => ({
+			status: 0,
+			stdout: 'git@gitlab.acme.test:ops/infra/platform/tools.git',
+			error: undefined,
+		})) as typeof _internals.spawnSync;
+
+		expect(parsePrRef('7', '/repo/here')).toEqual({
+			owner: 'ops/infra/platform',
+			repo: 'tools',
+			number: 7,
+		});
+	});
+
+	test('github rows unchanged; generic host and wrong resource stay null', () => {
+		expect(parsePrRef('https://github.com/owner/repo/pull/42')).toEqual({
+			owner: 'owner',
+			repo: 'repo',
+			number: 42,
+		});
+		expect(parsePrRef('https://example.com/owner/repo/pull/1')).toBeNull();
+		expect(parsePrRef('https://gitlab.com/owner/repo/-/issues/5')).toBeNull();
+	});
+});
+
+describe('resolveCanonicalPrUrl / resolvePrCommandInput — GitLab MR URLs (#2733)', () => {
+	test('resolveCanonicalPrUrl rebuilds the self-hosted MR canonical URL', () => {
+		expect(
+			resolveCanonicalPrUrl(
+				'https://gitlab.acme.test/ops/infra/platform/tools/-/merge_requests/7',
+			),
+		).toEqual({
+			prUrl:
+				'https://gitlab.acme.test/ops/infra/platform/tools/-/merge_requests/7',
+			owner: 'ops/infra/platform',
+			repo: 'tools',
+			number: 7,
+		});
+	});
+
+	test('resolveCanonicalPrUrl github shape unchanged', () => {
+		expect(resolveCanonicalPrUrl('https://github.com/o/r/pull/1')).toEqual({
+			prUrl: 'https://github.com/o/r/pull/1',
+			owner: 'o',
+			repo: 'r',
+			number: 1,
+		});
+	});
+
+	test('resolvePrCommandInput round-trips an MR URL plus instructions', () => {
+		expect(
+			resolvePrCommandInput([
+				'https://gitlab.com/acme/app/-/merge_requests/155',
+				'review',
+				'the',
+				'MR',
+			]),
+		).toEqual({
+			prUrl: 'https://gitlab.com/acme/app/-/merge_requests/155',
+			instructions: 'review the MR',
+		});
+	});
+
+	test('resolvePrCommandInput sanitizes MR URLs (query/fragment stripped)', () => {
+		expect(
+			resolvePrCommandInput([
+				'https://gitlab.com/acme/app/-/merge_requests/155?diff=1#notes',
+			]),
+		).toEqual({
+			prUrl: 'https://gitlab.com/acme/app/-/merge_requests/155',
+			instructions: '',
+		});
+	});
+
+	test('resolvePrCommandInput rejects an unsupported-forge URL', () => {
+		const result = resolvePrCommandInput([
+			'https://bitbucket.org/owner/repo/pull/1',
+		]);
+		expect(result && 'error' in result).toBe(true);
 	});
 });

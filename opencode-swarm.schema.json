@@ -3112,6 +3112,25 @@
         }
       }
     },
+    "forge": {
+      "description": "Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733).",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "default": "auto",
+          "type": "string",
+          "enum": [
+            "github",
+            "gitlab",
+            "auto"
+          ]
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
     "observability": {
       "description": "Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485).",
       "type": "object",

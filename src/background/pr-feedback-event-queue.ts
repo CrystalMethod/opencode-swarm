@@ -9,6 +9,7 @@ import {
 	writePrWorkflowAtomicJson,
 } from '../hooks/pr-workflow-gate.js';
 import { validateSwarmPath } from '../hooks/utils.js';
+import { canonicalForgePrUrl } from '../providers/forge-provider.js';
 import { canonicalRootKeyFresh } from '../utils/canonical-root.js';
 
 const PR_FEEDBACK_EVENT_QUEUE_DIR = 'pr-feedback-events';
@@ -989,22 +990,10 @@ function normalizeSessionID(sessionID: string): string {
 }
 
 function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const matched = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!matched
-		) {
-			return null;
-		}
-		const prNumber = Number(matched[3]);
-		if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
-		return `github.com/${matched[1].toLowerCase()}/${matched[2].toLowerCase()}/pull/${prNumber}`;
-	} catch {
-		return null;
-	}
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body.
+	return canonicalForgePrUrl(value);
 }
 
 function queueRelativePath(sessionID: string): string {

@@ -1169,7 +1169,7 @@ ACTION: Load skill ${bundledProjectSkillFileReference('swarm-ci-monitor')} immed
 
 HARD CONSTRAINTS (apply regardless of skill load success):
 - Do NOT invoke this mode's merge path without the user having named the PR explicitly — no auto-discovery.
-- Verify \`reviewDecision: APPROVED\` before entering the fix loop; abort with "human review not complete" if not.
+- Verify \`reviewDecision: APPROVED\` before entering the fix loop; abort with "human review not complete" if not. (GitHub PRs only — for a GitLab MR the provider layer reports reviewDecision, mergeStateStatus, and statusCheckRollup as NOT SUPPORTED / UNAVAILABLE; verify approvals and mergeability via \`glab api projects/<path>/merge_requests/<iid>\` (\`merge_status\`) and the approvals endpoint instead, and never fabricate a substitute value.)
 - Verify \`mergeable: MERGEABLE\` and an acceptable \`mergeStateStatus\` before entering the fix loop; do not bypass these gates even under time pressure.
 - Never use \`--admin\`, a forced merge strategy, or \`--delete-branch\` — let branch protection determine the merge method.
 - Re-verify review approval and mergeable state immediately before every merge attempt (Step 3 of the loaded skill) — a check that was green earlier is not sufficient.
