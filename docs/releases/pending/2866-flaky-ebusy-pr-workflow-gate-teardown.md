@@ -2,8 +2,8 @@
 
 ## Why
 
-`dispatch-lanes-pr-review-micro-cycle.test.ts` — and any of the 48 suites
-sharing the fixture — intermittently failed on Windows in
+`dispatch-lanes-pr-review-micro-cycle.test.ts` — and the other 45 suites
+sharing the fixture (46 consumer files reference the shared teardown) — intermittently failed on Windows in
 `teardownPrWorkflowGateFixtures`: the shared teardown removed its temp
 project directory with an unguarded, zero-retry `fs.rm` immediately after
 `closeAllProjectDbs()`, so a transient directory-handle holder (just-closed
@@ -19,7 +19,7 @@ teardown class previously retired file-by-file for
 ## What changed
 
 - `teardownPrWorkflowGateFixtures`
-  (`tests/unit/hooks/pr-workflow-gate.test-fixtures.ts`, 48 consumer
+  (`tests/unit/hooks/pr-workflow-gate.test-fixtures.ts`, 46 consumer
   suites) and `createPublicationFixture().teardown`
   (`tests/unit/hooks/pr-workflow-publication.test-fixtures.ts`, 7 consumer
   suites) now remove their temp directories through the repository's

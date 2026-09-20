@@ -98,18 +98,22 @@ describe('pr-workflow fixture teardown EBUSY tolerance (issue 2866)', () => {
 			await flushEventLoop();
 			let caught: unknown;
 			try {
-				await teardownPrWorkflowGateFixtures();
-			} catch (error) {
-				caught = error;
-			}
-			expect(caught).toBeInstanceOf(Error);
-			const code = (caught as NodeJS.ErrnoException | undefined)?.code;
-			expect(TRANSIENT_CODES.has(code ?? '')).toBe(true);
-			await holderDone;
-			try {
-				safeRmRecursive(dir);
-			} catch {
-				// best-effort cleanup of the leaked fixture dir
+				try {
+					await teardownPrWorkflowGateFixtures();
+				} catch (error) {
+					caught = error;
+				}
+				expect(caught).toBeInstanceOf(Error);
+				const code = (caught as NodeJS.ErrnoException | undefined)?.code;
+				expect(TRANSIENT_CODES.has(code ?? '')).toBe(true);
+			} finally {
+				// Assert-failure safety: never leak the holder child or the dir.
+				await holderDone;
+				try {
+					safeRmRecursive(dir);
+				} catch {
+					// best-effort cleanup of the leaked fixture dir
+				}
 			}
 		},
 	);
