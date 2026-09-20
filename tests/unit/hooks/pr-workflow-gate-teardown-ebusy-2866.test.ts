@@ -37,6 +37,9 @@ function holdDirectoryUntilExit(dir: string, pings: number): Promise<void> {
 	const child = spawn('ping', ['-n', String(pings), '127.0.0.1'], {
 		cwd: dir,
 		stdio: 'ignore',
+		// Backstop only (invariant 3): holders self-terminate in ~1 s (-n 2)
+		// or ~3 s (-n 4); this bounds a pathological never-exiting child.
+		timeout: 10_000,
 	});
 	if (child.pid === undefined) {
 		throw new Error('directory holder child failed to spawn');
