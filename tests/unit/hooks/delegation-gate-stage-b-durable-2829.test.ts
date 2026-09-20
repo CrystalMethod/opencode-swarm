@@ -325,6 +325,36 @@ describe('eviction: settled/abandoned durable bindings are removed and the store
 			{ output: `[TESTED] | task-${TASK_ID} | PASS | all checks green` },
 		);
 		expect(settlementDropAdvisories(sessionID).length).toBe(0);
+		// Final-critic round-1 finding 4: assert the DELETION, not just the
+		// absence of an advisory — the record is gone from disk.
+		expect(readStageBDispatchBindings(tempDir, sessionID, callID)).toBeNull();
+	});
+
+	it('the denied-dispatch abort evicts the durable record (review finding 4)', async () => {
+		const sessionID = 'sess-2829-abort';
+		tempDir = makeTempDir('dg-2829-abort-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		await seedReviewerApproved(tempDir, 'abort');
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set(TASK_ID, 'reviewer_run');
+		session.currentTaskId = TASK_ID;
+		const callID = 'call-2829-abort';
+
+		const hook1 = createDelegationGateHook(durableTestConfig(), tempDir);
+		await hook1.toolBefore(
+			{ tool: 'Task', sessionID, callID },
+			{ args: testEngineerArgs() },
+		);
+		expect(
+			readStageBDispatchBindings(tempDir, sessionID, callID),
+		).not.toBeNull();
+
+		// The public denial-rollback entry point (the path src/index.ts calls
+		// when toolBefore throws) with the owner sessionID threads through to
+		// deleteStageBDispatchBindings.
+		await hook1.abortDeniedSettlementForCall(callID, sessionID);
+		expect(readStageBDispatchBindings(tempDir, sessionID, callID)).toBeNull();
 	});
 });
 

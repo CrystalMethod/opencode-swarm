@@ -12,8 +12,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
 	deleteStageBDispatchBindings,
+	isRecordableCallId,
 	isRecordableSessionId,
 	MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR,
+	MAX_STAGE_B_BINDING_SESSION_DIRS,
 	readStageBDispatchBindings,
 	recordStageBDispatchBindings,
 	STAGE_B_BINDING_TTL_MS,
@@ -198,6 +200,8 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 			.filter((f) => f.endsWith('.json'));
 		expect(remaining.length).toBeLessThanOrEqual(
 			MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR,
+			MAX_STAGE_B_BINDING_SESSION_DIRS,
+			isRecordableCallId,
 		);
 		// The oldest (call-cap-0) was evicted; the newest survives.
 		expect(fs.existsSync(recordPathFor(SESSION, 'call-cap-0'))).toBe(false);
@@ -213,6 +217,59 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 		expect(() =>
 			storeInternals.pruneStore(dir, now + STAGE_B_BINDING_TTL_MS + 1),
 		).not.toThrow();
+	});
+
+	it('rejects callIDs that are not a single safe path segment (no nested dirs)', () => {
+		// Final-critic round-1 finding 1: a callID with a path separator
+		// would nest directories under the session dir and escape both the
+		// per-session cap and TTL pruning. Record/read/delete all refuse.
+		expect(isRecordableCallId('nested-1/call')).toBe(false);
+		const BS = String.fromCharCode(92); // a literal backslash, immune to formatter escape collapsing
+		expect(isRecordableCallId('a' + BS + 'b')).toBe(false);
+		expect(isRecordableCallId('..')).toBe(false);
+		expect(isRecordableCallId('.')).toBe(false);
+		expect(isRecordableCallId('')).toBe(false);
+		expect(isRecordableCallId(undefined)).toBe(false);
+		expect(isRecordableCallId('CON')).toBe(false);
+		expect(isRecordableCallId('call-2829-ok')).toBe(true);
+		for (const bad of ['nested-1/call', 'a' + BS + 'b', '..']) {
+			expect(
+				recordStageBDispatchBindings(dir, {
+					sessionID: SESSION,
+					callID: bad,
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				}),
+			).toBe(false);
+			expect(readStageBDispatchBindings(dir, SESSION, bad)).toBeNull();
+			expect(() =>
+				deleteStageBDispatchBindings(dir, SESSION, bad),
+			).not.toThrow();
+		}
+		// Nothing was written anywhere for the rejected callIDs.
+		const sessionDir = path.dirname(recordPathFor(SESSION, 'probe'));
+		expect(fs.existsSync(sessionDir)).toBe(false);
+	});
+
+	it('enforces the 128-session-dir cap on EVERY write (LRU sweep on overflow)', () => {
+		// Final-critic round-1 finding 2: the 60 s sweep throttle alone let
+		// session dirs accumulate unbounded between sweeps. The write path
+		// counts the store root's dirs (one readdir) and forces the LRU
+		// sweep the moment the cap is exceeded.
+		for (let i = 0; i <= MAX_STAGE_B_BINDING_SESSION_DIRS; i++) {
+			const ok = recordStageBDispatchBindings(dir, {
+				sessionID: `sess-2829-cap-${i}`,
+				callID: 'call-1',
+				bindings: [{ taskId: '1.1', generation: i }],
+			});
+			expect(ok).toBe(true);
+		}
+		const storeRoot = path.dirname(
+			path.dirname(recordPathFor(`sess-2829-cap-0`, 'call-1')),
+		);
+		const dirs = fs
+			.readdirSync(storeRoot, { withFileTypes: true })
+			.filter((e) => e.isDirectory());
+		expect(dirs.length).toBeLessThanOrEqual(MAX_STAGE_B_BINDING_SESSION_DIRS);
 	});
 
 	it('a leftover same-directory temp file is never a read target', () => {

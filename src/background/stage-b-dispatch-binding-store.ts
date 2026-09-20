@@ -50,7 +50,7 @@ export const STAGE_B_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
 /** Cross-session sweep cadence: the per-write cost stays bounded to the owning session dir. */
 export const STAGE_B_BINDING_SWEEP_INTERVAL_MS = 60_000;
 
-let lastSweepCompletedAt: number | undefined;
+const lastSweepCompletedAtByRoot = new Map<string, number>();
 
 const WINDOWS_RESERVED = new Set([
 	'CON',
@@ -104,6 +104,28 @@ export function isRecordableSessionId(
 	return !WINDOWS_RESERVED.has(sessionID.split('.')[0]!.toUpperCase());
 }
 
+/** Single safe path segment only (final-critic round-1 finding 1): a callID containing a separator would nest directories that escape both the cap and TTL pruning — reject it outright, exactly like a non-recordable sessionID. */
+export function isRecordableCallId(
+	callID: string | undefined | null,
+): callID is string {
+	if (
+		typeof callID !== 'string' ||
+		callID.length === 0 ||
+		callID.length > 256
+	) {
+		return false;
+	}
+	if (
+		callID.includes('/') ||
+		callID.includes('\\') ||
+		callID === '.' ||
+		callID === '..'
+	) {
+		return false;
+	}
+	return !WINDOWS_RESERVED.has(callID.split('.')[0]!.toUpperCase());
+}
+
 function sessionDirName(sessionID: string): string {
 	return createHash('sha256').update(sessionID).digest('hex').slice(0, 24);
 }
@@ -136,11 +158,7 @@ export function recordStageBDispatchBindings(
 	options: { nowMs?: () => number; forceSweep?: boolean } = {},
 ): boolean {
 	const { sessionID, callID } = entry;
-	if (
-		!isRecordableSessionId(sessionID) ||
-		typeof callID !== 'string' ||
-		callID.length === 0
-	) {
+	if (!isRecordableSessionId(sessionID) || !isRecordableCallId(callID)) {
 		return false;
 	}
 	const bindings = entry.bindings.filter(
@@ -172,13 +190,31 @@ export function recordStageBDispatchBindings(
 		// cross-session sweep is throttled to at most one pass per sweep
 		// interval. Both are injectable via nowMs for deterministic tests.
 		pruneSessionDir(directory, sessionID, nowMs());
+		// Final-critic round-1 finding 2: the session-dir cap must be
+		// enforced on EVERY write — the 60 s sweep throttle alone let new
+		// session dirs accumulate unbounded between sweeps. One cheap
+		// readdir of the store root decides; over the cap, the full sweep
+		// runs immediately regardless of the throttle (and the throttle is
+		// keyed per project root, so one project's activity never starves
+		// another's sweep in a shared process).
+		const storeRoot = validateSwarmPath(directory, STAGE_B_BINDINGS_DIR);
+		let sessionDirCount = 0;
+		try {
+			sessionDirCount = readdirSync(storeRoot, { withFileTypes: true }).filter(
+				(e) => e.isDirectory(),
+			).length;
+		} catch {
+			sessionDirCount = 0;
+		}
 		const now = nowMs();
+		const lastSweep = lastSweepCompletedAtByRoot.get(storeRoot);
 		if (
 			options.forceSweep ||
-			lastSweepCompletedAt === undefined ||
-			now - lastSweepCompletedAt >= STAGE_B_BINDING_SWEEP_INTERVAL_MS
+			sessionDirCount > MAX_STAGE_B_BINDING_SESSION_DIRS ||
+			lastSweep === undefined ||
+			now - lastSweep >= STAGE_B_BINDING_SWEEP_INTERVAL_MS
 		) {
-			lastSweepCompletedAt = now;
+			lastSweepCompletedAtByRoot.set(storeRoot, now);
 			pruneStore(directory, now);
 		}
 		return true;
@@ -201,11 +237,7 @@ export function readStageBDispatchBindings(
 	callID: string,
 	options: { nowMs?: () => number } = {},
 ): PersistedStageBBindings | null {
-	if (
-		!isRecordableSessionId(sessionID) ||
-		typeof callID !== 'string' ||
-		callID.length === 0
-	) {
+	if (!isRecordableSessionId(sessionID) || !isRecordableCallId(callID)) {
 		return null;
 	}
 	let filePath: string;

@@ -3960,8 +3960,10 @@ export function createDelegationGateHook(
 		// record only ADDS post-restart reconstruction (which still feeds the
 		// existing expectedGeneration fence, invariant 9). A transient fs
 		// failure degrades to today's behavior (drop-on-restart) rather than
-		// failing a working dispatch. Bounded: one small JSON write + rename
-		// under a 50 ms overrun guard, debug-gated warn only (AGENTS #1/#3/#10).
+		// failing a working dispatch. Cost: one small JSON write + rename + a
+		// one-directory prune; a ~50 ms elapsed-time TELEMETRY threshold logs
+		// (debug-gated) when exceeded — it observes latency, it does not bound
+		// it (AGENTS #1/#3/#10).
 		const durableStart = Date.now();
 		const persisted = _internals.recordStageBDispatchBindings(directory, {
 			sessionID: sessionID ?? '',
@@ -7579,6 +7581,14 @@ ${warningLines.join('\n')}`;
 			// the retry fail closed as unbound (issue #2491, F-001).
 			stageBRouteSlotByCallID.delete(callID);
 			stageBDispatchContextByCallID.delete(callID);
+			// Issue #2829: the durable dispatch-generation twin is another
+			// call-scoped reservation of exactly this kind — drain it BEFORE
+			// the coder-settlement early return so a denied reviewer/
+			// test-engineer dispatch (which never begins a coder settlement)
+			// still evicts its durable binding.
+			if (sessionID) {
+				deleteStageBDispatchBindings(directory, sessionID, callID);
+			}
 			const begun = begunCoderSettlementsByCallID.get(callID);
 			if (!begun?.taskId) return;
 			try {
@@ -7609,12 +7619,6 @@ ${warningLines.join('\n')}`;
 				clearCoderTaskChangeContext(callID);
 				clearPublishedScopeBindings(callID);
 				stageBDispatchGenerationsByCallID.delete(callID);
-				// Issue #2829: evict the durable twin too when the owner session is
-				// known; without it the TTL prune collects the record (a denied
-				// dispatch never produces a child settlement).
-				if (sessionID) {
-					deleteStageBDispatchBindings(directory, sessionID, callID);
-				}
 				gateDispatchPrimaryTaskByCallID.delete(callID);
 				deleteStoredInputArgs(callID);
 			}
