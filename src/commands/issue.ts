@@ -71,10 +71,6 @@ const USAGE = [
 	'  --no-repro    Skip reproduction step',
 ].join('\n');
 
-function validateAndSanitizeUrl(rawUrl: string) {
-	return validateAndSanitizeGithubUrl(rawUrl, 'issues');
-}
-
 interface ParsedArgs {
 	plan: boolean;
 	trace: boolean;

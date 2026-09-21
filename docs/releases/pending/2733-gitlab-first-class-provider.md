@@ -15,6 +15,8 @@ Issue #2733: every PR/issue workflow integrated exclusively with GitHub through 
 
 ## Migration
 
+Downgrade note: subscription records and issue references for **generic self-hosted GitLab instances** carry a `forge` declaration that older plugin releases (<= 7.184.17) reject as an unknown key — before downgrading from a release containing this change, unsubscribe from any self-hosted GitLab MR (`/swarm pr unsubscribe <mr-url>`) or remove `.swarm/pr-monitor/` state. GitHub subscriptions are unaffected. Follow-up issue #2882 also tracks the deferred canonical-wrapper threading and a narrow monitor store-write-refusal edge for declared generic hosts.
+
 No breaking changes for GitHub users: every GitHub-path output (canonical URLs, GHE/proxy bare-number fallback, error semantics for GitHub-shape mistakes) is byte-identical. Sanctioned contract changes (tests updated in the same PR): `pr-subscriptions` schema now accepts GitLab MR `prUrl` shapes and nested-namespace `repoFullName`; `record_issue_publication` accepts GitLab MR URLs; `pr-unsubscribe`'s test seam grew `resolveCanonicalPrUrl`. Schema artifact regenerated (`opencode-swarm.schema.json`, `docs/configuration.md` forge section).
 
 ## Caveats

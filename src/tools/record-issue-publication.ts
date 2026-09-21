@@ -13,7 +13,10 @@
  */
 
 import { z } from 'zod';
-import { detectGitRemote } from '../commands/_shared/url-security.js';
+import {
+	detectGitRemote,
+	sanitizeUrl,
+} from '../commands/_shared/url-security.js';
 import { loadPluginConfig } from '../config/loader.js';
 import { validateSwarmPath } from '../hooks/utils';
 import {
@@ -65,6 +68,12 @@ export async function executeRecordIssuePublication(
 	}
 	const { issueNumber, prNumber, prUrl, headSha } = parsed.data;
 
+	// PRR-02: strip any userinfo before the URL is persisted — the receipt is
+	// a durable artifact, and while the validators now reject credentialed
+	// URLs outright, sanitizing here keeps the stored value clean by
+	// construction.
+	const sanitizedPrUrl = sanitizeUrl(prUrl);
+
 	// #2733: prUrl is valid on its own shape (github / gitlab.com / gitlab.*),
 	// or against the project's configured forge declaration (a generic
 	// self-hosted GitLab host declared via forge.base_url). The schema cannot
@@ -86,7 +95,7 @@ export async function executeRecordIssuePublication(
 		published: true,
 		issueNumber,
 		prNumber,
-		prUrl,
+		prUrl: sanitizedPrUrl,
 		publishedAt: new Date().toISOString(),
 	};
 	if (headSha) receipt.headSha = headSha;

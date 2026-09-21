@@ -530,7 +530,17 @@ export class PrMonitorWorker {
 		// synthesized fields cannot be polled by the gh pipeline at all — skip
 		// with an explicit unavailable marker instead of running polls that
 		// would fabricate error-loop circuit-breaker churn.
-		const forgeContext = detectForgeFromUrl(sub.prUrl);
+		// The skip must cover BOTH GitLab surface classes (PRR-11): hosts that
+		// shape-detect as GitLab (gitlab.com / gitlab.*) AND generic
+		// self-hosted instances declared via the forge declaration persisted
+		// with the subscription record. Shape detection alone returns null for
+		// declared generic hosts, which would let them fall through to gh
+		// polls that cannot serve them.
+		const forgeContext =
+			detectForgeFromUrl(sub.prUrl) ??
+			(sub.forge
+				? { provider: sub.forge.provider, host: sub.forge.host }
+				: null);
 		if (
 			forgeContext &&
 			!getProviderCapabilities(forgeContext.provider).statusCheckRollup &&
@@ -538,14 +548,13 @@ export class PrMonitorWorker {
 			!getProviderCapabilities(forgeContext.provider).mergeStateStatus
 		) {
 			// Production wiring for the glab resolver (bounded, lazy, cached —
-			// at most one probe cycle per process): report whether a usable
-			// glab binary exists so the unavailable marker is diagnostic, not
-			// just a skip.
+			// at most one probe cycle per process). Log resolution STATE only,
+			// never the absolute binary path (log minimization, PRR-24).
 			const glabBinary = resolveGlabExecutable();
 			const glabStatus =
 				glabBinary === 'glab'
 					? 'glab binary not resolved (bare-name fallback)'
-					: `glab binary resolved at ${glabBinary}`;
+					: 'glab binary resolved';
 			log(
 				'[PrMonitorWorker] GitLab MR monitoring unavailable: glab-backed polling is not wired yet (issue #2882); skipping gh poll for this subscription',
 				{ correlationId, glabStatus },

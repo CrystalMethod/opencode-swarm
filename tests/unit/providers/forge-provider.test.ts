@@ -450,3 +450,23 @@ describe('getProviderCapabilities (#2733 AC7)', () => {
 		});
 	});
 });
+
+describe('review-round coverage (PR #2884 feedback: PRR-16, TC-02/03)', () => {
+	test('provider github + baseUrl is a rejected configuration conflict (PRR-16)', () => {
+		const sel = resolveProviderSelection({
+			config: { provider: 'github', baseUrl: 'https://gitlab.example.com' },
+			remotes: ['https://github.com/octocat/hello.git'],
+		});
+		expect(sel.ok).toBe(false);
+	});
+
+	test('http remote URL is rejected by parseForgeRemoteUrl (TC-02)', () => {
+		expect(parseForgeRemoteUrl('http://gitlab.com/acme/app.git')).toBeNull();
+	});
+
+	test('punycode remote host is rejected by parseForgeRemoteUrl (TC-03)', () => {
+		expect(
+			parseForgeRemoteUrl('https://gitlab.xn--80ak6aa92e.com/acme/app.git'),
+		).toBeNull();
+	});
+});

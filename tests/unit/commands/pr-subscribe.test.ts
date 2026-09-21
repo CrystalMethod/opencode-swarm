@@ -18,6 +18,7 @@ const mockSubscribe = mock(() => Promise.resolve({}));
 // ---------------------------------------------------------------------------
 let tempDir: string;
 let savedPrSubscribeInternals: typeof prSubscribeInternals;
+let savedPrRefInternals: typeof prRefInternals.spawnSync;
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'pr-subscribe-test-'));
@@ -32,6 +33,7 @@ beforeEach(() => {
 	})) as typeof prSubscribeInternals.loadPluginConfig;
 	// Mock subscribe via DI seam
 	prSubscribeInternals.subscribe = mockSubscribe;
+	savedPrRefInternals = prRefInternals.spawnSync;
 	// Reset per-test state for the spawnSync seam used by bare-number resolution.
 	// detectGitRemote() calls _internals.spawnSync('git', ['remote', 'get-url', 'origin'], ...)
 	// — see src/commands/_shared/url-security.ts.
@@ -54,6 +56,11 @@ afterEach(() => {
 	prSubscribeInternals.loadPluginConfig =
 		savedPrSubscribeInternals.loadPluginConfig;
 	prSubscribeInternals.subscribe = savedPrSubscribeInternals.subscribe;
+	// (PR #2884 review) restore the pr-ref spawnSync seam too — without this
+	// the stubbed 'remote get-url' fake leaks into other test files running in
+	// the same process (url-security spawnSync-env tests see 'unexpected git
+	// command').
+	prRefInternals.spawnSync = savedPrRefInternals;
 });
 
 // ---------------------------------------------------------------------------

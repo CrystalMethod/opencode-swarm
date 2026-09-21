@@ -4043,7 +4043,7 @@ export const PluginConfigSchema = z.object({
 	// Optional with safe defaults: absent = 'auto' provider detection; GitHub
 	// behavior is unchanged when the section is omitted.
 	forge: ForgeConfigSchema.optional().describe(
-		'Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733).',
+		'Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733). Ambiguous git remotes (mixed providers, unrecognized self-hosted hosts, or no remote) fail closed and require an explicit selection; forge.base_url passes through the same HTTPS-only / non-private / ASCII-host guards as every forge URL and is never a trust whitelist; combining base_url with provider "github" is rejected as a configuration conflict.',
 	),
 
 	// Remote OTLP/OpenInference observability export (issue #2485). Opt-in;

@@ -59,13 +59,21 @@ const GITHUB_CONTEXT: ForgeContext = {
 export function sanitizeInstructions(raw: string): string {
 	const collapsed = raw.replace(/\s+/g, ' ').trim();
 	const stripped = collapsed.replace(/\[\s*MODE\s*:[^\]]*\]/gi, '');
-	const normalized = stripped.replace(/\s+/g, ' ').trim();
+	let normalized = stripped.replace(/\s+/g, ' ').trim();
+	// Control characters never belong in a MODE signal line (H4): strip any
+	// C0/DEL the whitespace collapse did not remove.
+	if (containsControlCharacters(normalized)) {
+		normalized = normalized.replace(/[\u0000-\u001f\u007f]/gu, '');
+	}
 	if (normalized.length <= MAX_INSTRUCTIONS_LEN) return normalized;
 	return `${normalized.slice(0, MAX_INSTRUCTIONS_LEN)}…`;
 }
 
-export function validateAndSanitizeUrl(rawUrl: string): ValidationResult {
-	return validateAndSanitizeGithubUrl(rawUrl, 'pull');
+export function validateAndSanitizeUrl(
+	rawUrl: string,
+	configured?: ForgeContext,
+): ValidationResult {
+	return validateAndSanitizeGithubUrl(rawUrl, 'pull', configured);
 }
 
 export interface ParsedPr {

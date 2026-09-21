@@ -83,10 +83,21 @@ export interface ForgeCapabilities {
 export const GITHUB_CANONICAL_HOST = 'github.com';
 export const GITLAB_PUBLIC_HOST = 'gitlab.com';
 
-/** Hosts whose first DNS label is exactly `gitlab` (gitlab.com, gitlab.example.com). */
+/**
+ * Hosts whose first DNS label is exactly `gitlab` (gitlab.com,
+ * gitlab.example.com). The remainder must be a syntactically plausible
+ * hostname: non-empty, no empty labels (`gitlab..com`), no bare trailing dot
+ * (`gitlab.`), and no leading digit violation on the next label.
+ */
 export function isGitLabIndicatingHost(host: string): boolean {
 	const lower = host.toLowerCase();
-	return lower === GITLAB_PUBLIC_HOST || lower.startsWith('gitlab.');
+	if (lower === GITLAB_PUBLIC_HOST) return true;
+	if (!lower.startsWith('gitlab.')) return false;
+	const remainder = lower.slice('gitlab.'.length);
+	if (remainder.length === 0) return false;
+	return remainder
+		.split('.')
+		.every((label) => /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(label));
 }
 
 /**
@@ -115,6 +126,7 @@ export function detectForgeFromUrl(
 		const parsed = new URL(url);
 		if (parsed.protocol !== 'https:') return null;
 		const host = parsed.hostname.toLowerCase();
+		if (hasUserinfo(parsed)) return null;
 		if (hasNonAsciiHostname(host) || hasPunycodeLabel(host)) return null;
 		// Defense in depth (review round 4): private/localhost hosts are
 		// rejected even when a configured declaration names them, so a
@@ -137,6 +149,16 @@ export function detectForgeFromUrl(
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Reject URLs carrying userinfo (`https://user:token@host/...`). WHATWG's
+ * `url.hostname` silently strips the authority, so a credentialed URL would
+ * otherwise pass host/shape checks and persist the embedded credentials raw
+ * into durable records (PRR-02). Every forge URL validator calls this.
+ */
+function hasUserinfo(parsed: URL): boolean {
+	return parsed.username !== '' || parsed.password !== '';
 }
 
 function isConfiguredGitLabHost(
@@ -178,8 +200,24 @@ export function matchForgeResourceUrl(
 		return null;
 	}
 	if (parsed.protocol !== 'https:') return null;
+	// Credential rejection (PRR-02): hostname strips userinfo, so the raw
+	// authority must be checked before any shape match can authorize storage.
+	if (hasUserinfo(parsed)) return null;
 	const host = parsed.hostname.toLowerCase();
-	if (hasNonAsciiHostname(host)) return null;
+	// Guard parity with detectForgeFromUrl/canonicalForgePrUrl (PRR-01):
+	// punycode labels and private/localhost hosts are rejected here too.
+	if (hasNonAsciiHostname(host) || hasPunycodeLabel(host)) return null;
+	if (isPrivateHost(parsed)) return null;
+	// Percent-encoded control bytes (PRR-10): the raw check above only sees
+	// literal bytes; `%00` survives WHATWG parsing as text, so decode the
+	// pathname and re-check before any capture is trusted.
+	try {
+		if (containsControlCharacters(decodeURIComponent(parsed.pathname))) {
+			return null;
+		}
+	} catch {
+		return null;
+	}
 
 	if (host === GITHUB_CANONICAL_HOST) {
 		const m = parsed.pathname.match(
@@ -298,6 +336,7 @@ export function canonicalForgePrUrl(
 	try {
 		const url = new URL(value);
 		if (url.protocol !== 'https:') return null;
+		if (hasUserinfo(url)) return null;
 		const host = url.hostname.toLowerCase();
 		// Defense in depth (review rounds 4 + final-critic round 3): the
 		// IDN/punycode and private-host guards apply to EVERY branch,

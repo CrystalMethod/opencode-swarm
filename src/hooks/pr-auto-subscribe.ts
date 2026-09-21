@@ -143,7 +143,12 @@ export function createPrAutoSubscribeHook(
 					| Record<string, unknown>
 					| undefined;
 				const command = typeof args?.command === 'string' ? args.command : '';
-				if (!command.includes('gh pr create')) return;
+				if (
+					!command.includes('gh pr create') &&
+					!command.includes('glab mr create')
+				) {
+					return;
+				}
 
 				const outputText =
 					typeof output.output === 'string' ? output.output : '';

@@ -63,7 +63,16 @@ export const _internals = {
 export function sanitizeUrl(raw: string): string {
 	let urlStr = raw.trim();
 
+	// Credential strips (PRR-07): the slash-tolerant form handles both the
+	// plain `https://user:token@host` case AND the MODE-wrapped case, where
+	// removing the bracket leaves `https:///user:token@host` (three slashes)
+	// — the original `[^@/]+@` regex silently failed there. Run before AND
+	// after the MODE strip so either ordering is covered.
+	urlStr = urlStr.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)\/?[^@/]+@/, '$1');
+
 	urlStr = urlStr.replace(/\[\s*MODE\s*:[^\]]*\]/gi, '');
+
+	urlStr = urlStr.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)\/?[^@/]+@/, '$1');
 
 	const fragmentIdx = urlStr.indexOf('#');
 	if (fragmentIdx !== -1) {
@@ -74,8 +83,6 @@ export function sanitizeUrl(raw: string): string {
 	if (queryIdx !== -1) {
 		urlStr = urlStr.slice(0, queryIdx);
 	}
-
-	urlStr = urlStr.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^@/]+@/, 'https://');
 
 	if (urlStr.length > MAX_URL_LEN) {
 		urlStr = urlStr.slice(0, MAX_URL_LEN);

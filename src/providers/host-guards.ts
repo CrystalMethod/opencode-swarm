@@ -89,6 +89,14 @@ export function isPrivateHost(url: URL): boolean {
 		return true;
 	}
 
+	// RFC 6761: any name under the pseudo-TLD `.localhost` resolves to the
+	// loopback and must never be treated as a public forge host (a prefix
+	// rule like `gitlab.` would otherwise smuggle `gitlab.localhost` past
+	// the bare-localhost checks).
+	if (host.endsWith('.localhost')) {
+		return true;
+	}
+
 	if (
 		IPV4_PRIVATE.test(host) ||
 		IPV4_LINK_LOCAL.test(host) ||

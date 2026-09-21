@@ -22,6 +22,9 @@ beforeEach(() => {
 	savedInternals = { ..._internals };
 	_internals.unsubscribe = mockUnsubscribe;
 	_internals.buildCorrelationId = mockBuildCorrelationId;
+	// (#2733 PRR-18) the handler resolves refs through
+	// _internals.resolveCanonicalPrUrl; parsePrRef stays on the seam for the
+	// unresolvable-ref test only and is NOT consulted by tests 4-6.
 	_internals.parsePrRef = mockParsePrRef;
 	_internals.looksLikePrRef = mockLooksLikePrRef;
 });

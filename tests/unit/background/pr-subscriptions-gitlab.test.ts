@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { subscribe } from '../../../src/background/pr-subscriptions';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function makeTempProject(): string {
@@ -100,5 +101,27 @@ describe('pr-subscriptions store — GitLab MR URLs (#2733)', () => {
 				prUrl: 'https://github.com/owner/repo/pull/1',
 			}),
 		).rejects.toThrow(/Invalid subscription record/);
+	});
+});
+
+describe('repoFullName shape pins (PRR-08, PR #2884 review)', () => {
+	test('a 3-segment repoFullName with a GITHUB prUrl is accepted (deliberate loosening — prUrl is the authoritative identity)', async () => {
+		const { subscribe } = await import(
+			'../../../src/background/pr-subscriptions'
+		);
+		const dir = canonicalMkdtemp('swarm-pr-sub-gl-');
+		try {
+			fs.mkdirSync(path.join(dir, '.swarm', 'pr-monitor'), { recursive: true });
+			const record = await subscribe(dir, {
+				sessionID: 'sess-pin',
+				prNumber: 1,
+				repoFullName: 'owner/repo/extra',
+				prUrl: 'https://github.com/owner/repo/pull/1',
+			});
+			expect(record.status).toBe('active');
+		} finally {
+			closeAllProjectDbs();
+			safeRmRecursive(dir);
+		}
 	});
 });

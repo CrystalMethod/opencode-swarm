@@ -305,6 +305,12 @@ export interface PrSubscriptionRecord {
 	/** e.g. "owner/repo". */
 	repoFullName: string;
 	prUrl: string;
+	/**
+	 * #2733: the configured forge declaration this prUrl was validated
+	 * against (present only for generic self-hosted GitLab hosts). Persisted
+	 * with the record so reload validation is config-free.
+	 */
+	forge?: { provider: 'gitlab'; host: string };
 	headRefOid?: string;
 	/** Epoch ms — last time the poller checked this PR. */
 	lastCheckedAt: number;

@@ -11,11 +11,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { handleIssueCommand } from '../../../src/commands/issue';
 import { resolvePrCommandInput } from '../../../src/commands/pr-ref';
+import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import {
 	resolveForgeContextFromPluginConfig,
 	resolveProviderSelection,
 } from '../../../src/providers/forge-provider';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function makeConfiguredProject(baseUrl: string): string {
@@ -45,7 +47,8 @@ describe('forge config runtime wiring (#2733 final-critic fix)', () => {
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
-			fs.rmSync(d, { recursive: true, force: true });
+			closeAllProjectDbs();
+			safeRmRecursive(d);
 		}
 	});
 
@@ -210,7 +213,8 @@ describe('durable-path forge declarations (#2733 final-critic round 2)', () => {
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
-			fs.rmSync(d, { recursive: true, force: true });
+			closeAllProjectDbs();
+			safeRmRecursive(d);
 		}
 	});
 
@@ -366,5 +370,106 @@ describe('declared-host read-path hardening (#2733 review round 4)', () => {
 				},
 			),
 		).toBe(false);
+	});
+});
+
+describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		for (const d of dirs.splice(0)) {
+			closeAllProjectDbs();
+			safeRmRecursive(d);
+		}
+	});
+
+	function makeSub(
+		prUrl: string,
+		forge?: { provider: 'gitlab'; host: string },
+	) {
+		return {
+			correlationId: `sess::r/p::7`,
+			sessionID: 'sess',
+			prNumber: 7,
+			repoFullName: 'r/p',
+			prUrl,
+			...(forge ? { forge } : {}),
+			lastCheckedAt: 0,
+			isWatching: true,
+			hasUnaddressedEvents: false,
+			status: 'active' as const,
+			createdAt: 0,
+			updatedAt: 0,
+			errorCount: 0,
+		};
+	}
+
+	test('pollSinglePr skips BOTH gitlab.com and declared generic-host subscriptions', async () => {
+		const workerMod = await import('../../../src/background/pr-monitor-worker');
+		const dir = makeConfiguredProject('https://git.example.internal');
+		dirs.push(dir);
+		const worker = new workerMod.PrMonitorWorker({
+			directory: dir,
+			config: { enabled: true } as never,
+		});
+		const snapshotCalls: number[] = [];
+		const real = workerMod._internals.getPRPollSnapshot;
+		workerMod._internals.getPRPollSnapshot = (async (...args: unknown[]) => {
+			snapshotCalls.push(args.length);
+			throw new Error('gh poll must not run for GitLab subscriptions');
+		}) as typeof workerMod._internals.getPRPollSnapshot;
+		workerMod._internals.updateSnapshot = (async () =>
+			undefined) as typeof workerMod._internals.updateSnapshot;
+		try {
+			const poll = (
+				worker as unknown as {
+					pollSinglePr: (
+						sub: unknown,
+						isTimedOut?: () => boolean,
+						isProbe?: boolean,
+					) => Promise<void>;
+				}
+			).pollSinglePr.bind(worker);
+			// gitlab.com (shape-detected)
+			await poll(makeSub('https://gitlab.com/acme/app/-/merge_requests/9'));
+			// generic self-hosted via persisted declaration (PRR-11)
+			await poll(
+				makeSub('https://git.example.internal/team/proj/-/merge_requests/7', {
+					provider: 'gitlab',
+					host: 'git.example.internal',
+				}),
+			);
+			expect(snapshotCalls).toEqual([]);
+		} finally {
+			workerMod._internals.getPRPollSnapshot = real;
+		}
+	});
+
+	test('a GitHub subscription still reaches the gh poll (control)', async () => {
+		const workerMod = await import('../../../src/background/pr-monitor-worker');
+		const dir = makeUnconfiguredProject();
+		dirs.push(dir);
+		const worker = new workerMod.PrMonitorWorker({
+			directory: dir,
+			config: { enabled: true } as never,
+		});
+		let called = 0;
+		const real = workerMod._internals.getPRPollSnapshot;
+		workerMod._internals.getPRPollSnapshot = (async () => {
+			called++;
+			throw new Error('sentinel: poll reached gh pipeline');
+		}) as typeof workerMod._internals.getPRPollSnapshot;
+		workerMod._internals.updateSnapshot = (async () =>
+			undefined) as typeof workerMod._internals.updateSnapshot;
+		try {
+			const poll = (
+				worker as unknown as {
+					pollSinglePr: (sub: unknown) => Promise<void>;
+				}
+			).pollSinglePr.bind(worker);
+			await poll(makeSub('https://github.com/owner/repo/pull/42'));
+			expect(called).toBe(1);
+		} finally {
+			workerMod._internals.getPRPollSnapshot = real;
+		}
 	});
 });
