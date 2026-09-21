@@ -43,9 +43,11 @@ const ORIGINALS = {
 	cleanAsync: gateInternals.resolveIsWorkingTreeCleanAsync,
 };
 
-beforeEach(() => {
+beforeEach(async () => {
 	directory = canonicalMkdtemp('issue-2840-completion-');
-	fs.mkdir(path.join(directory, '.git'), { recursive: true });
+	// PR review finding (Copilot): fs is node:fs/promises — the mkdir promise
+	// must be awaited inside the async beforeEach, not left floating.
+	await fs.mkdir(path.join(directory, '.git'), { recursive: true });
 	gateInternals.resetTrackedStateCache();
 	gateInternals.resolveCurrentGitHead = () => HEAD_SHA;
 	gateInternals.resolveCurrentGitHeadAsync = async () => HEAD_SHA;

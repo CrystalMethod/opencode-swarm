@@ -45,6 +45,10 @@ export const _internals = {
 	resolveMergeBase: resolveExactMergeBase,
 	resolveMergeBaseAsync: resolveExactMergeBaseAsync,
 	markPrReviewTriggerEvaluationComplete,
+	// PR review F-4: the snapshot read and the fresh re-read both route
+	// through this seam so the TOCTOU race (receipt landing between the two
+	// reads) is deterministically testable.
+	findByBatchIdDetailed,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -355,9 +359,13 @@ export async function executeWritePrReviewTriggerEval(
 		// fail closed with an honest rejection instead of falling into the
 		// "no verifiable provenance chain" branch below, which would read
 		// UNKNOWN records as a provenance violation.
-		const batchRead = findByBatchIdDetailed(directory, row.source_batch_id!, {
-			parentSessionId: sessionID,
-		});
+		const batchRead = _internals.findByBatchIdDetailed(
+			directory,
+			row.source_batch_id!,
+			{
+				parentSessionId: sessionID,
+			},
+		);
 		if (batchRead.status === 'uncertain') {
 			return failure(
 				`MATCHED trigger ${row.trigger_id} cannot be validated: the delegation store is unreadable after ${batchRead.attempts} attempts (${batchRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,
@@ -452,13 +460,20 @@ export async function executeWritePrReviewTriggerEval(
 		if (livenessTerminalDead) {
 			// Issue #2840: the snapshot above predates this decision, and a
 			// receipt published in between flips the answer. Re-read the cited
-			// record fresh and re-evaluate the full dead-family predicate
-			// (including the receipt cross-check) before admitting — the
-			// decision is then made against the store as of the decision
-			// moment, narrowing the race to the receipt write itself.
-			const freshRead = findByBatchIdDetailed(directory, row.source_batch_id!, {
-				parentSessionId: sessionID,
-			});
+			// record fresh and re-evaluate the dead-family SUBSET of the
+			// predicate (record-level identity, liveness class, and the receipt
+			// cross-check — a dead lane retains no output artifact to re-read)
+			// before admitting — the decision is then made against the store as
+			// of the decision moment, narrowing the race to the receipt write
+			// itself. Both reads route through the _internals.findByBatchIdDetailed
+			// seam so the between-reads race is deterministically testable.
+			const freshRead = _internals.findByBatchIdDetailed(
+				directory,
+				row.source_batch_id!,
+				{
+					parentSessionId: sessionID,
+				},
+			);
 			if (freshRead.status === 'uncertain') {
 				return failure(
 					`MATCHED trigger ${row.trigger_id} cannot be validated: the delegation store is unreadable after ${freshRead.attempts} attempts (${freshRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,

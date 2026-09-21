@@ -71,18 +71,22 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 		);
 		expect(sites).toEqual([
 			'src/hooks/pr-workflow-gate.ts:11337', // readPrReviewFinalFindingPolicyForReport
-			'src/hooks/pr-workflow-gate.ts:12791', // dispatchCoverageFinalization message formatting
-			'src/hooks/pr-workflow-gate.ts:12857', // completion preflight
-			'src/hooks/pr-workflow-gate.ts:12884', // completion post-ladder finding-policy check
+			'src/hooks/pr-workflow-gate.ts:12799', // dispatchCoverageFinalization message formatting
+			'src/hooks/pr-workflow-gate.ts:12865', // completion preflight
+			'src/hooks/pr-workflow-gate.ts:12905', // completion post-ladder finding-policy check
 			'src/pr-review/completion.ts:1660', // readPrReviewTerminalCoverageForReport
 		]);
 	});
 
-	test('every production call site passes disclosedCoverageDegradation', () => {
+	test('every production call site passes disclosedCoverageDegradation — bound to a value, never a falsy literal', () => {
 		const sites = productionCallSites();
 		expect(sites.length).toBeGreaterThan(0);
 		// The call spans multiple lines at some sites; read a window around the
-		// call line and require the option within it.
+		// call line and require the option within it. PR review F-3: the old
+		// substring check was value-blind — `{ disclosedCoverageDegradation: false }`
+		// (the #2840 defect reintroduced as a hardcoded literal) passed it. The
+		// option must be present as a bound property AND must not be bound to a
+		// statically-falsy literal.
 		for (const site of sites) {
 			const lines = productionSource(site.file).split('\n');
 			const window = lines.slice(site.line - 1, site.line + 6).join('\n');
@@ -90,6 +94,16 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 				window.includes('disclosedCoverageDegradation'),
 				`${site.file}:${site.line} must pass disclosedCoverageDegradation (the #2840 defect class is the unwired caller); call: ${site.text}`,
 			).toBe(true);
+			expect(
+				window,
+				`${site.file}:${site.line} must bind disclosedCoverageDegradation to a value (property form), not merely mention it; call: ${site.text}`,
+			).toMatch(/disclosedCoverageDegradation\s*:\s*\S/);
+			expect(
+				window,
+				`${site.file}:${site.line} must not bind disclosedCoverageDegradation to a statically-falsy literal (the #2840 defect reintroduced); call: ${site.text}`,
+			).not.toMatch(
+				/disclosedCoverageDegradation\s*:\s*(?:false|null|undefined|0)\b/,
+			);
 		}
 	});
 

@@ -60,6 +60,7 @@ const originalGateInternals = {
 const originalWriterInternals = {
 	digest: writerInternals.resolvePrWorkflowRevisionDigest,
 	mergeBase: writerInternals.resolveMergeBase,
+	findByBatchIdDetailed: writerInternals.findByBatchIdDetailed,
 };
 
 function tempRoot(): string {
@@ -314,6 +315,8 @@ afterEach(() => {
 	writerInternals.resolvePrWorkflowRevisionDigest =
 		originalWriterInternals.digest;
 	writerInternals.resolveMergeBase = originalWriterInternals.mergeBase;
+	writerInternals.findByBatchIdDetailed =
+		originalWriterInternals.findByBatchIdDetailed;
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -338,5 +341,60 @@ describe('issue #2840 — TOCTOU: a receipt-bearing lane is never a dead family'
 			result.success,
 			`receipt-less liveness-dead lane must still admit; writer said: ${result.message}`,
 		).toBe(true);
+	});
+
+	test('PR review F-4: a receipt landing between the snapshot read and the fresh re-read still fails closed (the load-bearing conjunct)', async () => {
+		// The tool reads the lane record twice: the snapshot predicate (the
+		// short-circuit) and the fresh findByBatchIdDetailed re-read (the
+		// load-bearing authority). This test simulates the exact TOCTOU race
+		// the fresh read exists for: the receipt is ABSENT at the snapshot
+		// read and PRESENT at the fresh one (it landed in between). Without
+		// the !freshAlreadySubmittedReceipt conjunct the fresh predicate
+		// admits the dead-family disclosure and this test fails.
+		const root = tempRoot();
+		await establishBoundReviewGate(root, true);
+		const realFinder = writerInternals.findByBatchIdDetailed;
+		let reads = 0;
+		writerInternals.findByBatchIdDetailed = ((
+			directory: string,
+			batchId: string,
+			options: unknown,
+		) => {
+			reads += 1;
+			const outcome = realFinder(
+				directory,
+				batchId,
+				options as Parameters<typeof realFinder>[2],
+			);
+			if (reads === 1 && outcome.status === 'ok') {
+				// Strip the receipt from the SNAPSHOT view only: as far as the
+				// first read is concerned the lane is still receipt-less.
+				for (const record of outcome.value) {
+					if (record.result?.prReviewResultReceipt) {
+						record.result = { ...record.result };
+						delete record.result.prReviewResultReceipt;
+					}
+					if (record.terminalResult?.result?.prReviewResultReceipt) {
+						record.terminalResult = {
+							...record.terminalResult,
+							result: { ...record.terminalResult.result },
+						};
+						delete record.terminalResult.result.prReviewResultReceipt;
+					}
+				}
+			}
+			return outcome;
+		}) as typeof realFinder;
+		const result = await runWriter(root);
+		expect(
+			result.success,
+			`a receipt observed by the fresh re-read must block the dead-family admission; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain(
+			'does not reference a verifiable micro-lane provenance chain',
+		);
+		// Both reads actually happened (snapshot + fresh) — the race was
+		// genuinely exercised, not short-circuited away.
+		expect(reads).toBeGreaterThanOrEqual(2);
 	});
 });

@@ -252,7 +252,10 @@ export type PrReviewEvent =
 			 * degradation makes the review DEGRADED_DISCLOSED — the verdict matrix
 			 * below must reject APPROVE even for a COMPLETE settlement.
 			 */
-			disclosedDegradation?: boolean;
+			// PR review F-5: REQUIRED (single production dispatch site always
+			// populates it) — an alternate future caller omitting it must fail
+			// to compile, never silently get the pre-#2840 permissive matrix.
+			disclosedDegradation: boolean;
 	  }
 	| {
 			type: 'critic_result_recorded';

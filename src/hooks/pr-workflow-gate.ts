@@ -12739,10 +12739,18 @@ export async function completePrWorkflow(
 		// with all six base dimensions settled COMPLETE. Unset receipt path ⇒
 		// no degradation (no fs read); a corrupt-present receipt throws BLOCKED
 		// exactly like the inventory pass.
-		const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
-			directory,
-			state.prReviewTriggerEvalPath,
-		);
+		// PR review F-1: both consumers of the flag (the reducer guard and
+		// allowedPrReviewReportVerdicts) gate on kind === 'COMPLETE', so the
+		// value is only ever observable there — and a receipt read on any other
+		// kind could only ever THROW (a corrupt-present receipt BLOCKing a
+		// NO_COVERAGE completion that never read the receipt pre-#2840). Compute
+		// it for COMPLETE only; every other kind is provably false.
+		let disclosedDegradation =
+			settlement.kind === 'COMPLETE' &&
+			prReviewReceiptHasCoverageDegradations(
+				directory,
+				state.prReviewTriggerEvalPath,
+			);
 		// Issue #2512: coverage finalization is REDUCER-OWNED — the adapter
 		// dispatches `coverage_finalization_requested` and maps the typed
 		// rejections to the operator-facing BLOCKED messages the inline checks
@@ -12874,6 +12882,19 @@ export async function completePrWorkflow(
 			) {
 				throw new Error(
 					'BLOCKED: PR_REVIEW state changed while checking terminal readiness; retry from current state',
+				);
+			}
+			// PR review F-2: the terminal-ladder await above can straddle a
+			// trigger-eval receipt write; the revision check covers gate-state
+			// changes, not receipt bytes. Re-read the degradation AFTER the
+			// ladder so the post-ladder dispatch and policy check consume the
+			// current receipt, not the pre-await capture (the pre-ladder
+			// preflight keep its own capture — an illegal verdict must fail fast
+			// before the expensive ladder).
+			if (ready.settlement.kind === 'COMPLETE') {
+				disclosedDegradation = prReviewReceiptHasCoverageDegradations(
+					directory,
+					readyState.prReviewTriggerEvalPath,
 				);
 			}
 			dispatchCoverageFinalization(ready.settlement);
