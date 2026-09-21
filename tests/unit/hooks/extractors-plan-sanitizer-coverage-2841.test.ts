@@ -258,6 +258,18 @@ describe('plan cursor BLOCKED surfacing (#2841)', () => {
 		expect(cursor.endsWith('[/SWARM PLAN CURSOR]')).toBe(true);
 		expect(cursor.length).toBeLessThanOrEqual(Math.floor(500 / 0.33));
 
+		// Narrow-band regression (reviewer round 2): the reservation's fit
+		// check must use the composed summary length. At maxTokens 20
+		// (maxChars 60) the 62-char reservation does NOT fit and is declined;
+		// at 21 (63) it fires and lands exactly on the bound. Both must stay
+		// within the documented bound.
+		for (const t of [19, 20, 21]) {
+			const swept = extractPlanCursor(hostilePlan, { maxTokens: t });
+			expect(swept.length).toBeLessThanOrEqual(Math.floor(t / 0.33));
+		}
+		const justFits = extractPlanCursor(hostilePlan, { maxTokens: 21 });
+		expect(justFits).toMatch(/^## Phase 8 \[BLOCKED\]$/m);
+
 		// Sub-fitting budget: when even the BLOCKED summary cannot fit the
 		// documented bound, the bound wins (documented edge, same as every
 		// other section — only the closing marker survives).

@@ -616,34 +616,33 @@ No plan content available. Start by creating a .swarm/plan.md file.
 		// Reserve room for the first blocked summary ahead of generic tail
 		// truncation, as long as the summary itself fits the documented bound;
 		// when even it cannot fit max_chars, the bound wins (as for every
-		// other section).
-		const blockedMarker = nextBlocked
-			? `## Phase ${nextBlocked.number} [BLOCKED]`
-			: '';
-		if (
-			nextBlocked &&
-			blockedMarker &&
-			!trimmed.includes(blockedMarker) &&
-			blockedMarker.length +
-				nextBlocked.title.length +
-				closingMarker.length +
-				2 <=
-				maxChars
-		) {
+		// other section). The fit check uses the composed summary length
+		// (marker + '\n- ' + title) plus the closing marker and the leading
+		// newline — reviewer round 2 caught a +2 under-reserve here.
+		let blockedReserved = false;
+		if (nextBlocked) {
+			const blockedMarker = `## Phase ${nextBlocked.number} [BLOCKED]`;
 			const blockedSummary = `${blockedMarker}\n- ${nextBlocked.title}`;
-			const room = Math.max(
-				0,
-				maxChars - blockedSummary.length - closingMarker.length - 1,
-			);
-			if (trimmed.length > room) {
-				trimmed = trimmed.slice(0, room);
-				const trimNewline = trimmed.lastIndexOf('\n');
-				if (trimNewline > 0) {
-					trimmed = trimmed.slice(0, trimNewline);
+			if (
+				!trimmed.includes(blockedMarker) &&
+				blockedSummary.length + closingMarker.length + 1 <= maxChars
+			) {
+				const room = Math.max(
+					0,
+					maxChars - blockedSummary.length - closingMarker.length - 1,
+				);
+				if (trimmed.length > room) {
+					trimmed = trimmed.slice(0, room);
+					const trimNewline = trimmed.lastIndexOf('\n');
+					if (trimNewline > 0) {
+						trimmed = trimmed.slice(0, trimNewline);
+					}
 				}
+				output = `${trimmed}\n${blockedSummary}${closingMarker}`;
+				blockedReserved = true;
 			}
-			output = `${trimmed}\n${blockedSummary}${closingMarker}`;
-		} else {
+		}
+		if (!blockedReserved) {
 			output = `${trimmed}${closingMarker}`;
 		}
 	}
