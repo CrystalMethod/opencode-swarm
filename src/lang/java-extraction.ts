@@ -1,21 +1,26 @@
 /**
- * Shared Java import extraction.
+ * Shared Java extraction module.
  *
- * Single source of truth for parsing Java `import` statements, reconciling the
- * two previously-duplicated implementations:
- * - `parseJavaFileImports` in `src/tools/repo-graph/builder.ts` (whole-file,
- *   line-anchored regex with comment/string masking)
- * - `parseJavaImport` in `src/lang/symbol-graph.ts` (single-line regex)
+ * Owns both Java import parsing and the tree-sitter Java symbol grammar:
+ * - `parseJavaImports` reconciles the two previously-duplicated import
+ *   implementations:
+ *   - `parseJavaFileImports` in `src/tools/repo-graph/builder.ts` (whole-file,
+ *     line-anchored regex with comment/string masking)
+ *   - `parseJavaImport` in `src/lang/symbol-graph.ts` (single-line regex)
+ * - `JAVA_SYMBOL_GRAMMAR` is the tree-sitter Java symbol grammar (defs/imports/
+ *   refs query sets) previously defined in `src/lang/symbol-graph.ts`, absorbed
+ *   here so the shared module owns the Java symbol grammar.
  *
- * Binding semantics deliberately match both predecessors so consumers of either
- * shape observe identical results:
+ * Import binding semantics deliberately match both predecessors so consumers of
+ * either shape observe identical results:
  * - `import a.b.C;`          -> specifier `a.b.C`, named, binding `C`
  * - `import static a.b.C.m;` -> specifier `a.b.C`, named, binding `m`
  * - `import a.b.*;`          -> specifier `a.b.*`, namespace, no named binding
  * - `import static a.b.*;`   -> specifier `a.b.*`, namespace, no named binding
  *
- * The module is import-parsing-only: it does not perform symbol extraction and
- * does not depend on any tree-sitter grammar.
+ * The module does not perform symbol extraction itself; it only provides the
+ * import parser and the symbol grammar that consumers (refactored separately)
+ * use to extract symbols.
  */
 
 /** A single bound name produced by a named import. */
@@ -85,9 +90,7 @@ function finalDottedSegment(path: string): string {
  * comments are not matched.
  */
 function stripComments(content: string): string {
-	return content
-		.replace(/\/\*[\s\S]*?\*\//g, ' ')
-		.replace(/\/\/[^\n]*/g, ' ');
+	return content.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
 }
 
 /**
@@ -99,3 +102,58 @@ function maskMultilineStringLiterals(content: string): string {
 		block.replace(/[^\n]/g, ' '),
 	);
 }
+
+/**
+ * The tree-sitter query sets for a single grammar id — one defs/imports/refs
+ * triple. Patterns must be verified against the shipped grammar WASMs
+ * (s-expression dumps) before being added: node types and field names differ
+ * from what source syntax suggests.
+ */
+export interface SymbolGrammar {
+	/** Query patterns matching symbol definitions (functions, classes, ...). */
+	defs: string;
+	/** Query patterns matching import/require statements. */
+	imports: string;
+	/** Query patterns matching symbol references. */
+	refs: string;
+	/** Query patterns matching export statements. */
+	exports: string;
+}
+
+/**
+ * The tree-sitter Java symbol grammar.
+ *
+ * Absorbed from `src/lang/symbol-graph.ts` so the shared Java extraction module
+ * owns the Java symbol grammar alongside import parsing. Consumers extract
+ * symbols by running these query sets against a parsed Java tree.
+ */
+export const JAVA_SYMBOL_GRAMMAR: SymbolGrammar = {
+	defs: `
+		(method_declaration
+			(identifier) @func.name
+		) @func.def
+		(constructor_declaration
+			(identifier) @ctor.name
+		) @ctor.def
+		(class_declaration
+			(identifier) @class.name
+		) @class.def
+		(interface_declaration
+			(identifier) @interface.name
+		) @interface.def
+		(enum_declaration
+			(identifier) @enum.name
+		) @enum.def
+		(record_declaration
+			(identifier) @record.name
+		) @record.def
+	`,
+	imports: `
+		(import_declaration) @import
+	`,
+	refs: `
+		(identifier) @ref.identifier
+		(type_identifier) @ref.identifier
+	`,
+	exports: ``,
+};
