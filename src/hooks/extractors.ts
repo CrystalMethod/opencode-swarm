@@ -12,11 +12,17 @@ import { estimateCharsForTokens } from './utils';
 
 /**
  * Extracts the current phase information from plan content.
+ *
+ * #2841: plan.md is user-writeable content and this one-liner feeds the
+ * `[SWARM CONTEXT] Phase:` architect-context injection, so it MUST pass the
+ * shared sanitizer (input-side, the same pattern as `extractPlanCursor`).
  */
 export function extractCurrentPhase(planContent: string): string | null {
 	if (!planContent) {
 		return null;
 	}
+
+	planContent = sanitizeContextText(planContent);
 
 	const lines = planContent.split('\n');
 
@@ -48,11 +54,16 @@ export function extractCurrentPhase(planContent: string): string | null {
 
 /**
  * Extracts the first incomplete task from the current IN PROGRESS phase.
+ *
+ * #2841: feeds the `[SWARM CONTEXT] Current task:` injection — sanitized
+ * input-side like its siblings.
  */
 export function extractCurrentTask(planContent: string): string | null {
 	if (!planContent) {
 		return null;
 	}
+
+	planContent = sanitizeContextText(planContent);
 
 	const lines = planContent.split('\n');
 	let inCurrentPhase = false;
@@ -119,6 +130,9 @@ export function extractDecisions(
 
 /**
  * Extracts incomplete tasks from plan content under the current IN PROGRESS phase.
+ *
+ * #2841: feeds the `SWARM TASKS` compaction fact (LLM-context injection) —
+ * sanitized input-side like its siblings.
  */
 export function extractIncompleteTasks(
 	planContent: string,
@@ -127,6 +141,8 @@ export function extractIncompleteTasks(
 	if (!planContent) {
 		return null;
 	}
+
+	planContent = sanitizeContextText(planContent);
 
 	const lines = planContent.split('\n');
 	let tasksText = '';
@@ -225,11 +241,19 @@ export function extractCurrentPhaseFromPlan(plan: Plan): string | null {
 		blocked: 'BLOCKED',
 	};
 	const statusText = statusMap[phase.status] || 'PENDING';
-	return `Phase ${phase.id}: ${phase.name} [${statusText}]`;
+	// #2841: phase.name is architect-authored from untrusted input and this
+	// one-liner feeds the `[SWARM CONTEXT] Phase:` injection — the composed
+	// string must pass the shared sanitizer before it is returned.
+	return sanitizeContextText(
+		`Phase ${phase.id}: ${phase.name} [${statusText}]`,
+	);
 }
 
 /**
  * Extracts the first incomplete task from the current phase of a Plan object.
+ *
+ * #2841: task fields feed the `[SWARM CONTEXT] Current task:` injection —
+ * the composed line must pass the shared sanitizer before it is returned.
  */
 export function extractCurrentTaskFromPlan(plan: Plan): string | null {
 	const phase = plan.phases.find((p) => p.id === resolveActivePhaseId(plan));
@@ -242,7 +266,9 @@ export function extractCurrentTaskFromPlan(plan: Plan): string | null {
 			inProgress.depends.length > 0
 				? ` (depends: ${inProgress.depends.join(', ')})`
 				: '';
-		return `- [ ] ${inProgress.id}: ${inProgress.description} [${inProgress.size.toUpperCase()}]${deps} ← CURRENT`;
+		return sanitizeContextText(
+			`- [ ] ${inProgress.id}: ${inProgress.description} [${inProgress.size.toUpperCase()}]${deps} ← CURRENT`,
+		);
 	}
 
 	const pending = phase.tasks.find((t) => t.status === 'pending');
@@ -251,7 +277,9 @@ export function extractCurrentTaskFromPlan(plan: Plan): string | null {
 			pending.depends.length > 0
 				? ` (depends: ${pending.depends.join(', ')})`
 				: '';
-		return `- [ ] ${pending.id}: ${pending.description} [${pending.size.toUpperCase()}]${deps}`;
+		return sanitizeContextText(
+			`- [ ] ${pending.id}: ${pending.description} [${pending.size.toUpperCase()}]${deps}`,
+		);
 	}
 
 	return null;
@@ -279,7 +307,11 @@ export function extractIncompleteTasksFromPlan(
 		return `- [ ] ${t.id}: ${t.description} [${t.size.toUpperCase()}]${deps}${marker}`;
 	});
 
-	const text = lines.join('\n');
+	// #2841: task fields feed the `SWARM TASKS` compaction fact (LLM-context
+	// injection). Sanitize BEFORE the maxChars bound so the documented
+	// truncation limit holds on the sanitized text (same rationale as the
+	// #2838 cursor input-side fix).
+	const text = sanitizeContextText(lines.join('\n'));
 	if (text.length <= maxChars) return text;
 	return `${text.slice(0, maxChars)}...`;
 }
@@ -331,7 +363,7 @@ No plan content available. Start by creating a .swarm/plan.md file.
 	const phases: Array<{
 		number: number;
 		title: string;
-		status: 'COMPLETE' | 'IN PROGRESS' | 'PENDING';
+		status: 'COMPLETE' | 'IN PROGRESS' | 'PENDING' | 'BLOCKED';
 		contentLines: string[];
 	}> = [];
 
@@ -358,7 +390,8 @@ No plan content available. Start by creating a .swarm/plan.md file.
 			const status = phaseMatch[3].toUpperCase() as
 				| 'COMPLETE'
 				| 'IN PROGRESS'
-				| 'PENDING';
+				| 'PENDING'
+				| 'BLOCKED';
 
 			currentPhase = {
 				number: phaseNum,
@@ -467,6 +500,14 @@ No plan content available. Start by creating a .swarm/plan.md file.
 
 	// Output next pending phase(s)
 	const nextPending = pendingPhases[0];
+	// #2841: surface a blocked phase (first one) as a one-liner like PENDING
+	// instead of silently dropping it from the cursor.
+	const nextBlocked = phases.find((p) => p.status === 'BLOCKED');
+	if (nextBlocked) {
+		result.push('');
+		result.push(`## Phase ${nextBlocked.number} [BLOCKED]`);
+		result.push(`- ${nextBlocked.title}`);
+	}
 	if (nextPending) {
 		result.push('');
 		result.push(`## Phase ${nextPending.number} [PENDING]`);
@@ -533,6 +574,13 @@ No plan content available. Start by creating a .swarm/plan.md file.
 			} else {
 				compactResult.push('- (No pending tasks)');
 			}
+		}
+
+		// Blocked phase one-liner (#2841) — compact rebuild must surface it too.
+		if (nextBlocked) {
+			compactResult.push('');
+			compactResult.push(`## Phase ${nextBlocked.number} [BLOCKED]`);
+			compactResult.push(`- ${nextBlocked.title}`);
 		}
 
 		// Next pending

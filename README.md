@@ -1078,7 +1078,9 @@ unchanged — on the default path that is the phase header line, and on the
 scoring path the phase and current‑task context candidates. The full plan text
 is never injected in its place. When the cursor exceeds `max_tokens` and the
 compact rebuild kicks in, lookahead is reduced to one task and earlier phases
-collapse to one‑line summaries.
+collapse to one‑line summaries. A phase marked `[BLOCKED]` is surfaced as a
+one‑line `## Phase N [BLOCKED]` summary in both renders (issue #2841) — it is
+never silently dropped.
 
 ## Tool Output Truncation (v6.13)
 
