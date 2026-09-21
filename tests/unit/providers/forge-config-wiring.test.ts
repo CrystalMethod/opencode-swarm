@@ -385,7 +385,10 @@ describe('declared-host read-path hardening (#2733 review round 4)', () => {
 	});
 });
 
-describe('monitor GitLab poll routing (PRR-11/19, PR #2884 review; #2882)', () => {
+describe('monitor GitLab poll routing (PRR-11/19; #2882)', () => {
+	// The routing contract (both GitLab surface classes go glab, gh fetchers
+	// never run) is pinned in tests/unit/background/pr-monitor-gitlab-poll-path-2882.test.ts.
+
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
@@ -414,82 +417,6 @@ describe('monitor GitLab poll routing (PRR-11/19, PR #2884 review; #2882)', () =
 			errorCount: 0,
 		};
 	}
-
-	test('pollSinglePr routes BOTH gitlab.com and declared generic-host subscriptions to the glab pipeline (#2882)', async () => {
-		const workerMod = await import('../../../src/background/pr-monitor-worker');
-		const dir = makeConfiguredProject('https://git.example.internal');
-		dirs.push(dir);
-		const worker = new workerMod.PrMonitorWorker({
-			directory: dir,
-			config: { enabled: true } as never,
-		});
-		const snapshotCalls: number[] = [];
-		const real = workerMod._internals.getPRPollSnapshot;
-		workerMod._internals.getPRPollSnapshot = (async (...args: unknown[]) => {
-			snapshotCalls.push(args.length);
-			throw new Error('gh poll must not run for GitLab subscriptions');
-		}) as typeof workerMod._internals.getPRPollSnapshot;
-		const mrSnapshotCalls: string[] = [];
-		const realMr = workerMod._internals.getMRPollSnapshot;
-		const realMrComments = workerMod._internals.getMRComments;
-		const fakeSnapshot = {
-			status: {
-				number: 9,
-				state: 'OPEN' as const,
-				mergeable: 'MERGEABLE' as const,
-				mergeStateStatus: 'NOT_AVAILABLE',
-				headRefOid: 'sha-1',
-				statusCheckRollup: [],
-			},
-			comments: [],
-			merge: {
-				mergeable: 'MERGEABLE' as const,
-				mergeStateStatus: 'NOT_AVAILABLE',
-				headRefOid: 'sha-1',
-			},
-			review: { reviewDecision: '', reviewRequestCount: 0 },
-			pipelines: [],
-			pipelinesFetchSucceeded: true,
-		};
-		workerMod._internals.getMRPollSnapshot = (async (input: {
-			projectPath: string;
-			iid: number;
-		}) => {
-			mrSnapshotCalls.push(`${input.projectPath}!${input.iid}`);
-			return fakeSnapshot;
-		}) as unknown as typeof workerMod._internals.getMRPollSnapshot;
-		workerMod._internals.getMRComments =
-			(async () => []) as typeof workerMod._internals.getMRComments;
-		workerMod._internals.updateSnapshot = (async () =>
-			undefined) as typeof workerMod._internals.updateSnapshot;
-		try {
-			const poll = (
-				worker as unknown as {
-					pollSinglePr: (
-						sub: unknown,
-						isTimedOut?: () => boolean,
-						isProbe?: boolean,
-					) => Promise<void>;
-				}
-			).pollSinglePr.bind(worker);
-			// gitlab.com (shape-detected)
-			await poll(makeSub('https://gitlab.com/acme/app/-/merge_requests/9'));
-			// generic self-hosted via persisted declaration (PRR-11)
-			await poll(
-				makeSub('https://git.example.internal/team/proj/-/merge_requests/7', {
-					provider: 'gitlab',
-					host: 'git.example.internal',
-				}),
-			);
-			expect(snapshotCalls).toEqual([]);
-			// makeSub pins prNumber 7 for both subscriptions; both must route via glab.
-			expect(mrSnapshotCalls).toEqual(['r/p!7', 'r/p!7']);
-		} finally {
-			workerMod._internals.getPRPollSnapshot = real;
-			workerMod._internals.getMRPollSnapshot = realMr;
-			workerMod._internals.getMRComments = realMrComments;
-		}
-	});
 
 	test('a GitHub subscription still reaches the gh poll (control)', async () => {
 		const workerMod = await import('../../../src/background/pr-monitor-worker');

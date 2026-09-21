@@ -111,7 +111,7 @@ describe('queue admission + claim with configured context (#2882 AC5)', () => {
 				message: 'm',
 				dedupToken: 't1',
 				authorized: false,
-				queuedAt: new Date().toISOString(),
+				queuedAt: '2026-09-21T00:00:00.000Z',
 			}),
 		).rejects.toThrow(/BLOCKED/);
 
@@ -126,7 +126,7 @@ describe('queue admission + claim with configured context (#2882 AC5)', () => {
 				message: 'm',
 				dedupToken: 't1',
 				authorized: false,
-				queuedAt: new Date().toISOString(),
+				queuedAt: '2026-09-21T00:00:00.000Z',
 			},
 			FORGE,
 		);
@@ -148,7 +148,7 @@ describe('queue admission + claim with configured context (#2882 AC5)', () => {
 				message: 'm',
 				dedupToken: 't2',
 				authorized: false,
-				queuedAt: new Date().toISOString(),
+				queuedAt: '2026-09-21T00:00:00.000Z',
 			},
 			FORGE,
 		);
