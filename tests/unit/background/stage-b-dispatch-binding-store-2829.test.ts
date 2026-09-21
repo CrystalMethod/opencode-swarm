@@ -22,6 +22,7 @@ import {
 	STAGE_B_BINDING_TTL_MS,
 	_internals as storeInternals,
 } from '../../../src/background/stage-b-dispatch-binding-store';
+import { withFrozenClock } from '../../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let dir = '';
@@ -332,7 +333,7 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 				.filter((e) => e.isDirectory()).length;
 		// Deletion alone leaves the empty dirs (no prune ran for them yet).
 		expect(dirCount()).toBe(3);
-		storeInternals.pruneStore(dir, Date.now());
+		storeInternals.pruneStore(dir, 4102444800000); // fixed epoch (2100) — the dirs hold only empties
 		expect(dirCount()).toBe(0);
 	});
 
@@ -345,7 +346,8 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 		);
 		fs.writeFileSync(freshTmp, 'in-flight atomic-write temp');
 		// Fresh temp: neither pruned nor is the dir GC'd under it.
-		storeInternals.pruneSessionDir(dir, SESSION, Date.now());
+		const freshNow = withFrozenClock(() => Date.now());
+		storeInternals.pruneSessionDir(dir, SESSION, freshNow);
 		expect(fs.existsSync(freshTmp)).toBe(true);
 		expect(fs.existsSync(sessionDir)).toBe(true);
 		// Far-future clock: the temp is now TTL-stale — pruned, and the dir
