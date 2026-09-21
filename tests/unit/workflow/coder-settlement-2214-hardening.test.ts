@@ -139,7 +139,7 @@ describe('issue #2214 — review-feedback hardening', () => {
 			'test-contention-id',
 		);
 		expect(lock.acquired).toBe(true);
-		await hook.abortDeniedSettlementForCall('f2-locked');
+		await hook.abortDeniedSettlementForCall('f2-locked', 'parent');
 		await lock.lock._release?.().catch(() => undefined);
 
 		// The WAL is still DISPATCHED (the abort failed), but the in-memory

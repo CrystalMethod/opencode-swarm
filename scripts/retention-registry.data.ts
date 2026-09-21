@@ -4471,7 +4471,40 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		owner: '#2676',
 		disposition: { kind: 'retain-by-design', issue: 2676, citation: 'src/services/task-cohort.ts:179', note: 'Frozen cohort manifests delivered by #2676 (D16): snapshot-bound provenance (trigger/WAL/event/host-status digests) with FIFO-bounded retention; the report renders from the in-memory snapshot, so the store is evidence, not authority.' },
 	},
-];
+	{
+		id: 'stage-b-dispatch-bindings',
+		category: 2,
+		pathGrammar: '.swarm/stage-b-dispatch-bindings/<sha256(sessionID).slice(0,24)>/<callID>.json',
+		canonicalRoot: 'project-swarm',
+		writerModules: ['src/background/stage-b-dispatch-binding-store.ts'],
+		writerCitations: [
+			'src/background/stage-b-dispatch-binding-store.ts recordStageBDispatchBindings — atomic temp+rename of one bounded JSON per (sessionID, callID); delete via rmSync force (issue #2829 durable twin of stageBDispatchGenerationsByCallID)',
+		],
+		readerCitations: [
+			'src/background/stage-b-dispatch-binding-store.ts readStageBDispatchBindings — single indexed file, openSync(O_NOFOLLOW)+fstatSync 64KB cap, identity+TTL+per-entry shape validation, fail-closed to null',
+		],
+		schemaVersion: 'stage-b binding v1 (schemaVersion, sessionID, callID, recordedAt, bindings[])',
+		stateClass: 'operational',
+		privacyClass: 'metadata',
+		writeLimits: {
+			bound: 'per-session-dir file cap 128 enforced at every write on the owning dir; 128-session-dir LRU ceiling enforced the moment a write sees it exceeded; empty session dirs are garbage-collected during prune (rmdir only on a truly empty dir — an in-flight .tmp guards it), so the ceiling tracks live dirs and a finished session leaves nothing behind; 24h TTL prune also collects crashed .tmp leftovers; both path components validated single segments (no nesting)',
+			scope: 'global',
+			citation: 'src/background/stage-b-dispatch-binding-store.ts MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR/MAX_STAGE_B_BINDING_SESSION_DIRS/STAGE_B_BINDING_TTL_MS + record-path cap check',
+		},
+		readBound: { pattern: 'indexed', bound: 'single bounded JSON ≤64KB', sync: true, citation: 'src/background/stage-b-dispatch-binding-store.ts readStageBDispatchBindings' },
+		lockModel: 'in-process bound enforcement (invariant 8 pattern); single writer per (sessionID, callID), last-write-wins is correct (re-dispatch replaces the binding)',
+		crashBehavior: 'atomic temp+rename — a torn write leaves the old complete record or no new one; any partial record fails the validated read closed to null (today’s unbound drop)',
+		closePolicy: 'not in the close/archive set — fencing tokens outlive the session they fence',
+		closeArrayMembership: {
+			'stage-b-dispatch-bindings': 'neither',
+		},
+		resetPolicy: 'reset removes the whole tree recursively (summaries/ pattern, reset.ts); reset-session removes the invoking session’s subtree (path derivation single-sourced from the store module)',
+		legacyCompatibility: 'n/a (new tree)',
+		healthSignal: 'dispatch-time persistence failures are non-fatal but ALWAYS-VISIBLE (criticalWarn; the in-memory map remains the primary fence)',
+		owner: '#2829',
+		disposition: { kind: 'retain-by-design', issue: 2829, citation: 'src/background/stage-b-dispatch-binding-store.ts:1', note: 'Durable twin of the Stage B dispatch-generation fencing token (#2817 option (b)): records only what the in-memory map already records; reconstruction feeds the UNCHANGED expectedGeneration fence; bounded by per-dir cap + session-dir LRU (empty dirs GC’d on prune) + TTL.' },
+	},
+	];
 
 /**
  * Issue #1534 guardrail — FROZEN allowlist. Artifacts already wired into
