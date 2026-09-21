@@ -165,20 +165,17 @@ export async function handlePrSubscribeCommand(
 			deliveryLine,
 		]
 			.concat(
-				// Honest capability reporting (issue #2733, AC7): for GitLab MRs
-				// the monitor cannot yet deliver events (glab-backed polling is
-				// tracked as #2882). The subscription IS recorded (reference
-				// storage, gates, and publication flows operate on GitLab
-				// refs), but the user must be told monitoring is unavailable
-				// rather than promised events.
+				// Honest capability reporting (issues #2733 AC7 + #2882): GitLab
+				// MRs now get live glab-backed polling (snapshot, comments,
+				// pipelines), while the three GitHub-synthesized fields stay
+				// explicitly NOT AVAILABLE — they are never fabricated.
 				prUrl.includes('/-/merge_requests/')
 					? [
 							'',
-							'Note: live monitoring is NOT AVAILABLE for GitLab merge',
-							'requests yet — glab-backed polling is tracked as issue #2882.',
-							'The subscription is recorded and PR reference/gate/',
-							'publication workflows operate on this MR, but no CI/comment/',
-							'review events will be delivered until that lands.',
+							'Note: live GitLab MR monitoring is active (glab-backed:',
+							'state, comments, and pipeline CI events). Review-decision',
+							'and status-check rollup equivalents remain NOT AVAILABLE',
+							'for GitLab — the monitor never fabricates them (issue #2733).',
 						]
 					: [],
 			)

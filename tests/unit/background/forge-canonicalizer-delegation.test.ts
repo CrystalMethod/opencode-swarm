@@ -53,8 +53,8 @@ describe('canonicalGitHubPrUrl delegation (#2733)', () => {
 				`${rel} must still define the module-local canonicalGitHubPrUrl`,
 			).toBe(true);
 			expect(
-				source.includes('return canonicalForgePrUrl(value);'),
-				`${rel} must delegate, not reimplement`,
+				source.includes('return canonicalForgePrUrl(value, configured);'),
+				`${rel} must delegate (with the #2882 configured-context pass-through), not reimplement`,
 			).toBe(true);
 		}
 	});

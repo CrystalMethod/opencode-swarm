@@ -17,7 +17,8 @@ import {
 	dispatchEphemeralAgent,
 } from '../evaluation/ephemeral-agent-dispatcher.js';
 import { parseCriticResponseFields } from '../full-auto/critic-response-parser.js';
-import { getPRPollSnapshot } from '../git/pr.js';
+import { getMRPollSnapshot, getPRPollSnapshot } from '../git/pr.js';
+import { detectForgeFromUrl } from '../providers/forge-provider.js';
 import {
 	canonicalRootKeyFresh,
 	canonicalRootKeyFreshAsync,
@@ -25,6 +26,7 @@ import {
 } from '../utils/canonical-root.js';
 import { log } from '../utils/logger.js';
 import { parseModelString } from '../utils/model-dispatch-fallback.js';
+import { findSubscriptionRecordForPrUrl } from './pr-subscriptions.js';
 
 const MAX_RUNTIME_REGISTRATIONS = 64;
 const OVERSIGHT_TIMEOUT_MS = 60_000;
@@ -320,7 +322,29 @@ function createRuntime(
 			try {
 				// Always use the owner root, not a caller-supplied cwd. The loop passes
 				// its directory for contract clarity, but this runtime's registration
-				// is the authority that binds authenticated GitHub polling to a root.
+				// is the authority that binds authenticated forge polling to a root.
+				// #2882: GitLab subscriptions resolve their MR head through the
+				// glab-backed snapshot (subscription forge declaration for host
+				// selection); GitHub subscriptions keep the gh poll path unchanged.
+				const subscription = await _internals.findSubscriptionRecordForPrUrl(
+					options.directory,
+					{ repoFullName, prNumber },
+				);
+				const forgeContext =
+					subscription?.forge ??
+					(subscription
+						? (detectForgeFromUrl(subscription.prUrl) ?? undefined)
+						: undefined);
+				if (forgeContext?.provider === 'gitlab') {
+					const mrSnapshot = await _internals.getMRPollSnapshot({
+						projectPath: repoFullName,
+						iid: prNumber,
+						cwd: options.directory,
+						host: forgeContext.host,
+					});
+					const head = mrSnapshot.status.headRefOid;
+					return typeof head === 'string' && head.length > 0 ? head : null;
+				}
 				const snapshot = await _internals.getPRPollSnapshot(
 					prNumber,
 					repoFullName,
@@ -409,6 +433,8 @@ export async function dispatchPrFeedbackOversight(
 /** Test-only DI visibility; production behavior still uses these same calls. */
 export const _internals: {
 	getPRPollSnapshot: typeof getPRPollSnapshot;
+	getMRPollSnapshot: typeof getMRPollSnapshot;
+	findSubscriptionRecordForPrUrl: typeof findSubscriptionRecordForPrUrl;
 	dispatchEphemeralAgent: typeof dispatchEphemeralAgent;
 	parseCriticResponseFields: typeof parseCriticResponseFields;
 	canonicalRootKeyFresh: typeof canonicalRootKeyFresh;
@@ -416,6 +442,8 @@ export const _internals: {
 	log: typeof log;
 } = {
 	getPRPollSnapshot,
+	getMRPollSnapshot,
+	findSubscriptionRecordForPrUrl,
 	dispatchEphemeralAgent,
 	parseCriticResponseFields,
 	canonicalRootKeyFresh,

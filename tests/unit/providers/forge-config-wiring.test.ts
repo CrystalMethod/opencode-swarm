@@ -155,7 +155,7 @@ describe('GitLab monitor honest reporting (#2733 final-critic fix)', () => {
 		expect(caps.mergeStateStatus).toBe(false);
 	});
 
-	test('handlePrSubscribeCommand tells GitLab MR subscribers monitoring is unavailable', async () => {
+	test('handlePrSubscribeCommand discloses live GitLab monitoring and the unavailable synthesized fields (#2882)', async () => {
 		const { handlePrSubscribeCommand } = await import(
 			'../../../src/commands/pr-subscribe'
 		);
@@ -176,8 +176,9 @@ describe('GitLab monitor honest reporting (#2733 final-critic fix)', () => {
 			expect(out).toContain(
 				'Subscribed to https://gitlab.com/acme/app/-/merge_requests/9',
 			);
+			expect(out).toContain('live GitLab MR monitoring is active');
 			expect(out).toContain('NOT AVAILABLE');
-			expect(out).toContain('#2882');
+			expect(out).toContain('#2733');
 		} finally {
 			sub._internals.subscribe = realSubscribe;
 			sub._internals.loadPluginConfig = realLoad;
@@ -384,7 +385,7 @@ describe('declared-host read-path hardening (#2733 review round 4)', () => {
 	});
 });
 
-describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
+describe('monitor GitLab poll routing (PRR-11/19, PR #2884 review; #2882)', () => {
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
@@ -414,7 +415,7 @@ describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
 		};
 	}
 
-	test('pollSinglePr skips BOTH gitlab.com and declared generic-host subscriptions', async () => {
+	test('pollSinglePr routes BOTH gitlab.com and declared generic-host subscriptions to the glab pipeline (#2882)', async () => {
 		const workerMod = await import('../../../src/background/pr-monitor-worker');
 		const dir = makeConfiguredProject('https://git.example.internal');
 		dirs.push(dir);
@@ -428,6 +429,37 @@ describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
 			snapshotCalls.push(args.length);
 			throw new Error('gh poll must not run for GitLab subscriptions');
 		}) as typeof workerMod._internals.getPRPollSnapshot;
+		const mrSnapshotCalls: string[] = [];
+		const realMr = workerMod._internals.getMRPollSnapshot;
+		const realMrComments = workerMod._internals.getMRComments;
+		const fakeSnapshot = {
+			status: {
+				number: 9,
+				state: 'OPEN' as const,
+				mergeable: 'MERGEABLE' as const,
+				mergeStateStatus: 'NOT_AVAILABLE',
+				headRefOid: 'sha-1',
+				statusCheckRollup: [],
+			},
+			comments: [],
+			merge: {
+				mergeable: 'MERGEABLE' as const,
+				mergeStateStatus: 'NOT_AVAILABLE',
+				headRefOid: 'sha-1',
+			},
+			review: { reviewDecision: '', reviewRequestCount: 0 },
+			pipelines: [],
+			pipelinesFetchSucceeded: true,
+		};
+		workerMod._internals.getMRPollSnapshot = (async (input: {
+			projectPath: string;
+			iid: number;
+		}) => {
+			mrSnapshotCalls.push(`${input.projectPath}!${input.iid}`);
+			return fakeSnapshot;
+		}) as unknown as typeof workerMod._internals.getMRPollSnapshot;
+		workerMod._internals.getMRComments =
+			(async () => []) as typeof workerMod._internals.getMRComments;
 		workerMod._internals.updateSnapshot = (async () =>
 			undefined) as typeof workerMod._internals.updateSnapshot;
 		try {
@@ -450,8 +482,12 @@ describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
 				}),
 			);
 			expect(snapshotCalls).toEqual([]);
+			// makeSub pins prNumber 7 for both subscriptions; both must route via glab.
+			expect(mrSnapshotCalls).toEqual(['r/p!7', 'r/p!7']);
 		} finally {
 			workerMod._internals.getPRPollSnapshot = real;
+			workerMod._internals.getMRPollSnapshot = realMr;
+			workerMod._internals.getMRComments = realMrComments;
 		}
 	});
 

@@ -9,7 +9,10 @@ import {
 	writePrWorkflowAtomicJson,
 } from '../hooks/pr-workflow-gate.js';
 import { validateSwarmPath } from '../hooks/utils.js';
-import { canonicalForgePrUrl } from '../providers/forge-provider.js';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
 import { canonicalRootKeyFresh } from '../utils/canonical-root.js';
 
 const PR_FEEDBACK_EVENT_QUEUE_DIR = 'pr-feedback-events';
@@ -148,9 +151,12 @@ export async function enqueuePrFeedbackMonitorEvent(
 		PrFeedbackMonitorEvent,
 		'claimedWorkflowInstanceId' | 'claimedAt' | 'claimedOwnerPid'
 	>,
+	// #2882 AC5: configured context from the subscription record's persisted
+	// forge declaration; absent context keeps the fail-closed BLOCKED throw.
+	forge?: ForgeContext,
 ): Promise<PrFeedbackMonitorQueueRecord> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
-	const normalizedEvent = normalizeEvent(event);
+	const normalizedEvent = normalizeEvent(event, forge);
 	return withQueueMutation(directory, normalizedSessionID, async () => {
 		const current =
 			(await readPrFeedbackMonitorQueueFromDisk(
@@ -193,6 +199,9 @@ export async function claimPrFeedbackMonitorEvents(
 	prUrl: string,
 	dedupTokens?: readonly string[],
 	ownerPid = process.pid,
+	// #2882 AC5: configured context authorizing declared generic self-hosted
+	// GitLab MR URLs on the claim gate and every event match below.
+	forge?: ForgeContext,
 ): Promise<PrFeedbackMonitorEvent[]> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
 	const normalizedWorkflowInstanceId = workflowInstanceId.trim();
@@ -206,7 +215,7 @@ export async function claimPrFeedbackMonitorEvents(
 			'BLOCKED: PR feedback monitor queue claim requires a positive owner PID',
 		);
 	}
-	const canonicalPrUrl = canonicalGitHubPrUrl(prUrl);
+	const canonicalPrUrl = canonicalGitHubPrUrl(prUrl, forge);
 	if (!canonicalPrUrl) {
 		throw new Error(
 			'BLOCKED: PR feedback monitor queue claim requires a canonical GitHub PR URL',
@@ -228,7 +237,7 @@ export async function claimPrFeedbackMonitorEvents(
 		let changed = false;
 		const claimedEvents = current.events.map((event) => {
 			if (
-				canonicalGitHubPrUrl(event.prUrl) !== canonicalPrUrl ||
+				canonicalGitHubPrUrl(event.prUrl, forge) !== canonicalPrUrl ||
 				(selectedTokens && !selectedTokens.has(event.dedupToken))
 			) {
 				return event;
@@ -259,7 +268,7 @@ export async function claimPrFeedbackMonitorEvents(
 				(event) =>
 					event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId &&
 					event.claimedOwnerPid === ownerPid &&
-					canonicalGitHubPrUrl(event.prUrl) === canonicalPrUrl &&
+					canonicalGitHubPrUrl(event.prUrl, forge) === canonicalPrUrl &&
 					(!selectedTokens || selectedTokens.has(event.dedupToken)),
 			);
 		}
@@ -273,7 +282,7 @@ export async function claimPrFeedbackMonitorEvents(
 			(event) =>
 				event.claimedWorkflowInstanceId === normalizedWorkflowInstanceId &&
 				event.claimedOwnerPid === ownerPid &&
-				canonicalGitHubPrUrl(event.prUrl) === canonicalPrUrl &&
+				canonicalGitHubPrUrl(event.prUrl, forge) === canonicalPrUrl &&
 				(!selectedTokens || selectedTokens.has(event.dedupToken)),
 		);
 	});
@@ -422,9 +431,11 @@ function normalizeEvent(
 		PrFeedbackMonitorEvent,
 		'claimedWorkflowInstanceId' | 'claimedAt'
 	>,
+	// #2882 AC5: configured context; absent keeps the fail-closed BLOCKED throw.
+	forge?: ForgeContext,
 ): PrFeedbackMonitorEvent {
 	const parsed = PrFeedbackMonitorEventSchema.parse(event);
-	if (!canonicalGitHubPrUrl(parsed.prUrl)) {
+	if (!canonicalGitHubPrUrl(parsed.prUrl, forge)) {
 		throw new Error(
 			'BLOCKED: PR feedback monitor queue events require a canonical GitHub PR URL',
 		);
@@ -989,11 +1000,16 @@ function normalizeSessionID(sessionID: string): string {
 	return normalized;
 }
 
-function canonicalGitHubPrUrl(value: string): string | null {
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
 	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
 	// shared implementation; its GitHub output is byte-identical to the
-	// previous module-local body.
-	return canonicalForgePrUrl(value);
+	// previous module-local body. #2882 AC5: the optional configured context
+	// authorizes declared generic self-hosted GitLab MR URLs; absent context
+	// keeps the fail-closed behavior.
+	return canonicalForgePrUrl(value, configured);
 }
 
 function queueRelativePath(sessionID: string): string {

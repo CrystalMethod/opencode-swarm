@@ -4,8 +4,12 @@ import {
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 } from '../background/pr-feedback-event-queue.js';
+import { findSubscriptionRecordForPrUrl } from '../background/pr-subscriptions.js';
 import { appendCoreEventSync } from '../events/core-events.js';
-import { canonicalForgePrUrl } from '../providers/forge-provider.js';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
 import {
 	ensurePrWorkflowSkillContractsFresh,
 	SKILL_CONTRACT_WAKE_BUDGET_MS,
@@ -426,18 +430,62 @@ function isTerminalToolStatus(value: unknown): boolean {
 	);
 }
 
-function canonicalGitHubPrUrl(value: string): string | null {
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
 	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
 	// shared implementation; its GitHub output is byte-identical to the
-	// previous module-local body.
-	return canonicalForgePrUrl(value);
+	// previous module-local body. #2882 AC5: the optional configured context
+	// authorizes declared generic self-hosted GitLab MR URLs; absent context
+	// keeps the fail-closed behavior.
+	return canonicalForgePrUrl(value, configured);
 }
 
-function sameGitHubPr(left: string, right: string): boolean {
-	const leftCanonical = canonicalGitHubPrUrl(left);
+function sameGitHubPr(
+	left: string,
+	right: string,
+	configured?: ForgeContext,
+): boolean {
+	const leftCanonical = canonicalGitHubPrUrl(left, configured);
 	return (
-		leftCanonical !== null && leftCanonical === canonicalGitHubPrUrl(right)
+		leftCanonical !== null &&
+		leftCanonical === canonicalGitHubPrUrl(right, configured)
 	);
+}
+
+/**
+ * #2882 AC5: resolve the wake's configured forge context from the
+ * subscription record's persisted declaration — keyed on the first queued
+ * event's identity, falling back to the feedback target URL. Undefined on
+ * miss or when nothing is queued (fail-closed: canonicalization then runs
+ * unconfigured exactly as before).
+ */
+async function resolveWakeForgeContext(
+	directory: string,
+	firstQueuedEvent?: {
+		prUrl?: string;
+		repoFullName?: string;
+		prNumber?: number;
+	},
+	feedbackTarget?: string,
+): Promise<ForgeContext | undefined> {
+	try {
+		const key = firstQueuedEvent?.repoFullName
+			? {
+					repoFullName: firstQueuedEvent.repoFullName,
+					prNumber: firstQueuedEvent.prNumber,
+					...(firstQueuedEvent.prUrl ? { prUrl: firstQueuedEvent.prUrl } : {}),
+				}
+			: feedbackTarget
+				? { prUrl: feedbackTarget }
+				: null;
+		if (!key) return undefined;
+		const record = await findSubscriptionRecordForPrUrl(directory, key);
+		return record?.forge;
+	} catch {
+		return undefined;
+	}
 }
 
 function formatQueuedMonitorEventsText(
@@ -1338,12 +1386,21 @@ export function createPrWorkflowResponseGate(options: {
 			state = prePromptState;
 			feedbackTarget =
 				state.prFeedbackTargetUrl ?? state.prFeedbackReviewHandoff?.prUrl;
+			// #2882 AC5: derive the configured forge context once per wake from
+			// the subscription record's persisted declaration (first queued
+			// event's identity, falling back to the feedback target URL), then
+			// use it for every canonicalization on this wake.
+			const wakeForgeContext = await resolveWakeForgeContext(
+				options.directory,
+				queuedMonitorRecord?.events[0],
+				feedbackTarget,
+			);
 			const queuedMonitorEvents =
 				queuedMonitorRecord?.events.filter(
 					(event) =>
 						!event.claimedWorkflowInstanceId &&
 						Boolean(feedbackTarget) &&
-						sameGitHubPr(event.prUrl, feedbackTarget ?? ''),
+						sameGitHubPr(event.prUrl, feedbackTarget ?? '', wakeForgeContext),
 				) ?? [];
 			const queuedMonitorText =
 				queuedMonitorEvents.length > 0
@@ -1462,6 +1519,7 @@ export function createPrWorkflowResponseGate(options: {
 							postWakeState.prFeedbackReviewHandoff?.prUrl ??
 							'',
 						feedbackTarget,
+						wakeForgeContext,
 					)
 				) {
 					await _internals
@@ -1471,6 +1529,8 @@ export function createPrWorkflowResponseGate(options: {
 							state.workflowInstanceId,
 							feedbackTarget,
 							queuedMonitorEvents.map((event) => event.dedupToken),
+							process.pid,
+							wakeForgeContext,
 						)
 						.catch(() => []);
 				}
