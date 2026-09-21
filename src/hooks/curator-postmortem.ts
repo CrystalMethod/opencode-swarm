@@ -21,6 +21,7 @@ import { claimNextScanBatch } from '../knowledge/scan-cursor.js';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
 import { derivePlanId } from '../plan/utils.js';
+import { sanitizeContextText } from './context-sanitizer.js';
 import {
 	type CuratorLLMDelegate,
 	normalizeRecommendationEntryIdToken,
@@ -697,10 +698,15 @@ async function repairPostMortemActions(
 			'Existing entry_id values may be full UUIDs or unique 8+ character hex prefixes copied from KNOWLEDGE_ENTRIES.',
 			'Allowed queue_triage action values: apply, reject.',
 			'Do not include unsupported actions such as merge.',
+			// #2890: diagnostics are derived from raw fragments of the malformed
+			// LLM output and the echoed output is round-1 model text; both are
+			// sanitized field-level. The instruction lines above stay first-party
+			// and unsanitized — sanitizeContextText rewrites ``` sequences, so a
+			// blanket wrap of the composed prompt would corrupt the fence.
 			'Diagnostics:',
-			diagnostics.join('; '),
+			sanitizeContextText(diagnostics.join('; ')),
 			'Original output:',
-			llmOutput.slice(0, 8000),
+			sanitizeContextText(llmOutput).slice(0, 8000),
 		].join('\n');
 		const repaired = await options.llmDelegate('', repairPrompt, ac.signal);
 		const parsed = _internals.parsePostMortemActions(repaired);
@@ -1090,7 +1096,12 @@ function assembleLLMInput(
 		sections.push(`DRIFT_REPORTS:\n${driftText}`);
 	}
 
-	return sections.join('\n\n');
+	// #2890: every section above can carry untrusted text (curator digest,
+	// knowledge lessons, proposal files, retrospectives, drift reports).
+	// Sanitize the assembled delegate input at this single composition point;
+	// idempotent, and structural `SECTION:` labels contain no sanitizable
+	// patterns so benign sections render byte-identically.
+	return sanitizeContextText(sections.join('\n\n'));
 }
 
 // ============================================================================
