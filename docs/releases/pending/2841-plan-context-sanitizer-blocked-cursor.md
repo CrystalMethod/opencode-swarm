@@ -23,9 +23,13 @@ Closes the two gaps the #2838 post-merge review left open for #2841:
 - A phase carrying `[BLOCKED]` is no longer silently dropped from the
   `[SWARM PLAN CURSOR]`. The cursor now surfaces the first blocked phase as
   a one-line `## Phase N [BLOCKED]` summary (same shape as the PENDING
-  one-liner) in both the full render and the compact rebuild. Previously a
-  blocked phase vanished from the cursor entirely, leaving the architect
-  with no signal that a phase was blocked.
+  one-liner) in both the full render and the compact rebuild, and the final
+  max_chars cap reserves room for that summary ahead of generic tail
+  truncation, so a pathological earlier section cannot silently drop it
+  (only when even the summary cannot fit the configured bound does the bound
+  win, as for every other section). Previously a blocked phase vanished from
+  the cursor entirely, leaving the architect with no signal that a phase was
+  blocked.
 
 ## Why
 

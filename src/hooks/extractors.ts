@@ -611,7 +611,41 @@ No plan content available. Start by creating a .swarm/plan.md file.
 		if (lastNewline > 0) {
 			trimmed = trimmed.slice(0, lastNewline);
 		}
-		output = `${trimmed}${closingMarker}`;
+		// #2841 (final-critic): the cap keeps the FRONT and can cut the BLOCKED
+		// one-liner off the tail — the exact silent drop this issue closes.
+		// Reserve room for the first blocked summary ahead of generic tail
+		// truncation, as long as the summary itself fits the documented bound;
+		// when even it cannot fit max_chars, the bound wins (as for every
+		// other section).
+		const blockedMarker = nextBlocked
+			? `## Phase ${nextBlocked.number} [BLOCKED]`
+			: '';
+		if (
+			nextBlocked &&
+			blockedMarker &&
+			!trimmed.includes(blockedMarker) &&
+			blockedMarker.length +
+				nextBlocked.title.length +
+				closingMarker.length +
+				2 <=
+				maxChars
+		) {
+			const blockedSummary = `${blockedMarker}\n- ${nextBlocked.title}`;
+			const room = Math.max(
+				0,
+				maxChars - blockedSummary.length - closingMarker.length - 1,
+			);
+			if (trimmed.length > room) {
+				trimmed = trimmed.slice(0, room);
+				const trimNewline = trimmed.lastIndexOf('\n');
+				if (trimNewline > 0) {
+					trimmed = trimmed.slice(0, trimNewline);
+				}
+			}
+			output = `${trimmed}\n${blockedSummary}${closingMarker}`;
+		} else {
+			output = `${trimmed}${closingMarker}`;
+		}
 	}
 
 	return output;

@@ -235,6 +235,37 @@ describe('plan cursor BLOCKED surfacing (#2841)', () => {
 		expect(compactCursor).toMatch(/^## Phase 9 \[PENDING\]$/m);
 	});
 
+	it('final cap cannot silently drop the BLOCKED one-liner (reserved)', () => {
+		// Final-critic adversarial shape: a pathological IN-PROGRESS title eats
+		// the whole budget, so the final cap truncates the tail. The BLOCKED
+		// summary is reserved ahead of generic tail truncation; only when the
+		// summary itself cannot fit max_chars does the bound win.
+		const hugeTitle = 'X'.repeat(2000);
+		const hostilePlan = [
+			'# Hostile Budget Plan',
+			'',
+			`## Phase 7: ${hugeTitle} [IN PROGRESS]`,
+			'- [ ] 7.1: Keep consuming the budget',
+			'',
+			'## Phase 8: Gated Integration [BLOCKED]',
+			'',
+			'## Phase 9: Hardening [PENDING]',
+			'',
+		].join('\n');
+		const cursor = extractPlanCursor(hostilePlan, { maxTokens: 500 });
+		expect(cursor).toMatch(/^## Phase 8 \[BLOCKED\]$/m);
+		expect(cursor).toContain('Gated Integration');
+		expect(cursor.endsWith('[/SWARM PLAN CURSOR]')).toBe(true);
+		expect(cursor.length).toBeLessThanOrEqual(Math.floor(500 / 0.33));
+
+		// Sub-fitting budget: when even the BLOCKED summary cannot fit the
+		// documented bound, the bound wins (documented edge, same as every
+		// other section — only the closing marker survives).
+		const tiny = extractPlanCursor(hostilePlan, { maxTokens: 5 });
+		expect(tiny).not.toMatch(/## Phase 8/);
+		expect(tiny).toContain('[/SWARM PLAN CURSOR]');
+	});
+
 	it('benign-with-BLOCKED cursor output is additive-only (pinned)', () => {
 		const cursor = extractPlanCursor(blockedPlanMd);
 		expect(cursor).toBe(
