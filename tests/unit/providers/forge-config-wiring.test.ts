@@ -43,12 +43,23 @@ function makeUnconfiguredProject(): string {
 // tests/helpers/isolated-test-env.ts).
 const { cleanup: cleanupEnv } = createIsolatedTestEnv();
 
+// Windows runners can hold a transient lock (AV scan, deferred handle close)
+// on a freshly written temp dir even past safeRmRecursive's EBUSY/EPERM
+// retries; a leftover %TEMP% entry is preferable to failing a passing test.
+function bestEffortRm(dir: string): void {
+	try {
+		safeRmRecursive(dir);
+	} catch {
+		// best-effort: teardown cleanup only
+	}
+}
+
 describe('forge config runtime wiring (#2733 final-critic fix)', () => {
 	const dirs: string[] = [];
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
 			closeAllProjectDbs();
-			safeRmRecursive(d);
+			bestEffortRm(d);
 		}
 	});
 
@@ -214,7 +225,7 @@ describe('durable-path forge declarations (#2733 final-critic round 2)', () => {
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
 			closeAllProjectDbs();
-			safeRmRecursive(d);
+			bestEffortRm(d);
 		}
 	});
 
@@ -378,7 +389,7 @@ describe('monitor GitLab-skip wiring (PRR-11/19, PR #2884 review)', () => {
 	afterEach(() => {
 		for (const d of dirs.splice(0)) {
 			closeAllProjectDbs();
-			safeRmRecursive(d);
+			bestEffortRm(d);
 		}
 	});
 
