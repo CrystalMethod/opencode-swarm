@@ -45,6 +45,10 @@ export const _internals = {
 	resolveMergeBase: resolveExactMergeBase,
 	resolveMergeBaseAsync: resolveExactMergeBaseAsync,
 	markPrReviewTriggerEvaluationComplete,
+	// PR review F-4: the snapshot read and the fresh re-read both route
+	// through this seam so the TOCTOU race (receipt landing between the two
+	// reads) is deterministically testable.
+	findByBatchIdDetailed,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -355,9 +359,13 @@ export async function executeWritePrReviewTriggerEval(
 		// fail closed with an honest rejection instead of falling into the
 		// "no verifiable provenance chain" branch below, which would read
 		// UNKNOWN records as a provenance violation.
-		const batchRead = findByBatchIdDetailed(directory, row.source_batch_id!, {
-			parentSessionId: sessionID,
-		});
+		const batchRead = _internals.findByBatchIdDetailed(
+			directory,
+			row.source_batch_id!,
+			{
+				parentSessionId: sessionID,
+			},
+		);
 		if (batchRead.status === 'uncertain') {
 			return failure(
 				`MATCHED trigger ${row.trigger_id} cannot be validated: the delegation store is unreadable after ${batchRead.attempts} attempts (${batchRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,
@@ -417,8 +425,24 @@ export async function executeWritePrReviewTriggerEval(
 		// Operator cancellations share the record shape but are the
 		// controller's own act, so status "cancelled" stays fail-closed;
 		// re-dispatch the family instead of disclosing it.
+		// Issue #2840 TOCTOU cross-check: a lane whose durable record already
+		// holds a prReviewResultReceipt finished its real review — the receipt
+		// can land exactly as the presumed-stale liveness sweep fires (or later
+		// via parentRepair reconciliation). Such a lane is NOT a dead family:
+		// its findings exist and `publishPrReviewResultReceipt` refuses normal
+		// resubmission onto terminal lanes, so disclosing it dead would strand
+		// real findings behind a mislabel. Fail closed on provenance instead
+		// so the operator reconciles the receipt. This snapshot check is a
+		// short-circuit only — the load-bearing authority is the fresh re-read
+		// below the admission branch, which re-evaluates the full predicate
+		// (including the receipt cross-check) against the store as of the
+		// decision moment.
+		const laneAlreadySubmittedReceipt =
+			!!record?.result?.prReviewResultReceipt ||
+			!!record?.terminalResult?.result.prReviewResultReceipt;
 		const livenessTerminalDead =
 			provenanceFailure &&
+			!laneAlreadySubmittedReceipt &&
 			!!record &&
 			record.mode === 'swarm-pr-review:micro' &&
 			recordOwnedLanes.includes(row.trigger_id) &&
@@ -434,11 +458,58 @@ export async function executeWritePrReviewTriggerEval(
 			);
 		}
 		if (livenessTerminalDead) {
+			// Issue #2840: the snapshot above predates this decision, and a
+			// receipt published in between flips the answer. Re-read the cited
+			// record fresh and re-evaluate the dead-family SUBSET of the
+			// predicate (record-level identity, liveness class, and the receipt
+			// cross-check — a dead lane retains no output artifact to re-read)
+			// before admitting — the decision is then made against the store as
+			// of the decision moment, narrowing the race to the receipt write
+			// itself. Both reads route through the _internals.findByBatchIdDetailed
+			// seam so the between-reads race is deterministically testable.
+			const freshRead = _internals.findByBatchIdDetailed(
+				directory,
+				row.source_batch_id!,
+				{
+					parentSessionId: sessionID,
+				},
+			);
+			if (freshRead.status === 'uncertain') {
+				return failure(
+					`MATCHED trigger ${row.trigger_id} cannot be validated: the delegation store is unreadable after ${freshRead.attempts} attempts (${freshRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,
+				);
+			}
+			const freshRecord = freshRead.value.find(
+				(candidate) => candidate.laneId === row.source_lane_id,
+			);
+			const freshOwnedLanes = freshRecord?.ownedWorkflowLanes?.length
+				? freshRecord.ownedWorkflowLanes
+				: freshRecord?.workflowLane
+					? [freshRecord.workflowLane]
+					: [];
+			const freshAlreadySubmittedReceipt =
+				!!freshRecord?.result?.prReviewResultReceipt ||
+				!!freshRecord?.terminalResult?.result.prReviewResultReceipt;
+			const freshStillDead =
+				!!freshRecord &&
+				freshRecord.mode === 'swarm-pr-review:micro' &&
+				freshOwnedLanes.includes(row.trigger_id) &&
+				(freshRecord.status === 'stale' || freshRecord.status === 'error') &&
+				freshRecord.result?.workflowLaneFailureClass === 'liveness' &&
+				!freshRecord.result?.outputRef?.trim() &&
+				freshRecord.workspace?.prHeadSha === parsed.data.pr_head_sha &&
+				freshRecord.workspace?.gitHead === parsed.data.pr_head_sha &&
+				!freshAlreadySubmittedReceipt;
+			if (!freshStillDead) {
+				return failure(
+					`MATCHED trigger ${row.trigger_id} does not reference a verifiable micro-lane provenance chain`,
+				);
+			}
 			coverageDegradations.push({
 				trigger_id: row.trigger_id,
 				source_batch_id: row.source_batch_id!,
 				source_lane_id: row.source_lane_id!,
-				reason: `liveness-terminal dead family: lane settled ${record!.status} with typed liveness class (presumed host abandonment), no retained artifact; family disclosed unattested`,
+				reason: `liveness-terminal dead family: lane settled ${freshRecord!.status} with typed liveness class (presumed host abandonment), no retained artifact; family disclosed unattested`,
 			});
 			continue;
 		}

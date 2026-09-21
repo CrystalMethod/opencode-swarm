@@ -58,6 +58,7 @@ import {
 	type PrReviewResultUnresolvedReason,
 	PrReviewRunIdSchema,
 } from '../background/pr-review-contract.js';
+import { prReviewReceiptHasCoverageDegradations } from '../background/pr-review-trigger-receipt-reader.js';
 import { validateSwarmPath } from '../hooks/utils.js';
 import { CIRCUIT_TERMINAL_DELEGATION_STATUSES } from './circuit.js';
 import {
@@ -119,6 +120,8 @@ export interface PrReviewCompletionState {
 	prReviewPartialBaseCoverage?: PrReviewPartialBaseCoverageRecord;
 	prReviewCoverageDisclosurePath?: string;
 	prReviewCoverageDisclosureDigest?: string;
+	/** Issue #2840: durable trigger-eval receipt path (degradation disclosure). */
+	prReviewTriggerEvalPath?: string;
 }
 
 /** The gate-context surface the settlement consumes (full ctx is gate-owned). */
@@ -436,10 +439,20 @@ export type PrReviewReportVerdict = (typeof PR_REVIEW_REPORT_VERDICTS)[number];
  * PARTIAL may only request changes or declare itself incomplete; NO_COVERAGE
  * is a forced INCOMPLETE operational report. Neither may ever APPROVE or
  * claim a full review.
+ *
+ * Issue #2840: `options.disclosedCoverageDegradation` is true when the
+ * durable trigger-eval receipt carries at least one disclosed coverage
+ * degradation (liveness-terminal dead family or coverage-quality). Such a
+ * review is DEGRADED_DISCLOSED — the COMPLETE branch constructs the
+ * `{quality:'degraded', disclosed:true}` coverage the finding policy already
+ * maps to `['REQUEST_CHANGES','INCOMPLETE']`, so a degraded review can never
+ * APPROVE. PARTIAL already excludes APPROVE and NO_COVERAGE stays forced
+ * INCOMPLETE through its `{quality:'none'}` mapping; both are unchanged.
  */
 export function allowedPrReviewReportVerdicts(
 	kind: PrReviewTerminalCoverageKind,
 	findings: ReadonlyArray<FinalPolicyFinding> = [],
+	options?: { disclosedCoverageDegradation?: boolean },
 ): readonly PrReviewReportVerdict[] {
 	// PARTIAL is a truthful covered-dimensions settlement even when its
 	// authoritative finding projection is empty.  Keep its coverage-only
@@ -448,11 +461,19 @@ export function allowedPrReviewReportVerdicts(
 	if (kind === 'PARTIAL' && findings.length === 0) {
 		return ['REQUEST_CHANGES', 'INCOMPLETE'];
 	}
+	const degraded =
+		kind === 'COMPLETE' && options?.disclosedCoverageDegradation === true;
 	const projection = evaluateFinalFindingPolicy({
 		policyVersion: 1,
 		finalStatus: 'COMPLETE',
-		coverage:
-			kind === 'COMPLETE'
+		coverage: degraded
+			? {
+					kind: 'base',
+					quality: 'degraded',
+					disclosed: true,
+					provenance: 'valid',
+				}
+			: kind === 'COMPLETE'
 				? { kind: 'base', quality: 'complete', provenance: 'valid' }
 				: kind === 'PARTIAL'
 					? { kind: 'base', quality: 'partial', provenance: 'valid' }
@@ -1633,6 +1654,14 @@ export async function readPrReviewTerminalCoverageForReport(
 		// This report-only projection has no finding-policy artifact available;
 		// pass an explicit empty set instead of relying on an omitted optional
 		// argument that could accidentally permit APPROVE in a future caller.
-		allowedVerdicts: allowedPrReviewReportVerdicts(settlement.kind, []),
+		// Issue #2840: the durable trigger-eval receipt's disclosed coverage
+		// degradations downgrade the verdict matrix the same way the
+		// completion gates enforce (DEGRADED_DISCLOSED never approves).
+		allowedVerdicts: allowedPrReviewReportVerdicts(settlement.kind, [], {
+			disclosedCoverageDegradation: prReviewReceiptHasCoverageDegradations(
+				directory,
+				state.prReviewTriggerEvalPath,
+			),
+		}),
 	};
 }
