@@ -1,5 +1,21 @@
 # Changelog
 
+## [7.185.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.17...v7.185.0) (2026-09-21)
+
+
+### Features
+
+* **delegation:** persist Stage B dispatch-generation bindings across restarts ([#2829](https://github.com/ZaxbyHub/opencode-swarm/issues/2829)) ([695b249](https://github.com/ZaxbyHub/opencode-swarm/commit/695b249d25f4de52639b7a888e0ebfb5a7f74927))
+* **forge:** GitLab as a first-class provider alongside GitHub ([#2733](https://github.com/ZaxbyHub/opencode-swarm/issues/2733)) ([e611123](https://github.com/ZaxbyHub/opencode-swarm/commit/e611123bd6a1b8ce012c0b21aef1429dda1dc6ad))
+
+
+### Bug Fixes
+
+* **agents:** trim GitLab clause to fit ARCHITECT_PROMPT_BUDGET_CHARS ([267b2ac](https://github.com/ZaxbyHub/opencode-swarm/commit/267b2acfa4e757defd994a22d20e1f118650910a))
+* **delegation:** resolve PR review findings on Stage B binding durability ([#2829](https://github.com/ZaxbyHub/opencode-swarm/issues/2829)) ([4898e80](https://github.com/ZaxbyHub/opencode-swarm/commit/4898e800441ba93e614844dbe3283129ae9c6c29))
+* **forge:** close swarm-pr-review findings on the GitLab provider surface ([#2884](https://github.com/ZaxbyHub/opencode-swarm/issues/2884) feedback) ([7901e8c](https://github.com/ZaxbyHub/opencode-swarm/commit/7901e8c3cec27108ace8e2861367d74debf500a1))
+* **pr-ref:** charwise control-char filter instead of regex literal ([204acad](https://github.com/ZaxbyHub/opencode-swarm/commit/204acadd08bc3e8ff9519ef411242d44fca14ba9))
+
 ## [7.184.17](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.16...v7.184.17) (2026-09-20)
 
 
