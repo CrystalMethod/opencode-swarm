@@ -278,6 +278,27 @@ describe('plan cursor BLOCKED surfacing (#2841)', () => {
 		expect(tiny).toContain('[/SWARM PLAN CURSOR]');
 	});
 
+	it('multiple BLOCKED phases surface only the first one (pinned, #2886)', () => {
+		const multiBlockedPlanMd = [
+			'# Multi Block Plan',
+			'',
+			'## Phase 1: First Block [BLOCKED]',
+			'- [ ] 1.1: Resolve the first blocker',
+			'',
+			'## Phase 2: Second Block [BLOCKED]',
+			'- [ ] 2.1: Resolve the second blocker',
+			'',
+			'## Phase 3: Hardening [PENDING]',
+			'',
+		].join('\n');
+		const cursor = extractPlanCursor(multiBlockedPlanMd);
+		expect(cursor).toMatch(/^## Phase 1 \[BLOCKED\]$/m);
+		expect(cursor).toContain('First Block');
+		expect(cursor).not.toMatch(/^## Phase 2 \[BLOCKED\]$/m);
+		expect(cursor).not.toContain('Second Block');
+		expect(cursor).toMatch(/^## Phase 3 \[PENDING\]$/m);
+	});
+
 	it('benign-with-BLOCKED cursor output is additive-only (pinned)', () => {
 		const cursor = extractPlanCursor(blockedPlanMd);
 		expect(cursor).toBe(

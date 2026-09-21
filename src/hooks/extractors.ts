@@ -39,6 +39,20 @@ export function extractCurrentPhase(planContent: string): string | null {
 		}
 	}
 
+	// #2886: report a BLOCKED phase the way the structured path already does
+	// (`extractCurrentPhaseFromPlan` maps blocked → 'BLOCKED') instead of
+	// silently dropping it. First BLOCKED wins, mirroring the plan cursor's
+	// `phases.find` precedent; an IN PROGRESS phase still outranks it.
+	for (let i = 0; i < Math.min(20, lines.length); i++) {
+		const line = lines[i].trim();
+		const blockedMatch = line.match(/^## Phase (\d+):?\s*(.*?)\s*\[BLOCKED\]/i);
+		if (blockedMatch) {
+			const phaseNum = blockedMatch[1];
+			const description = blockedMatch[2]?.trim() || '';
+			return `Phase ${phaseNum}: ${description} [BLOCKED]`;
+		}
+	}
+
 	// Look for Phase: N in the first 3 lines (header)
 	for (let i = 0; i < Math.min(3, lines.length); i++) {
 		const line = lines[i].trim();
@@ -101,6 +115,12 @@ export function extractCurrentTask(planContent: string): string | null {
  *   indented sub-bullets are filtered out here).
  * - Lines are reproduced verbatim from `raw` — bullet prefix, markers
  *   (✅ / [timestamps]) and all — then joined, trimmed and truncated.
+ *
+ * #2886: context.md is agent-written after consuming untrusted task/issue
+ * text and this return feeds the compaction `SWARM DECISIONS` LLM-context
+ * fact, so it MUST pass the shared sanitizer input-side (the same pattern as
+ * `extractCurrentPhase`); the system-enhancer wraps of this output become
+ * idempotent no-ops.
  */
 export function extractDecisions(
 	contextContent: string,
@@ -109,6 +129,8 @@ export function extractDecisions(
 	if (!contextContent) {
 		return null;
 	}
+
+	contextContent = sanitizeContextText(contextContent);
 
 	const decisionLines = extractContextDecisions(contextContent)
 		.filter((decision) => decision.raw.startsWith('- '))
@@ -181,6 +203,11 @@ export function extractIncompleteTasks(
 
 /**
  * Extracts patterns section from context content.
+ *
+ * #2886: context.md is agent-written after consuming untrusted task/issue
+ * text and this return feeds the compaction `SWARM PATTERNS` LLM-context
+ * fact, so it MUST pass the shared sanitizer input-side (the same pattern as
+ * `extractCurrentPhase`).
  */
 export function extractPatterns(
 	contextContent: string,
@@ -189,6 +216,8 @@ export function extractPatterns(
 	if (!contextContent) {
 		return null;
 	}
+
+	contextContent = sanitizeContextText(contextContent);
 
 	const lines = contextContent.split('\n');
 	let patternsText = '';
