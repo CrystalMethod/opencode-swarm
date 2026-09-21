@@ -16,19 +16,35 @@ context without the shared sanitizer:
   raw `<system>` / `<tool_call>` payload planted in a `.swarm/context.md`
   bullet into the compaction facts block. The existing wraps of the same
   producer output in `system-enhancer.ts` (`[SWARM CONTEXT] Key decisions:`)
-  become idempotent no-ops. Benign context.md is byte-identical: the
-  sanitizer is idempotent and formatting-preserving, `- ` bullets, `✅` /
+  become idempotent no-ops. Benign context.md is byte-identical **for
+  content the sanitizer contract leaves alone**: the sanitizer is
+  idempotent and formatting-preserving, so `- ` bullets, `✅` /
   `[timestamp]` markers and the documented `maxChars` truncation bound are
-  unchanged.
+  unchanged; decision or pattern bullets that themselves contain
+  sanitizer-matched constructs (HTML/XML-style tags such as `</div>`,
+  triple backticks, line-start `system:` prose) are rewritten per the
+  sanitizer contract — the same intentional, defense-in-depth fidelity rule
+  the #2841 plan-extractor fix shipped. This change also supersedes the
+  exact-string expectation of the #2087 compaction boundary regression test
+  (`compaction-customizer-summary-safety.test.ts`): an injected
+  `</swarm_compaction_facts>` closer in a decision bullet is now
+  neutralized to `[/BLOCKED-TAG]` by the producer sanitizer upstream of the
+  hook's own `escapeCompactionBoundary`, which remains in place and keeps
+  escaping the whitespace-padded tag variants the sanitizer does not
+  preempt.
 - Markdown `extractCurrentPhase` no longer silently skips a plan whose only
   non-complete phase carries `[BLOCKED]`. The legacy markdown path (compaction
   `SWARM PLAN` fact + `[SWARM CONTEXT] Phase:` one-liner) now reports the
   first BLOCKED phase as `Phase N: <description> [BLOCKED]` — closing the
   parity gap with the structured path (`extractCurrentPhaseFromPlan`) and the
-  plan cursor, both of which already surface BLOCKED. Precedence: an IN
-  PROGRESS phase still outranks a BLOCKED one; the `Phase: N [PENDING]`
-  header fallback is unchanged; multiple BLOCKED phases resolve to the first
-  (the cursor's own `phases.find` precedent, now pinned by test).
+  plan cursor, both of which already surface BLOCKED. The extractor's two
+  other consumers change with it for such plans: the user-facing
+  `/swarm status` phase line (`status-service`) and the system-enhancer
+  scoring-path cursor candidate now surface the BLOCKED phase instead of
+  `Unknown`/nothing. Precedence: an IN PROGRESS phase still outranks a
+  BLOCKED one; the `Phase: N [PENDING]` header fallback is unchanged;
+  multiple BLOCKED phases resolve to the first (the cursor's own
+  `phases.find` precedent, now pinned by test).
 
 ## Why
 

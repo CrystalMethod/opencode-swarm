@@ -12,7 +12,9 @@
  *    survive verbatim; the system-enhancer wrap becomes an idempotent no-op.
  * 2. Source ratchet — each producer body contains a LOAD-BEARING
  *    sanitizeContextText call (consumed binding or sanitized return), so
- *    removing the call or discarding its result fails this suite.
+ *    removing the call fails this suite; a decoy binding that discards the
+ *    sanitized value while still parsing raw input is caught by the
+ *    behavioral block in section 1 instead.
  * 3. Benign preservation — byte-exact pins for benign context.md (mirroring
  *    the freeze-time capture) and the documented maxChars truncation bound
  *    applied to sanitized text.
