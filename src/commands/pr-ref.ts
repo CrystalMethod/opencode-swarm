@@ -61,9 +61,17 @@ export function sanitizeInstructions(raw: string): string {
 	const stripped = collapsed.replace(/\[\s*MODE\s*:[^\]]*\]/gi, '');
 	let normalized = stripped.replace(/\s+/g, ' ').trim();
 	// Control characters never belong in a MODE signal line (H4): strip any
-	// C0/DEL the whitespace collapse did not remove.
+	// C0/DEL the whitespace collapse did not remove. Charwise filter instead
+	// of a control-char regex — Biome's noControlCharactersInRegex rejects
+	// even unicode-escaped ranges in regex literals.
 	if (containsControlCharacters(normalized)) {
-		normalized = normalized.replace(/[\u0000-\u001f\u007f]/gu, '');
+		normalized = normalized
+			.split('')
+			.filter((ch) => {
+				const cp = ch.codePointAt(0);
+				return cp !== undefined && cp > 0x1f && cp !== 0x7f;
+			})
+			.join('');
 	}
 	if (normalized.length <= MAX_INSTRUCTIONS_LEN) return normalized;
 	return `${normalized.slice(0, MAX_INSTRUCTIONS_LEN)}…`;
