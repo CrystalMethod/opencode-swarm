@@ -19,7 +19,7 @@ import {
 	buildCorrelationId,
 	unsubscribe,
 } from '../background/pr-subscriptions.js';
-import { looksLikePrRef, parsePrRef } from './pr-ref.js';
+import { looksLikePrRef, parsePrRef, resolveCanonicalPrUrl } from './pr-ref.js';
 
 /**
  * Unsubscribe the current session from PR monitoring notifications.
@@ -51,7 +51,7 @@ export async function handlePrUnsubscribeCommand(
 	}
 
 	const refToken = rest[0];
-	const prInfo = _internals.parsePrRef(refToken, directory);
+	const prInfo = _internals.resolveCanonicalPrUrl(refToken, directory);
 
 	if (!prInfo) {
 		if (_internals.looksLikePrRef(refToken)) {
@@ -73,7 +73,7 @@ export async function handlePrUnsubscribeCommand(
 	}
 
 	const repoFullName = `${prInfo.owner}/${prInfo.repo}`;
-	const prUrl = `https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`;
+	const prUrl = prInfo.prUrl;
 
 	try {
 		const correlationId = _internals.buildCorrelationId(
@@ -116,5 +116,6 @@ export const _internals = {
 	unsubscribe,
 	buildCorrelationId,
 	parsePrRef,
+	resolveCanonicalPrUrl,
 	looksLikePrRef,
 };

@@ -125,6 +125,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `automation` | object | — | Background automation mode and per-feature toggles (v6.7 background-first rollout). |
 | `knowledge` | object | — | Two-tier cross-project knowledge base (v6.17). |
 | `memory` | object | — | Swarm memory substrate — disabled by default so existing flows are unchanged. |
+| `forge` | object | — | Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733). Ambiguous git remotes (mixed providers, unrecognized self-hosted hosts, or no remote) fail closed and require an explicit selection; forge.base_url passes through the same HTTPS-only / non-private / ASCII-host guards as every forge URL and is never a trust whitelist; combining base_url with provider "github" is rejected as a configuration conflict. |
 | `observability` | object | — | Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485). |
 | `learning` | object | — | Learning subsystem: real-time admission, PRM persistence, dedup sweep (issue #1821). |
 | `consensus` | object | — | Consensus mining over completed run evidence (issue #1821). |
@@ -771,6 +772,19 @@ environment variable:
 Like `OPENCODE_SWARM_GIT_BINARY`, this is a user/machine-level escape hatch; no
 repository-supplied value can ever name a gh candidate. See
 `describeGhResolution()` for a diagnostic of the most recent probe cycle.
+
+### GitLab CLI (`glab`)
+
+Issue #2733: the glab executable for GitLab-backed features is resolved by
+`src/utils/glab-executable.ts` with the same candidate discipline as gh
+(platform absolute locations first, then every `glab` match on `PATH` gated by
+a `glab version <major>.<minor>…` version probe, then the bare `glab` name as
+a terminal fallback). There is deliberately **no `glab.binary` config key** —
+the only override is the environment variable:
+
+| Env var | Description |
+|---------|-------------|
+| `OPENCODE_SWARM_GLAB_BINARY` | Absolute path to the glab executable to try first. An unusable value (relative, missing, or failing the version probe) is skipped with a warning and the resolver falls through its built-in candidate list — it never breaks glab availability. See `describeGlabResolution()` for a diagnostic of the most recent probe cycle. |
 
 ### Memory
 

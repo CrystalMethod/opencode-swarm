@@ -5,6 +5,7 @@ import {
 	readPrFeedbackMonitorQueue,
 } from '../background/pr-feedback-event-queue.js';
 import { appendCoreEventSync } from '../events/core-events.js';
+import { canonicalForgePrUrl } from '../providers/forge-provider.js';
 import {
 	ensurePrWorkflowSkillContractsFresh,
 	SKILL_CONTRACT_WAKE_BUDGET_MS,
@@ -426,22 +427,10 @@ function isTerminalToolStatus(value: unknown): boolean {
 }
 
 function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!match
-		) {
-			return null;
-		}
-		const number = Number(match[3]);
-		if (!Number.isSafeInteger(number) || number <= 0) return null;
-		return `github.com/${match[1].toLowerCase()}/${match[2].toLowerCase()}/pull/${number}`;
-	} catch {
-		return null;
-	}
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body.
+	return canonicalForgePrUrl(value);
 }
 
 function sameGitHubPr(left: string, right: string): boolean {

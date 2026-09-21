@@ -18,8 +18,13 @@ import {
 	type PRStatusResult,
 	type ReviewStateResult,
 } from '../git/pr';
+import {
+	detectForgeFromUrl,
+	getProviderCapabilities,
+} from '../providers/forge-provider.js';
 import { advisoryWarn } from '../services/warning-buffer';
 import { log, error as logError } from '../utils';
+import { resolveGlabExecutable } from '../utils/glab-executable.js';
 import { type AutomationEventType, getGlobalEventBus } from './event-bus';
 import {
 	isPrSubscriptionCapacityError,
@@ -516,6 +521,46 @@ export class PrMonitorWorker {
 		isProbe = false,
 	): Promise<void> {
 		const correlationId = sub.correlationId;
+
+		// Honest capability reporting (issue #2733): getProviderCapabilities is
+		// the decision source. GitHub's gh CLI synthesizes
+		// statusCheckRollup/reviewDecision/mergeStateStatus; GitLab's MR API
+		// does not, and glab-backed MR polling is tracked as follow-up #2882.
+		// A subscription whose provider cannot serve ANY of the three
+		// synthesized fields cannot be polled by the gh pipeline at all — skip
+		// with an explicit unavailable marker instead of running polls that
+		// would fabricate error-loop circuit-breaker churn.
+		// The skip must cover BOTH GitLab surface classes (PRR-11): hosts that
+		// shape-detect as GitLab (gitlab.com / gitlab.*) AND generic
+		// self-hosted instances declared via the forge declaration persisted
+		// with the subscription record. Shape detection alone returns null for
+		// declared generic hosts, which would let them fall through to gh
+		// polls that cannot serve them.
+		const forgeContext =
+			detectForgeFromUrl(sub.prUrl) ??
+			(sub.forge
+				? { provider: sub.forge.provider, host: sub.forge.host }
+				: null);
+		if (
+			forgeContext &&
+			!getProviderCapabilities(forgeContext.provider).statusCheckRollup &&
+			!getProviderCapabilities(forgeContext.provider).reviewDecision &&
+			!getProviderCapabilities(forgeContext.provider).mergeStateStatus
+		) {
+			// Production wiring for the glab resolver (bounded, lazy, cached —
+			// at most one probe cycle per process). Log resolution STATE only,
+			// never the absolute binary path (log minimization, PRR-24).
+			const glabBinary = resolveGlabExecutable();
+			const glabStatus =
+				glabBinary === 'glab'
+					? 'glab binary not resolved (bare-name fallback)'
+					: 'glab binary resolved';
+			log(
+				'[PrMonitorWorker] GitLab MR monitoring unavailable: glab-backed polling is not wired yet (issue #2882); skipping gh poll for this subscription',
+				{ correlationId, glabStatus },
+			);
+			return;
+		}
 
 		// Initialize or retrieve circuit-breaker state from subscription snapshot
 		if (!this.circuitBreakerMap.has(correlationId) && sub.errorCount > 0) {

@@ -21,7 +21,13 @@
 
 import { subscribe } from '../background/pr-subscriptions.js';
 import { loadPluginConfig } from '../config/loader.js';
-import { looksLikePrRef, parsePrRef } from './pr-ref.js';
+import {
+	detectForgeFromUrl,
+	type ForgeContext,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
+import { detectGitRemote } from './_shared/url-security.js';
+import { looksLikePrRef, resolveCanonicalPrUrl } from './pr-ref.js';
 
 /**
  * Subscribe the current session to PR monitoring notifications.
@@ -31,6 +37,23 @@ import { looksLikePrRef, parsePrRef } from './pr-ref.js';
  * (`sessionID::repoFullName::prNumber`) already exists, the existing record
  * is returned without duplication.
  */
+/**
+ * Lazily resolve the configured forge context (see pr-ref.ts); consulted
+ * only when shape detection cannot answer.
+ */
+function loadConfiguredForgeContext(
+	directory: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function handlePrSubscribeCommand(
 	directory: string,
 	args: string[],
@@ -53,7 +76,7 @@ export async function handlePrSubscribeCommand(
 	}
 
 	const refToken = rest[0];
-	const prInfo = parsePrRef(refToken, directory);
+	const prInfo = resolveCanonicalPrUrl(refToken, directory);
 
 	if (!prInfo) {
 		if (looksLikePrRef(refToken)) {
@@ -90,7 +113,14 @@ export async function handlePrSubscribeCommand(
 	}
 
 	const repoFullName = `${prInfo.owner}/${prInfo.repo}`;
-	const prUrl = `https://github.com/${prInfo.owner}/${prInfo.repo}/pull/${prInfo.number}`;
+	const prUrl = prInfo.prUrl;
+	// #2733: for a configured generic self-hosted GitLab host, persist the
+	// declaration the URL was validated against so the durable store reloads
+	// config-free (shape-detected gitlab hosts need no declaration).
+	const forge =
+		detectForgeFromUrl(prUrl) === null
+			? loadConfiguredForgeContext(directory)
+			: undefined;
 
 	try {
 		const config = _internals.loadPluginConfig(directory);
@@ -110,6 +140,9 @@ export async function handlePrSubscribeCommand(
 			repoFullName,
 			prUrl,
 			maxSubscriptions: prMonitorConfig?.max_subscriptions,
+			...(forge?.provider === 'gitlab'
+				? { forge: { provider: 'gitlab' as const, host: forge.host } }
+				: {}),
 		});
 
 		const deliveryMode =
@@ -130,7 +163,26 @@ export async function handlePrSubscribeCommand(
 			'conflicts and resolutions, merge/close, and (off by default)',
 			'CI success. Each event type is gated by its notify_* flag.',
 			deliveryLine,
-		].join('\n');
+		]
+			.concat(
+				// Honest capability reporting (issue #2733, AC7): for GitLab MRs
+				// the monitor cannot yet deliver events (glab-backed polling is
+				// tracked as #2882). The subscription IS recorded (reference
+				// storage, gates, and publication flows operate on GitLab
+				// refs), but the user must be told monitoring is unavailable
+				// rather than promised events.
+				prUrl.includes('/-/merge_requests/')
+					? [
+							'',
+							'Note: live monitoring is NOT AVAILABLE for GitLab merge',
+							'requests yet — glab-backed polling is tracked as issue #2882.',
+							'The subscription is recorded and PR reference/gate/',
+							'publication workflows operate on this MR, but no CI/comment/',
+							'review events will be delivered until that lands.',
+						]
+					: [],
+			)
+			.join('\n');
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return [`Error: Failed to subscribe to ${prUrl}`, '', message].join('\n');

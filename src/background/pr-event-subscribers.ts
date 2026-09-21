@@ -29,6 +29,7 @@ import {
 	type PrWorkflowGateState,
 	readPrWorkflowGateState,
 } from '../hooks/pr-workflow-gate';
+import { canonicalForgePrUrl } from '../providers/forge-provider.js';
 import { getAgentSession } from '../state';
 import { log } from '../utils';
 import { pushAdvisory } from '../utils/advisory-queue';
@@ -483,22 +484,10 @@ const CONTENT_EVENT_TYPES = new Set([
 ]);
 
 function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!match
-		) {
-			return null;
-		}
-		const number = Number(match[3]);
-		if (!Number.isSafeInteger(number) || number <= 0) return null;
-		return `github.com/${match[1].toLowerCase()}/${match[2].toLowerCase()}/pull/${number}`;
-	} catch {
-		return null;
-	}
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body.
+	return canonicalForgePrUrl(value);
 }
 
 function sameGitHubPr(left: string, right: string): boolean {

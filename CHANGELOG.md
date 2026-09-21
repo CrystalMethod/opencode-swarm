@@ -1,5 +1,32 @@
 # Changelog
 
+## [7.185.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.17...v7.185.0) (2026-09-21)
+
+
+### Features
+
+* **delegation:** persist Stage B dispatch-generation bindings across restarts ([#2829](https://github.com/ZaxbyHub/opencode-swarm/issues/2829)) ([695b249](https://github.com/ZaxbyHub/opencode-swarm/commit/695b249d25f4de52639b7a888e0ebfb5a7f74927))
+* **forge:** GitLab as a first-class provider alongside GitHub ([#2733](https://github.com/ZaxbyHub/opencode-swarm/issues/2733)) ([e611123](https://github.com/ZaxbyHub/opencode-swarm/commit/e611123bd6a1b8ce012c0b21aef1429dda1dc6ad))
+
+
+### Bug Fixes
+
+* **agents:** trim GitLab clause to fit ARCHITECT_PROMPT_BUDGET_CHARS ([267b2ac](https://github.com/ZaxbyHub/opencode-swarm/commit/267b2acfa4e757defd994a22d20e1f118650910a))
+* **delegation:** resolve PR review findings on Stage B binding durability ([#2829](https://github.com/ZaxbyHub/opencode-swarm/issues/2829)) ([4898e80](https://github.com/ZaxbyHub/opencode-swarm/commit/4898e800441ba93e614844dbe3283129ae9c6c29))
+* **forge:** close swarm-pr-review findings on the GitLab provider surface ([#2884](https://github.com/ZaxbyHub/opencode-swarm/issues/2884) feedback) ([7901e8c](https://github.com/ZaxbyHub/opencode-swarm/commit/7901e8c3cec27108ace8e2861367d74debf500a1))
+* **pr-ref:** charwise control-char filter instead of regex literal ([204acad](https://github.com/ZaxbyHub/opencode-swarm/commit/204acadd08bc3e8ff9519ef411242d44fca14ba9))
+
+## [7.184.17](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.16...v7.184.17) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pr-workflow:** address pr2875 review findings ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([fdcaac5](https://github.com/ZaxbyHub/opencode-swarm/commit/fdcaac5d59f7ae08840c318cb7dccc88f2c7fd52))
+* **pr-workflow:** detect and repair stale installed skill copies at MODE entry ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([0ea1fed](https://github.com/ZaxbyHub/opencode-swarm/commit/0ea1fed970543cf5f899fbe147b1d408ceddf640))
+* **pr-workflow:** detect and repair stale installed skill copies at MODE entry ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([faa4aaf](https://github.com/ZaxbyHub/opencode-swarm/commit/faa4aaf3e28f63fc1325bcfee4e97070eae525d7))
+* **tests:** route shared PR-workflow fixture teardowns through safeRmRecursive ([#2866](https://github.com/ZaxbyHub/opencode-swarm/issues/2866)) ([e3a4ac0](https://github.com/ZaxbyHub/opencode-swarm/commit/e3a4ac0a275b55087da97cd4ec4b9898bde799a0))
+* **tests:** route shared PR-workflow fixture teardowns through safeRmRecursive ([#2866](https://github.com/ZaxbyHub/opencode-swarm/issues/2866)) ([33e5fc4](https://github.com/ZaxbyHub/opencode-swarm/commit/33e5fc45c66ce291930b191dda9e215592ffdaa5))
+
 ## [7.184.16](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.15...v7.184.16) (2026-09-20)
 
 

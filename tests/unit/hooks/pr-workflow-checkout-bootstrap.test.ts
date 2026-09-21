@@ -10,6 +10,7 @@ import {
 	bindPrWorkflowHead,
 	enforcePrWorkflowToolBefore,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 
 let directory = '';
 const originalResolveCurrentGitHead = _test_exports.resolveCurrentGitHead;
@@ -85,7 +86,7 @@ afterEach(async () => {
 		originalResolveRemoteRefsContainingHead;
 	_test_exports.resolveRemoteRefsContainingHeadAsync =
 		originalResolveRemoteRefsContainingHeadAsync;
-	await fs.rm(directory, { recursive: true, force: true });
+	safeRmRecursive(directory);
 });
 
 describe('PR workflow checkout bootstrap', () => {

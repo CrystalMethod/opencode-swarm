@@ -5319,6 +5319,7 @@ async function initializeOpenCodeSwarm(
 					try {
 						await delegationGateHooks.abortDeniedSettlementForCall(
 							input.callID,
+							input.sessionID,
 						);
 					} catch {
 						/* rollback is best-effort; the denial still propagates */

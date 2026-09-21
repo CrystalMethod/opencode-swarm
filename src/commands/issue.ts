@@ -13,6 +13,15 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadPluginConfig } from '../config/loader.js';
+import {
+	buildIssueUrl,
+	detectForgeFromUrl,
+	type ForgeContext,
+	matchForgeResourceUrl,
+	parseForgeRemoteUrl,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write';
 import { assertProjectRoot } from '../utils/project-boundary.js';
 
@@ -24,6 +33,28 @@ import {
 	sanitizeUrl,
 	validateAndSanitizeGithubUrl,
 } from './_shared/url-security.js';
+
+const GITHUB_CONTEXT: ForgeContext = {
+	provider: 'github',
+	host: 'github.com',
+};
+
+/**
+ * Lazily resolve the configured forge context (see pr-ref.ts). Only consulted
+ * when shape detection cannot answer; GitHub paths perform no extra I/O.
+ */
+function loadConfiguredForgeContext(
+	directory: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 const USAGE = [
 	'Usage: /swarm issue <url|owner/repo#N|N> [--plan] [--trace] [--no-repro]',
@@ -39,10 +70,6 @@ const USAGE = [
 	'  --trace       Run the fix workflow end-to-end (implies --plan); compose commit-pr to publish.',
 	'  --no-repro    Skip reproduction step',
 ].join('\n');
-
-function validateAndSanitizeUrl(rawUrl: string) {
-	return validateAndSanitizeGithubUrl(rawUrl, 'issues');
-}
 
 interface ParsedArgs {
 	plan: boolean;
@@ -81,16 +108,21 @@ interface ParsedIssue {
 	owner: string;
 	repo: string;
 	number: number;
+	/** Provider context for canonical URL construction (issue #2733). */
+	forge: ForgeContext;
 }
 
 /**
  * Parse issue reference from three formats:
- * 1. Full URL: https://github.com/owner/repo/issues/N
+ * 1. Full URL: https://github.com/owner/repo/issues/N or
+ *    https://<gitlab-host>/owner/repo/-/issues/N (GitLab; owner may be a
+ *    nested namespace path)
  * 2. Shorthand: owner/repo#N
- * 3. Bare number: N (requires git remote)
+ * 3. Bare number: N (requires git remote; provider-aware when the remote is
+ *    GitLab-indicating)
  */
 function parseIssueRef(input: string, directory: string): ParsedIssue | null {
-	// Format 1: Full URL
+	// Format 1: Full URL — GitHub shape first (unchanged), then GitLab.
 	const urlMatch = input.match(
 		/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)\/?$/i,
 	);
@@ -105,7 +137,27 @@ function parseIssueRef(input: string, directory: string): ParsedIssue | null {
 			owner: urlMatch[1],
 			repo: urlMatch[2],
 			number: parseInt(urlMatch[3], 10),
+			forge: GITHUB_CONTEXT,
 		};
+	}
+
+	if (/^https:\/\//i.test(input)) {
+		const forge = matchForgeResourceUrl(
+			input,
+			'issues',
+			detectForgeFromUrl(input)
+				? undefined
+				: loadConfiguredForgeContext(directory),
+		);
+		if (forge && forge.provider === 'gitlab') {
+			return {
+				owner: forge.owner,
+				repo: forge.repo,
+				number: forge.number,
+				forge: { provider: forge.provider, host: forge.host },
+			};
+		}
+		return null;
 	}
 
 	// Format 2: Shorthand owner/repo#N
@@ -121,6 +173,7 @@ function parseIssueRef(input: string, directory: string): ParsedIssue | null {
 			owner: shorthandMatch[1],
 			repo: shorthandMatch[2],
 			number: parseInt(shorthandMatch[3], 10),
+			forge: GITHUB_CONTEXT,
 		};
 	}
 
@@ -133,6 +186,41 @@ function parseIssueRef(input: string, directory: string): ParsedIssue | null {
 			return null;
 		}
 
+		// Host-aware first (GitLab remote → GitLab context + nested
+		// namespace), then the legacy any-host fallback for GHE/proxy.
+		const forgeRemote = parseForgeRemoteUrl(remoteUrl);
+		if (forgeRemote) {
+			return {
+				owner: forgeRemote.owner,
+				repo: forgeRemote.repo,
+				number: issueNumber,
+				forge: { provider: forgeRemote.provider, host: forgeRemote.host },
+			};
+		}
+
+		// Configured-context fallback (issue #2733): a generic-host remote on
+		// a project whose `forge` config declares a GitLab instance resolves
+		// in that context (host preserved for canonical issue URLs).
+		const configured = loadConfiguredForgeContext(directory);
+		if (configured?.provider === 'gitlab') {
+			const generic = remoteUrl.match(
+				/^https:\/\/([^/]+)\/(.+?)(?:\.git)?\/?$/i,
+			);
+			if (generic && generic[1].toLowerCase() === configured.host) {
+				const segments = generic[2]
+					.split('/')
+					.filter((x) => x.length > 0 && x !== '.git');
+				if (segments.length >= 2) {
+					return {
+						owner: segments.slice(0, -1).join('/'),
+						repo: segments[segments.length - 1] as string,
+						number: issueNumber,
+						forge: configured,
+					};
+				}
+			}
+		}
+
 		const parsed = parseGitRemoteUrl(remoteUrl);
 		if (!parsed) {
 			return null;
@@ -142,6 +230,7 @@ function parseIssueRef(input: string, directory: string): ParsedIssue | null {
 			owner: parsed.owner,
 			repo: parsed.repo,
 			number: issueNumber,
+			forge: GITHUB_CONTEXT,
 		};
 	}
 
@@ -196,11 +285,24 @@ export function handleIssueCommand(directory: string, args: string[]): string {
 		return `Error: Could not parse issue reference from "${sanitizeErrorEcho(rawInput)}"\n\n${USAGE}`;
 	}
 
-	// Build full GitHub URL
-	const issueUrl = `https://github.com/${issueInfo.owner}/${issueInfo.repo}/issues/${issueInfo.number}`;
+	// Build the canonical issue URL for the resolved provider (GitHub output
+	// unchanged; GitLab uses the /-/issues/N shape with the matched host).
+	const issueUrl = buildIssueUrl(
+		issueInfo.forge,
+		issueInfo.owner,
+		issueInfo.repo,
+		issueInfo.number,
+	);
 
 	// Validate and sanitize URL
-	const result = validateAndSanitizeUrl(issueUrl);
+	// A configured generic GitLab host is authorized at validation by the
+	// derived context (declaration, not a whitelist bypass — guards apply).
+	const urlContext =
+		issueInfo.forge.provider === 'gitlab' &&
+		!issueInfo.forge.host.startsWith('gitlab.')
+			? issueInfo.forge
+			: undefined;
+	const result = validateAndSanitizeGithubUrl(issueUrl, 'issues', urlContext);
 	if ('error' in result) {
 		return `Error: ${result.error}\n\n${USAGE}`;
 	}
@@ -218,6 +320,12 @@ export function handleIssueCommand(directory: string, args: string[]): string {
 		owner: issueInfo.owner,
 		repo: issueInfo.repo,
 		number: issueInfo.number,
+		// #2733: persist the forge declaration for a configured generic
+		// self-hosted GitLab host so recovery validation is config-free.
+		...(issueInfo.forge.provider === 'gitlab' &&
+		!issueInfo.forge.host.startsWith('gitlab.')
+			? { forge: issueInfo.forge }
+			: {}),
 		timestamp: new Date().toISOString(),
 		flags: {
 			...(parsed.plan && { plan: true }),

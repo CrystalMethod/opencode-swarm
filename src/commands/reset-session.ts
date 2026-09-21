@@ -1,5 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+	STAGE_B_BINDINGS_DIR,
+	stageBSessionDirName,
+} from '../background/stage-b-dispatch-binding-store';
 import { resolveWorktreeRepoOwnership } from '../config/lane-context';
 import { closeProjectDb } from '../db/project-db';
 import { clearAllSessionOverrides } from '../db/qa-gate-session-override.js';
@@ -459,6 +463,31 @@ export async function handleResetSessionCommand(
 		results.push(
 			'⚠️ Knowledge gate obligations not released: no session context on this invocation',
 		);
+	}
+
+	// Issue #2829: evict this session's durable Stage B dispatch-generation
+	// bindings (the store keys records by sha256(sessionID); only the invoking
+	// session's subtree is removed — other sessions' pending settlements keep
+	// their reconstruction path). Skipped when no session context exists.
+	if (sessionID) {
+		try {
+			const { existsSync, rmSync } = await import('node:fs');
+			// Single-sourced from the store module (PR review finding): the
+			// hash derivation and directory name must never drift from what the
+			// store itself writes, or this purge silently deletes nothing.
+			const sessionBindingDir = validateSwarmPath(
+				directory,
+				`${STAGE_B_BINDINGS_DIR}/${stageBSessionDirName(sessionID)}`,
+			);
+			if (existsSync(sessionBindingDir)) {
+				rmSync(sessionBindingDir, { recursive: true, force: true });
+				results.push('✅ Deleted stage-b-dispatch-bindings for this session');
+			}
+		} catch {
+			results.push(
+				'⚠️ Stage B durable bindings not cleared (best-effort; TTL prune collects them)',
+			);
+		}
 	}
 	swarmState.gateDenialCounts.clear();
 	swarmState.currentCriticalShownIds.clear();
