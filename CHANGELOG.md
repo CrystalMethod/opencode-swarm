@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.185.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.185.0...v7.185.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **hooks:** reserve BLOCKED cursor summary ahead of final-cap truncation (final-critic [#2841](https://github.com/ZaxbyHub/opencode-swarm/issues/2841)) ([0b194ac](https://github.com/ZaxbyHub/opencode-swarm/commit/0b194acf9af8c6c50ab1a9be0e7e9bb7d891bc87))
+* **hooks:** sanitize context.md-derived compaction facts + report markdown BLOCKED phases ([#2886](https://github.com/ZaxbyHub/opencode-swarm/issues/2886)) ([afca0d8](https://github.com/ZaxbyHub/opencode-swarm/commit/afca0d8b22f452cb715923d6c9047c16633045b3))
+* **hooks:** sanitize context.md-derived compaction facts + report markdown BLOCKED phases ([#2886](https://github.com/ZaxbyHub/opencode-swarm/issues/2886)) ([dca4656](https://github.com/ZaxbyHub/opencode-swarm/commit/dca4656ba3abfb842211adb0469afcdc7104355f))
+* **hooks:** sanitize remaining plan-derived context injections + surface BLOCKED phases in plan cursor ([#2841](https://github.com/ZaxbyHub/opencode-swarm/issues/2841)) ([444b565](https://github.com/ZaxbyHub/opencode-swarm/commit/444b565e90ebeebdf6d9a88219c10d744e87822a))
+* **hooks:** sanitize remaining plan-derived context injections and surface BLOCKED phases in the plan cursor ([6f5f9db](https://github.com/ZaxbyHub/opencode-swarm/commit/6f5f9dbb4c971a90376d338bb3d9d99e9f7a5934))
+* **hooks:** use composed summary length in BLOCKED cap reservation (reviewer round 2) ([0772592](https://github.com/ZaxbyHub/opencode-swarm/commit/07725925d019302daede0874fe247fad780b270e))
+* **pr-review:** gate verdict APPROVE on disclosed coverage degradations ([#2840](https://github.com/ZaxbyHub/opencode-swarm/issues/2840)) ([10dcbc9](https://github.com/ZaxbyHub/opencode-swarm/commit/10dcbc911a0a1f187031c0181ef7d280be8d76d2))
+
 ## [7.185.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.17...v7.185.0) (2026-09-21)
 
 
