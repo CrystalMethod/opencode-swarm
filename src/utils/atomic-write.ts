@@ -117,7 +117,7 @@ export const SWARM_TEMP_GRAMMARS: readonly SwarmTempGrammar[] = [
 		token: 'instance',
 		quarantineEligible: true,
 		parsesTarget: true,
-		producers: ['src/hooks/issue-trace-state.ts:447'],
+		producers: ['src/hooks/issue-trace-state.ts:466'],
 		note: 'the .json terminator keeps this shape distinct from the bare two-token family — declared before it so first-match wins',
 	},
 	{

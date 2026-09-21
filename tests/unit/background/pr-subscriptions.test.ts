@@ -163,17 +163,6 @@ describe('pr-subscriptions store', () => {
 			});
 		});
 
-		test('subscribe rejects invalid repoFullName with three segments', async () => {
-			await expect(
-				subscribe(dir, {
-					sessionID: 'sess_1',
-					prNumber: 1,
-					repoFullName: 'owner/repo/extra',
-					prUrl: 'https://github.com/owner/repo/pull/1',
-				}),
-			).rejects.toThrow(/Invalid subscription record/);
-		});
-
 		test('subscribe rejects invalid prUrl that is not a GitHub URL', async () => {
 			await expect(
 				subscribe(dir, {

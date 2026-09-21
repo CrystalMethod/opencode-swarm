@@ -13,21 +13,42 @@
  */
 
 import { z } from 'zod';
+import {
+	detectGitRemote,
+	sanitizeUrl,
+} from '../commands/_shared/url-security.js';
+import { loadPluginConfig } from '../config/loader.js';
 import { validateSwarmPath } from '../hooks/utils';
+import {
+	type ForgeContext,
+	isForgePrUrl,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
 import { atomicWriteSwarmFile } from '../utils/atomic-write';
 import { createSwarmTool } from './create-tool';
+
+/**
+ * Lazily resolve the configured forge context (see pr-ref.ts); only
+ * consulted when the prUrl is not shape-valid on its own.
+ */
+function loadConfiguredForgeContext(
+	directory: string,
+): ForgeContext | undefined {
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 const RecordIssuePublicationArgsSchema = z
 	.object({
 		issueNumber: z.number().int().min(1),
 		prNumber: z.number().int().min(1),
-		prUrl: z
-			.string()
-			.url()
-			.regex(
-				/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/,
-				'prUrl must be a canonical GitHub PR URL (https://github.com/<owner>/<repo>/pull/<number>)',
-			),
+		prUrl: z.string().url(),
 		headSha: z.string().min(1).optional(),
 	})
 	.strict();
@@ -47,11 +68,34 @@ export async function executeRecordIssuePublication(
 	}
 	const { issueNumber, prNumber, prUrl, headSha } = parsed.data;
 
+	// PRR-02: strip any userinfo before the URL is persisted — the receipt is
+	// a durable artifact, and while the validators now reject credentialed
+	// URLs outright, sanitizing here keeps the stored value clean by
+	// construction.
+	const sanitizedPrUrl = sanitizeUrl(prUrl);
+
+	// #2733: prUrl is valid on its own shape (github / gitlab.com / gitlab.*),
+	// or against the project's configured forge declaration (a generic
+	// self-hosted GitLab host declared via forge.base_url). The schema cannot
+	// know the project config, so the configured check lives here; the URL
+	// guards (HTTPS-only, private/IDN rejection) all still apply inside
+	// isForgePrUrl.
+	if (!isForgePrUrl(prUrl)) {
+		const configured = loadConfiguredForgeContext(directory);
+		if (!(configured && isForgePrUrl(prUrl, configured))) {
+			return JSON.stringify({
+				success: false,
+				message:
+					'Invalid publication receipt: prUrl must be a canonical PR URL (GitHub https://github.com/<owner>/<repo>/pull/<number> or GitLab https://<gitlab-host>/<owner>/<repo>/-/merge_requests/<number>)',
+			});
+		}
+	}
+
 	const receipt: Record<string, unknown> = {
 		published: true,
 		issueNumber,
 		prNumber,
-		prUrl,
+		prUrl: sanitizedPrUrl,
 		publishedAt: new Date().toISOString(),
 	};
 	if (headSha) receipt.headSha = headSha;
@@ -88,7 +132,7 @@ export async function executeRecordIssuePublication(
 export const record_issue_publication: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Record that the traced issue has been published (PR created/updated) so the /swarm issue --trace workflow can reach its terminal published state. The trace stops at publication_handoff (the commit-pr directive) until this receipt is observed — publication_handoff is NOT "issue resolved". commit-pr calls this after the PR is created/updated. Supply the traced issue number, the exact PR number, the canonical GitHub PR URL, and (optionally) the published HEAD sha. The receipt is issue-bound.',
+			'Record that the traced issue has been published (PR created/updated) so the /swarm issue --trace workflow can reach its terminal published state. The trace stops at publication_handoff (the commit-pr directive) until this receipt is observed — publication_handoff is NOT "issue resolved". commit-pr calls this after the PR is created/updated. Supply the traced issue number, the exact PR number, the canonical PR URL (GitHub or GitLab), and (optionally) the published HEAD sha. The receipt is issue-bound.',
 		args: {
 			issueNumber: RecordIssuePublicationArgsSchema.shape.issueNumber,
 			prNumber: RecordIssuePublicationArgsSchema.shape.prNumber,

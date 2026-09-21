@@ -3112,6 +3112,25 @@
         }
       }
     },
+    "forge": {
+      "description": "Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733). Ambiguous git remotes (mixed providers, unrecognized self-hosted hosts, or no remote) fail closed and require an explicit selection; forge.base_url passes through the same HTTPS-only / non-private / ASCII-host guards as every forge URL and is never a trust whitelist; combining base_url with provider \"github\" is rejected as a configuration conflict.",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "default": "auto",
+          "type": "string",
+          "enum": [
+            "github",
+            "gitlab",
+            "auto"
+          ]
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
     "observability": {
       "description": "Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485).",
       "type": "object",
