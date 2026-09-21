@@ -27,11 +27,13 @@
 import { createHash } from 'node:crypto';
 import {
 	closeSync,
+	constants,
 	existsSync,
 	fstatSync,
 	openSync,
 	readdirSync,
 	readSync,
+	rmdirSync,
 	rmSync,
 	statSync,
 } from 'node:fs';
@@ -49,8 +51,25 @@ export const STAGE_B_BINDING_MAX_BYTES = 64 * 1024;
 export const STAGE_B_BINDING_TTL_MS = 24 * 60 * 60 * 1000;
 /** Cross-session sweep cadence: the per-write cost stays bounded to the owning session dir. */
 export const STAGE_B_BINDING_SWEEP_INTERVAL_MS = 60_000;
+/**
+ * Explicit bound for the process-global sweep throttle (AGENTS.md invariant
+ * 8): one timestamp per distinct project root, FIFO-evicted past this many —
+ * realistic processes see a handful of roots, but the cap must be explicit.
+ */
+export const MAX_STAGE_B_SWEEP_THROTTLE_ROOTS = 32;
 
 const lastSweepCompletedAtByRoot = new Map<string, number>();
+
+function rememberSweepCompletedAt(storeRoot: string, now: number): void {
+	// delete-then-set refreshes recency (Map insertion order = FIFO order).
+	lastSweepCompletedAtByRoot.delete(storeRoot);
+	lastSweepCompletedAtByRoot.set(storeRoot, now);
+	while (lastSweepCompletedAtByRoot.size > MAX_STAGE_B_SWEEP_THROTTLE_ROOTS) {
+		const oldest = lastSweepCompletedAtByRoot.keys().next().value;
+		if (oldest === undefined) break;
+		lastSweepCompletedAtByRoot.delete(oldest);
+	}
+}
 
 const WINDOWS_RESERVED = new Set([
 	'CON',
@@ -126,9 +145,16 @@ export function isRecordableCallId(
 	return !WINDOWS_RESERVED.has(callID.split('.')[0]!.toUpperCase());
 }
 
-function sessionDirName(sessionID: string): string {
+/**
+ * Public single source of the per-session directory name (PR review finding:
+ * reset paths hand-rolled this derivation — any drift would silently purge the
+ * wrong subtree). `_internals.sessionDirName` aliases this for tests.
+ */
+export function stageBSessionDirName(sessionID: string): string {
 	return createHash('sha256').update(sessionID).digest('hex').slice(0, 24);
 }
+
+const sessionDirName = stageBSessionDirName;
 
 function recordPath(
 	directory: string,
@@ -214,7 +240,7 @@ export function recordStageBDispatchBindings(
 			lastSweep === undefined ||
 			now - lastSweep >= STAGE_B_BINDING_SWEEP_INTERVAL_MS
 		) {
-			lastSweepCompletedAtByRoot.set(storeRoot, now);
+			rememberSweepCompletedAt(storeRoot, now);
 			pruneStore(directory, now);
 		}
 		return true;
@@ -248,7 +274,10 @@ export function readStageBDispatchBindings(
 	}
 	let fd: number | undefined;
 	try {
-		fd = openSync(filePath, 'r');
+		// O_NOFOLLOW mirrors the readScopeFromDisk precedent (scope-persistence):
+		// a planted symlink at the record path fails here instead of being read.
+		// On Windows the flag is undefined and `| undefined` coerces to a no-op.
+		fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
 		const stats = fstatSync(fd);
 		if (!stats.isFile() || stats.size > STAGE_B_BINDING_MAX_BYTES) return null;
 		const buffer = Buffer.alloc(stats.size);
@@ -314,11 +343,10 @@ export function deleteStageBDispatchBindings(
 	sessionID: string,
 	callID: string,
 ): void {
-	if (
-		!isRecordableSessionId(sessionID) ||
-		typeof callID !== 'string' ||
-		callID.length === 0
-	) {
+	// Defense-in-depth (PR review finding): validate callID exactly like the
+	// record/read paths — a crafted separator-bearing callID must not resolve
+	// into a sibling session's subtree just because it is only ever deleted.
+	if (!isRecordableSessionId(sessionID) || !isRecordableCallId(callID)) {
 		return;
 	}
 	try {
@@ -390,12 +418,28 @@ function pruneDirEntries(
 	dirPath: string,
 	nowMs: number,
 ): { dirPath: string; newest: number } | null {
-	let files: string[];
+	let entries: string[];
 	try {
-		files = readdirSync(dirPath).filter((f) => f.endsWith('.json'));
+		entries = readdirSync(dirPath);
 	} catch {
 		return null;
 	}
+	// Atomic-write temp files (target + suffix, always carrying `.tmp`) are
+	// crash leftovers: TTL-prune them so they cannot accumulate outside every
+	// bound, but NEVER while fresh — a fresh temp is an in-flight write and the
+	// dir must be left alone for it.
+	const temps = entries.filter((f) => f.includes('.tmp'));
+	for (const temp of temps) {
+		const tp = path.join(dirPath, temp);
+		try {
+			if (nowMs - statSync(tp).mtimeMs > STAGE_B_BINDING_TTL_MS) {
+				rmSync(tp, { force: true });
+			}
+		} catch {
+			// unreadable — leave it to TTL
+		}
+	}
+	const files = entries.filter((f) => f.endsWith('.json'));
 	const stamped: Array<{ file: string; mtime: number }> = [];
 	for (const file of files) {
 		const fp = path.join(dirPath, file);
@@ -431,6 +475,27 @@ function pruneDirEntries(
 		}
 	}
 	const newest = fresh.reduce((max, s) => Math.max(max, s.mtime), 0);
+	// Empty-dir GC (PR review finding, Copilot store:371): a session dir whose
+	// records were all deleted or TTL-pruned must not linger — empty dirs
+	// count toward the 128-dir cap on every write yet were invisible to LRU
+	// removal, permanently forcing unthrottled full sweeps once 128 distinct
+	// sessions had ever run. Removal is race-safe by construction: re-readdir,
+	// then rmdirSync, which only succeeds on an EMPTY directory — a concurrent
+	// writer that landed any entry (its .tmp first) makes rmdir fail
+	// ENOTEMPTY/EACCES and we simply skip. The owning write of THIS call has
+	// already renamed its .json into place before pruning, so a session dir is
+	// never reaped out from under its own in-progress record call.
+	if (newest === 0) {
+		try {
+			if (readdirSync(dirPath).length === 0) {
+				rmdirSync(dirPath);
+				return null;
+			}
+		} catch {
+			// non-empty (in-flight temp), already gone, or platform refusal —
+			// leave it; the next sweep retries
+		}
+	}
 	return { dirPath, newest };
 }
 

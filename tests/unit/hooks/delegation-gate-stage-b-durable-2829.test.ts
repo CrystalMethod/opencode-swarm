@@ -389,3 +389,88 @@ describe('advisory: the unbound text stays truthful after durability (#2829)', (
 		expect(advisory).toMatch(RESTART_RE);
 	});
 });
+
+describe('denied-abort drain: the in-memory generation binding drains on EVERY exit path (PR #2883 review, CRITICAL)', () => {
+	it('after a denied-dispatch abort, a late settlement drops unbound — the leaked-map regression discriminator', async () => {
+		const sessionID = 'sess-2829-drain';
+		tempDir = makeTempDir('dg-2829-drain-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		await seedReviewerApproved(tempDir, 'drain');
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set(TASK_ID, 'reviewer_run');
+		session.currentTaskId = TASK_ID;
+		const callID = 'call-2829-drain';
+
+		// Dispatch on hook1 — records the in-memory binding AND the durable twin.
+		const hook1 = createDelegationGateHook(durableTestConfig(), tempDir);
+		await hook1.toolBefore(
+			{ tool: 'Task', sessionID, callID },
+			{ args: testEngineerArgs() },
+		);
+		expect(
+			readStageBDispatchBindings(tempDir, sessionID, callID),
+		).not.toBeNull();
+
+		// The denial-rollback entry point with NO begun coder settlement
+		// (reviewer/test-engineer shape): returns at the early return. Before
+		// the fix, stageBDispatchGenerationsByCallID kept the entry — the
+		// map's cap HARD-REJECTS new dispatches (STAGE_B_CONTEXT_CAPACITY,
+		// never evicts), so each denied dispatch permanently consumed an
+		// admission slot for the process lifetime.
+		await hook1.abortDeniedSettlementForCall(callID, sessionID);
+
+		// Discriminator: with the entry drained (in-memory AND durable), a
+		// late settlement for the denied call must drop UNBOUND. With the
+		// pre-fix leaked entry it would instead find the generation and
+		// proceed through the fence.
+		await hook1.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID,
+				args: { subagent_type: 'test_engineer', task_id: TASK_ID },
+			},
+			{ output: `[TESTED] | task-${TASK_ID} | PASS | all checks green` },
+		);
+		const advisories = settlementDropAdvisories(sessionID);
+		expect(unboundAdvisory(advisories)).toContain(MARKER);
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
+	});
+});
+
+describe('evidence-path reconstruction: every gate agent settles after restart (PR #2883 review, HIGH)', () => {
+	it('a critic evidence settlement reconstructs from the durable twin (no GENERATION_REQUIRED wedge)', async () => {
+		const sessionID = 'sess-2829-critic';
+		tempDir = makeTempDir('dg-2829-critic-');
+		startAgentSession(sessionID, 'architect', tempDir);
+		await drainRehydrations();
+		await seedReviewerApproved(tempDir, 'critic');
+		const session = ensureAgentSession(sessionID);
+		session.taskWorkflowStates.set(TASK_ID, 'pre_check_passed');
+		session.currentTaskId = TASK_ID;
+		const callID = 'call-2829-critic';
+		const args = { subagent_type: 'critic', task_id: TASK_ID };
+
+		// Dispatch in "process 1" — every TASK_GATE_AGENTS dispatch persists
+		// the durable twin, critic included.
+		const hook1 = createDelegationGateHook(durableTestConfig(), tempDir);
+		await hook1.toolBefore({ tool: 'Task', sessionID, callID }, { args });
+		expect(
+			readStageBDispatchBindings(tempDir, sessionID, callID),
+		).not.toBeNull();
+
+		// "Restart": fresh closure — the evidence-settlement path finds an
+		// empty in-memory map and must reconstruct from the durable twin.
+		// Before the fix this threw TASK_WORKFLOW_GENERATION_REQUIRED for
+		// every non-reviewer/test_engineer gate agent.
+		const hook2 = createDelegationGateHook(durableTestConfig(), tempDir);
+		await hook2.toolAfter(
+			{ tool: 'Task', sessionID, callID, args },
+			{ output: 'VERDICT: APPROVED\nThe review is complete.' },
+		);
+
+		const evidence = await readTaskEvidence(tempDir, TASK_ID);
+		expect(evidence?.gates?.critic).toBeDefined();
+	});
+});

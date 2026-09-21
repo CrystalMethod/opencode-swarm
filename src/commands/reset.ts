@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { resetAutomationManager } from '../background/manager';
+import { STAGE_B_BINDINGS_DIR } from '../background/stage-b-dispatch-binding-store';
 import { validateSwarmPath } from '../hooks/utils';
 import { clearPlanLedgerForReset } from '../plan/ledger.js';
 import { withPlanLifecycleLock } from '../plan/manager.js';
@@ -248,7 +249,7 @@ export async function handleResetCommand(
 	try {
 		const stageBBindingPath = validateSwarmPath(
 			directory,
-			'stage-b-dispatch-bindings',
+			STAGE_B_BINDINGS_DIR,
 		);
 		if (_internals.existsSync(stageBBindingPath)) {
 			_internals.rmSync(stageBBindingPath, { recursive: true, force: true });

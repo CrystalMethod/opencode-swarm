@@ -18,6 +18,7 @@ import {
 	MAX_STAGE_B_BINDING_SESSION_DIRS,
 	readStageBDispatchBindings,
 	recordStageBDispatchBindings,
+	STAGE_B_BINDING_SWEEP_INTERVAL_MS,
 	STAGE_B_BINDING_TTL_MS,
 	_internals as storeInternals,
 } from '../../../src/background/stage-b-dispatch-binding-store';
@@ -200,8 +201,6 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 			.filter((f) => f.endsWith('.json'));
 		expect(remaining.length).toBeLessThanOrEqual(
 			MAX_STAGE_B_BINDING_FILES_PER_SESSION_DIR,
-			MAX_STAGE_B_BINDING_SESSION_DIRS,
-			isRecordableCallId,
 		);
 		// The oldest (call-cap-0) was evicted; the newest survives.
 		expect(fs.existsSync(recordPathFor(SESSION, 'call-cap-0'))).toBe(false);
@@ -282,5 +281,166 @@ describe('stage-b-dispatch-binding-store (#2829)', () => {
 		fs.writeFileSync(`${p}.abcdef0123456789abcdef0123456789.tmp`, 'garbage');
 		const read = readStageBDispatchBindings(dir, SESSION, CALL);
 		expect(read?.bindings[0]?.generation).toBe(1);
+	});
+
+	it('per-entry shape validation also rejects null/missing taskId and missing generation (whole record null)', () => {
+		recordStageBDispatchBindings(dir, {
+			sessionID: SESSION,
+			callID: CALL,
+			bindings: [{ taskId: '1.1', generation: 2 }],
+		});
+		const p = recordPathFor(SESSION, CALL);
+		const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as {
+			bindings: Array<Record<string, unknown>>;
+		};
+		for (const bad of [
+			{ taskId: null, generation: 2 },
+			{ generation: 2 }, // missing taskId
+			{ taskId: '1.2' }, // missing generation
+		]) {
+			raw.bindings.push(bad);
+			fs.writeFileSync(p, JSON.stringify(raw));
+			expect(readStageBDispatchBindings(dir, SESSION, CALL)).toBeNull();
+			raw.bindings.pop();
+		}
+		// Restored record validates again.
+		fs.writeFileSync(p, JSON.stringify(raw));
+		expect(readStageBDispatchBindings(dir, SESSION, CALL)).not.toBeNull();
+	});
+
+	it('sweep garbage-collects empty session dirs so the 128-dir cap cannot be permanently exceeded', () => {
+		// PR review finding (Copilot store:371): records deleted or TTL-pruned
+		// left their <hash>/ dir behind; empties counted toward the cap but were
+		// invisible to LRU removal, permanently forcing unthrottled full sweeps.
+		for (let i = 0; i < 3; i++) {
+			const sess = `sess-2829-gc-${i}`;
+			expect(
+				recordStageBDispatchBindings(dir, {
+					sessionID: sess,
+					callID: 'call-1',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				}),
+			).toBe(true);
+			deleteStageBDispatchBindings(dir, sess, 'call-1');
+		}
+		const storeRoot = path.dirname(
+			path.dirname(recordPathFor('sess-2829-gc-0', 'call-1')),
+		);
+		const dirCount = () =>
+			fs
+				.readdirSync(storeRoot, { withFileTypes: true })
+				.filter((e) => e.isDirectory()).length;
+		// Deletion alone leaves the empty dirs (no prune ran for them yet).
+		expect(dirCount()).toBe(3);
+		storeInternals.pruneStore(dir, Date.now());
+		expect(dirCount()).toBe(0);
+	});
+
+	it('an in-flight .tmp guards its session dir from empty-dir GC; a stale .tmp is TTL-collected and the dir then removed', () => {
+		const sessionDir = path.dirname(recordPathFor(SESSION, CALL));
+		fs.mkdirSync(sessionDir, { recursive: true });
+		const freshTmp = path.join(
+			sessionDir,
+			`${CALL}.json.abcdef0123456789abcdef0123456789.tmp`,
+		);
+		fs.writeFileSync(freshTmp, 'in-flight atomic-write temp');
+		// Fresh temp: neither pruned nor is the dir GC'd under it.
+		storeInternals.pruneSessionDir(dir, SESSION, Date.now());
+		expect(fs.existsSync(freshTmp)).toBe(true);
+		expect(fs.existsSync(sessionDir)).toBe(true);
+		// Far-future clock: the temp is now TTL-stale — pruned, and the dir
+		// (empty after that) is removed in the same pass.
+		const t0 = 4102444800000; // 2100-01-01T00:00:00Z
+		storeInternals.pruneSessionDir(dir, SESSION, t0);
+		expect(fs.existsSync(freshTmp)).toBe(false);
+		expect(fs.existsSync(sessionDir)).toBe(false);
+	});
+
+	it('throttles the cross-session sweep to one pass per interval; forceSweep bypasses the throttle', () => {
+		const t0 = 4102444800000; // fixed epoch — everything real-mtime is TTL-stale from here
+		const OTHER = 'sess-2829-throttle-other';
+		const seedStale = () => {
+			expect(
+				recordStageBDispatchBindings(dir, {
+					sessionID: OTHER,
+					callID: 'call-old',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				}),
+			).toBe(true);
+		};
+		const staleFile = () => recordPathFor(OTHER, 'call-old');
+		// First write for SESSION: no sweep recorded for this fresh store root
+		// yet → the sweep runs and TTL-prunes the other session's record.
+		seedStale();
+		expect(
+			recordStageBDispatchBindings(
+				dir,
+				{
+					sessionID: SESSION,
+					callID: 'call-a',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				},
+				{ nowMs: () => t0 },
+			),
+		).toBe(true);
+		expect(fs.existsSync(staleFile())).toBe(false);
+		// Within the sweep interval: throttled — a re-seeded stale record survives.
+		seedStale();
+		expect(
+			recordStageBDispatchBindings(
+				dir,
+				{
+					sessionID: SESSION,
+					callID: 'call-b',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				},
+				{ nowMs: () => t0 + 1000 },
+			),
+		).toBe(true);
+		expect(fs.existsSync(staleFile())).toBe(true);
+		// forceSweep bypasses the throttle.
+		expect(
+			recordStageBDispatchBindings(
+				dir,
+				{
+					sessionID: SESSION,
+					callID: 'call-c',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				},
+				{ nowMs: () => t0 + 2000, forceSweep: true },
+			),
+		).toBe(true);
+		expect(fs.existsSync(staleFile())).toBe(false);
+		// After the full interval the throttled path sweeps again on its own.
+		seedStale();
+		expect(
+			recordStageBDispatchBindings(
+				dir,
+				{
+					sessionID: SESSION,
+					callID: 'call-d',
+					bindings: [{ taskId: '1.1', generation: 1 }],
+				},
+				{ nowMs: () => t0 + 2000 + STAGE_B_BINDING_SWEEP_INTERVAL_MS },
+			),
+		).toBe(true);
+		expect(fs.existsSync(staleFile())).toBe(false);
+	});
+
+	it('delete refuses a separator-bearing callID without touching the sibling it names (defense-in-depth)', () => {
+		expect(
+			recordStageBDispatchBindings(dir, {
+				sessionID: SESSION,
+				callID: 'call-real',
+				bindings: [{ taskId: '1.1', generation: 1 }],
+			}),
+		).toBe(true);
+		expect(() =>
+			deleteStageBDispatchBindings(dir, SESSION, 'nested-1/call-real'),
+		).not.toThrow();
+		// The real record named by the traversal suffix is untouched.
+		expect(
+			readStageBDispatchBindings(dir, SESSION, 'call-real')?.bindings.length,
+		).toBe(1);
 	});
 });

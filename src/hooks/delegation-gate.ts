@@ -3974,9 +3974,19 @@ export function createDelegationGateHook(
 			})),
 		});
 		const durableElapsed = Date.now() - durableStart;
-		if (!persisted || durableElapsed > 50) {
+		// PR #2883 review finding: a lost durable twin silently degrades this
+		// dispatch to drop-on-restart — an operator-visible loss, so the
+		// FAILURE uses the always-emitted channel (logger.warn/log are
+		// debug-gated; #2817 set the visibility precedent for Stage B state
+		// loss). The elapsed-time telemetry stays debug-gated (it observes
+		// latency, it does not bound it).
+		if (!persisted) {
+			logger.criticalWarn(
+				`[delegation-gate] Stage B durable binding write FAILED for call ${callID} — restart recovery for this dispatch is unavailable until re-dispatch (non-fatal; in-memory fencing remains active)`,
+			);
+		} else if (durableElapsed > 50) {
 			logger.log(
-				`[delegation-gate] Stage B durable binding write for call ${callID}: persisted=${persisted} elapsedMs=${durableElapsed}`,
+				`[delegation-gate] Stage B durable binding write for call ${callID}: persisted=true elapsedMs=${durableElapsed}`,
 			);
 		}
 	};
@@ -6840,9 +6850,45 @@ export function createDelegationGateHook(
 									const { recordGateEvidence } = await import(
 										'../gate-evidence'
 									);
-									const gateLaunchGeneration = stageBDispatchGenerationsByCallID
+									let gateLaunchGeneration = stageBDispatchGenerationsByCallID
 										.get(input.callID)
 										?.get(evidenceTaskId);
+									if (
+										TASK_GATE_AGENTS.has(targetAgentForEvidence) &&
+										gateLaunchGeneration === undefined
+									) {
+										// PR #2883 review finding: the durable twin serves
+										// every generation-fenced settlement — this evidence
+										// path's fenced members (docs/designer/critic/
+										// critic_sounding_board/explorer/sme), not only the
+										// reviewer/test_engineer Stage B loop. (The three
+										// specialized verifier critics settle via the
+										// pre-existing recordAgentDispatch path, which does
+										// not consume this fence.) Same contract as the
+										// settlement path: the reconstructed generation feeds
+										// the SAME expectedGeneration fence below (a stale
+										// binding dies on
+										// TASK_WORKFLOW_GENERATION_MISMATCH, invariant 9);
+										// a missing/invalid durable record keeps the throw.
+										const durable = _internals.readStageBDispatchBindings(
+											directory,
+											input.sessionID,
+											input.callID,
+										);
+										const reconstructed = durable?.bindings.find(
+											(b) => b.taskId === evidenceTaskId,
+										)?.generation;
+										if (
+											reconstructed !== undefined &&
+											Number.isInteger(reconstructed) &&
+											reconstructed >= 0
+										) {
+											gateLaunchGeneration = reconstructed;
+											logger.log(
+												`[delegation-gate] reconstructed Stage B gate binding for ${evidenceTaskId} from durable store (call ${input.callID}, generation ${reconstructed}) — fencing proceeds as in-process`,
+											);
+										}
+									}
 									if (
 										TASK_GATE_AGENTS.has(targetAgentForEvidence) &&
 										gateLaunchGeneration === undefined
@@ -7581,6 +7627,17 @@ ${warningLines.join('\n')}`;
 			// the retry fail closed as unbound (issue #2491, F-001).
 			stageBRouteSlotByCallID.delete(callID);
 			stageBDispatchContextByCallID.delete(callID);
+			// PR #2883 review finding (CRITICAL): the in-memory
+			// dispatch-generation binding is call-scoped state of exactly the
+			// same kind and must drain here too. The map's cap
+			// (MAX_PENDING_CODER_CHANGE_CONTEXTS, in rememberStageBDispatchGenerations)
+			// hard-rejects NEW dispatches with STAGE_B_CONTEXT_CAPACITY rather
+			// than evicting, so an entry leaked past the early return below
+			// would permanently consume an admission slot for the process
+			// lifetime. reviewer/test-engineer denies never begin a coder
+			// settlement, so this is their only drain; the idempotent delete in
+			// the finally below covers the begun path.
+			stageBDispatchGenerationsByCallID.delete(callID);
 			// Issue #2829: the durable dispatch-generation twin is another
 			// call-scoped reservation of exactly this kind — drain it BEFORE
 			// the coder-settlement early return so a denied reviewer/

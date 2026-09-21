@@ -1,5 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+	STAGE_B_BINDINGS_DIR,
+	stageBSessionDirName,
+} from '../background/stage-b-dispatch-binding-store';
 import { resolveWorktreeRepoOwnership } from '../config/lane-context';
 import { closeProjectDb } from '../db/project-db';
 import { clearAllSessionOverrides } from '../db/qa-gate-session-override.js';
@@ -467,15 +471,13 @@ export async function handleResetSessionCommand(
 	// their reconstruction path). Skipped when no session context exists.
 	if (sessionID) {
 		try {
-			const { createHash } = await import('node:crypto');
 			const { existsSync, rmSync } = await import('node:fs');
-			const sessionSlice = createHash('sha256')
-				.update(sessionID)
-				.digest('hex')
-				.slice(0, 24);
+			// Single-sourced from the store module (PR review finding): the
+			// hash derivation and directory name must never drift from what the
+			// store itself writes, or this purge silently deletes nothing.
 			const sessionBindingDir = validateSwarmPath(
 				directory,
-				`stage-b-dispatch-bindings/${sessionSlice}`,
+				`${STAGE_B_BINDINGS_DIR}/${stageBSessionDirName(sessionID)}`,
 			);
 			if (existsSync(sessionBindingDir)) {
 				rmSync(sessionBindingDir, { recursive: true, force: true });
