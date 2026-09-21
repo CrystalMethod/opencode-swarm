@@ -7,7 +7,6 @@
  * The seam snapshots remain process-global exactly like every existing
  * `_test_exports` suite.
  */
-import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
@@ -25,6 +24,7 @@ import {
 	recordPrFeedbackGateBatch,
 	recordPrFeedbackStageA,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 export const HEAD_SHA = 'abc123';
@@ -282,7 +282,7 @@ export async function createPublicationFixture(): Promise<PublicationFixture> {
 			Object.assign(_test_exports, seamSnapshot);
 			_test_exports.resetTrackedStateCache();
 			closeAllProjectDbs();
-			await fs.rm(directory, { recursive: true, force: true });
+			safeRmRecursive(directory);
 		},
 	};
 

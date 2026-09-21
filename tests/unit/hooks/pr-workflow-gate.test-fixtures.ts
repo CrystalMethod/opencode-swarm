@@ -17,6 +17,7 @@ import {
 	PR_REVIEW_BASE_DIMENSION_IDS,
 	PR_REVIEW_REQUIRED_MICRO_LANE_IDS,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { LEGACY_PR_REVIEW_RESILIENCE_POLICY } from '../pr-review-test-policy.js';
 
 export { LEGACY_PR_REVIEW_RESILIENCE_POLICY } from '../pr-review-test-policy.js';
@@ -121,7 +122,7 @@ export async function teardownPrWorkflowGateFixtures(): Promise<void> {
 	_test_exports.resolvePrReviewDiffStatsAsync =
 		originalResolvePrReviewDiffStatsAsync;
 	closeAllProjectDbs();
-	await fs.rm(tempDir, { recursive: true, force: true });
+	safeRmRecursive(tempDir);
 }
 
 export async function persistBatch(

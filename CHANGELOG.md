@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.184.17](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.16...v7.184.17) (2026-09-20)
+
+
+### Bug Fixes
+
+* **pr-workflow:** address pr2875 review findings ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([fdcaac5](https://github.com/ZaxbyHub/opencode-swarm/commit/fdcaac5d59f7ae08840c318cb7dccc88f2c7fd52))
+* **pr-workflow:** detect and repair stale installed skill copies at MODE entry ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([0ea1fed](https://github.com/ZaxbyHub/opencode-swarm/commit/0ea1fed970543cf5f899fbe147b1d408ceddf640))
+* **pr-workflow:** detect and repair stale installed skill copies at MODE entry ([#2601](https://github.com/ZaxbyHub/opencode-swarm/issues/2601)) ([faa4aaf](https://github.com/ZaxbyHub/opencode-swarm/commit/faa4aaf3e28f63fc1325bcfee4e97070eae525d7))
+* **tests:** route shared PR-workflow fixture teardowns through safeRmRecursive ([#2866](https://github.com/ZaxbyHub/opencode-swarm/issues/2866)) ([e3a4ac0](https://github.com/ZaxbyHub/opencode-swarm/commit/e3a4ac0a275b55087da97cd4ec4b9898bde799a0))
+* **tests:** route shared PR-workflow fixture teardowns through safeRmRecursive ([#2866](https://github.com/ZaxbyHub/opencode-swarm/issues/2866)) ([33e5fc4](https://github.com/ZaxbyHub/opencode-swarm/commit/33e5fc45c66ce291930b191dda9e215592ffdaa5))
+
 ## [7.184.16](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.184.15...v7.184.16) (2026-09-20)
 
 
