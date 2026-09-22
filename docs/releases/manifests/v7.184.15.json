@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.15",
+  "tagCommit": "ea6296b70b293bbf7dc6d3e08533d98e97a9f1e4",
+  "targetCommitish": "ea6296b70b293bbf7dc6d3e08533d98e97a9f1e4",
+  "releaseBodySha256": "ae4e605f5821d1b2b5450f7575f46cdc257bea5897d79c555bbd9856c81aa674",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2582-auto-checkpoint-threshold.md",
+      "sha256": "6c40ae60012ee280550179824fd2076bf9363528324281f5c0a662eed4db53e4"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2864-auto-checkpoint-hardening.md",
+      "sha256": "4f782b7977566a53fd2b1705132b23213165167974f9351326c56fc435a55d81"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/checkpoint-config-doc-1660.md",
+      "sha256": "8555905fe90540102085a449ef3f1927c15a306bb0bd8c44d48f5fe142cf453a"
+    }
+  ]
+}

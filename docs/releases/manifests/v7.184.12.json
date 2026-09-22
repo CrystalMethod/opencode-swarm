@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.12",
+  "tagCommit": "6f65a3c308d0fe246e5d629da117b7b959489754",
+  "targetCommitish": "6f65a3c308d0fe246e5d629da117b7b959489754",
+  "releaseBodySha256": "5608797a4defeed869418bc1f4c8e884feb1ac313f8026685691c6ac06719cc4",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2582-auto-checkpoint-threshold.md",
+      "sha256": "6c40ae60012ee280550179824fd2076bf9363528324281f5c0a662eed4db53e4"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2700-eventless-terminal-window.md",
+      "sha256": "d2c4db30f1110d091cdbb107ab13b3df59dec6aa4b7de2adc375ef4480e8e0a6"
+    }
+  ]
+}
