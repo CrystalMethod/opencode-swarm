@@ -50,6 +50,10 @@ export const _internals = {
 	// through this seam so the TOCTOU race (receipt landing between the two
 	// reads) is deterministically testable.
 	findByBatchIdDetailed,
+	// Issue #2878 review: the fresh-leg gate re-read routes through the seam
+	// too, so the decision-moment ledger re-check (snapshot says exhausted,
+	// fresh read disagrees) is deterministically testable.
+	readPrWorkflowGateState,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -569,7 +573,10 @@ export async function executeWritePrReviewTriggerEval(
 			// the store as of the decision moment.
 			let freshGateState: Awaited<ReturnType<typeof readPrWorkflowGateState>>;
 			try {
-				freshGateState = await readPrWorkflowGateState(directory, sessionID);
+				freshGateState = await _internals.readPrWorkflowGateState(
+					directory,
+					sessionID,
+				);
 			} catch (error) {
 				return failure(error instanceof Error ? error.message : String(error));
 			}

@@ -8,14 +8,20 @@ import {
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
 import {
+	getCoordinationState,
+	transitionCoordinationState,
+} from '../../../src/db/coordination-store.js';
+import {
 	activatePrWorkflow,
 	bindPrReviewBase,
 	bindPrReviewTriggerLedger,
 	enforcePrReviewBaseDimensions,
 	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
+	readPrWorkflowGateState,
 	recordPrReviewMicroFamilyDispatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { prWorkflowSessionFileStem } from '../../../src/pr-review/persistence.js';
 import {
 	executeWritePrReviewTriggerEval,
 	PR_REVIEW_TRIGGER_DEFINITIONS,
@@ -56,6 +62,7 @@ const originalGateInternals = {
 const originalWriterInternals = {
 	digest: writerInternals.resolvePrWorkflowRevisionDigest,
 	mergeBase: writerInternals.resolveMergeBase,
+	readGateState: writerInternals.readPrWorkflowGateState,
 };
 
 function tempRoot(): string {
@@ -274,6 +281,8 @@ afterEach(() => {
 	writerInternals.resolvePrWorkflowRevisionDigest =
 		originalWriterInternals.digest;
 	writerInternals.resolveMergeBase = originalWriterInternals.mergeBase;
+	writerInternals.readPrWorkflowGateState =
+		originalWriterInternals.readGateState;
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -331,6 +340,97 @@ describe('C2: dead-family disclosure fails closed when the retry budget is not e
 		).toBe(false);
 		expect(result.message).toContain(
 			'not among the recorded dispatch attempts',
+		);
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('admission fails closed when the cited attempt no longer belongs to this pr head', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'micro-attempt-1',
+			'micro-attempt-2',
+			DEAD_BATCH,
+		]);
+		// Tamper with the persisted ledger the way only external state corruption
+		// could: re-head the CITED record to another pr head. Production write
+		// paths can never produce this (the checkout assert and the session head
+		// immutability both reject foreign heads), which is exactly why the
+		// record-level prHeadSha filter exists. With the filter, the cited batch
+		// drops out of this head's count and the admission fails closed with the
+		// foreign-cited-batch message; without it, the budget would still be
+		// met (3 remaining records) AND the cited batch would still be counted,
+		// wrongly disclosing the dead family.
+		const current = await readPrWorkflowGateState(root, SESSION_ID);
+		if (!current) throw new Error('missing active workflow state');
+		const ledger = current.prReviewMicroFamilyDispatches ?? [];
+		expect(ledger.length).toBe(3);
+		const namespace = `pr-workflow.state:${prWorkflowSessionFileStem(SESSION_ID)}`;
+		const row = getCoordinationState(root, namespace, 'state');
+		if (!row) throw new Error('missing workflow coordination row');
+		const tamperedLedger = ledger.map((record) =>
+			record.batchId === DEAD_BATCH
+				? { ...record, prHeadSha: 'fed789bread' }
+				: record,
+		);
+		const result_ = transitionCoordinationState(root, {
+			namespace,
+			entityKey: 'state',
+			expectedRevision: row.revision,
+			generation: current.revision + 1,
+			status: current.mode,
+			payload: JSON.stringify({
+				...current,
+				revision: current.revision + 1,
+				prReviewMicroFamilyDispatches: tamperedLedger,
+			}),
+		});
+		expect(result_.outcome).toBe('applied');
+		gateInternals.resetTrackedStateCache();
+
+		const result = await evaluate(root, 'c2-foreign-head-run');
+
+		expect(
+			result.success,
+			`a cited attempt re-headed away from this pr head must not satisfy the budget; writer said: ${result.message}`,
+		).toBe(false);
+		// The re-headed cited record drops out of this head's count, so the
+		// below-budget branch fires (2 remaining) with the foreign-cited note.
+		expect(result.message).toContain('2 dispatch attempt');
+		expect(result.message).toContain('is not among them');
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('the decision-moment fresh re-read rejects when the ledger no longer proves exhaustion', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'micro-attempt-1',
+			'micro-attempt-2',
+			DEAD_BATCH,
+		]);
+		// Snapshot sees the exhausted budget; the fresh re-read at the
+		// decision moment observes a ledger that no longer proves it (the
+		// seam models concurrent state loss between the two reads).
+		const realState = await readPrWorkflowGateState(root, SESSION_ID);
+		writerInternals.readPrWorkflowGateState = async () => ({
+			...realState!,
+			prReviewMicroFamilyDispatches: (
+				realState?.prReviewMicroFamilyDispatches ?? []
+			).slice(0, 2),
+		});
+		const result = await evaluate(root, 'c2-fresh-regression-run');
+
+		expect(
+			result.success,
+			`a fresh ledger that no longer proves exhaustion must fail closed at the decision moment; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toMatch(
+			/no longer proves the retry budget exhausted/,
 		);
 		expect(
 			existsSync(join(root, '.swarm', 'pr-review')),

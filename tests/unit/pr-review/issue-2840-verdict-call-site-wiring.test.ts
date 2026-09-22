@@ -70,10 +70,10 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 			(site) => `${site.file}:${site.line}`,
 		);
 		expect(sites).toEqual([
-			'src/hooks/pr-workflow-gate.ts:11348', // readPrReviewFinalFindingPolicyForReport
-			'src/hooks/pr-workflow-gate.ts:12804', // dispatchCoverageFinalization message formatting
-			'src/hooks/pr-workflow-gate.ts:12870', // completion preflight
-			'src/hooks/pr-workflow-gate.ts:12910', // completion post-ladder finding-policy check
+			'src/hooks/pr-workflow-gate.ts:11476', // readPrReviewFinalFindingPolicyForReport
+			'src/hooks/pr-workflow-gate.ts:12932', // dispatchCoverageFinalization message formatting
+			'src/hooks/pr-workflow-gate.ts:12998', // completion preflight
+			'src/hooks/pr-workflow-gate.ts:13038', // completion post-ladder finding-policy check
 			'src/pr-review/completion.ts:1660', // readPrReviewTerminalCoverageForReport
 		]);
 	});

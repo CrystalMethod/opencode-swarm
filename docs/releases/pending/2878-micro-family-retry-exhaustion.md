@@ -5,8 +5,8 @@
 - **Persisted per-family micro dispatch attempt ledger.** Every
   `dispatch_lanes_async` micro-mode acknowledgment now appends one record to
   `prReviewMicroFamilyDispatches` in PR-workflow gate state
-  (`{batchId, prHeadSha, lanes: [{laneId, workflowLane, ownedWorkflowLanes}],
-  admittedAt}`), recorded after the trigger-ledger bind and strictly before
+  (`{batchId, prHeadSha, lanes: [{laneId, workflowLane,
+  ownedWorkflowLanes when non-empty}], admittedAt}`), recorded after the trigger-ledger bind and strictly before
   any lane session is created. The ledger is batchId-idempotent (a crash-retry
   of the same dispatch call never double-counts) and bounded at
   `MAX_WORKFLOW_BATCHES` (128) with a fail-closed BLOCKED refusal at the cap —

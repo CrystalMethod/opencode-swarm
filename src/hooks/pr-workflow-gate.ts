@@ -7229,7 +7229,7 @@ export async function recordPrReviewMicroFamilyDispatch(
 		// as separate partial-retry batches) is 33 records; the 128 cap is
 		// ~3.9x that headroom.
 		throw new Error(
-			`BLOCKED: PR_REVIEW micro-family dispatch ledger limit reached (${MAX_WORKFLOW_BATCHES} recorded acknowledgments)`,
+			`BLOCKED: PR_REVIEW micro-family dispatch ledger limit reached (${MAX_WORKFLOW_BATCHES} recorded acknowledgments). Nothing was appended and no lane was launched, so re-issuing this dispatch call is safe once the ledger has room. A healthy run records at most ~${11 * (1 + 2)} acknowledgments (11 families x initial dispatch + 2 retries), so reaching the cap indicates a dispatch loop. Recovery: let the active workflow settle or restart with abort_pr_workflow (kind "recovery").`,
 		);
 	}
 	const record: PrReviewMicroFamilyDispatchRecord = {
