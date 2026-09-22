@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.1",
+  "tagCommit": "048311dcc0248ea9b87b72cdfdac3e7086cce048",
+  "targetCommitish": "048311dcc0248ea9b87b72cdfdac3e7086cce048",
+  "releaseBodySha256": "cb8d6cea8dc1d224052495b9ea173192df487ecf8288c5de802bee88fa6d4352",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2878-micro-family-retry-exhaustion.md",
+      "sha256": "69b648d8fcbaec11f6c6e01f7b30450e1c6ab1a5fb4538e47113ba1d696b9627"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2898-cleanup-apply-gh-auth-retention.md",
+      "sha256": "4ce373152f48bd8597a655ff55f6700efc2313260b2477f7ff7487a0d45df133"
+    }
+  ]
+}
