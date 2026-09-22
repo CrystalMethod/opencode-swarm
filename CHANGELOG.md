@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.186.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.0...v7.186.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **pr-review:** close swarm-pr-review findings on the [#2878](https://github.com/ZaxbyHub/opencode-swarm/issues/2878) retry-budget enforcement ([c0a24da](https://github.com/ZaxbyHub/opencode-swarm/commit/c0a24da79c47ea21e43f0a89c77853ca31d56e72))
+* **pr-review:** enforce dead-family retry-budget exhaustion from a persisted micro-family dispatch ledger ([#2878](https://github.com/ZaxbyHub/opencode-swarm/issues/2878)) ([e1065fc](https://github.com/ZaxbyHub/opencode-swarm/commit/e1065fc7e84718732c2753eb2b60c93fee6386ff))
+* **release:** address pr2911 review findings (2898) ([5e9ed8c](https://github.com/ZaxbyHub/opencode-swarm/commit/5e9ed8c206731dc04b193396e9522084593a28f3))
+* **release:** authenticate fragment cleanup apply step and report retention trend ([#2898](https://github.com/ZaxbyHub/opencode-swarm/issues/2898)) ([2e6641f](https://github.com/ZaxbyHub/opencode-swarm/commit/2e6641faeadc82b057357ac6518cc5fbfc39365c))
+
 ## [7.186.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.185.1...v7.186.0) (2026-09-22)
 
 
