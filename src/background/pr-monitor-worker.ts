@@ -10,18 +10,18 @@
 import type { PrMonitorConfig } from '../config/schema';
 import {
 	getMergeGroupRun,
+	getMRComments,
+	getMRPollSnapshot,
 	getPRPollSnapshot,
 	getPRReviewComments,
 	type MergeGroupRunResult,
 	type MergeStateResult,
+	type MRPipelineCheck,
 	type PRCommentResult,
 	type PRStatusResult,
 	type ReviewStateResult,
 } from '../git/pr';
-import {
-	detectForgeFromUrl,
-	getProviderCapabilities,
-} from '../providers/forge-provider.js';
+import { detectForgeFromUrl } from '../providers/forge-provider.js';
 import { advisoryWarn } from '../services/warning-buffer';
 import { log, error as logError } from '../utils';
 import { resolveGlabExecutable } from '../utils/glab-executable.js';
@@ -522,45 +522,22 @@ export class PrMonitorWorker {
 	): Promise<void> {
 		const correlationId = sub.correlationId;
 
-		// Honest capability reporting (issue #2733): getProviderCapabilities is
-		// the decision source. GitHub's gh CLI synthesizes
-		// statusCheckRollup/reviewDecision/mergeStateStatus; GitLab's MR API
-		// does not, and glab-backed MR polling is tracked as follow-up #2882.
-		// A subscription whose provider cannot serve ANY of the three
-		// synthesized fields cannot be polled by the gh pipeline at all — skip
-		// with an explicit unavailable marker instead of running polls that
-		// would fabricate error-loop circuit-breaker churn.
-		// The skip must cover BOTH GitLab surface classes (PRR-11): hosts that
-		// shape-detect as GitLab (gitlab.com / gitlab.*) AND generic
-		// self-hosted instances declared via the forge declaration persisted
-		// with the subscription record. Shape detection alone returns null for
-		// declared generic hosts, which would let them fall through to gh
-		// polls that cannot serve them.
+		// Provider-aware routing (issue #2882): resolve the forge context with
+		// the same two-step PRR-11 logic (URL shape detection first, persisted
+		// forge declaration second for generic self-hosted hosts), then route
+		// GitLab subscriptions to the glab-backed MR fetchers. The three
+		// GitHub-synthesized fields stay honestly-unavailable in that snapshot
+		// — getProviderCapabilities remains the source of truth and is
+		// unchanged (all three false for gitlab); pipeline/CI verdicts ride
+		// their own channel into the existing event vocabulary. A missing glab
+		// binary is a real environment error (bare-name fallback behaves like
+		// gh's) and flows through the standard error/circuit-breaker path.
 		const forgeContext =
 			detectForgeFromUrl(sub.prUrl) ??
 			(sub.forge
 				? { provider: sub.forge.provider, host: sub.forge.host }
 				: null);
-		if (
-			forgeContext &&
-			!getProviderCapabilities(forgeContext.provider).statusCheckRollup &&
-			!getProviderCapabilities(forgeContext.provider).reviewDecision &&
-			!getProviderCapabilities(forgeContext.provider).mergeStateStatus
-		) {
-			// Production wiring for the glab resolver (bounded, lazy, cached —
-			// at most one probe cycle per process). Log resolution STATE only,
-			// never the absolute binary path (log minimization, PRR-24).
-			const glabBinary = resolveGlabExecutable();
-			const glabStatus =
-				glabBinary === 'glab'
-					? 'glab binary not resolved (bare-name fallback)'
-					: 'glab binary resolved';
-			log(
-				'[PrMonitorWorker] GitLab MR monitoring unavailable: glab-backed polling is not wired yet (issue #2882); skipping gh poll for this subscription',
-				{ correlationId, glabStatus },
-			);
-			return;
-		}
+		const isGitLab = forgeContext?.provider === 'gitlab';
 
 		// Initialize or retrieve circuit-breaker state from subscription snapshot
 		if (!this.circuitBreakerMap.has(correlationId) && sub.errorCount > 0) {
@@ -602,65 +579,130 @@ export class PrMonitorWorker {
 			// (status + merge + review + issue comments) plus one gh api call for
 			// inline review comments — two spawns per PR per poll, replacing the
 			// previous three pr-view spawns and two gh api spawns.
-			const [snapshot, reviewComments] = await Promise.all([
-				_internals.getPRPollSnapshot(
-					sub.prNumber,
-					sub.repoFullName,
-					this.directory,
-				),
-				_internals.getPRReviewComments(
-					sub.prNumber,
-					sub.repoFullName,
-					this.directory,
-				),
-			]);
-
-			// Abort if pollWithTimeout already fired — don't mutate state after timeout
-			if (isTimedOut?.()) {
-				log('[PrMonitorWorker] Skipping late result — poll already timed out', {
-					correlationId: sub.correlationId,
+			// #2882: GitLab subscriptions take the glab-backed MR path instead —
+			// same two-call shape (snapshot + notes), three bounded spawns inside
+			// the snapshot fetch, merge-group runs skipped (GitHub-only concept).
+			let changes: ComputedChanges;
+			if (isGitLab) {
+				// Observability only (log minimization, PRR-24): resolution state,
+				// never the absolute glab path.
+				const glabBinary = resolveGlabExecutable();
+				const glabStatus =
+					glabBinary === 'glab'
+						? 'glab binary not resolved (bare-name fallback)'
+						: 'glab binary resolved';
+				log('[PrMonitorWorker] Polling GitLab MR (glab-backed)', {
+					correlationId,
+					glabStatus,
 				});
-				return;
-			}
 
-			// Fetch merge group run info (depends on snapshot.status.statusCheckRollup)
-			let mergeGroupRunResult: MergeGroupRunResult | null = null;
-			let mergeGroupRunFetchSucceeded = false;
-			try {
-				mergeGroupRunResult = await _internals.getMergeGroupRun(
-					snapshot.status.statusCheckRollup,
-					sub.repoFullName,
-					this.directory,
+				const mrInput = {
+					projectPath: sub.repoFullName,
+					iid: sub.prNumber,
+					cwd: this.directory,
+					...(forgeContext ? { host: forgeContext.host } : {}),
+				};
+				const [mrSnapshot, mrComments] = await Promise.all([
+					_internals.getMRPollSnapshot(mrInput),
+					_internals.getMRComments(mrInput),
+				]);
+
+				// Abort if pollWithTimeout already fired — don't mutate state after timeout
+				if (isTimedOut?.()) {
+					log(
+						'[PrMonitorWorker] Skipping late result — poll already timed out',
+						{
+							correlationId: sub.correlationId,
+						},
+					);
+					return;
+				}
+
+				// Phase 1: pure computation (no side effects, no await). Pipeline
+				// verdicts ride the dedicated channel; the three GitHub-synthesized
+				// fields arrive as honest-unavailable markers in the snapshot.
+				changes = this.computeChanges(
+					sub,
+					{
+						status: mrSnapshot.status,
+						comments: mrComments,
+						merge: mrSnapshot.merge,
+						review: mrSnapshot.review,
+						mergeGroupRun: null,
+					},
+					true,
+					{
+						checks: mrSnapshot.pipelines,
+						fetchSucceeded: mrSnapshot.pipelinesFetchSucceeded,
+					},
 				);
-				mergeGroupRunFetchSucceeded = true;
-			} catch (err) {
-				log('[PrMonitorWorker] Failed to fetch merge group run', {
-					correlationId: sub.correlationId,
-					error: err instanceof Error ? err.message : String(err),
-				});
-				// Continue without merge group run info — do NOT overwrite existing snapshot state
-			}
+			} else {
+				const [snapshot, reviewComments] = await Promise.all([
+					_internals.getPRPollSnapshot(
+						sub.prNumber,
+						sub.repoFullName,
+						this.directory,
+					),
+					_internals.getPRReviewComments(
+						sub.prNumber,
+						sub.repoFullName,
+						this.directory,
+					),
+				]);
 
-			// Abort if pollWithTimeout already fired — don't mutate state after timeout
-			if (isTimedOut?.()) {
-				log('[PrMonitorWorker] Skipping late result — poll already timed out', {
-					correlationId: sub.correlationId,
-				});
-				return;
-			}
+				// Abort if pollWithTimeout already fired — don't mutate state after timeout
+				if (isTimedOut?.()) {
+					log(
+						'[PrMonitorWorker] Skipping late result — poll already timed out',
+						{
+							correlationId: sub.correlationId,
+						},
+					);
+					return;
+				}
 
-			// Phase 1: pure computation (no side effects, no await)
-			const changes = this.computeChanges(
-				sub,
-				{
-					status: snapshot.status,
-					comments: [...snapshot.comments, ...reviewComments],
-					merge: snapshot.merge,
-					review: snapshot.review,
-					mergeGroupRun: mergeGroupRunResult,
-				},
-				mergeGroupRunFetchSucceeded,
-			);
+				// Fetch merge group run info (depends on snapshot.status.statusCheckRollup)
+				let mergeGroupRunResult: MergeGroupRunResult | null = null;
+				let mergeGroupRunFetchSucceeded = false;
+				try {
+					mergeGroupRunResult = await _internals.getMergeGroupRun(
+						snapshot.status.statusCheckRollup,
+						sub.repoFullName,
+						this.directory,
+					);
+					mergeGroupRunFetchSucceeded = true;
+				} catch (err) {
+					log('[PrMonitorWorker] Failed to fetch merge group run', {
+						correlationId: sub.correlationId,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					// Continue without merge group run info — do NOT overwrite existing snapshot state
+				}
+
+				// Abort if pollWithTimeout already fired — don't mutate state after timeout
+				if (isTimedOut?.()) {
+					log(
+						'[PrMonitorWorker] Skipping late result — poll already timed out',
+						{
+							correlationId: sub.correlationId,
+						},
+					);
+					return;
+				}
+
+				// Phase 1: pure computation (no side effects, no await)
+				changes = this.computeChanges(
+					sub,
+					{
+						status: snapshot.status,
+						comments: [...snapshot.comments, ...reviewComments],
+						merge: snapshot.merge,
+						review: snapshot.review,
+						mergeGroupRun: mergeGroupRunResult,
+					},
+					mergeGroupRunFetchSucceeded,
+				);
+			}
 
 			// Phase 2: apply changes with single timeout guard
 			await this.applyChanges(sub, changes, isTimedOut);
@@ -728,11 +770,21 @@ export class PrMonitorWorker {
 	 * @param mergeGroupRunFetchSucceeded - if false, mergeGroupRun fields are
 	 *   intentionally omitted from snapshotUpdates to preserve prior snapshot state
 	 *   on transient fetch failures.
+	 * @param gitLabPipelines - #2882 glab path only: real pipeline verdicts for
+	 *   the MR head sha plus whether the pipelines fetch succeeded. When present,
+	 *   CI transitions key off these checks instead of statusCheckRollup (which
+	 *   stays an honest-unavailable marker for GitLab and is never populated
+	 *   from pipeline data); when fetchSucceeded is false, lastCheckRunSet is
+	 *   left untouched so prior CI state is preserved (mergeGroupRun pattern).
 	 */
 	private computeChanges(
 		sub: PrSubscriptionRecord,
 		current: PrFetchResult,
 		mergeGroupRunFetchSucceeded: boolean,
+		gitLabPipelines?: {
+			checks: MRPipelineCheck[];
+			fetchSucceeded: boolean;
+		},
 	): ComputedChanges {
 		const events: Array<{ type: AutomationEventType; payload: unknown }> = [];
 		const snapshotUpdates: Partial<PrSubscriptionRecord> = {
@@ -769,24 +821,43 @@ export class PrMonitorWorker {
 		}
 
 		// ── CI status change ──
-		const currentCheckSet = this.serializeChecks(
-			current.status.statusCheckRollup,
-		);
-		snapshotUpdates.lastCheckRunSet = currentCheckSet;
+		// #2882: on the GitLab path the transition key and CI events are driven
+		// by real pipeline verdicts from the dedicated channel; the GitHub path
+		// is byte-identical to the pre-#2882 behavior.
+		const ciChecks: PRStatusResult['statusCheckRollup'] = gitLabPipelines
+			? gitLabPipelines.checks
+			: current.status.statusCheckRollup;
+		// #2895 review F-3: an empty GitLab checks array means NO terminal
+		// verdict for the head sha this poll (pipeline pending/retrying/none) —
+		// not a transition to "no checks". Overwriting the prior verdict set
+		// with an empty one reset the transition key and caused a duplicate
+		// pr.ci.failed when a retrying pipeline failed again. Preserve prior
+		// state exactly like a failed pipelines fetch; a NEW pipeline id
+		// failing after a retry still transitions (matching GitHub's
+		// new-check-name semantics).
+		const gitlabNoTerminalVerdict =
+			gitLabPipelines !== undefined && gitLabPipelines.checks.length === 0;
 		if (
-			sub.lastCheckRunSet !== undefined &&
-			currentCheckSet !== sub.lastCheckRunSet
+			!gitlabNoTerminalVerdict &&
+			(!gitLabPipelines || gitLabPipelines.fetchSucceeded)
 		) {
-			const prevChecks = this.parseCheckSet(sub.lastCheckRunSet);
-			this.computeCIEvents(
-				sub,
-				prevChecks,
-				current.status.statusCheckRollup,
-				current.status.headRefOid,
-				events,
-			);
+			const currentCheckSet = this.serializeChecks(ciChecks);
+			snapshotUpdates.lastCheckRunSet = currentCheckSet;
+			if (
+				sub.lastCheckRunSet !== undefined &&
+				currentCheckSet !== sub.lastCheckRunSet
+			) {
+				const prevChecks = this.parseCheckSet(sub.lastCheckRunSet);
+				this.computeCIEvents(
+					sub,
+					prevChecks,
+					ciChecks,
+					current.status.headRefOid,
+					events,
+				);
+			}
+			snapshotUpdates.lastCheckRunSet = currentCheckSet;
 		}
-		snapshotUpdates.lastCheckRunSet = currentCheckSet;
 
 		// ── New comments ──
 		// Sort by createdAt ascending so ordering is deterministic regardless
@@ -1319,6 +1390,8 @@ export class PrMonitorWorker {
 export const _internals = {
 	getPRPollSnapshot,
 	getPRReviewComments,
+	getMRPollSnapshot,
+	getMRComments,
 	getMergeGroupRun,
 	listActive,
 	updateSnapshot,

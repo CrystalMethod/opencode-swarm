@@ -207,7 +207,10 @@ import type {
 	PrReviewEvent,
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
-import { canonicalForgePrUrl } from '../providers/forge-provider.js';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
 import {
 	ensurePrWorkflowSkillContractsFresh,
@@ -1701,6 +1704,10 @@ export async function activatePrWorkflow(
 		prHeadSha?: string;
 		requireCheckoutPreflight?: boolean;
 		prUrl?: string;
+		// #2882 AC5: configured context authorizing a declared generic
+		// self-hosted GitLab MR URL as the PR_FEEDBACK target. Fail-closed
+		// when absent: the URL must then canonicalize on its own shape.
+		forge?: ForgeContext;
 	} = {},
 ): Promise<PrWorkflowGateState> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
@@ -1726,14 +1733,17 @@ export async function activatePrWorkflow(
 			);
 			if (existing?.mode === mode) {
 				if (mode === 'PR_FEEDBACK' && options.prUrl) {
-					const requestedTarget = canonicalGitHubPrUrl(options.prUrl);
+					const requestedTarget = canonicalGitHubPrUrl(
+						options.prUrl,
+						options.forge,
+					);
 					if (!requestedTarget) {
 						throw new Error(
 							'BLOCKED: PR_FEEDBACK target must be a canonical GitHub PR URL',
 						);
 					}
 					const existingTarget = existing.prFeedbackTargetUrl
-						? canonicalGitHubPrUrl(existing.prFeedbackTargetUrl)
+						? canonicalGitHubPrUrl(existing.prFeedbackTargetUrl, options.forge)
 						: null;
 					if (existingTarget && requestedTarget !== existingTarget) {
 						throw new Error(
@@ -1803,7 +1813,7 @@ export async function activatePrWorkflow(
 			const timestamp = isoNow();
 			const feedbackTargetUrl =
 				mode === 'PR_FEEDBACK' && options.prUrl
-					? canonicalGitHubPrUrl(options.prUrl)
+					? canonicalGitHubPrUrl(options.prUrl, options.forge)
 						? options.prUrl
 						: null
 					: undefined;
@@ -11369,11 +11379,17 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	return { policyVersion: 1, permittedVerdicts, blockingFindingIds };
 }
 
-function canonicalGitHubPrUrl(value: string): string | null {
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
 	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
 	// shared implementation; its GitHub output is byte-identical to the
-	// previous module-local body.
-	return canonicalForgePrUrl(value);
+	// previous module-local body. #2882 AC5: the optional configured context
+	// authorizes declared generic self-hosted GitLab MR URLs; absent context
+	// keeps the fail-closed behavior. The PR_REVIEW consent/handoff
+	// comparisons below intentionally pass no context (GitHub-only domain).
+	return canonicalForgePrUrl(value, configured);
 }
 
 function assertMatchingPrReviewFeedbackConsent(

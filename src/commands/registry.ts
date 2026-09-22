@@ -12,9 +12,15 @@ import {
 	type PrWorkflowMode,
 	transitionPrReviewToFeedback,
 } from '../hooks/pr-workflow-gate.js';
+import {
+	detectForgeFromUrl,
+	type ForgeContext,
+	resolveForgeContextFromPluginConfig,
+} from '../providers/forge-provider.js';
 import type { ReviewModelDispatcher } from '../review/contracts.js';
 import type { ReviewAgentModelRegistry } from '../review/runtime.js';
 import { warn } from '../utils/logger.js';
+import { detectGitRemote } from './_shared/url-security.js';
 import { handleAbortPrWorkflowCommand } from './abort-pr-workflow.js';
 import { handleAcknowledgeSpecDriftCommand } from './acknowledge-spec-drift.js';
 import { handleAgentsCommand } from './agents.js';
@@ -416,6 +422,28 @@ async function handleModeCommandWithBundledSkills(
 	return result;
 }
 
+/**
+ * #2882 AC5: resolve the configured forge context for a user-supplied
+ * PR/MR URL on the command path — the same two-step resolution pr-subscribe
+ * uses (#2733): URL shape detection first, then the plugin-config-declared
+ * forge context (base_url/host) via the git remote. Undefined when shape
+ * detection answers or nothing is declared (fail-closed downstream).
+ */
+function resolveCommandForgeContext(
+	directory: string,
+	prUrl: string,
+): ForgeContext | undefined {
+	if (detectForgeFromUrl(prUrl)) return undefined;
+	try {
+		const config = loadPluginConfig(directory);
+		const remote = detectGitRemote(directory, undefined);
+		const remotes = remote ? [remote] : [];
+		return resolveForgeContextFromPluginConfig(config, remotes) ?? undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function handlePrFeedbackCommandWithTransition(
 	ctx: CommandContext,
 ): CommandResult {
@@ -467,6 +495,11 @@ async function handlePrFeedbackCommandWithTransition(
 		await activatePrWorkflow(ctx.directory, ctx.sessionID, 'PR_FEEDBACK', {
 			requireCheckoutPreflight: true,
 			...(parsed.prUrl ? { prUrl: parsed.prUrl } : {}),
+			// #2882 AC5: a declared generic self-hosted GitLab MR target needs
+			// its configured context for the activation canonicalization gate.
+			...(parsed.prUrl
+				? { forge: resolveCommandForgeContext(ctx.directory, parsed.prUrl) }
+				: {}),
 		});
 	}
 	return handlePrFeedbackCommand(ctx.directory, ctx.args);

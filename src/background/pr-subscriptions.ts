@@ -61,7 +61,10 @@ import {
 import { withEvidenceLock } from '../evidence/lock.js';
 import { observeStoreHealth } from '../health/learning-health.js';
 import { validateSwarmPath } from '../hooks/utils.js';
-import { isForgePrUrl } from '../providers/forge-provider.js';
+import {
+	canonicalForgePrUrl,
+	isForgePrUrl,
+} from '../providers/forge-provider.js';
 import { telemetry } from '../telemetry.js';
 import { log } from '../utils';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write.js';
@@ -3618,6 +3621,93 @@ export async function lookupByPr(
 		}
 	}
 	return null;
+}
+
+/**
+ * Find the active subscription record whose forge declaration authorizes a
+ * given MR/PR URL or (repoFullName, prNumber) identity (issue #2882 AC5).
+ *
+ * Every PROVIDED key field must match. `prUrl` matches on raw string equality
+ * or — for declared generic self-hosted GitLab hosts, which never canonicalize
+ * without context — on record-scoped canonicalization (both URLs canonicalized
+ * with the candidate record's own `forge` declaration). This resolves the
+ * lookup chicken-and-egg: the declaration needed to canonicalize lives on the
+ * record being looked for.
+ *
+ * Tie-breaking: first match wins. The store's composite `correlationId`
+ * (`${sessionID}::${repoFullName}::${prNumber}`) is unique, so true duplicates
+ * are impossible; callers needing session scoping pass `sessionID` too.
+ * Returns null on miss — callers then run with NO configured context and the
+ * existing fail-closed canonicalization behavior stands.
+ */
+export async function findSubscriptionRecordForPrUrl(
+	directory: string,
+	key: {
+		prUrl?: string;
+		repoFullName?: string;
+		prNumber?: number;
+		sessionID?: string;
+	},
+): Promise<PrSubscriptionRecord | null> {
+	if (key.repoFullName !== undefined && key.prNumber !== undefined) {
+		// lookupByPr returns the FIRST active record for the identity regardless
+		// of session; when a sessionID is supplied and that record belongs to a
+		// different session, fall through to the full scan below rather than
+		// failing closed — multiple sessions subscribed to the same MR is a
+		// supported scenario (Copr review round, PR #2895).
+		const record = await lookupByPr(directory, key.repoFullName, key.prNumber);
+		if (
+			record &&
+			(!key.sessionID || record.sessionID === key.sessionID) &&
+			(key.prUrl === undefined ||
+				record.prUrl === key.prUrl ||
+				subscriptionPrUrlMatches(record, key.prUrl))
+		) {
+			return record;
+		}
+		if (!key.sessionID) return null;
+	}
+	if (key.prUrl === undefined && key.repoFullName === undefined) return null;
+	if (key.prUrl === undefined) {
+		// repoFullName+prNumber given (no prUrl), session mismatch above: scan
+		// for that session's own record.
+		const active = await listActive(directory);
+		for (const record of active) {
+			if (key.sessionID && record.sessionID !== key.sessionID) continue;
+			if (
+				record.repoFullName === key.repoFullName &&
+				record.prNumber === key.prNumber
+			) {
+				return record;
+			}
+		}
+		return null;
+	}
+	const active = await listActive(directory);
+	for (const record of active) {
+		if (key.sessionID && record.sessionID !== key.sessionID) continue;
+		if (
+			record.prUrl === key.prUrl ||
+			subscriptionPrUrlMatches(record, key.prUrl)
+		) {
+			return record;
+		}
+	}
+	return null;
+}
+
+/**
+ * Record-scoped canonical match: authorize the URL with the record's own
+ * persisted forge declaration (null for records without one — shape-detected
+ * hosts canonicalize unconfigured).
+ */
+function subscriptionPrUrlMatches(
+	record: PrSubscriptionRecord,
+	prUrl: string,
+): boolean {
+	const left = canonicalForgePrUrl(record.prUrl, record.forge);
+	const right = canonicalForgePrUrl(prUrl, record.forge);
+	return left !== null && left === right;
 }
 
 /**
