@@ -1,5 +1,21 @@
 # Changelog
 
+## [7.186.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.185.1...v7.186.0) (2026-09-22)
+
+
+### Features
+
+* **gitlab:** glab-backed live MR data for PR monitoring ([76fa891](https://github.com/ZaxbyHub/opencode-swarm/commit/76fa891250588c96e3e11667c239a64b6fbcb409))
+* **gitlab:** glab-backed live MR data for PR monitoring ([#2882](https://github.com/ZaxbyHub/opencode-swarm/issues/2882)) ([0e73156](https://github.com/ZaxbyHub/opencode-swarm/commit/0e7315623a20f18af0a8ca278f5b68ba61915b1f))
+
+
+### Bug Fixes
+
+* **gitlab:** resolve PR [#2895](https://github.com/ZaxbyHub/opencode-swarm/issues/2895) review findings (F-1..F-3, Copilot thread) ([6ebda94](https://github.com/ZaxbyHub/opencode-swarm/commit/6ebda942e4b7f9ddfdf2509f2101808d22953bd6))
+* **hooks:** sanitize curator LLM delegate inputs ([#2890](https://github.com/ZaxbyHub/opencode-swarm/issues/2890)) ([91e3217](https://github.com/ZaxbyHub/opencode-swarm/commit/91e3217441a41353d994c50de5f3427866f9ca3a))
+* **hooks:** sanitize curator LLM delegate inputs ([#2890](https://github.com/ZaxbyHub/opencode-swarm/issues/2890)) ([996e9a9](https://github.com/ZaxbyHub/opencode-swarm/commit/996e9a96706769b16e15977018fad072833933d9))
+* **hooks:** sanitize label-interpolated curator LLM fields field-level (review round 2) ([e84be38](https://github.com/ZaxbyHub/opencode-swarm/commit/e84be381ee7688e02a3d430365e4ca0d9798e149))
+
 ## [7.185.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.185.0...v7.185.1) (2026-09-21)
 
 
