@@ -363,9 +363,11 @@ function emitDelegationCostObservation(
 		// exact-call identity and an unknown-honest cost block. Token axes are
 		// carried ONLY when the provider's own payload attested usage
 		// (cost_source 'reported' — the pinned SDK shapes carry cost and usage
-		// together; the synthesized missing-cost evidence item zero-fills usage
-		// and must not leak in as a known zero). An estimate-only chain carries
-		// its estimated dollar value but leaves token axes unknown.
+		// together; since #2789 the synthesized missing-cost evidence item
+		// carries all-null usage, and the typeof guards below omit any axis
+		// the producer did not hold, so neither can leak in as a known zero).
+		// An estimate-only chain carries its estimated dollar value but leaves
+		// token axes unknown.
 		const usageAttested = costFields.cost_source === 'reported';
 		recordExecutionAttempt({
 			sessionId: record.parentSessionId,
