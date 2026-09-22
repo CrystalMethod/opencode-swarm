@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.10",
+  "tagCommit": "9dfa95a42a9d7ed1b7a7ba3f2a24c0a5e1e0bd3f",
+  "targetCommitish": "9dfa95a42a9d7ed1b7a7ba3f2a24c0a5e1e0bd3f",
+  "releaseBodySha256": "daa839d2ebeecb6c9df80b4f8ccbd92472307450a796ec83c70c81875e7f3171",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2581-todo-gate-evidence-wiring.md",
+      "sha256": "a18f168e42b843a8ef3a1eed0ec76c90ffd9d004514ed2fffed64a0527dd6bc8"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2705-remaining-spawn-sites.md",
+      "sha256": "16e8bd8e8cad75ee7990985dc9258676fb2c3c80fd4a937ea85b9057c61e87bd"
+    }
+  ]
+}
