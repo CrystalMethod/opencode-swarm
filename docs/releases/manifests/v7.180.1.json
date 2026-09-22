@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.180.1",
+  "tagCommit": "d40e9341611401e53e42d448e372f5bea3ed5e57",
+  "targetCommitish": "d40e9341611401e53e42d448e372f5bea3ed5e57",
+  "releaseBodySha256": "c434705aecf6bfe7725c271317c47afa4c8af28adf3a16ad65ec65068ab1c6b6",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2578-general-council-stance-persistence.md",
+      "sha256": "5fa59cf91f950a1e2af9fbc34e2f2567eb30afddaa1f6dde0de0dcaf648e12cf"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2671-architect-prompt-budget-matrix.md",
+      "sha256": "ae2ecf5767c46c48e2bef5bd682aeee7aac0c6e1da0131d2e2024eca34426118"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2673-strict-single-system-guidance.md",
+      "sha256": "7404fb59fea11aa090b0baedd2b7378be1bfc4da3e58391fe4dae8055cbaa41e"
+    }
+  ]
+}

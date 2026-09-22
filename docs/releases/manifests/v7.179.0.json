@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.179.0",
+  "tagCommit": "88fde41133e58e9788c7a3a7487e67ee52461d49",
+  "targetCommitish": "88fde41133e58e9788c7a3a7487e67ee52461d49",
+  "releaseBodySha256": "0928e41cdedcad738f060093396f80228704627e7cb985095f5141ef43ef5212",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2492-bounded-test-mutation-scope.md",
+      "sha256": "6e9a9c3d85de3e394cd4a3d2aa30a1a5275df4caa6f8bedcee8109eb8467ff5a"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2540-repo-map-actions-connect-or-retire.md",
+      "sha256": "6ed72ca0767ab8cd205be91ae05fe524e352bddfa3e334c888b5787a8173aa09"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2602-pr-workflow-human-cancellation.md",
+      "sha256": "c13c30fe4101f84456e6ac93fb4f7191db97567493d3c453fbca5db410fdf5e0"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2677-required-check-contract.md",
+      "sha256": "00c7d68830883b3fe7cebf226c25c78e002422b1bb815fef5db6538df203c5cd"
+    }
+  ]
+}

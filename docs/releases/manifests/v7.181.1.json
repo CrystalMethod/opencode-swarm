@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.181.1",
+  "tagCommit": "37ee0ce8be11aa105ef97a829ef6038a6a90df1c",
+  "targetCommitish": "37ee0ce8be11aa105ef97a829ef6038a6a90df1c",
+  "releaseBodySha256": "df9e5d6e7cb7b7ff2f34a8b50cff32d61d61dc047257c357c29ac1b961f80ca5",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/rework-recovery-escape-hatch-2755.md",
+      "sha256": "cb37bfd8308db764ace6608e1503db8837fc36d8914fa5f220ee31485ce8c106"
+    }
+  ]
+}

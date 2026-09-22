@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.181.4",
+  "tagCommit": "4e45e155803d831645ede0f94b0d69425ccc86ae",
+  "targetCommitish": "4e45e155803d831645ede0f94b0d69425ccc86ae",
+  "releaseBodySha256": "6c8cf37174e5bc17488eb08748ee81b3a21ff741b8f52b3e0bea00f590d62faa",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/fix-plan-critic-task-attribution-2757.md",
+      "sha256": "950723d87e5d42e85e4fd855fc5bfc432c5a9742be5b78302995597097057e6f"
+    }
+  ]
+}

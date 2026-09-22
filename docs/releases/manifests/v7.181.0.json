@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.181.0",
+  "tagCommit": "ef59deb85debd456b40db8306322268d6b702a20",
+  "targetCommitish": "ef59deb85debd456b40db8306322268d6b702a20",
+  "releaseBodySha256": "a45e0e04c95fceb936e0082a8e8bae3043efcce07760725fafc15defe0f8f98b",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/harnessopt-capstone-2503.md",
+      "sha256": "fa093e08f113c1cb2cdc2acede35cd14bc4d3c0e7a7cd7e4880673e75ccccbe5"
+    }
+  ]
+}

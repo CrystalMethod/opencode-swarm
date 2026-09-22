@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.183.0",
+  "tagCommit": "b9ed6c1b50af29fc478ca4b604b823d837f542c1",
+  "targetCommitish": "b9ed6c1b50af29fc478ca4b604b823d837f542c1",
+  "releaseBodySha256": "d88f074f6e6e78ffe955ba9f457b898a365448e8a7a8a4bca6e8bbf82fdcaffe",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2676-execution-attempt-tracing.md",
+      "sha256": "16ec3c018267170a4a76f8ceeae1c706eec460978c557e05873c2ca1d2523817"
+    }
+  ]
+}

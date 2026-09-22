@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.180.0",
+  "tagCommit": "87b5489e2f61a75205cbaa1acbbc0800f5f002aa",
+  "targetCommitish": "87b5489e2f61a75205cbaa1acbbc0800f5f002aa",
+  "releaseBodySha256": "fcb4bab31a48d3c362d6fb129f6246428912c8551da82a247accdee07adc175e",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/feat-2501-speckit-v2-multi-feature.md",
+      "sha256": "316075a05fc4796c0a81f1615dc45243ba5e1c6794d2ddb0f154f5827e8a6dfe"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/feat-2502-pr-feedback-loop.md",
+      "sha256": "8b55caaaed87d5a5f62a4e78634253272cfe9d16e93c0b7b911238db8c3446c5"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/issue-2667-hydration-project-owned-generation-fenced.md",
+      "sha256": "a2ce0937a042a9ce29d1a4e0e9bc09fd8a7ef2cc6a8959f081d12391e50459a1"
+    }
+  ]
+}

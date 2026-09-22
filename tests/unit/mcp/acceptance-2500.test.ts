@@ -475,12 +475,22 @@ describe('MCP explicitly authorized writes (#2500)', () => {
 		expect(serverSource).toContain('if (options.transport === undefined)');
 	});
 
-	test('AC9: pending release fragment exists and describes the feature', () => {
+	test('AC9: release fragment evidence exists and describes the feature', () => {
 		const pending = path.resolve('docs/releases/pending');
 		expect(existsSync(pending)).toBe(true);
 		const fragment = '2500-authorized-mcp-writes.md';
-		expect(existsSync(path.join(pending, fragment))).toBe(true);
-		const body = readFileSync(path.join(pending, fragment), 'utf8');
-		expect(body).toMatch(/explicitly authorized|MCP/i);
+		if (existsSync(path.join(pending, fragment))) {
+			expect(readFileSync(path.join(pending, fragment), 'utf8')).toMatch(
+				/explicitly authorized|MCP/i,
+			);
+			return;
+		}
+		// #2899: consumed fragments are materialized into docs/releases; a
+		// referencing manifest is the surviving release evidence.
+		const manifests = path.resolve('docs/releases/manifests');
+		const referenced = readdirSync(manifests).filter((name) =>
+			readFileSync(path.join(manifests, name), 'utf8').includes(fragment),
+		);
+		expect(referenced.length).toBeGreaterThanOrEqual(1);
 	});
 });
