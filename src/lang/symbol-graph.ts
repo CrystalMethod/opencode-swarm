@@ -1,4 +1,5 @@
 import type { Language, Node, QueryMatch, Tree } from 'web-tree-sitter';
+import { JAVA_SYMBOL_GRAMMAR, parseJavaImports } from './java-extraction';
 import {
 	collectCommonJsExports,
 	collectPythonAllNames,
@@ -209,36 +210,7 @@ const QUERIES: Record<
 		`,
 		exports: ``,
 	},
-	java: {
-		defs: `
-			(method_declaration
-				(identifier) @func.name
-			) @func.def
-			(constructor_declaration
-				(identifier) @ctor.name
-			) @ctor.def
-			(class_declaration
-				(identifier) @class.name
-			) @class.def
-			(interface_declaration
-				(identifier) @interface.name
-			) @interface.def
-			(enum_declaration
-				(identifier) @enum.name
-			) @enum.def
-			(record_declaration
-				(identifier) @record.name
-			) @record.def
-		`,
-		imports: `
-			(import_declaration) @import
-		`,
-		refs: `
-			(identifier) @ref.identifier
-			(type_identifier) @ref.identifier
-		`,
-		exports: ``,
-	},
+	java: JAVA_SYMBOL_GRAMMAR,
 	kotlin: {
 		defs: `
 			(function_declaration
@@ -1875,7 +1847,7 @@ function parseImport(
 		case 'go':
 			return parseGoImportHardened(text);
 		case 'java':
-			return parseJavaImport(text);
+			return parseJavaImports(text);
 		case 'kotlin':
 			return parseKotlinImport(text);
 		case 'csharp':
@@ -2183,31 +2155,6 @@ function finalDottedSegment(path: string): string {
 	const withoutGenerics = path.replace(/<.*>$/s, '');
 	const lastDot = withoutGenerics.lastIndexOf('.');
 	return lastDot === -1 ? withoutGenerics : withoutGenerics.slice(lastDot + 1);
-}
-
-function parseJavaImport(text: string): FileSymbolFacts['imports'][0] | null {
-	const t = text.trim();
-	// import foo.Bar;
-	// import static foo.Bar.baz;
-	// import foo.*;  /  import static foo.Bar.*;
-	const m = t.match(/^import\s+(static\s+)?([^;\s]+)\s*;?\s*$/);
-	if (!m) return null;
-	const isStatic = Boolean(m[1]);
-	const path = m[2];
-	const last = finalDottedSegment(path);
-	// On-demand import: no single symbol is bound.
-	if (last === '*') {
-		return { specifier: path, importType: 'namespace', bindings: [] };
-	}
-	// `import static foo.Bar.baz` binds the member `baz` declared by the type
-	// `foo.Bar`, so the module specifier is the type, not the member.
-	const lastDot = path.lastIndexOf('.');
-	const specifier = isStatic && lastDot !== -1 ? path.slice(0, lastDot) : path;
-	return {
-		specifier,
-		importType: 'named',
-		bindings: [{ imported: last, local: last }],
-	};
 }
 
 function parseKotlinImport(text: string): FileSymbolFacts['imports'][0] | null {
