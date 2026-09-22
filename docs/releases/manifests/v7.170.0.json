@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.170.0",
+  "tagCommit": "f12e821a706be2575d630b7de7c8bd51ed7abf40",
+  "targetCommitish": "f12e821a706be2575d630b7de7c8bd51ed7abf40",
+  "releaseBodySha256": "6f5ec4d56973c76c936d4c03b7493ac747dda788aea16409330cdbfb270e885f",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2497-advisory-headless-ci.md",
+      "sha256": "4b11608ba9fe95d102a34a6b67b3b0831ef7addd0a5fb7f746dbff05ee94be78"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2574-gate-denial-guidance.md",
+      "sha256": "aa3af60fd90202d8018df3a8e8009e06b1f5fbae58d699238010c6e5614f570c"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2590-macos-sandbox-exec-sbpl-setenv.md",
+      "sha256": "5ae8727c152e42411cd7b4cfbc5f78768c57fc5efec33f0cfe7b3b11f7f5b080"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/ci-gate-policy-2552.md",
+      "sha256": "0005e99265fbea4b37cea0e286503b499cbfae31e830274912c508c1ebde846c"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/ci-merge-group-event-scoped-cancellation-2552.md",
+      "sha256": "cd492c06aae7d308ab758959155afa4fa5fcc2b70f196d212ca4ddf27fad5ee4"
+    },
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/ci-stage-a-decision-2552.md",
+      "sha256": "697f703ef65d18e81c189d02fe8727ee4d5f6b4b3a36788ae4d2c6b66b01b8f4"
+    },
+    {
+      "prNumber": null,
+      "order": 6,
+      "path": "docs/releases/pending/issue-1074-node24-actions.md",
+      "sha256": "10341d8f6f2244645d89f200059ef74686ea825e0b40fbb620cda511c740b76c"
+    }
+  ]
+}

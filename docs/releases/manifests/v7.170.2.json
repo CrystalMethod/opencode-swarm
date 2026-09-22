@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.170.2",
+  "tagCommit": "d97b7646013dd5c1219d49e6f44b881882146530",
+  "targetCommitish": "d97b7646013dd5c1219d49e6f44b881882146530",
+  "releaseBodySha256": "b99e4a4ca54c2eabd56be2b9ccd1badabf8544440e391fc62bea9f123a5a79db",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2529-host-task-tool-id.md",
+      "sha256": "58adcba2a98b23d8c0c17e423283913473fed7bd4d80e9362e1c4d7911f0ec96"
+    }
+  ]
+}

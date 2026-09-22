@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.171.0",
+  "tagCommit": "cdccdc8b9618e91729bf4c1381466fdcac8198fc",
+  "targetCommitish": "cdccdc8b9618e91729bf4c1381466fdcac8198fc",
+  "releaseBodySha256": "eb34364960acdd2774d77bf7f09e53d3445cac37ad8afff2918ac82e9e161bcd",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2486-training-vault-dataset-export.md",
+      "sha256": "dab891aff5651c8b7358f4981dee8b33028dd3e7e51a50006443703b6fa385df"
+    }
+  ]
+}

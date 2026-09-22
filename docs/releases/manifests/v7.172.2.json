@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.172.2",
+  "tagCommit": "ec76aba5cff2536887a1c90e7bc1dfd8ce04690c",
+  "targetCommitish": "ec76aba5cff2536887a1c90e7bc1dfd8ce04690c",
+  "releaseBodySha256": "94d9e5d1072f855059f3243c428655dda9133a3a9554d22c2378e18b1af6d317",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2498-gated-github-action-follow-up.md",
+      "sha256": "0994437b3af9f65a5a0df2291ff438bd848a10b3d680d7fbe919699c8489f8e4"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2614-refuse-unregistered-lane-agents.md",
+      "sha256": "33cc5c591e90ef881c504d7ca2ec14e086b39088ede7d4c2bc0cb6a27412b47f"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.176.0",
+  "tagCommit": "5779b5e173b082a9b29dfe8de14657d4dd4b5313",
+  "targetCommitish": "5779b5e173b082a9b29dfe8de14657d4dd4b5313",
+  "releaseBodySha256": "365046e00b868927791193374be5707f012b1771a86ce1c059695df347a20fcb",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2670-startup-latency-contract.md",
+      "sha256": "e4973dc1ede659134c57dd5010f1eefb043d4ab6de94ce72f538dd53165b670f"
+    }
+  ]
+}
