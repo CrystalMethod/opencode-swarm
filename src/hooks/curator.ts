@@ -75,6 +75,7 @@ import { bunWrite } from '../utils/bun-compat';
 import { extractContextDecisions } from '../utils/context-decisions';
 import * as logger from '../utils/logger';
 import { invalidateCachedArtifact } from '../utils/swarm-artifact-cache';
+import { sanitizeContextText } from './context-sanitizer.js';
 import type {
 	ComplianceObservation,
 	CuratorConfig,
@@ -1554,13 +1555,23 @@ export async function runCuratorInit(
 
 		if (llmDelegate) {
 			try {
-				const userInput = [
-					'TASK: CURATOR_INIT',
-					`PRIOR_SUMMARY: ${priorSummary ? JSON.stringify(priorSummary) : 'none'}`,
-					`KNOWLEDGE_ENTRIES: ${JSON.stringify(allEntriesForCurator)}`,
-					`PROJECT_CONTEXT: ${contextMd?.slice(0, config.max_summary_tokens * 2) ?? 'none'}`,
-					`POST_MORTEM_DIGEST: ${latestPostMortemDigest ?? 'none'}`,
-				].join('\n');
+				// #2890: PROJECT_CONTEXT is a raw context.md slice and the other
+				// fields carry persisted summary/knowledge/post-mortem text.
+				// Label-interpolated blobs are sanitized FIELD-LEVEL before
+				// composition (a `system:` directive on the blob's first line
+				// would otherwise sit mid-line after the label, where the
+				// sanitizer's line-anchored directive rule cannot fire), and the
+				// composed input is sanitized again before the delegate
+				// (idempotent).
+				const userInput = sanitizeContextText(
+					[
+						'TASK: CURATOR_INIT',
+						`PRIOR_SUMMARY: ${priorSummary ? JSON.stringify(priorSummary) : 'none'}`,
+						`KNOWLEDGE_ENTRIES: ${JSON.stringify(allEntriesForCurator)}`,
+						`PROJECT_CONTEXT: ${sanitizeContextText(contextMd?.slice(0, config.max_summary_tokens * 2) ?? 'none')}`,
+						`POST_MORTEM_DIGEST: ${sanitizeContextText(latestPostMortemDigest ?? 'none')}`,
+					].join('\n'),
+				);
 
 				const systemPrompt = CURATOR_INIT_PROMPT;
 				const timeoutMs =
@@ -1748,7 +1759,14 @@ export async function runCuratorPhase(
 		// first-5 cap below is unchanged.
 		const keyDecisions: string[] = contextMd
 			? extractContextDecisions(contextMd).map((decision) =>
-					decision.raw.trim().slice(2),
+					// #2890: context.md is untrusted at the injection boundary (the
+					// #1126 threat model). Each decision is sanitized standalone so a
+					// bullet-initial `system:` is at string-start where the
+					// line-anchored directive rule fires — after JSON.stringify it
+					// would be mid-line and missed. This also cleans the persisted
+					// phaseDigest.key_decisions so payload decisions cannot resurface
+					// via phase_digests[] in later PRIOR_SUMMARY reads.
+					sanitizeContextText(decision.raw.trim().slice(2)),
 				)
 			: [];
 
@@ -1797,15 +1815,24 @@ export async function runCuratorPhase(
 			try {
 				const priorDigest = priorSummary?.digest ?? 'none';
 				const systemPrompt = CURATOR_PHASE_PROMPT;
-				const userInput = [
-					`TASK: CURATOR_PHASE ${phase}`,
-					`PRIOR_DIGEST: ${priorDigest}`,
-					`PHASE_EVENTS: ${JSON.stringify(phaseEvents.slice(0, 50))}`,
-					`PHASE_DECISIONS: ${JSON.stringify(keyDecisions)}`,
-					`AGENTS_DISPATCHED: ${JSON.stringify(agentsDispatched)}`,
-					`AGENTS_EXPECTED: ["reviewer", "test_engineer"]`,
-					`KNOWLEDGE_ENTRIES: ${JSON.stringify(knowledgeForCurator)}`,
-				].join('\n');
+				// #2890: every field below can carry untrusted text (context.md
+				// decisions, events.jsonl free-text fields, knowledge lessons, the
+				// persisted digest). PRIOR_DIGEST is sanitized FIELD-LEVEL (a
+				// `system:` directive on the digest's first line would otherwise
+				// sit mid-line after the label), and the composed input is
+				// sanitized again before the delegate (idempotent; covers legacy
+				// persisted digests too).
+				const userInput = sanitizeContextText(
+					[
+						`TASK: CURATOR_PHASE ${phase}`,
+						`PRIOR_DIGEST: ${sanitizeContextText(priorDigest)}`,
+						`PHASE_EVENTS: ${JSON.stringify(phaseEvents.slice(0, 50))}`,
+						`PHASE_DECISIONS: ${JSON.stringify(keyDecisions)}`,
+						`AGENTS_DISPATCHED: ${JSON.stringify(agentsDispatched)}`,
+						`AGENTS_EXPECTED: ["reviewer", "test_engineer"]`,
+						`KNOWLEDGE_ENTRIES: ${JSON.stringify(knowledgeForCurator)}`,
+					].join('\n'),
+				);
 
 				const timeoutMs =
 					config.llm_timeout_ms ?? DEFAULT_CURATOR_LLM_TIMEOUT_MS;
