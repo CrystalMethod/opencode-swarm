@@ -100,7 +100,7 @@ async function runOnce(costFields: Record<string, unknown>): Promise<string> {
 }
 
 beforeEach(() => {
-	tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-2789-engine-'));
+	tmpDir = canonicalMkdtemp('swarm-2789-engine-');
 });
 
 afterEach(() => {

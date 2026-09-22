@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { recoverPendingCostCorrectionForTest } from '../../../src/index';
+import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 import {
 	buildDelegationCostFields,
 	summarizeTelemetryCosts,
@@ -16,7 +17,7 @@ import {
 let testDir: string;
 
 beforeEach(() => {
-	testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-2789-fold-'));
+	testDir = canonicalMkdtemp('swarm-2789-fold-');
 	fs.mkdirSync(path.join(testDir, '.swarm'), { recursive: true });
 });
 

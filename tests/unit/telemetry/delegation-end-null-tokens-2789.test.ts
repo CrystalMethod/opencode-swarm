@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
 import { projectOtlpAttributes } from '../../../src/observability/otlp-exporter';
 import {
 	addTelemetryListener,
@@ -9,6 +7,7 @@ import {
 	resetTelemetryForTesting,
 	telemetry,
 } from '../../../src/telemetry';
+import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 // Issue #2789: delegationEnd emits null (unknown) token axes when the
 // producer did not hold a value; known numbers pass through verbatim and an
@@ -17,7 +16,7 @@ import {
 let tempDir: string;
 
 beforeEach(() => {
-	tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'swarm-2789-emit-'));
+	tempDir = canonicalMkdtemp('swarm-2789-emit-');
 	initTelemetry(tempDir);
 });
 
