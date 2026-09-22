@@ -102,6 +102,7 @@ import {
 	type PrWorkflowPendingLaneLiveness,
 	readPrWorkflowGateState,
 	recordPrFeedbackGateBatch,
+	recordPrReviewMicroFamilyDispatch,
 	recordPrReviewValidationBatch,
 	rollbackPrReviewBaseAdmissionIfUnlaunched,
 	validatePrReviewDiscoveryLaneCompletion,
@@ -1768,6 +1769,22 @@ export async function executeDispatchLanesAsync(
 						directory,
 						context.sessionID,
 						effectiveTriggerEvaluation,
+					);
+					// Issue #2878: persist this dispatch as one counted attempt
+					// per family the lanes own, so the dead-family admission in
+					// write_pr_review_trigger_eval can mechanically prove the
+					// bounded retry budget was exhausted before disclosing a
+					// liveness-dead family. Recorded after the ledger bind and
+					// before any lane session is created (crash-window
+					// disposition on the recording function).
+					gateState = await recordPrReviewMicroFamilyDispatch(
+						directory,
+						context.sessionID,
+						laneSpecs,
+						{
+							batchId,
+							prHeadSha: headSha,
+						},
 					);
 					prReviewWorkflowInstanceId = gateState.workflowInstanceId;
 					prReviewWorkflowRevision = gateState.revision;

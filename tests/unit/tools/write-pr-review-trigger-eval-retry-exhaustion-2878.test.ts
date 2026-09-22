@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
@@ -8,10 +8,9 @@ import {
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
 import {
-	type PrReviewLaneResultEnvelope,
-	type PrReviewResultReceipt,
-	prReviewLaneResultEnvelopeDigest,
-} from '../../../src/background/pr-review-contract.js';
+	getCoordinationState,
+	transitionCoordinationState,
+} from '../../../src/db/coordination-store.js';
 import {
 	activatePrWorkflow,
 	bindPrReviewBase,
@@ -19,8 +18,10 @@ import {
 	enforcePrReviewBaseDimensions,
 	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
+	readPrWorkflowGateState,
 	recordPrReviewMicroFamilyDispatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { prWorkflowSessionFileStem } from '../../../src/pr-review/persistence.js';
 import {
 	executeWritePrReviewTriggerEval,
 	PR_REVIEW_TRIGGER_DEFINITIONS,
@@ -28,24 +29,24 @@ import {
 } from '../../../src/tools/write-pr-review-trigger-eval.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
-// Issue #2840 (AC6, TOCTOU cross-check): a liveness-shape micro lane whose
-// durable record ALREADY holds a prReviewResultReceipt is not a dead family —
-// its review finished (the receipt landed as the presumed-stale sweep fired,
-// or later via parentRepair). The trigger-eval writer must refuse the
-// dead-family admission and fail closed on the provenance chain instead of
-// mislabeling real findings "presumed host abandonment". The receipt-less
-// control (the #2835 shape) still admits with the disclosure.
+// Issue #2878 acceptance check C2 (DISCRIMINATING — RED at base): the
+// dead-family admission fails closed when the bounded retry budget (initial
+// dispatch plus PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET retries) is not proven
+// exhausted from the persisted per-family dispatch ledger — zero attempts,
+// below-budget attempts, or a cited batch that is not among the recorded
+// attempts. At base the admission discloses with zero attempts recorded, so
+// every case below must observe success:false only after the fix.
 
 const tempDirs: string[] = [];
-const SESSION_ID = 'toctou-2840-session';
+const SESSION_ID = 'c2-retry-exhaustion-session';
 const HEAD_SHA = 'abc123';
 const BASE_SHA = 'def456';
 const BASE_REF = 'origin/main';
-const REVISION_DIGEST = 'toctou-2840-revision';
+const REVISION_DIGEST = 'c2-retry-exhaustion-revision';
 const REVIEW_SCOPE = `complete PR diff ${BASE_SHA}...${HEAD_SHA}`;
 const DEAD_TRIGGER = 'unclassified-risk';
-const DEAD_BATCH = 'micro-batch-toctou';
-const DEAD_LANE = 'lane-unclassified-toctou';
+const DEAD_BATCH = 'micro-batch-dead';
+const DEAD_LANE = 'lane-unclassified-dead';
 const STALE_REASON = `lane ${DEAD_LANE} presumed stale: idle host session past the stale horizon`;
 const STALE_DIGEST = createHash('sha256').update(STALE_REASON).digest('hex');
 
@@ -61,11 +62,11 @@ const originalGateInternals = {
 const originalWriterInternals = {
 	digest: writerInternals.resolvePrWorkflowRevisionDigest,
 	mergeBase: writerInternals.resolveMergeBase,
-	findByBatchIdDetailed: writerInternals.findByBatchIdDetailed,
+	readGateState: writerInternals.readPrWorkflowGateState,
 };
 
 function tempRoot(): string {
-	const root = canonicalMkdtemp('toctou-2840-');
+	const root = canonicalMkdtemp('c2-retry-exhaustion-');
 	mkdirSync(join(root, '.git'), { recursive: true });
 	tempDirs.push(root);
 	return root;
@@ -148,55 +149,7 @@ async function recordCompletedBaseLane(
 	});
 }
 
-/** A structurally valid receipt envelope whose owned lanes are all unresolved
- * (the shape a parent-repair submission carries for a dead child). */
-function repairEnvelope(): PrReviewLaneResultEnvelope {
-	return {
-		schemaVersion: 1,
-		outcome: 'INCOMPLETE',
-		creditedLanes: [],
-		findings: [],
-		cleanAttestations: [],
-		unresolved: [
-			{
-				workflowLane: DEAD_TRIGGER,
-				reason: 'NOT_EXECUTED',
-				detail: 'child died before submitting',
-			},
-		],
-	};
-}
-
-function repairReceipt(): PrReviewResultReceipt {
-	const envelope = repairEnvelope();
-	return {
-		schemaVersion: 1,
-		mode: 'swarm-pr-review:micro',
-		workflowInstanceId: 'wfi-toctou-2840',
-		workflowRevision: 1,
-		batchId: DEAD_BATCH,
-		laneId: DEAD_LANE,
-		workflowLane: DEAD_TRIGGER,
-		ownedWorkflowLanes: [DEAD_TRIGGER],
-		baseSha: BASE_SHA,
-		headSha: HEAD_SHA,
-		dispatchRevisionDigest: 'e'.repeat(64),
-		childSessionId: `${DEAD_BATCH}-${DEAD_LANE}-session`,
-		generation: 1,
-		semanticEnvelopeDigest: prReviewLaneResultEnvelopeDigest(envelope),
-		envelope,
-		submittedBy: 'workflow_parent',
-		submittedByParentSessionId: SESSION_ID,
-		laneTerminalStateAtSubmission: 'stale',
-	};
-}
-
-/** Settle the dead-shape micro lane; `withReceipt` additionally plants a
- * prReviewResultReceipt on the terminal result (the TOCTOU state). */
-async function recordLivenessDeadMicroLane(
-	root: string,
-	withReceipt: boolean,
-): Promise<void> {
+async function recordLivenessDeadMicroLane(root: string): Promise<void> {
 	const correlationId = `${DEAD_BATCH}-${DEAD_LANE}-session`;
 	await recordPendingDelegation(root, {
 		correlationId,
@@ -229,14 +182,27 @@ async function recordLivenessDeadMicroLane(
 			truncated: false,
 			digest: STALE_DIGEST,
 			workflowLaneFailureClass: 'liveness',
-			...(withReceipt ? { prReviewResultReceipt: repairReceipt() } : {}),
 		},
 	});
 }
 
+async function recordFamilyDispatchAttempts(
+	root: string,
+	batchIds: string[],
+): Promise<void> {
+	for (const batchId of batchIds) {
+		await recordPrReviewMicroFamilyDispatch(
+			root,
+			SESSION_ID,
+			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
+			{ batchId, prHeadSha: HEAD_SHA },
+		);
+	}
+}
+
 async function establishBoundReviewGate(
 	root: string,
-	withReceipt: boolean,
+	attemptBatchIds: string[],
 ): Promise<void> {
 	gateInternals.resolveCurrentGitHead = () => HEAD_SHA;
 	gateInternals.resolveIsWorkingTreeClean = () => true;
@@ -280,27 +246,15 @@ async function establishBoundReviewGate(
 			evidence,
 		})),
 	);
-	// Issue #2878: the receipt-less control below must still admit, so the
-	// fixture satisfies the enforced retry budget — initial dispatch plus two
-	// retries, the cited dead batch last.
-	for (const batchId of ['toctou-attempt-1', 'toctou-attempt-2', DEAD_BATCH]) {
-		await recordPrReviewMicroFamilyDispatch(
-			root,
-			SESSION_ID,
-			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
-			{ batchId, prHeadSha: HEAD_SHA },
-		);
-	}
-	await recordLivenessDeadMicroLane(root, withReceipt);
+	await recordLivenessDeadMicroLane(root);
+	await recordFamilyDispatchAttempts(root, attemptBatchIds);
 }
 
-async function runWriter(
-	root: string,
-): Promise<{ success: boolean; message: string }> {
+async function evaluate(root: string, runId: string) {
 	return JSON.parse(
 		await executeWritePrReviewTriggerEval(
 			{
-				run_id: 'toctou-2840-run',
+				run_id: runId,
 				pr_head_sha: HEAD_SHA,
 				base_sha: BASE_SHA,
 				base_ref: BASE_REF,
@@ -327,86 +281,160 @@ afterEach(() => {
 	writerInternals.resolvePrWorkflowRevisionDigest =
 		originalWriterInternals.digest;
 	writerInternals.resolveMergeBase = originalWriterInternals.mergeBase;
-	writerInternals.findByBatchIdDetailed =
-		originalWriterInternals.findByBatchIdDetailed;
+	writerInternals.readPrWorkflowGateState =
+		originalWriterInternals.readGateState;
 	for (const dir of tempDirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
-describe('issue #2840 — TOCTOU: a receipt-bearing lane is never a dead family', () => {
-	test('liveness-shape lane WITH a prReviewResultReceipt fails closed on provenance, not dead-family admission', async () => {
+describe('C2: dead-family disclosure fails closed when the retry budget is not exhausted (issue #2878)', () => {
+	test('admission fails closed when zero dispatch attempts are recorded for the dead family', async () => {
 		const root = tempRoot();
-		await establishBoundReviewGate(root, true);
-		const result = await runWriter(root);
-		expect(result.success).toBe(false);
-		expect(result.message).toContain(
-			'does not reference a verifiable micro-lane provenance chain',
-		);
-	});
+		await establishBoundReviewGate(root, []);
+		const result = await evaluate(root, 'c2-zero-attempts-run');
 
-	test('control: the receipt-less #2835 shape still admits with the disclosure', async () => {
-		const root = tempRoot();
-		await establishBoundReviewGate(root, false);
-		const result = await runWriter(root);
 		expect(
 			result.success,
-			`receipt-less liveness-dead lane must still admit; writer said: ${result.message}`,
-		).toBe(true);
+			`zero recorded attempts must fail closed; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain(DEAD_TRIGGER);
+		expect(result.message).toMatch(/dispatch/i);
+		expect(result.message).toContain('0 dispatch attempt');
+		expect(result.message).toContain('retry budget');
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
 	});
 
-	test('PR review F-4: a receipt landing between the snapshot read and the fresh re-read still fails closed (the load-bearing conjunct)', async () => {
-		// The tool reads the lane record twice: the snapshot predicate (the
-		// short-circuit) and the fresh findByBatchIdDetailed re-read (the
-		// load-bearing authority). This test simulates the exact TOCTOU race
-		// the fresh read exists for: the receipt is ABSENT at the snapshot
-		// read and PRESENT at the fresh one (it landed in between). Without
-		// the !freshAlreadySubmittedReceipt conjunct the fresh predicate
-		// admits the dead-family disclosure and this test fails.
+	test('admission fails closed below budget even when the cited batch is recorded', async () => {
 		const root = tempRoot();
-		await establishBoundReviewGate(root, true);
-		const realFinder = writerInternals.findByBatchIdDetailed;
-		let reads = 0;
-		writerInternals.findByBatchIdDetailed = ((
-			directory: string,
-			batchId: string,
-			options: unknown,
-		) => {
-			reads += 1;
-			const outcome = realFinder(
-				directory,
-				batchId,
-				options as Parameters<typeof realFinder>[2],
-			);
-			if (reads === 1 && outcome.status === 'ok') {
-				// Strip the receipt from the SNAPSHOT view only: as far as the
-				// first read is concerned the lane is still receipt-less.
-				for (const record of outcome.value) {
-					if (record.result?.prReviewResultReceipt) {
-						record.result = { ...record.result };
-						delete record.result.prReviewResultReceipt;
-					}
-					if (record.terminalResult?.result?.prReviewResultReceipt) {
-						record.terminalResult = {
-							...record.terminalResult,
-							result: { ...record.terminalResult.result },
-						};
-						delete record.terminalResult.result.prReviewResultReceipt;
-					}
-				}
-			}
-			return outcome;
-		}) as typeof realFinder;
-		const result = await runWriter(root);
+		await establishBoundReviewGate(root, ['micro-attempt-1', DEAD_BATCH]);
+		const result = await evaluate(root, 'c2-below-budget-run');
+
 		expect(
 			result.success,
-			`a receipt observed by the fresh re-read must block the dead-family admission; writer said: ${result.message}`,
+			`two of three attempts must fail closed; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain('2 dispatch attempt');
+		expect(result.message).toContain('retry budget');
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('admission fails closed at budget when the cited batch is not among recorded attempts', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'attempt-1',
+			'attempt-2',
+			'attempt-3',
+		]);
+		const result = await evaluate(root, 'c2-foreign-batch-run');
+
+		expect(
+			result.success,
+			`a cited batch outside the counted attempts must fail closed; writer said: ${result.message}`,
 		).toBe(false);
 		expect(result.message).toContain(
-			'does not reference a verifiable micro-lane provenance chain',
+			'not among the recorded dispatch attempts',
 		);
-		// Both reads actually happened (snapshot + fresh) — the race was
-		// genuinely exercised, not short-circuited away.
-		expect(reads).toBeGreaterThanOrEqual(2);
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('admission fails closed when the cited attempt no longer belongs to this pr head', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'micro-attempt-1',
+			'micro-attempt-2',
+			DEAD_BATCH,
+		]);
+		// Tamper with the persisted ledger the way only external state corruption
+		// could: re-head the CITED record to another pr head. Production write
+		// paths can never produce this (the checkout assert and the session head
+		// immutability both reject foreign heads), which is exactly why the
+		// record-level prHeadSha filter exists. With the filter, the cited batch
+		// drops out of this head's count and the admission fails closed with the
+		// foreign-cited-batch message; without it, the budget would still be
+		// met (3 remaining records) AND the cited batch would still be counted,
+		// wrongly disclosing the dead family.
+		const current = await readPrWorkflowGateState(root, SESSION_ID);
+		if (!current) throw new Error('missing active workflow state');
+		const ledger = current.prReviewMicroFamilyDispatches ?? [];
+		expect(ledger.length).toBe(3);
+		const namespace = `pr-workflow.state:${prWorkflowSessionFileStem(SESSION_ID)}`;
+		const row = getCoordinationState(root, namespace, 'state');
+		if (!row) throw new Error('missing workflow coordination row');
+		const tamperedLedger = ledger.map((record) =>
+			record.batchId === DEAD_BATCH
+				? { ...record, prHeadSha: 'fed789bread' }
+				: record,
+		);
+		const result_ = transitionCoordinationState(root, {
+			namespace,
+			entityKey: 'state',
+			expectedRevision: row.revision,
+			generation: current.revision + 1,
+			status: current.mode,
+			payload: JSON.stringify({
+				...current,
+				revision: current.revision + 1,
+				prReviewMicroFamilyDispatches: tamperedLedger,
+			}),
+		});
+		expect(result_.outcome).toBe('applied');
+		gateInternals.resetTrackedStateCache();
+
+		const result = await evaluate(root, 'c2-foreign-head-run');
+
+		expect(
+			result.success,
+			`a cited attempt re-headed away from this pr head must not satisfy the budget; writer said: ${result.message}`,
+		).toBe(false);
+		// The re-headed cited record drops out of this head's count, so the
+		// below-budget branch fires (2 remaining) with the foreign-cited note.
+		expect(result.message).toContain('2 dispatch attempt');
+		expect(result.message).toContain('is not among them');
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('the decision-moment fresh re-read rejects when the ledger no longer proves exhaustion', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'micro-attempt-1',
+			'micro-attempt-2',
+			DEAD_BATCH,
+		]);
+		// Snapshot sees the exhausted budget; the fresh re-read at the
+		// decision moment observes a ledger that no longer proves it (the
+		// seam models concurrent state loss between the two reads).
+		const realState = await readPrWorkflowGateState(root, SESSION_ID);
+		writerInternals.readPrWorkflowGateState = async () => ({
+			...realState!,
+			prReviewMicroFamilyDispatches: (
+				realState?.prReviewMicroFamilyDispatches ?? []
+			).slice(0, 2),
+		});
+		const result = await evaluate(root, 'c2-fresh-regression-run');
+
+		expect(
+			result.success,
+			`a fresh ledger that no longer proves exhaustion must fail closed at the decision moment; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toMatch(
+			/no longer proves the retry budget exhausted/,
+		);
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
 	});
 });

@@ -240,7 +240,7 @@ export const SWARM_TEMP_GRAMMARS: readonly SwarmTempGrammar[] = [
 		producers: [
 			'src/tools/write-pr-review-artifact.ts:154',
 			'src/tools/write-pr-review-artifact.ts:174',
-			'src/tools/write-pr-review-trigger-eval.ts:100',
+			'src/tools/write-pr-review-trigger-eval.ts:105',
 		],
 		note: 'bundled-skills writes outside .swarm (project skill roots) and keeps its own contained-directory logic (invariant 4 bundled-skill ownership)',
 	},

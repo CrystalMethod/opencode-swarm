@@ -14,6 +14,7 @@ import {
 	enforcePrReviewBaseDimensions,
 	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
+	recordPrReviewMicroFamilyDispatch,
 	recordPrReviewValidationBatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import {
@@ -233,6 +234,16 @@ async function establishState(root: string): Promise<void> {
 			evidence,
 		})),
 	);
+	// Issue #2878: the dead-family admission requires the enforced retry
+	// budget — initial dispatch plus two retries, the cited dead batch last.
+	for (const batchId of ['micro-attempt-1', 'micro-attempt-2', DEAD_BATCH]) {
+		await recordPrReviewMicroFamilyDispatch(
+			root,
+			SESSION_ID,
+			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
+			{ batchId, prHeadSha: HEAD_SHA },
+		);
+	}
 	await recordLivenessDeadMicroLane(root);
 }
 

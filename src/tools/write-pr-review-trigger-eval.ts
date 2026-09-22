@@ -11,6 +11,7 @@ import {
 } from '../background/pr-review-contract.js';
 import {
 	buildPrReviewTriggerReceiptV2,
+	PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET,
 	PR_REVIEW_TRIGGER_RECEIPT_MAX_BYTES,
 	PrReviewWriterInputRowSchema,
 	parsePrReviewTriggerReceipt,
@@ -49,6 +50,10 @@ export const _internals = {
 	// through this seam so the TOCTOU race (receipt landing between the two
 	// reads) is deterministically testable.
 	findByBatchIdDetailed,
+	// Issue #2878 review: the fresh-leg gate re-read routes through the seam
+	// too, so the decision-moment ledger re-check (snapshot says exhausted,
+	// fresh read disagrees) is deterministically testable.
+	readPrWorkflowGateState,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -353,6 +358,33 @@ export async function executeWritePrReviewTriggerEval(
 	// duplicating (or reintroducing stale) content for it downstream.
 	const citedLaneOwnership = new Map<string, string[]>();
 	const coverageDegradations: TriggerCoverageDegradation[] = [];
+	// Issue #2878: persisted per-family dispatch attempts for this run. Every
+	// micro-dispatch acknowledgment appends one record
+	// (`recordPrReviewMicroFamilyDispatch` in the gate), so counting the
+	// records whose lanes own a family — under this evaluation's pr head — is
+	// the durable attempt count the dead-family admission requires. The
+	// record-level prHeadSha filter is explicit rather than relying solely on
+	// the state-level head binding, so a future weakening of that binding
+	// cannot silently let another head's attempts count. A consolidated lane's
+	// owned set falls back to its singleton workflow_lane, mirroring the
+	// recordOwnedLanes derivation below.
+	const countFamilyDispatchAttempts = (
+		state: Awaited<ReturnType<typeof readPrWorkflowGateState>>,
+		triggerId: string,
+		prHeadSha: string,
+	) =>
+		(state?.prReviewMicroFamilyDispatches ?? []).filter(
+			(dispatchRecord) =>
+				dispatchRecord.prHeadSha === prHeadSha &&
+				dispatchRecord.lanes.some((lane) =>
+					(lane.ownedWorkflowLanes?.length
+						? lane.ownedWorkflowLanes
+						: lane.workflowLane
+							? [lane.workflowLane]
+							: []
+					).includes(triggerId),
+				),
+		);
 	for (const row of validatedRows) {
 		if (row.result !== 'MATCHED') continue;
 		// Issue #2511: provenance decision site — an unreadable store must
@@ -440,7 +472,7 @@ export async function executeWritePrReviewTriggerEval(
 		const laneAlreadySubmittedReceipt =
 			!!record?.result?.prReviewResultReceipt ||
 			!!record?.terminalResult?.result.prReviewResultReceipt;
-		const livenessTerminalDead =
+		const deadFamilyRecordShape =
 			provenanceFailure &&
 			!laneAlreadySubmittedReceipt &&
 			!!record &&
@@ -452,6 +484,33 @@ export async function executeWritePrReviewTriggerEval(
 			!outputArtifact &&
 			record.workspace?.prHeadSha === parsed.data.pr_head_sha &&
 			record.workspace?.gitHead === parsed.data.pr_head_sha;
+		// Issue #2878: the dead-family disclosure is contractually limited to
+		// "after the bounded retry budget … is exhausted" (#2835 AC 1, the
+		// skill's "initial attempt plus up to 2 retries"). The budget is now
+		// proven from the persisted per-family dispatch ledger in gate state:
+		// the cited batch must itself be among the counted attempts, so a
+		// foreign batch can never borrow another family's exhausted budget.
+		const snapshotFamilyAttempts = countFamilyDispatchAttempts(
+			gateState,
+			row.trigger_id,
+			parsed.data.pr_head_sha,
+		);
+		const citedBatchAmongRecordedAttempts = snapshotFamilyAttempts.some(
+			(dispatchRecord) => dispatchRecord.batchId === row.source_batch_id,
+		);
+		const deadFamilyRetryBudgetExhausted =
+			snapshotFamilyAttempts.length >=
+				1 + PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET &&
+			citedBatchAmongRecordedAttempts;
+		const livenessTerminalDead =
+			deadFamilyRecordShape && deadFamilyRetryBudgetExhausted;
+		if (deadFamilyRecordShape && !deadFamilyRetryBudgetExhausted) {
+			return failure(
+				snapshotFamilyAttempts.length < 1 + PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET
+					? `MATCHED trigger ${row.trigger_id} cites a liveness-dead micro lane, but the dead-family disclosure requires the bounded retry budget (initial dispatch plus ${PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET} retries) to be exhausted first: only ${snapshotFamilyAttempts.length} dispatch attempt(s) for this family are recorded in gate state for pr_head_sha "${parsed.data.pr_head_sha}"${citedBatchAmongRecordedAttempts ? '' : `, and the cited batch "${row.source_batch_id}" is not among them`}. Nothing was persisted, so this call is retryable as-is. Recovery: re-dispatch the family (each micro dispatch_lanes acknowledgment records one attempt) or restart with abort_pr_workflow (kind "recovery").`
+					: `MATCHED trigger ${row.trigger_id} cites a liveness-dead micro lane whose batch "${row.source_batch_id}" is not among the recorded dispatch attempts for this family under pr_head_sha "${parsed.data.pr_head_sha}", so retry-budget exhaustion cannot be attributed to the cited lane. Nothing was persisted, so this call is retryable as-is. Recovery: re-dispatch the family or restart with abort_pr_workflow (kind "recovery").`,
+			);
+		}
 		if (provenanceFailure && !livenessTerminalDead) {
 			return failure(
 				`MATCHED trigger ${row.trigger_id} does not reference a verifiable micro-lane provenance chain`,
@@ -505,11 +564,42 @@ export async function executeWritePrReviewTriggerEval(
 					`MATCHED trigger ${row.trigger_id} does not reference a verifiable micro-lane provenance chain`,
 				);
 			}
+			// Issue #2878: mirror the #2840 decision-moment discipline for the
+			// attempt ledger — re-read the gate state and re-prove exhaustion.
+			// Attempt counts are monotonic within a pr head (a concurrent
+			// dispatch acknowledgment can only append), so the snapshot read
+			// cannot over-claim exhaustion; the fresh re-read guards the
+			// opposite direction and keeps the disclosure decision bound to
+			// the store as of the decision moment.
+			let freshGateState: Awaited<ReturnType<typeof readPrWorkflowGateState>>;
+			try {
+				freshGateState = await _internals.readPrWorkflowGateState(
+					directory,
+					sessionID,
+				);
+			} catch (error) {
+				return failure(error instanceof Error ? error.message : String(error));
+			}
+			const freshFamilyAttempts = countFamilyDispatchAttempts(
+				freshGateState,
+				row.trigger_id,
+				parsed.data.pr_head_sha,
+			);
+			const freshRetryBudgetExhausted =
+				freshFamilyAttempts.length >= 1 + PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET &&
+				freshFamilyAttempts.some(
+					(dispatchRecord) => dispatchRecord.batchId === row.source_batch_id,
+				);
+			if (!freshRetryBudgetExhausted) {
+				return failure(
+					`MATCHED trigger ${row.trigger_id} cites a liveness-dead micro lane, but the persisted dispatch-attempt ledger no longer proves the retry budget exhausted for this family at the decision moment (${freshFamilyAttempts.length} attempt(s) recorded, cited batch ${row.source_batch_id}). Nothing was persisted, so this call is retryable as-is. Recovery: re-dispatch the family or restart with abort_pr_workflow (kind "recovery").`,
+				);
+			}
 			coverageDegradations.push({
 				trigger_id: row.trigger_id,
 				source_batch_id: row.source_batch_id!,
 				source_lane_id: row.source_lane_id!,
-				reason: `liveness-terminal dead family: lane settled ${freshRecord!.status} with typed liveness class (presumed host abandonment), no retained artifact; family disclosed unattested`,
+				reason: `liveness-terminal dead family: lane settled ${freshRecord!.status} with typed liveness class (presumed host abandonment), no retained artifact; family disclosed unattested; retry budget exhausted after ${freshFamilyAttempts.length} recorded dispatch attempt(s) for this family (cited batch ${row.source_batch_id} among them)`,
 			});
 			continue;
 		}
