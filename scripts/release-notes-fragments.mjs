@@ -2248,15 +2248,143 @@ async function modeApplyCleanup(log, args) {
 
 function modeVerifyRetention(log, args) {
 	if (args.length > 0) throw new Error('verify-retention does not accept options');
-	const result = auditFragmentRetention(resolveRepoRoot());
+	const repoRoot = resolveRepoRoot();
+	const result = auditFragmentRetention(repoRoot);
 	for (const message of result.diagnostics) log(message);
-	process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+	const sinceMs = Date.now() - RETENTION_TREND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+	const addedInWindow = countPendingAddsSince(
+		repoRoot,
+		new Date(sinceMs).toISOString(),
+	);
+	const trend = computeRetentionTrend({
+		pending: result.pending,
+		limit: result.limit,
+		addedInWindow,
+		windowDays: RETENTION_TREND_WINDOW_DAYS,
+	});
+	const daysToLimitText =
+		trend.daysToLimit === null ? 'n/a (no adds in window)' : String(trend.daysToLimit);
+	log(
+		`retention trend: add rate ${trend.addRatePerDay}/day (${RETENTION_TREND_WINDOW_DAYS}-day window, ${addedInWindow} added); days-to-limit ${daysToLimitText}`,
+	);
+	const warning = retentionWallWarning(result.pending, result.limit, trend);
+	if (warning !== null) {
+		log(`::warning::${warning} (pending ${result.pending}, limit ${result.limit})`);
+	}
+	process.stdout.write(
+		JSON.stringify({ ...result, trend }, null, 2) + '\n',
+	);
 	return result.violation ? 1 : 0;
 }
 
 // -----------------------------------------------------------------------------
 // CLI dispatch.
 // -----------------------------------------------------------------------------
+
+// Issue #2898 contract: exactly the CLI modes whose execution path reaches the
+// `gh` binary (ghJson / ghInput / tryGhJson). Workflow steps invoking one of
+// these modes must carry GH_TOKEN (and GITHUB_REPOSITORY where slug resolution
+// is needed) in their step env — enforced by
+// tests/unit/scripts/ci/release-fragments-gh-auth-shape-2898.test.ts. When
+// adding a mode that calls gh, add it here so the shape test covers it.
+export const MODES_REQUIRING_GH = [
+	'update-pr',
+	'update-release',
+	'prepare-cleanup',
+	'apply-cleanup',
+];
+
+// Retention-trend diagnostics (issue #2898): how fast pending fragments are
+// added and how many days remain before the retention limit reddens drift CI.
+export const RETENTION_TREND_WINDOW_DAYS = 14;
+export const RETENTION_WARN_DAYS = 30;
+// Warn even when the add rate stalls if pending is already this close to the
+// hard limit (PR #2911 review: a 740/750 state with a quiet window must not
+// read as safe just because days-to-limit is undefined).
+export const RETENTION_NEAR_WALL_RATIO = 0.9;
+
+export function retentionWallWarning(pending, limit, trend) {
+	if (!Number.isFinite(pending) || pending < 0) {
+		throw new Error('retention warning pending count must be a non-negative finite number');
+	}
+	if (!Number.isFinite(limit) || limit <= 0) {
+		throw new Error('retention warning limit must be a positive finite number');
+	}
+	if (
+		!trend ||
+		(trend.daysToLimit !== null && !Number.isFinite(trend.daysToLimit)) ||
+		!Number.isFinite(trend.addRatePerDay)
+	) {
+		throw new Error('retention warning trend must carry finite daysToLimit/addRatePerDay');
+	}
+	if (trend.daysToLimit !== null && trend.daysToLimit < RETENTION_WARN_DAYS) {
+		return `retention wall under ${RETENTION_WARN_DAYS} days: days-to-limit ${trend.daysToLimit} at add rate ${trend.addRatePerDay}/day`;
+	}
+	if (
+		trend.daysToLimit === null &&
+		pending / limit >= RETENTION_NEAR_WALL_RATIO
+	) {
+		return `pending fragments within ${Math.round((1 - RETENTION_NEAR_WALL_RATIO) * 100)}% of the limit with no adds recorded in the last ${RETENTION_TREND_WINDOW_DAYS}-day window`;
+	}
+	return null;
+}
+
+export function computeRetentionTrend({
+	pending,
+	limit,
+	addedInWindow,
+	windowDays,
+}) {
+	if (!Number.isFinite(pending) || pending < 0) {
+		throw new Error('retention trend pending count must be a non-negative finite number');
+	}
+	if (!Number.isFinite(limit) || limit <= 0) {
+		throw new Error('retention trend limit must be a positive finite number');
+	}
+	if (!Number.isFinite(addedInWindow) || addedInWindow < 0) {
+		throw new Error('retention trend added count must be a non-negative finite number');
+	}
+	if (!Number.isInteger(windowDays) || windowDays <= 0) {
+		throw new Error('retention trend window must be a positive integer number of days');
+	}
+	const addRatePerDay =
+		Math.round((addedInWindow / windowDays) * 100) / 100;
+	let daysToLimit = null;
+	if (addRatePerDay > 0) {
+		const headroom = Math.max(limit - pending, 0);
+		daysToLimit = Math.round((headroom / addRatePerDay) * 10) / 10;
+	}
+	return {
+		windowDays,
+		addedInWindow,
+		addRatePerDay,
+		daysToLimit,
+	};
+}
+
+export function countPendingAddsSince(repoRoot, sinceIso, runGitText = gitText) {
+	if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(String(sinceIso))) {
+		throw new Error('retention trend since must be an ISO-8601 timestamp');
+	}
+	const output = runGitText(
+		[
+			'log',
+			'--diff-filter=A',
+			'--name-only',
+			'--pretty=format:',
+			'--since',
+			String(sinceIso),
+			'--',
+			'docs/releases/pending',
+		],
+		repoRoot,
+	);
+	let added = 0;
+	for (const line of String(output).split('\n')) {
+		if (line.trim().length > 0) added += 1;
+	}
+	return added;
+}
 
 async function main() {
 	const mode = process.argv[2];

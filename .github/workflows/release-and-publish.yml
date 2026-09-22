@@ -233,6 +233,8 @@ jobs:
 
       - name: Validate and apply fragment cleanup
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
@@ -440,4 +442,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/release-notes-fragments.mjs update-pr
+
+  # Issue #2898: publish-npm does not need cleanup-release-fragments (releases
+  # must not be blocked on the cleanup path), so a failing cleanup used to be
+  # invisible unless someone opened the run page. This summary job runs on every
+  # release regardless of the cleanup result and surfaces a non-success
+  # conclusion as an ::error:: annotation plus a run-summary line.
+  release-health-summary:
+    needs: [release-please, cleanup-release-fragments]
+    if: ${{ always() && needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Report release job conclusions
+        run: |
+          echo "release-please: ${{ needs.release-please.result }}"
+          echo "cleanup-release-fragments: ${{ needs.cleanup-release-fragments.result }}"
+          echo "release-please=${{ needs.release-please.result }} cleanup-release-fragments=${{ needs.cleanup-release-fragments.result }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.cleanup-release-fragments.result }}" != "success" ] && [ "${{ needs.cleanup-release-fragments.result }}" != "skipped" ]; then
+            echo "::error::cleanup-release-fragments concluded ${{ needs.cleanup-release-fragments.result }} — fragment cleanup did not complete (docs/releases archive not materialized for this release)"
+            exit 1
+          fi
 
