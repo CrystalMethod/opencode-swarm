@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { TOOL_METADATA } from '../../../src/tools/tool-metadata';
 
 const symbolsMeta = TOOL_METADATA.symbols;
