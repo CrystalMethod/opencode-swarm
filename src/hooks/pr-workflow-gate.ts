@@ -837,6 +837,23 @@ interface PrReviewValidationBatchRecord {
 }
 
 /**
+ * Issue #2878: one admitted micro-dispatch acknowledgment. The dead-family
+ * admission in `write_pr_review_trigger_eval` counts these per trigger family
+ * (filtered by pr head) to mechanically prove the bounded retry budget was
+ * exhausted before a liveness-dead family may be disclosed.
+ */
+interface PrReviewMicroFamilyDispatchRecord {
+	batchId: string;
+	prHeadSha: string;
+	lanes: Array<{
+		laneId: string;
+		workflowLane: string;
+		ownedWorkflowLanes?: string[];
+	}>;
+	admittedAt: string;
+}
+
+/**
  * Per-batch coherence keys for item-keyed reviewer/critic composition.
  *
  * This deliberately lives OUTSIDE `PrReviewValidationBatchRecord`: that record's
@@ -916,6 +933,15 @@ export interface PrWorkflowGateState {
 	prReviewContractRetryDimensions?: PrReviewBaseDimensionId[];
 	/** Canonical ordered semantic ledger frozen by the first micro dispatch. */
 	prReviewTriggerLedger?: PrReviewInlineTriggerRow[];
+	/**
+	 * Issue #2878: per-family micro dispatch attempt ledger, appended by every
+	 * micro-dispatch acknowledgment (`recordPrReviewMicroFamilyDispatch`). The
+	 * dead-family admission in `write_pr_review_trigger_eval` counts these per
+	 * trigger family (filtered by pr head) to mechanically prove the bounded
+	 * retry budget was exhausted before disclosing a liveness-dead family.
+	 * Bounded at MAX_WORKFLOW_BATCHES with fail-closed overflow.
+	 */
+	prReviewMicroFamilyDispatches?: PrReviewMicroFamilyDispatchRecord[];
 	prReviewTriggerEvalPath?: string;
 	/**
 	 * The run_id bound to the trigger-evaluation receipt at first consumption.
@@ -1439,6 +1465,27 @@ const PrReviewValidationBatchRecordSchema = z
 	})
 	.strict();
 
+// Issue #2878: persisted shape of one admitted micro-dispatch acknowledgment
+// (see the PrReviewMicroFamilyDispatchRecord interface for semantics).
+const PrReviewMicroFamilyDispatchRecordSchema = z
+	.object({
+		batchId: z.string().min(1),
+		prHeadSha: z.string().min(1),
+		lanes: z
+			.array(
+				z
+					.object({
+						laneId: z.string().min(1),
+						workflowLane: z.string().min(1),
+						ownedWorkflowLanes: z.array(z.string().min(1)).min(1).optional(),
+					})
+					.strict(),
+			)
+			.min(1),
+		admittedAt: z.string().min(1),
+	})
+	.strict();
+
 // Intentionally NOT .strict(): this record is the newest persisted shape and is
 // the most likely to gain fields. Passthrough keeps a future field opaque but
 // present through any read-modify-write cycle instead of bricking a rollback.
@@ -1546,6 +1593,10 @@ const PrWorkflowGateStateSchema = z
 		prReviewTriggerLedger: z
 			.array(PrReviewInlineTriggerRowSchema)
 			.length(PR_REVIEW_REQUIRED_TRIGGER_IDS.length)
+			.optional(),
+		prReviewMicroFamilyDispatches: z
+			.array(PrReviewMicroFamilyDispatchRecordSchema)
+			.max(MAX_WORKFLOW_BATCHES)
 			.optional(),
 		prReviewTriggerEvalPath: z.string().min(1).optional(),
 		prReviewTriggerEvalRunId: z.string().min(1).optional(),
@@ -7125,6 +7176,83 @@ export async function assertPrReviewBaseCoverageSettled(
 }
 
 /** Persist a council/reviewer/critic validation batch before launch. */
+/**
+ * Issue #2878: record one admitted micro-dispatch acknowledgment in the
+ * per-family dispatch attempt ledger. The dead-family admission in
+ * `write_pr_review_trigger_eval` counts these records (per trigger family,
+ * filtered by pr head) to mechanically prove the bounded retry budget
+ * (initial dispatch plus `PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET` retries) was
+ * exhausted before a liveness-dead family may be disclosed.
+ *
+ * Crash-window disposition, by ordering:
+ * - The record is persisted at acknowledgment time, strictly before any lane
+ *   session is created, so no dead lane can exist whose dispatch was not
+ *   first durably counted — the count can never under-report relative to the
+ *   lanes that actually ran.
+ * - A cap throw aborts the dispatch itself (the lane never launches), the
+ *   same fail-closed behavior as the validation-batch limit below.
+ * - A crash between this persist and lane launch leaves an orphan entry whose
+ *   lanes never started. That is benign: a retry of the exact same dispatch
+ *   call is a no-op (batchId idempotence below), and the over-count direction
+ *   is conservative for a disclosure gate that admits only at or above the
+ *   budget threshold — the cited (batch, lane) must still exist as a real
+ *   stale delegation record to be disclosed at all, so phantom attempts
+ *   alone can never unlock a disclosure.
+ *
+ * Unlike `recordPrReviewValidationBatch`, a duplicate batchId is a no-op
+ * rather than a throw: validation batches are one-shot contracts, while a
+ * dispatch acknowledgment is an idempotent fact that must survive a
+ * crash-retry of the same dispatch call without double-counting.
+ */
+export async function recordPrReviewMicroFamilyDispatch(
+	directory: string,
+	sessionID: string,
+	lanes: readonly PrWorkflowLaneSpec[],
+	options: { batchId: string; prHeadSha: string },
+): Promise<PrWorkflowGateState> {
+	const state = await bindPrWorkflowHead(
+		directory,
+		sessionID,
+		options.prHeadSha,
+	);
+	if (state.mode !== 'PR_REVIEW') throw wrongModeError(state, 'PR_REVIEW');
+	const batchId = normalizeBatchId(options.batchId);
+	const previous = state.prReviewMicroFamilyDispatches ?? [];
+	if (previous.some((record) => record.batchId === batchId)) {
+		return state;
+	}
+	if (previous.length >= MAX_WORKFLOW_BATCHES) {
+		// Fail closed with no eviction: silently dropping oldest records would
+		// under-count attempts and could re-wedge a run whose families'
+		// budgets were legitimately spent into an abort-only disclosure
+		// failure. The honest worst case (11 families x initial + 2 retries
+		// as separate partial-retry batches) is 33 records; the 128 cap is
+		// ~3.9x that headroom.
+		throw new Error(
+			`BLOCKED: PR_REVIEW micro-family dispatch ledger limit reached (${MAX_WORKFLOW_BATCHES} recorded acknowledgments)`,
+		);
+	}
+	const record: PrReviewMicroFamilyDispatchRecord = {
+		batchId,
+		prHeadSha: options.prHeadSha,
+		lanes: normalizeWorkflowLanes(lanes).map((lane) => ({
+			laneId: lane.laneId,
+			workflowLane: lane.workflowLane,
+			...(lane.ownedWorkflowLanes?.length
+				? { ownedWorkflowLanes: lane.ownedWorkflowLanes }
+				: {}),
+		})),
+		admittedAt: isoNow(),
+	};
+	const nextState: PrWorkflowGateState = {
+		...state,
+		updatedAt: isoNow(),
+		prReviewMicroFamilyDispatches: [...previous, record],
+	};
+	await persistState(directory, nextState);
+	return nextState;
+}
+
 export async function recordPrReviewValidationBatch(
 	directory: string,
 	sessionID: string,

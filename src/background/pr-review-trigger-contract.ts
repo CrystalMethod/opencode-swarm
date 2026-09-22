@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
+/**
+ * Issue #2878: the swarm-pr-review retry budget for a micro family — the
+ * initial dispatch plus up to this many retries — that the dead-family
+ * admission in `write_pr_review_trigger_eval` requires to be provably
+ * exhausted, from the persisted per-family dispatch ledger in PR-workflow
+ * gate state, before a liveness-dead family may be disclosed.
+ */
+export const PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET = 2;
+
 export const PR_REVIEW_TRIGGER_DEFINITIONS = [
 	{
 		id: 'auth-identity-secrets',

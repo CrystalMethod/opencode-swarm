@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
@@ -23,33 +23,24 @@ import {
 } from '../../../src/tools/write-pr-review-trigger-eval.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
-// Issue #2835 acceptance check C1 (DISCRIMINATING — RED at base).
-//
-// After the bounded retry budget for a MATCHED micro family is exhausted with
-// every family lane liveness-dead and no retained artifact, the controller
-// must be able to persist a truthful trigger-eval receipt carrying a durable
-// dead-family disclosure naming the dead lane (batch/lane identity, terminal
-// liveness status).
-//
-// Root cause D1: write-pr-review-trigger-eval.ts:387-414 treats the missing
-// outputRef on a sweep-settled liveness-terminal lane as a provenance FAILURE
-// and returns success:false ("does not reference a verifiable micro-lane
-// provenance chain"), so no receipt — and no disclosure — can ever be written.
+// Issue #2878 acceptance check C2 (DISCRIMINATING — RED at base): the
+// dead-family admission fails closed when the bounded retry budget (initial
+// dispatch plus PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET retries) is not proven
+// exhausted from the persisted per-family dispatch ledger — zero attempts,
+// below-budget attempts, or a cited batch that is not among the recorded
+// attempts. At base the admission discloses with zero attempts recorded, so
+// every case below must observe success:false only after the fix.
 
 const tempDirs: string[] = [];
-const SESSION_ID = 'c1-dead-family-session';
+const SESSION_ID = 'c2-retry-exhaustion-session';
 const HEAD_SHA = 'abc123';
 const BASE_SHA = 'def456';
 const BASE_REF = 'origin/main';
-const REVISION_DIGEST = 'c1-dead-family-revision';
+const REVISION_DIGEST = 'c2-retry-exhaustion-revision';
 const REVIEW_SCOPE = `complete PR diff ${BASE_SHA}...${HEAD_SHA}`;
 const DEAD_TRIGGER = 'unclassified-risk';
 const DEAD_BATCH = 'micro-batch-dead';
 const DEAD_LANE = 'lane-unclassified-dead';
-// Exact idle-host sweep shape (src/background/pending-delegations.ts /
-// src/tools/dispatch-lanes.ts liveness settlement): a synthesized result with
-// error/chars/truncated/digest and workflowLaneFailureClass 'liveness' — and
-// NO outputRef, because no artifact was retained.
 const STALE_REASON = `lane ${DEAD_LANE} presumed stale: idle host session past the stale horizon`;
 const STALE_DIGEST = createHash('sha256').update(STALE_REASON).digest('hex');
 
@@ -68,14 +59,12 @@ const originalWriterInternals = {
 };
 
 function tempRoot(): string {
-	const root = canonicalMkdtemp('c1-dead-family-');
+	const root = canonicalMkdtemp('c2-retry-exhaustion-');
 	mkdirSync(join(root, '.git'), { recursive: true });
 	tempDirs.push(root);
 	return root;
 }
 
-/** Ledger where only the mandatory fallback family is MATCHED; every other
- * family is NOT_TRIGGERED. The MATCHED row cites the dead lane's tuple. */
 function rows() {
 	return PR_REVIEW_TRIGGER_DEFINITIONS.map((definition) =>
 		definition.id === DEAD_TRIGGER
@@ -153,9 +142,6 @@ async function recordCompletedBaseLane(
 	});
 }
 
-/** Settle the unclassified-risk micro lane in the exact presumed-stale sweep
- * shape: durable terminal status 'stale' with a synthesized liveness result
- * and NO retained artifact (no storeLaneOutput, no outputRef). */
 async function recordLivenessDeadMicroLane(root: string): Promise<void> {
 	const correlationId = `${DEAD_BATCH}-${DEAD_LANE}-session`;
 	await recordPendingDelegation(root, {
@@ -193,7 +179,24 @@ async function recordLivenessDeadMicroLane(root: string): Promise<void> {
 	});
 }
 
-async function establishBoundReviewGate(root: string): Promise<void> {
+async function recordFamilyDispatchAttempts(
+	root: string,
+	batchIds: string[],
+): Promise<void> {
+	for (const batchId of batchIds) {
+		await recordPrReviewMicroFamilyDispatch(
+			root,
+			SESSION_ID,
+			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
+			{ batchId, prHeadSha: HEAD_SHA },
+		);
+	}
+}
+
+async function establishBoundReviewGate(
+	root: string,
+	attemptBatchIds: string[],
+): Promise<void> {
 	gateInternals.resolveCurrentGitHead = () => HEAD_SHA;
 	gateInternals.resolveIsWorkingTreeClean = () => true;
 	gateInternals.resolvePrWorkflowRevisionDigest = () => REVISION_DIGEST;
@@ -236,59 +239,24 @@ async function establishBoundReviewGate(root: string): Promise<void> {
 			evidence,
 		})),
 	);
-	// Issue #2878: the dead-family admission now requires the bounded retry
-	// budget to be provably exhausted, so the fixture records the initial
-	// dispatch plus two retries with the cited dead batch as the last attempt.
-	for (const batchId of ['micro-attempt-1', 'micro-attempt-2', DEAD_BATCH]) {
-		await recordPrReviewMicroFamilyDispatch(
-			root,
-			SESSION_ID,
-			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
-			{ batchId, prHeadSha: HEAD_SHA },
-		);
-	}
 	await recordLivenessDeadMicroLane(root);
+	await recordFamilyDispatchAttempts(root, attemptBatchIds);
 }
 
-function receiptPath(root: string, runId: string): string {
-	return join(root, '.swarm', 'pr-review', runId, 'trigger-eval.json');
-}
-
-/**
- * Durable-content disclosure matcher, deliberately field-name agnostic: accept
- * either a dedicated dead-lane disclosure array or a coverage_degradations
- * style entry, as long as some receipt entry durably names the trigger family,
- * the batch/lane identity, and a terminal liveness cause.
- */
-function findDeadLaneDisclosure(receipt: Record<string, unknown>): unknown {
-	const entryLists = Object.values(receipt).filter(
-		(value): value is unknown[] => Array.isArray(value),
-	);
-	for (const list of entryLists) {
-		for (const entry of list) {
-			if (typeof entry !== 'object' || entry === null) continue;
-			const record = entry as Record<string, unknown>;
-			const text = JSON.stringify(record);
-			if (!text.includes(DEAD_BATCH) || !text.includes(DEAD_LANE)) continue;
-			if (!text.includes(DEAD_TRIGGER)) continue;
-			const terminalStatus = [
-				record.status,
-				record.lane_status,
-				record.terminal_status,
-				record.failure_class,
-				record.workflowLaneFailureClass,
-				record.workflow_lane_failure_class,
-			].filter((value): value is string => typeof value === 'string');
-			const namesLivenessCause =
-				/liveness|presumed (stale|dead)|host session unobservable/i.test(
-					text,
-				) ||
-				terminalStatus.includes('stale') ||
-				terminalStatus.includes('error');
-			if (namesLivenessCause) return record;
-		}
-	}
-	return null;
+async function evaluate(root: string, runId: string) {
+	return JSON.parse(
+		await executeWritePrReviewTriggerEval(
+			{
+				run_id: runId,
+				pr_head_sha: HEAD_SHA,
+				base_sha: BASE_SHA,
+				base_ref: BASE_REF,
+				rows: rows(),
+			},
+			root,
+			{ sessionID: SESSION_ID },
+		),
+	) as { success: boolean; message: string };
 }
 
 afterEach(() => {
@@ -311,45 +279,62 @@ afterEach(() => {
 	}
 });
 
-describe('C1: write_pr_review_trigger_eval must persist a dead-family disclosure for a liveness-dead micro lane', () => {
-	test('a sweep-settled liveness-dead MATCHED family yields success:true plus a durable dead-lane disclosure on the receipt', async () => {
+describe('C2: dead-family disclosure fails closed when the retry budget is not exhausted (issue #2878)', () => {
+	test('admission fails closed when zero dispatch attempts are recorded for the dead family', async () => {
 		const root = tempRoot();
-		await establishBoundReviewGate(root);
-		const result = JSON.parse(
-			await executeWritePrReviewTriggerEval(
-				{
-					run_id: 'c1-dead-family-run',
-					pr_head_sha: HEAD_SHA,
-					base_sha: BASE_SHA,
-					base_ref: BASE_REF,
-					rows: rows(),
-				},
-				root,
-				{ sessionID: SESSION_ID },
-			),
-		) as { success: boolean; message: string };
+		await establishBoundReviewGate(root, []);
+		const result = await evaluate(root, 'c2-zero-attempts-run');
 
-		// At base this fails: the writer returns success:false with
-		// "does not reference a verifiable micro-lane provenance chain" because
-		// the liveness-settled sweep result carries no outputRef (root cause D1).
 		expect(
 			result.success,
-			`writer must succeed for a liveness-dead MATCHED family; writer said: ${result.message}`,
-		).toBe(true);
+			`zero recorded attempts must fail closed; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain(DEAD_TRIGGER);
+		expect(result.message).toMatch(/dispatch/i);
+		expect(result.message).toContain('0 dispatch attempt');
+		expect(result.message).toContain('retry budget');
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
 
-		const receiptFile = receiptPath(root, 'c1-dead-family-run');
+	test('admission fails closed below budget even when the cited batch is recorded', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, ['micro-attempt-1', DEAD_BATCH]);
+		const result = await evaluate(root, 'c2-below-budget-run');
+
 		expect(
-			existsSync(receiptFile),
-			'truthful trigger-eval receipt must be persisted',
-		).toBe(true);
-		const receipt = JSON.parse(readFileSync(receiptFile, 'utf-8')) as Record<
-			string,
-			unknown
-		>;
-		const disclosure = findDeadLaneDisclosure(receipt);
+			result.success,
+			`two of three attempts must fail closed; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain('2 dispatch attempt');
+		expect(result.message).toContain('retry budget');
 		expect(
-			disclosure,
-			`receipt must durably disclose the dead lane (${DEAD_TRIGGER} at ${DEAD_BATCH}/${DEAD_LANE}) with its terminal liveness cause; receipt: ${JSON.stringify(receipt)}`,
-		).not.toBeNull();
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
+	});
+
+	test('admission fails closed at budget when the cited batch is not among recorded attempts', async () => {
+		const root = tempRoot();
+		await establishBoundReviewGate(root, [
+			'attempt-1',
+			'attempt-2',
+			'attempt-3',
+		]);
+		const result = await evaluate(root, 'c2-foreign-batch-run');
+
+		expect(
+			result.success,
+			`a cited batch outside the counted attempts must fail closed; writer said: ${result.message}`,
+		).toBe(false);
+		expect(result.message).toContain(
+			'not among the recorded dispatch attempts',
+		);
+		expect(
+			existsSync(join(root, '.swarm', 'pr-review')),
+			'no receipt may be persisted on a fail-closed admission',
+		).toBe(false);
 	});
 });

@@ -19,6 +19,7 @@ import {
 	enforcePrReviewBaseDimensions,
 	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
+	recordPrReviewMicroFamilyDispatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import {
 	executeWritePrReviewTriggerEval,
@@ -279,6 +280,17 @@ async function establishBoundReviewGate(
 			evidence,
 		})),
 	);
+	// Issue #2878: the receipt-less control below must still admit, so the
+	// fixture satisfies the enforced retry budget — initial dispatch plus two
+	// retries, the cited dead batch last.
+	for (const batchId of ['toctou-attempt-1', 'toctou-attempt-2', DEAD_BATCH]) {
+		await recordPrReviewMicroFamilyDispatch(
+			root,
+			SESSION_ID,
+			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
+			{ batchId, prHeadSha: HEAD_SHA },
+		);
+	}
 	await recordLivenessDeadMicroLane(root, withReceipt);
 }
 

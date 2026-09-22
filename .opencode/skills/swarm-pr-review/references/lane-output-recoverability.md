@@ -336,7 +336,25 @@ UNATTESTED and can never support an APPROVE verdict. This disclosure is the
 settlement of last resort for a dead family: retry the family first (the
 initial attempt plus up to 2 retries — aborting after only the first retry is
 one bounded retry early), then disclose, and only then is `abort_pr_workflow`
-legitimate. An operator-cancelled lane does NOT qualify — `cancel_pending` is
+legitimate.
+
+The retry budget is mechanically enforced (issue #2878): every micro-family
+dispatch acknowledgment (`dispatch_lanes_async` with mode
+`swarm-pr-review:micro`) appends one record to the persisted per-family
+micro-family dispatch ledger in PR-workflow gate state, and the dead-family
+admission requires three recorded dispatch attempts (initial dispatch plus 2
+retries, `PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET`) for the cited family under
+the same `pr_head_sha` — with the cited batch among the counted attempts —
+before it stops failing closed with an actionable budget message that names
+the recorded count. Crash-window disposition of the ledger: each attempt is
+durably recorded at acknowledgment time, strictly before any lane session is
+created, so no dead lane can exist whose dispatch was not first counted; a
+crash between the acknowledgment and the lane launch leaves a benign orphan
+entry (batchId idempotence prevents double-counting on a retry of the same
+dispatch call, and the over-count direction is conservative because the cited
+batch must still exist as a real stale delegation record to be disclosed at
+all); the ledger is bounded at 128 records with a fail-closed BLOCKED refusal
+at the cap — never silent eviction. An operator-cancelled lane does NOT qualify — `cancel_pending` is
 a controlled act by the controller; re-dispatch the family instead of
 disclosing it.
 
