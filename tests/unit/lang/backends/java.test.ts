@@ -339,4 +339,67 @@ describe('_internals seam', () => {
 			'java.util.Map',
 		]);
 	});
+
+	test('exposes the extracted wrapper helpers for direct testing', () => {
+		expect(typeof _internals.wrapperExists).toBe('function');
+		expect(typeof _internals.resolveMvnwCommand).toBe('function');
+	});
+});
+
+describe('wrapperExists', () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-we-')),
+		);
+	});
+
+	afterEach(() => {
+		try {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		} catch {
+			// best-effort
+		}
+	});
+
+	test('true when the named wrapper file exists', () => {
+		fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+		expect(_internals.wrapperExists(tmpDir, 'gradlew')).toBe(true);
+	});
+
+	test('false when the named wrapper file is absent', () => {
+		expect(_internals.wrapperExists(tmpDir, 'gradlew')).toBe(false);
+		expect(_internals.wrapperExists(tmpDir, 'mvnw')).toBe(false);
+	});
+});
+
+describe('resolveMvnwCommand', () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-mvnw-')),
+		);
+	});
+
+	afterEach(() => {
+		try {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		} catch {
+			// best-effort
+		}
+	});
+
+	test('returns ./mvnw when mvnw.cmd is absent', () => {
+		fs.writeFileSync(path.join(tmpDir, 'mvnw'), '#!/bin/sh\nexit 0\n');
+		expect(_internals.resolveMvnwCommand(tmpDir)).toBe('./mvnw');
+	});
+
+	test('returns ./mvnw on non-Windows even when mvnw.cmd is present', () => {
+		if (process.platform === 'win32') return;
+		fs.writeFileSync(path.join(tmpDir, 'mvnw'), '#!/bin/sh\nexit 0\n');
+		fs.writeFileSync(path.join(tmpDir, 'mvnw.cmd'), '@echo off\n');
+		expect(_internals.resolveMvnwCommand(tmpDir)).toBe('./mvnw');
+	});
 });

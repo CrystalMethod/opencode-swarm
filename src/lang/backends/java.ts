@@ -125,6 +125,25 @@ function extractImports(_sourceFile: string, source: string): string[] {
 }
 
 /**
+ * True when a wrapper file named `name` exists in `dir`. Uses `existsSync`
+ * rather than a try/catch `accessSync` probe so callers avoid exception-based
+ * control flow.
+ */
+function wrapperExists(dir: string, name: string): boolean {
+	return fs.existsSync(path.join(dir, name));
+}
+
+/**
+ * Resolve the Maven wrapper command name: Windows prefers `mvnw.cmd` when it
+ * exists, otherwise the POSIX `./mvnw` script.
+ */
+function resolveMvnwCommand(dir: string): string {
+	const isWindows = process.platform === 'win32';
+	const hasMvnwCmd = wrapperExists(dir, 'mvnw.cmd');
+	return isWindows && hasMvnwCmd ? 'mvnw.cmd' : './mvnw';
+}
+
+/**
  * Prefer the Gradle wrapper when present, then the Maven wrapper; otherwise
  * defer to the default registry-driven selection (which checks binary
  * availability). Both wrapper checks are repo-local file probes, so they work
@@ -134,8 +153,7 @@ function extractImports(_sourceFile: string, source: string): string[] {
 async function selectTestFramework(
 	dir: string,
 ): Promise<TestFrameworkSelection | null> {
-	try {
-		fs.accessSync(path.join(dir, 'gradlew'));
+	if (wrapperExists(dir, 'gradlew')) {
 		return {
 			name: 'gradle',
 			cmd: ['./gradlew', 'test', '-q'],
@@ -143,23 +161,15 @@ async function selectTestFramework(
 			detectedVia: './gradlew',
 			filesIgnored: false,
 		};
-	} catch {
-		// no gradle wrapper — try the Maven wrapper
 	}
-	try {
-		fs.accessSync(path.join(dir, 'mvnw'));
-		const isWindows = process.platform === 'win32';
-		const hasMvnwCmd = fs.existsSync(path.join(dir, 'mvnw.cmd'));
-		const mvnw = isWindows && hasMvnwCmd ? 'mvnw.cmd' : './mvnw';
+	if (wrapperExists(dir, 'mvnw')) {
 		return {
 			name: 'maven',
-			cmd: [mvnw, 'test', '-q'],
+			cmd: [resolveMvnwCommand(dir), 'test', '-q'],
 			cwd: dir,
 			detectedVia: './mvnw',
 			filesIgnored: false,
 		};
-	} catch {
-		// no wrapper — fall through to the default
 	}
 	const profile = LANGUAGE_REGISTRY.get(PROFILE_ID);
 	if (!profile) return null;
@@ -214,4 +224,12 @@ export const _internals: {
 	extractImports: typeof extractImports;
 	isMainClass: typeof isMainClass;
 	detectFramework: typeof detectFramework;
-} = { extractImports, isMainClass, detectFramework };
+	wrapperExists: typeof wrapperExists;
+	resolveMvnwCommand: typeof resolveMvnwCommand;
+} = {
+	extractImports,
+	isMainClass,
+	detectFramework,
+	wrapperExists,
+	resolveMvnwCommand,
+};
