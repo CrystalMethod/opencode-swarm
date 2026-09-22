@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.177.1",
+  "tagCommit": "1e5377a8048eb76f9927c5d6e9edba355afd4582",
+  "targetCommitish": "1e5377a8048eb76f9927c5d6e9edba355afd4582",
+  "releaseBodySha256": "76d24f9b5766ea687b25e6ac039bfe0051c4282b7340622df4548c7785368e42",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2703-retry-critic-verdict-recovery.md",
+      "sha256": "b92f1861a23ac4bfedf16903cbe28875df490721798316c27ca5c0230c81dad9"
+    }
+  ]
+}

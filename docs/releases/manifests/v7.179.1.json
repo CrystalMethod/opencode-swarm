@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.179.1",
+  "tagCommit": "b5824bb85c17c962eff7bcfd3accb4ed7763b3a6",
+  "targetCommitish": "b5824bb85c17c962eff7bcfd3accb4ed7763b3a6",
+  "releaseBodySha256": "40df69afcfc59122f2eb21af88e9fd70e0b8194e9358d00cd041f44903a4c499",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2492-2540-safe-scopes-repo-map.md",
+      "sha256": "6131ace3ef7218a5239a1449472e295aa7b9044e060da27f9be5f384e72ed7e9"
+    }
+  ]
+}

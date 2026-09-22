@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.8",
+  "tagCommit": "be2ddc87dd6fe5e6be069d264ed3b1b3c538c2ee",
+  "targetCommitish": "be2ddc87dd6fe5e6be069d264ed3b1b3c538c2ee",
+  "releaseBodySha256": "20b066a1df2d952142385058df2ec6c02018841acfbd6da15b61d426aac5f038",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2580-plan-cursor-both-context-paths.md",
+      "sha256": "256205dcb4e4b51dbb92edbca20de3223b10b70ba12980b88bf5ab28dd81c180"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2835-pr-review-dead-family-trigger-eval-wedge.md",
+      "sha256": "bebc338a8d6104dd22b63aeb5be0d6ddea808ff7a74290c1a3b275ea31123340"
+    }
+  ]
+}

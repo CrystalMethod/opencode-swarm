@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.6",
+  "tagCommit": "d82f6f190c00ec48692bd08ae1c38b817715c8d3",
+  "targetCommitish": "d82f6f190c00ec48692bd08ae1c38b817715c8d3",
+  "releaseBodySha256": "6298a8a1383cfad3adcbac533c7e37e7b9a36fedf7fb1e919547885405944bae",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2807-root-fix-pr-workflow-session-lifecycle-ebusy.md",
+      "sha256": "49893dd3e555300aee779a92c31672ba07149917f5a4dcb8f5faf0782358e793"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/fix-2566-issue-tracer-v3-followups.md",
+      "sha256": "92691faf08f51c54f8e073c4ac3f2d3b618259f053c1e20338d2912d2d5e42df"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/fix-2579-installer-jsonc-cleanup.md",
+      "sha256": "006fca7eae44b98e37714193f1ef9413a82da3227e334af6ec8bc8d8ffdb6114"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2730-three-merge-group-flaky-tests-quarantine.md",
+      "sha256": "d60b22942ae8e15a345e6638ed6741f2bd05c09c90464f0c93762c04cc87ceab"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/issue-2761-pr-workflow-gc-and-2602-quarantine.md",
+      "sha256": "40d8c9b0ad597bcf128e546b1814ff93ffc909b202ff93f3e424f39c5447160b"
+    }
+  ]
+}

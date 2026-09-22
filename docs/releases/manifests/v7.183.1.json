@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.183.1",
+  "tagCommit": "9ba5b411fb92bb0fbb5628a500c36fd2eebeb0ee",
+  "targetCommitish": "9ba5b411fb92bb0fbb5628a500c36fd2eebeb0ee",
+  "releaseBodySha256": "c32ac1e065776c20e9bc5528fcbd17fe07fb004fc022675bd736f2fc427a29e4",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2791-delegation-store-legacy-deadline-read.md",
+      "sha256": "de7ebdd278fd7b5c9aad9c6b64991e1429ceace62beee26a6af210510c832ece"
+    }
+  ]
+}

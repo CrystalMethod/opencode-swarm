@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.181.3",
+  "tagCommit": "7aa8b9f8bd24380d3da1c5064ba5210a7807ce92",
+  "targetCommitish": "7aa8b9f8bd24380d3da1c5064ba5210a7807ce92",
+  "releaseBodySha256": "a0fedf943435bb9104c0210ad4e64e12ed013939d89b2212e7dfcb0c2e94f728",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2672-instruction-selection-paired-evidence.md",
+      "sha256": "bb4ee63f7d04d99122451c4846999e7689181b8710723caeb263464b74aeeae2"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2680-final-enabled-model-preflight.md",
+      "sha256": "b090fa2143fd9865d51dbbc89297214d362100328d6ee47cdcfdb05eff0d2a3f"
+    }
+  ]
+}
