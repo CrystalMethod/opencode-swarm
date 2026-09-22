@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.167.0",
+  "tagCommit": "dd961d25c6218adbf9102b3b445ddbc65298b05e",
+  "targetCommitish": "dd961d25c6218adbf9102b3b445ddbc65298b05e",
+  "releaseBodySha256": "c645a6d81eac085c8ae7b05e4874000dc6a856c0f2b271cc2f354eb618cda104",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2473-generation-fenced-launch-retry.md",
+      "sha256": "611aa9d1e7d24e2356b4c92491e62a923b985040ca1ca182a7a445ab6f0e6caa"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2506-lane-liveness-watchdog.md",
+      "sha256": "399d8cb432857cae6caf4d3c8aa76d7ff1018c4c378469b661324e3aed41b10d"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.173.0",
+  "tagCommit": "3188f226c7090b1e5141a90973fe52022fcc2222",
+  "targetCommitish": "3188f226c7090b1e5141a90973fe52022fcc2222",
+  "releaseBodySha256": "e616a39978369baaa07bee1c7d4c9b75ea9e8193690c9adb1c4587a7b22a58b9",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2508-settlement-merge-safety-purge.md",
+      "sha256": "c2f1156596654cf8df1117a32440474a2d007ccb090c724ea472b124b0d1a328"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2664-mandatory-lifecycle-bookkeeping.md",
+      "sha256": "cba1ce26d5f9e305d236e41ced5c5f3ea001c03ba426174ee4d0a9a119dcf5cc"
+    }
+  ]
+}

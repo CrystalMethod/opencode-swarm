@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.170.1",
+  "tagCommit": "b5f2d15c09b77e2044447ab4369ca73f5b71a1ba",
+  "targetCommitish": "b5f2d15c09b77e2044447ab4369ca73f5b71a1ba",
+  "releaseBodySha256": "a0f58bba9e15bc785e6a06d6e7a6570c1b69c00cee740d195dc41fab7513124c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2628-bounded-directives-to-verify.md",
+      "sha256": "428f073ed941a66ef3cb9b57f151fcef2aa1c8e16c560edcc39bfb2574a89622"
+    }
+  ]
+}

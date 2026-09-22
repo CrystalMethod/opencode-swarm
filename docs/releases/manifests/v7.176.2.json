@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.176.2",
+  "tagCommit": "d3f234d394429891b71a49d3ec7315fc423af90d",
+  "targetCommitish": "d3f234d394429891b71a49d3ec7315fc423af90d",
+  "releaseBodySha256": "6d31ba47f502fdd56195181899d4039eb5bdeced01f30843bd1285a4a7f73eac",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2702-docs-receipt-phase-cursor-mistag.md",
+      "sha256": "804a8e92be3b5f37a8181da08e755ffab885d97e56229bcdeb3cb9e3f91371d7"
+    }
+  ]
+}

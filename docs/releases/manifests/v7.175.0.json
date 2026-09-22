@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.175.0",
+  "tagCommit": "8b4174769292e32d729989953845d947cfc088bc",
+  "targetCommitish": "8b4174769292e32d729989953845d947cfc088bc",
+  "releaseBodySha256": "91bbd549104b9127b13d061f3982d908a645155208f4957cff419488ddfa8f08",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2585-live-proof-collect-identity.md",
+      "sha256": "013ab2d8d2730928a03a5d65c35a77ef14488c99b321edf7ca8165943c46ad89"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2665-task-recovery-receipts.md",
+      "sha256": "30cbd2ec8d96543ff0dbff8a53e317037592a8e5e8574da66941abd3f030a27b"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2669-automation-status-startup-nonfatal.md",
+      "sha256": "aefc1e436d7c0b2eef8fb3a68c27d76db42aba020c8ae9a3bfcf50422a9c690f"
+    }
+  ]
+}
