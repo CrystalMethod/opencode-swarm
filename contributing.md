@@ -407,7 +407,11 @@ After your PR merges, release-please opens or updates its release PR. CI runs `s
 The tag job then prepares an exact-tag cleanup plan. It proves the remote
 peeled tag, local peeled tag, and checkout HEAD are the same commit, binds the
 full GitHub Release body and each consumed fragment's SHA-256, and passes that
-plan to a fresh `main` checkout. The apply step is dry-run first and writes
+plan to a fresh `main` checkout. The apply step runs with
+`GH_TOKEN`/`GITHUB_REPOSITORY` step env (any step invoking a gh-dependent
+fragment-script mode must — enforced by
+`tests/unit/scripts/ci/release-fragments-gh-auth-shape-2898.test.ts`), is
+dry-run first, and writes
 `docs/releases/v<version>.md` plus
 `docs/releases/manifests/v<version>.json`; it deletes only a current pending
 file whose raw bytes still equal the tagged bytes. Changed, renamed, missing,
@@ -456,7 +460,11 @@ removes that state and fails closed before mutation unless its projected pending
 count satisfies the limit. The final batch has
 `nextCursor: null`, and its last tag must satisfy `verify-retention`.
 The drift workflow runs `verify-retention` to reject byte-identical consumed
-fragments and to enforce the pending-fragment count limit.
+fragments and to enforce the pending-fragment count limit, reporting the
+14-day add rate and projected days-to-limit (with a `::warning::` under 30
+days). Every release run ends in a `release-health-summary` job that reports
+the cleanup conclusion and emits an `::error::` annotation if the cleanup job
+did not complete.
 
 ---
 
