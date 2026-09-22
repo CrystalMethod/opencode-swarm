@@ -700,11 +700,13 @@ async function repairPostMortemActions(
 			'Do not include unsupported actions such as merge.',
 			// #2890: diagnostics are derived from raw fragments of the malformed
 			// LLM output and the echoed output is round-1 model text; both are
-			// sanitized field-level. The instruction lines above stay first-party
-			// and unsanitized — sanitizeContextText rewrites ``` sequences, so a
-			// blanket wrap of the composed prompt would corrupt the fence.
+			// sanitized FIELD-LEVEL (per-element for diagnostics, so every
+			// element is line-anchored, not just the first). The instruction
+			// lines above stay first-party and unsanitized —
+			// sanitizeContextText rewrites ``` sequences, so a blanket wrap of
+			// the composed prompt would corrupt the fence.
 			'Diagnostics:',
-			sanitizeContextText(diagnostics.join('; ')),
+			diagnostics.map((d) => sanitizeContextText(d)).join('; '),
 			'Original output:',
 			sanitizeContextText(llmOutput).slice(0, 8000),
 		].join('\n');
@@ -1043,9 +1045,15 @@ function assembleLLMInput(
 
 	sections.push(`TASK: CURATOR_POSTMORTEM ${planId}`);
 	sections.push(`SCOPE: ${scope}${sessionID ? ` (${sessionID})` : ''}`);
-	sections.push(`PLAN_SUMMARY: ${planSummary}`);
+	// #2890: label-interpolated blobs are sanitized FIELD-LEVEL so a
+	// `system:` directive on the blob's first line cannot sit mid-line after
+	// the label (where the sanitizer's line-anchored directive rule cannot
+	// fire); the assembled input is sanitized again at return (idempotent).
+	sections.push(`PLAN_SUMMARY: ${sanitizeContextText(planSummary)}`);
 
-	sections.push(`CURATOR_DIGESTS: ${curatorDigest ?? 'none'}`);
+	sections.push(
+		`CURATOR_DIGESTS: ${sanitizeContextText(curatorDigest ?? 'none')}`,
+	);
 
 	// `unacknowledged` is rendered alongside the verdict counts but is explicitly
 	// NOT one of them: it is the count of deliveries a delegate never answered.

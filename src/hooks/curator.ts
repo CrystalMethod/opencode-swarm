@@ -1556,15 +1556,20 @@ export async function runCuratorInit(
 		if (llmDelegate) {
 			try {
 				// #2890: PROJECT_CONTEXT is a raw context.md slice and the other
-				// fields carry persisted summary/knowledge/post-mortem text;
-				// sanitize the composed input before the delegate (idempotent).
+				// fields carry persisted summary/knowledge/post-mortem text.
+				// Label-interpolated blobs are sanitized FIELD-LEVEL before
+				// composition (a `system:` directive on the blob's first line
+				// would otherwise sit mid-line after the label, where the
+				// sanitizer's line-anchored directive rule cannot fire), and the
+				// composed input is sanitized again before the delegate
+				// (idempotent).
 				const userInput = sanitizeContextText(
 					[
 						'TASK: CURATOR_INIT',
 						`PRIOR_SUMMARY: ${priorSummary ? JSON.stringify(priorSummary) : 'none'}`,
 						`KNOWLEDGE_ENTRIES: ${JSON.stringify(allEntriesForCurator)}`,
-						`PROJECT_CONTEXT: ${contextMd?.slice(0, config.max_summary_tokens * 2) ?? 'none'}`,
-						`POST_MORTEM_DIGEST: ${latestPostMortemDigest ?? 'none'}`,
+						`PROJECT_CONTEXT: ${sanitizeContextText(contextMd?.slice(0, config.max_summary_tokens * 2) ?? 'none')}`,
+						`POST_MORTEM_DIGEST: ${sanitizeContextText(latestPostMortemDigest ?? 'none')}`,
 					].join('\n'),
 				);
 
@@ -1812,12 +1817,15 @@ export async function runCuratorPhase(
 				const systemPrompt = CURATOR_PHASE_PROMPT;
 				// #2890: every field below can carry untrusted text (context.md
 				// decisions, events.jsonl free-text fields, knowledge lessons, the
-				// persisted digest). Route the composed input through the shared
-				// sanitizer (idempotent; covers legacy persisted digests too).
+				// persisted digest). PRIOR_DIGEST is sanitized FIELD-LEVEL (a
+				// `system:` directive on the digest's first line would otherwise
+				// sit mid-line after the label), and the composed input is
+				// sanitized again before the delegate (idempotent; covers legacy
+				// persisted digests too).
 				const userInput = sanitizeContextText(
 					[
 						`TASK: CURATOR_PHASE ${phase}`,
-						`PRIOR_DIGEST: ${priorDigest}`,
+						`PRIOR_DIGEST: ${sanitizeContextText(priorDigest)}`,
 						`PHASE_EVENTS: ${JSON.stringify(phaseEvents.slice(0, 50))}`,
 						`PHASE_DECISIONS: ${JSON.stringify(keyDecisions)}`,
 						`AGENTS_DISPATCHED: ${JSON.stringify(agentsDispatched)}`,
