@@ -17,6 +17,51 @@ import {
 	parseJavaImports,
 } from '../../../src/lang/java-extraction';
 
+/**
+ * Snapshot of the Java grammar as defined in `src/lang/java-extraction.ts`
+ * (the `JAVA_SYMBOL_GRAMMAR` export). This snapshot is the drift-check oracle:
+ * `JAVA_SYMBOL_GRAMMAR` must remain byte-identical to it.
+ */
+const SOURCE_JAVA_GRAMMAR = {
+	defs: `
+		(method_declaration
+			(identifier) @func.name
+		) @func.def
+		(constructor_declaration
+			(identifier) @ctor.name
+		) @ctor.def
+		(class_declaration
+			(identifier) @class.name
+		) @class.def
+		(interface_declaration
+			(identifier) @interface.name
+		) @interface.def
+		(enum_declaration
+			(identifier) @enum.name
+		) @enum.def
+		(record_declaration
+			(identifier) @record.name
+		) @record.def
+	`,
+	imports: `
+		(import_declaration) @import
+	`,
+	refs: `
+		(identifier) @ref.identifier
+		(type_identifier) @ref.identifier
+	`,
+	exports: ``,
+};
+
+/** Collapses leading/trailing whitespace and blank lines for whitespace-insensitive comparison. */
+function normalizeQuery(q: string): string {
+	return q
+		.split('\n')
+		.map((line) => line.trim())
+		.filter((line) => line.length > 0)
+		.join('\n');
+}
+
 describe('parseJavaImports', () => {
 	test('returns an empty array for a source with no imports', () => {
 		expect(parseJavaImports('public class App {}')).toEqual([]);
@@ -213,5 +258,24 @@ describe('JAVA_SYMBOL_GRAMMAR', () => {
 
 	test('exports is empty for Java (no export statement)', () => {
 		expect(JAVA_SYMBOL_GRAMMAR.exports).toBe('');
+	});
+
+	test('defs/imports/refs query strings match the source grammar (no drift)', () => {
+		expect(JAVA_SYMBOL_GRAMMAR.defs).toBe(SOURCE_JAVA_GRAMMAR.defs);
+		expect(JAVA_SYMBOL_GRAMMAR.imports).toBe(SOURCE_JAVA_GRAMMAR.imports);
+		expect(JAVA_SYMBOL_GRAMMAR.refs).toBe(SOURCE_JAVA_GRAMMAR.refs);
+		expect(JAVA_SYMBOL_GRAMMAR.exports).toBe(SOURCE_JAVA_GRAMMAR.exports);
+	});
+
+	test('normalized query content matches the source grammar (whitespace-insensitive)', () => {
+		expect(normalizeQuery(JAVA_SYMBOL_GRAMMAR.defs)).toBe(
+			normalizeQuery(SOURCE_JAVA_GRAMMAR.defs),
+		);
+		expect(normalizeQuery(JAVA_SYMBOL_GRAMMAR.imports)).toBe(
+			normalizeQuery(SOURCE_JAVA_GRAMMAR.imports),
+		);
+		expect(normalizeQuery(JAVA_SYMBOL_GRAMMAR.refs)).toBe(
+			normalizeQuery(SOURCE_JAVA_GRAMMAR.refs),
+		);
 	});
 });
