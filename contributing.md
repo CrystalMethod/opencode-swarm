@@ -402,7 +402,7 @@ Do not prefix the heading with a version (`# v7.21.4`) — release-please owns t
 
 ### What still happens automatically
 
-After your PR merges, release-please opens or updates its release PR. CI runs `scripts/release-notes-fragments.mjs update-pr` to aggregate every pending fragment referenced by that release PR and inject it inside the `<!-- custom-release-notes:start --> … <!-- custom-release-notes:end -->` marker block (preserving release-please's own body markers). When the release PR merges and a tag is cut, `update-release` mirrors the same aggregation into the GitHub Release body.
+After your PR merges, release-please opens or updates its release PR. CI runs `scripts/release-notes-fragments.mjs update-pr` to aggregate every pending fragment referenced by that release PR and inject it inside the `<!-- custom-release-notes:start --> … <!-- custom-release-notes:end -->` marker block (preserving release-please's own body markers). When the release PR merges and a tag is cut, `update-release` mirrors the same aggregation into the GitHub Release body. A fragment's leading YAML frontmatter block (`---`-fenced, mapping-shaped) is treated as authoring metadata: it is stripped from the rendered release notes, while the provenance oracle keeps comparing the raw fragment bytes and accepts both the raw and the rendered published forms.
 
 The tag job then prepares an exact-tag cleanup plan. It proves the remote
 peeled tag, local peeled tag, and checkout HEAD are the same commit, binds the
@@ -444,12 +444,20 @@ exact tag oldest-to-newest and run
 `nextCursor` is null, also pass
 `--historical-batch .release-fragment-cleanup/batch.json`. The immutable plan
 records the digest-bound ordered tag snapshot, exact slice, and continuation.
-Then run
-`apply-cleanup --plan
-.release-fragment-cleanup/plan.json` followed by the explicit `--apply` form
-from a current main checkout. Cleanup-plan paths are restricted to one JSON file
+Both `prepare-cleanup` and `apply-cleanup` — the dry-run first, then the
+explicit `--apply` form — validate an exact-tag proof that requires the
+checkout HEAD to be the tag commit, so run them AT the tag checkout (a
+detached worktree per batch; early historical tags predate the cleanup
+feature, so overlay the current script without staging it, `git restore .`
+before each tag-to-tag move, and restore
+`docs/releases/manifests/historical-replay-state.json` before every tag
+except the first of the whole ordered list). Cleanup-plan paths are
+restricted to one JSON file
 directly under `.release-fragment-cleanup/`. Existing matching history is
-preserved; any conflict fails closed. Commit each bounded batch as a cleanup
+preserved; any conflict fails closed. The resulting `docs/releases` changes
+(history, manifests, replay state, and deletion of exactly the
+manifest-referenced pending fragments whose bytes still hash-match) are then
+committed from a current main checkout as the batch PR. Commit each bounded batch as a cleanup
 PR. Each non-final tag writes a version-controlled replay-state artifact so
 required retention CI can verify that bounded work remains. That authorization
 expires after seven days, reruns preserve its original deadline, and an expiry
