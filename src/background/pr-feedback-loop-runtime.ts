@@ -330,11 +330,18 @@ function createRuntime(
 					options.directory,
 					{ repoFullName, prNumber },
 				);
-				const forgeContext =
-					subscription?.forge ??
-					(subscription
-						? (detectForgeFromUrl(subscription.prUrl) ?? undefined)
-						: undefined);
+				// URL-first precedence, matching the pr-monitor-worker routing:
+				// shape detection answers for gitlab.com/gitlab.* hosts without
+				// consulting the persisted declaration, so a declared record's
+				// host field is only trusted for generic self-hosted URLs (where
+				// it was cross-validated against the prUrl host at subscribe
+				// time). Persisted-field-first would let a tampered declaration
+				// override shape detection.
+				const forgeContext = subscription
+					? (detectForgeFromUrl(subscription.prUrl) ??
+						subscription.forge ??
+						undefined)
+					: undefined;
 				if (forgeContext?.provider === 'gitlab') {
 					const mrSnapshot = await _internals.getMRPollSnapshot({
 						projectPath: repoFullName,

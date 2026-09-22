@@ -95,6 +95,43 @@ describe('findSubscriptionRecordForPrUrl (#2882 AC5)', () => {
 		});
 		expect(miss).toBeNull();
 	});
+
+	test('sessionID lookup falls through to the session own record when lookupByPr returns another session record (Copr round)', async () => {
+		const dir = makeProject();
+		dirs.push(dir);
+		// Two sessions subscribed to the SAME MR is a supported scenario
+		// (correlationId = session::repo::pr, so each session gets its own
+		// record). lookupByPr ignores session and returns whichever record
+		// sorts first — the session-scoped lookup must still find each
+		// session's own record (Copr round: it used to fail closed).
+		await subscribe(dir, {
+			sessionID: 'sess-b',
+			prNumber: 7,
+			repoFullName: 'team/proj',
+			prUrl: GENERIC,
+			forge: FORGE,
+		});
+		await subscribe(dir, {
+			sessionID: 'sess-a',
+			prNumber: 7,
+			repoFullName: 'team/proj',
+			prUrl: GENERIC,
+			forge: FORGE,
+		});
+		// Sanity: both records are active in the store.
+		const a = await findSubscriptionRecordForPrUrl(dir, {
+			repoFullName: 'team/proj',
+			prNumber: 7,
+			sessionID: 'sess-a',
+		});
+		const b = await findSubscriptionRecordForPrUrl(dir, {
+			repoFullName: 'team/proj',
+			prNumber: 7,
+			sessionID: 'sess-b',
+		});
+		expect(a?.sessionID).toBe('sess-a');
+		expect(b?.sessionID).toBe('sess-b');
+	});
 });
 
 describe('queue admission + claim with configured context (#2882 AC5)', () => {

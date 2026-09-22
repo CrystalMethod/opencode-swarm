@@ -827,7 +827,20 @@ export class PrMonitorWorker {
 		const ciChecks: PRStatusResult['statusCheckRollup'] = gitLabPipelines
 			? gitLabPipelines.checks
 			: current.status.statusCheckRollup;
-		if (!gitLabPipelines || gitLabPipelines.fetchSucceeded) {
+		// #2895 review F-3: an empty GitLab checks array means NO terminal
+		// verdict for the head sha this poll (pipeline pending/retrying/none) —
+		// not a transition to "no checks". Overwriting the prior verdict set
+		// with an empty one reset the transition key and caused a duplicate
+		// pr.ci.failed when a retrying pipeline failed again. Preserve prior
+		// state exactly like a failed pipelines fetch; a NEW pipeline id
+		// failing after a retry still transitions (matching GitHub's
+		// new-check-name semantics).
+		const gitlabNoTerminalVerdict =
+			gitLabPipelines !== undefined && gitLabPipelines.checks.length === 0;
+		if (
+			!gitlabNoTerminalVerdict &&
+			(!gitLabPipelines || gitLabPipelines.fetchSucceeded)
+		) {
 			const currentCheckSet = this.serializeChecks(ciChecks);
 			snapshotUpdates.lastCheckRunSet = currentCheckSet;
 			if (

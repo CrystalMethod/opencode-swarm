@@ -3650,6 +3650,11 @@ export async function findSubscriptionRecordForPrUrl(
 	},
 ): Promise<PrSubscriptionRecord | null> {
 	if (key.repoFullName !== undefined && key.prNumber !== undefined) {
+		// lookupByPr returns the FIRST active record for the identity regardless
+		// of session; when a sessionID is supplied and that record belongs to a
+		// different session, fall through to the full scan below rather than
+		// failing closed — multiple sessions subscribed to the same MR is a
+		// supported scenario (Copr review round, PR #2895).
 		const record = await lookupByPr(directory, key.repoFullName, key.prNumber);
 		if (
 			record &&
@@ -3660,9 +3665,24 @@ export async function findSubscriptionRecordForPrUrl(
 		) {
 			return record;
 		}
+		if (!key.sessionID) return null;
+	}
+	if (key.prUrl === undefined && key.repoFullName === undefined) return null;
+	if (key.prUrl === undefined) {
+		// repoFullName+prNumber given (no prUrl), session mismatch above: scan
+		// for that session's own record.
+		const active = await listActive(directory);
+		for (const record of active) {
+			if (key.sessionID && record.sessionID !== key.sessionID) continue;
+			if (
+				record.repoFullName === key.repoFullName &&
+				record.prNumber === key.prNumber
+			) {
+				return record;
+			}
+		}
 		return null;
 	}
-	if (key.prUrl === undefined) return null;
 	const active = await listActive(directory);
 	for (const record of active) {
 		if (key.sessionID && record.sessionID !== key.sessionID) continue;

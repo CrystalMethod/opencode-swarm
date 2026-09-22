@@ -199,16 +199,37 @@ describe('pipeline → CI event mapping (#2882 AC2)', () => {
 		expect((passed[0]?.payload as { checkCount: number }).checkCount).toBe(1);
 	});
 
-	test('non-terminal pipeline statuses produce no CI event fuel', async () => {
+	test('non-terminal pipeline statuses produce no CI event fuel and preserve prior verdicts', async () => {
 		const worker = makeWorker();
 		const sub = makeSub();
-		// Empty terminal set on every poll: no transitions, no events, but the
-		// transition key is still recorded (honest "no verdict yet").
+		// Empty terminal set on every poll from scratch: no transitions, no
+		// events, and (F-3) no empty-set write — the transition key stays
+		// unset until a real terminal verdict exists.
 		currentSnapshot = fakeMrSnapshot({ pipelines: [] });
 		await poll(worker, sub);
 		await poll(worker, sub);
 		expect(emitted.filter((e) => e.type.startsWith('pr.ci.'))).toHaveLength(0);
-		expect(snapshots[sub.correlationId]?.lastCheckRunSet).toBe('[]');
+		expect(snapshots[sub.correlationId]?.lastCheckRunSet).toBeUndefined();
+	});
+
+	test('a retrying pipeline preserves the prior failure verdict (no duplicate event fuel reset)', async () => {
+		const worker = makeWorker();
+		const sub = makeSub();
+		// Poll 1: pipeline #10 fails (recorded).
+		currentSnapshot = fakeMrSnapshot({
+			pipelines: [
+				{ name: 'pipeline #10', status: 'completed', conclusion: 'failure' },
+			],
+		});
+		await poll(worker, sub);
+		const priorKey = snapshots[sub.correlationId]?.lastCheckRunSet;
+		expect(priorKey).toContain('pipeline #10');
+		// Poll 2: the pipeline retries (non-terminal) — the prior failure
+		// verdict must be preserved, NOT reset to empty (F-3 duplicate cause).
+		currentSnapshot = fakeMrSnapshot({ pipelines: [] });
+		await poll(worker, sub);
+		expect(snapshots[sub.correlationId]?.lastCheckRunSet).toBe(priorKey);
+		expect(emitted.filter((e) => e.type.startsWith('pr.ci.'))).toHaveLength(0);
 	});
 
 	test('pipelines fetch failure preserves prior CI transition state', async () => {
