@@ -254,11 +254,11 @@ describe('selectFramework', () => {
 
 describe('isMainClass', () => {
 	test('true for a public static void main declaration', () => {
-		expect(isMainClass('public static void main(String[] args) {}')).toBe(
-			true,
-		);
+		expect(isMainClass('public static void main(String[] args) {}')).toBe(true);
 		expect(
-			isMainClass('  public static void main(String[] args) {\n    // body\n  }'),
+			isMainClass(
+				'  public static void main(String[] args) {\n    // body\n  }',
+			),
 		).toBe(true);
 	});
 
