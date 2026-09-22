@@ -409,7 +409,7 @@ peeled tag, local peeled tag, and checkout HEAD are the same commit, binds the
 full GitHub Release body and each consumed fragment's SHA-256, and passes that
 plan to a fresh `main` checkout. The apply step runs with
 `GH_TOKEN`/`GITHUB_REPOSITORY` step env (any step invoking a gh-dependent
-fragment-script mode must — enforced by
+fragment-script mode must carry them — enforced by
 `tests/unit/scripts/ci/release-fragments-gh-auth-shape-2898.test.ts`), is
 dry-run first, and writes
 `docs/releases/v<version>.md` plus

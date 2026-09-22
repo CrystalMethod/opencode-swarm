@@ -2267,10 +2267,9 @@ function modeVerifyRetention(log, args) {
 	log(
 		`retention trend: add rate ${trend.addRatePerDay}/day (${RETENTION_TREND_WINDOW_DAYS}-day window, ${addedInWindow} added); days-to-limit ${daysToLimitText}`,
 	);
-	if (trend.daysToLimit !== null && trend.daysToLimit < RETENTION_WARN_DAYS) {
-		log(
-			`::warning::retention wall under ${RETENTION_WARN_DAYS} days: days-to-limit ${trend.daysToLimit} at add rate ${trend.addRatePerDay}/day (pending ${result.pending}, limit ${result.limit})`,
-		);
+	const warning = retentionWallWarning(result.pending, result.limit, trend);
+	if (warning !== null) {
+		log(`::warning::${warning} (pending ${result.pending}, limit ${result.limit})`);
 	}
 	process.stdout.write(
 		JSON.stringify({ ...result, trend }, null, 2) + '\n',
@@ -2299,6 +2298,36 @@ export const MODES_REQUIRING_GH = [
 // added and how many days remain before the retention limit reddens drift CI.
 export const RETENTION_TREND_WINDOW_DAYS = 14;
 export const RETENTION_WARN_DAYS = 30;
+// Warn even when the add rate stalls if pending is already this close to the
+// hard limit (PR #2911 review: a 740/750 state with a quiet window must not
+// read as safe just because days-to-limit is undefined).
+export const RETENTION_NEAR_WALL_RATIO = 0.9;
+
+export function retentionWallWarning(pending, limit, trend) {
+	if (!Number.isFinite(pending) || pending < 0) {
+		throw new Error('retention warning pending count must be a non-negative finite number');
+	}
+	if (!Number.isFinite(limit) || limit <= 0) {
+		throw new Error('retention warning limit must be a positive finite number');
+	}
+	if (
+		!trend ||
+		(trend.daysToLimit !== null && !Number.isFinite(trend.daysToLimit)) ||
+		!Number.isFinite(trend.addRatePerDay)
+	) {
+		throw new Error('retention warning trend must carry finite daysToLimit/addRatePerDay');
+	}
+	if (trend.daysToLimit !== null && trend.daysToLimit < RETENTION_WARN_DAYS) {
+		return `retention wall under ${RETENTION_WARN_DAYS} days: days-to-limit ${trend.daysToLimit} at add rate ${trend.addRatePerDay}/day`;
+	}
+	if (
+		trend.daysToLimit === null &&
+		pending / limit >= RETENTION_NEAR_WALL_RATIO
+	) {
+		return `pending fragments within ${Math.round((1 - RETENTION_NEAR_WALL_RATIO) * 100)}% of the limit with no adds recorded in the last ${RETENTION_TREND_WINDOW_DAYS}-day window`;
+	}
+	return null;
+}
 
 export function computeRetentionTrend({
 	pending,

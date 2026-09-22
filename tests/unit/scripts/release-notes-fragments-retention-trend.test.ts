@@ -9,8 +9,10 @@ import path from 'node:path';
 import {
 	computeRetentionTrend,
 	countPendingAddsSince,
+	RETENTION_NEAR_WALL_RATIO,
 	RETENTION_TREND_WINDOW_DAYS,
 	RETENTION_WARN_DAYS,
+	retentionWallWarning,
 } from '../../../scripts/release-notes-fragments.mjs';
 
 describe('computeRetentionTrend', () => {
@@ -154,5 +156,97 @@ describe('countPendingAddsSince', () => {
 		expect(() =>
 			countPendingAddsSince('E:/repo-root', 'yesterday', () => ''),
 		).toThrow(/ISO-8601/);
+	});
+});
+
+describe('retentionWallWarning', () => {
+	test('warns when days-to-limit is under the warning horizon', () => {
+		const trend = computeRetentionTrend({
+			pending: 506,
+			limit: 750,
+			addedInWindow: 140,
+			windowDays: 14,
+		});
+		const warning = retentionWallWarning(506, 750, trend);
+		expect(warning).toContain(
+			`retention wall under ${RETENTION_WARN_DAYS} days`,
+		);
+		expect(warning).toContain('24.4');
+	});
+
+	test('warns on a stalled add rate when pending is already near the wall', () => {
+		const trend = computeRetentionTrend({
+			pending: 700,
+			limit: 750,
+			addedInWindow: 0,
+			windowDays: 14,
+		});
+		expect(trend.daysToLimit).toBeNull();
+		expect(retentionWallWarning(700, 750, trend)).toContain('no adds recorded');
+	});
+
+	test('stays silent while the trend is healthy', () => {
+		expect(
+			retentionWallWarning(
+				506,
+				750,
+				computeRetentionTrend({
+					pending: 506,
+					limit: 750,
+					addedInWindow: 70,
+					windowDays: 14,
+				}),
+			),
+		).toBeNull();
+		expect(
+			retentionWallWarning(
+				506,
+				750,
+				computeRetentionTrend({
+					pending: 506,
+					limit: 750,
+					addedInWindow: 0,
+					windowDays: 14,
+				}),
+			),
+		).toBeNull();
+	});
+
+	test('honors the near-wall ratio boundary', () => {
+		const pending = Math.floor(750 * RETENTION_NEAR_WALL_RATIO);
+		const trend = computeRetentionTrend({
+			pending,
+			limit: 750,
+			addedInWindow: 0,
+			windowDays: 14,
+		});
+		expect(retentionWallWarning(pending, 750, trend)).not.toBeNull();
+		expect(retentionWallWarning(pending - 1, 750, trend)).toBeNull();
+	});
+});
+
+describe('verify-retention mode end to end', () => {
+	test('the CLI wires audit + trend into its output and exit code', () => {
+		const root = path.resolve(import.meta.dir, '../../..');
+		const result = Bun.spawnSync({
+			cmd: ['node', 'scripts/release-notes-fragments.mjs', 'verify-retention'],
+			cwd: root,
+			stdio: ['ignore', 'pipe', 'pipe'],
+		});
+		expect(result.exitCode).toBe(0);
+		const stdout = result.stdout.toString();
+		const parsed = JSON.parse(stdout.slice(stdout.indexOf('{'))) as {
+			pending: number;
+			limit: number;
+			trend: {
+				windowDays: number;
+				addRatePerDay: number;
+				daysToLimit: number | null;
+			};
+		};
+		expect(parsed.trend.windowDays).toBe(RETENTION_TREND_WINDOW_DAYS);
+		expect(typeof parsed.trend.addRatePerDay).toBe('number');
+		expect(stdout).toMatch(/retention trend: add rate /);
+		expect(stdout).toMatch(/days-to-limit /);
 	});
 });
