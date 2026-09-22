@@ -815,6 +815,25 @@ export function schedulePostResolutionTasksForTest(
 }
 
 /**
+ * #2789 test seam: the recovery readback is module-internal (no other
+ * consumer), so this thin wrapper gives the unknown-preservation contract a
+ * non-booting unit-test surface, mirroring `schedulePostResolutionTasksForTest`.
+ */
+export async function recoverPendingCostCorrectionForTest(
+	directory: string,
+	parentSessionId: string,
+	childSessionId: string,
+	pricing?: CostPricingConfig,
+): Promise<PendingCostCorrection | null | undefined> {
+	return recoverPendingCostCorrection(
+		directory,
+		parentSessionId,
+		childSessionId,
+		pricing,
+	);
+}
+
+/**
  * Compute the effective set of tools eligible for line-based truncation.
  *
  * SUMMARIZER_EXEMPT_TOOL_NAMES is applied as an unconditional floor
@@ -991,16 +1010,24 @@ async function recoverPendingCostCorrection(
 	const effective = event;
 	if (effective.cost_source === 'reported') return null;
 	const currentFields = {
+		// #2789: unknown-preserving readback — an axis the recorded event does
+		// not hold stays null instead of being coerced to a fabricated 0.
 		tokens_input:
-			typeof effective.tokens_input === 'number' ? effective.tokens_input : 0,
+			typeof effective.tokens_input === 'number'
+				? effective.tokens_input
+				: null,
 		tokens_output:
-			typeof effective.tokens_output === 'number' ? effective.tokens_output : 0,
+			typeof effective.tokens_output === 'number'
+				? effective.tokens_output
+				: null,
 		tokens_reasoning:
 			typeof effective.tokens_reasoning === 'number'
 				? effective.tokens_reasoning
-				: 0,
+				: null,
 		tokens_cache:
-			typeof effective.tokens_cache === 'number' ? effective.tokens_cache : 0,
+			typeof effective.tokens_cache === 'number'
+				? effective.tokens_cache
+				: null,
 		cost_usd:
 			typeof effective.cost_usd === 'number' ? effective.cost_usd : null,
 		cost_source:

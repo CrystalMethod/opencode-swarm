@@ -692,10 +692,13 @@ export const telemetry = {
 			agentName,
 			taskId,
 			result,
-			tokens_input: costFields?.tokens_input ?? 0,
-			tokens_output: costFields?.tokens_output ?? 0,
-			tokens_reasoning: costFields?.tokens_reasoning ?? 0,
-			tokens_cache: costFields?.tokens_cache ?? 0,
+			// #2789: null-preserving unknown semantics — an axis the producer did
+			// not hold is emitted as null (like cost_usd below), never fabricated
+			// as 0. An explicit 0 remains a legal KNOWN value.
+			tokens_input: costFields?.tokens_input ?? null,
+			tokens_output: costFields?.tokens_output ?? null,
+			tokens_reasoning: costFields?.tokens_reasoning ?? null,
+			tokens_cache: costFields?.tokens_cache ?? null,
 			cost_usd: costFields?.cost_usd ?? null,
 			...costFields,
 			cost_source: costFields?.cost_source ?? 'unavailable',

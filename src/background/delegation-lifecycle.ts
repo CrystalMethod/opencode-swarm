@@ -380,12 +380,25 @@ function emitDelegationCostObservation(
 					: {}),
 				...(usageAttested
 					? {
-							inputTokens: costFields.tokens_input,
-							outputTokens: costFields.tokens_output,
+							// #2789: the legacy cost fields are now number | null; an
+							// axis the producer did not hold is OMITTED so the
+							// execution-attempt surface records it as unavailable
+							// (via knownCostValue) instead of a fabricated 0. The
+							// TaskAttemptCostInput axes stay plain `number | null`-
+							// free — this surface's unknown-honesty comes from its
+							// unavailable list, which stays a #2676 non-goal here.
+							...(typeof costFields.tokens_input === 'number'
+								? { inputTokens: costFields.tokens_input }
+								: {}),
+							...(typeof costFields.tokens_output === 'number'
+								? { outputTokens: costFields.tokens_output }
+								: {}),
 							// Combined cache read+write total (upstream axis
 							// collapse, documented in
 							// docs/execution-attempt-tracing.md).
-							cacheReadTokens: costFields.tokens_cache,
+							...(typeof costFields.tokens_cache === 'number'
+								? { cacheReadTokens: costFields.tokens_cache }
+								: {}),
 						}
 					: {}),
 				...(costFields.cost_source === 'reported' &&
