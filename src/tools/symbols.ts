@@ -1173,7 +1173,7 @@ export function extractJavaSymbols(
 						: typeDecl[1] === 'enum'
 							? 'enum'
 							: 'class',
-				exported: /^\s*public\b/.test(line),
+				exported: /\bpublic\b/.test(line),
 				signature: line.trim().substring(0, 100),
 				line: i + 1,
 			});
@@ -1181,13 +1181,13 @@ export function extractJavaSymbols(
 		}
 
 		const method = line.match(
-			/^(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
+			/^\s*(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
 		);
 		if (method && !JAVA_KEYWORDS.has(method[1])) {
 			symbols.push({
 				name: method[1],
 				kind: 'method',
-				exported: /^\s*public\b/.test(line),
+				exported: /\bpublic\b/.test(line),
 				signature: line.trim().substring(0, 100),
 				line: i + 1,
 			});
@@ -1359,7 +1359,7 @@ export const symbols: ToolDefinition = createSwarmTool({
 	description:
 		'Extract all exported symbols from a source file: functions with signatures, ' +
 		'classes with public members, interfaces, types, enums, constants. ' +
-		'Supports TypeScript/JavaScript, Python, Rust, Go, Dart, Ruby, and PHP. ' +
+		'Supports TypeScript/JavaScript, Python, Rust, Go, Dart, Ruby, Java, and PHP. ' +
 		'Use for architect planning, designer scaffolding, and understanding module ' +
 		'public API surface.',
 	args: {

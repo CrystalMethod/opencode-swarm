@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import {
-	extractJavaSymbols,
-	symbols,
-} from '../../../src/tools/symbols';
+import { extractJavaSymbols, symbols } from '../../../src/tools/symbols';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let root: string;
@@ -206,10 +203,9 @@ describe('symbols tool — java routing (DS-3)', () => {
 `,
 		);
 
-		const result = await symbols.execute(
-			{ file: 'App.java' },
-			{ directory: root } as any,
-		);
+		const result = await symbols.execute({ file: 'App.java' }, {
+			directory: root,
+		} as any);
 		const parsed = JSON.parse(result as string);
 
 		expect(parsed.error).toBeUndefined();
@@ -247,10 +243,9 @@ describe('symbols tool — java routing (DS-3)', () => {
 	test('unsupported extension error lists .java among supported extensions', async () => {
 		write('Main.kt', 'fun main() {}');
 
-		const result = await symbols.execute(
-			{ file: 'Main.kt' },
-			{ directory: root } as any,
-		);
+		const result = await symbols.execute({ file: 'Main.kt' }, {
+			directory: root,
+		} as any);
 		const parsed = JSON.parse(result as string);
 
 		expect(parsed.error).toContain('Unsupported file extension');

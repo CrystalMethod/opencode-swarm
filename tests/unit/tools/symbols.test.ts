@@ -401,8 +401,8 @@ class PrivateClass {
 		});
 
 		it('should handle unsupported file extension', async () => {
-			createTestFile(tempDir, 'test.java', 'public class Main {}');
-			const result = await symbols.execute({ file: 'test.java' }, {} as any);
+			createTestFile(tempDir, 'test.xyz', 'public class Main {}');
+			const result = await symbols.execute({ file: 'test.xyz' }, {} as any);
 			const parsed = parseResult(result);
 
 			expect(parsed.error).toContain('Unsupported file extension');
