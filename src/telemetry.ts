@@ -480,8 +480,9 @@ export function emit(
 		// `toLegacyTelemetryLine` takes `timestamp` from `canonical.observedAt`
 		// (stamped with the same `new Date().toISOString()`) and spreads the
 		// caller's original `data` object last. Proven by
-		// `tests/unit/telemetry/emit-line-parity.test.ts` against a corpus captured
-		// from the unmodified tree at e50386b9.
+		// `tests/unit/telemetry/emit-line-parity.test.ts` against a corpus
+		// deliberately regenerated at `0aa722596` (issue #2789; originally
+		// captured from the unmodified tree at e50386b9).
 		//
 		// `JSON.stringify` still throws here for circular/BigInt payloads, before
 		// the listener fan-out below — preserving the ordering asserted by
