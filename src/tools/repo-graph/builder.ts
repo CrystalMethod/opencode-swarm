@@ -16,6 +16,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { parseJavaImports } from '../../lang/java-extraction';
 import { LANGUAGE_REGISTRY } from '../../lang/profiles';
 import { extractFileSymbols } from '../../lang/symbol-graph';
 import * as logger from '../../utils/logger';
@@ -37,7 +38,7 @@ import {
 	type ParsedImport,
 	runFallbackScan,
 } from './fallback-scanner';
-import { extractFileOntology, maskMultilineStringLiterals } from './ontology';
+import { extractFileOntology } from './ontology';
 import { safeRealpathSync } from './safe-realpath';
 import {
 	createSymbolEdgeV2,
@@ -1280,44 +1281,21 @@ function finalDottedSegment(value: string): string {
  * back to `scanFile` — before this branch existed, `.java` fell through to the
  * TypeScript ESM regex and produced zero imports (issue #1529, RC-10).
  *
- * Binding semantics deliberately mirror `parseJavaImport` in
- * `src/lang/symbol-graph.ts` so the AST path and the fallback path emit the
- * same shape:
- * - `import a.b.C;`         -> specifier `a.b.C`, named, binding `C`
+ * Thin wrapper over the shared {@link parseJavaImports} from
+ * `src/lang/java-extraction.ts`, mapping the shared `JavaImport[]` shape onto
+ * the builder's `ParsedImport[]` shape. Binding semantics are unchanged:
+ * - `import a.b.C;`          -> specifier `a.b.C`, named, binding `C`
  * - `import static a.b.C.m;` -> specifier `a.b.C`, named, binding `m`
  * - `import a.b.*;`          -> specifier `a.b.*`, namespace, no named binding
  */
 function parseJavaFileImports(rawContent: string): ParsedImport[] {
-	const imports: ParsedImport[] = [];
-	// Mask text-block CONTENTS before matching. `stripComments` removes comments
-	// but keeps string literals verbatim, so a line-initial `import ...;` inside
-	// a Java text block matched this line-anchored regex and was fabricated as a
-	// real import. Reachable only when the AST path fails (grammar load failure,
-	// timeout, parse error) and this fallback runs, but real when it does.
-	const content = maskMultilineStringLiterals(
-		stripComments(rawContent),
-		'java',
-	);
-	const re =
-		/^[ \t]*import[ \t]+(static[ \t]+)?([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;?[ \t]*\r?$/gm;
-	for (let m = re.exec(content); m !== null; m = re.exec(content)) {
-		const isStatic = Boolean(m[1]);
-		const raw = m[2];
-		if (raw.endsWith('.*')) {
-			const parsed = makeParsedImport(raw, 'namespace', []);
-			if (parsed) imports.push(parsed);
-			continue;
-		}
-		// A static single-member import names the member, so the module is the
-		// enclosing type and the binding is the member.
-		const imported = finalDottedSegment(raw);
-		const specifier = isStatic ? raw.split('.').slice(0, -1).join('.') : raw;
-		const parsed = makeParsedImport(specifier, 'named', [
-			{ imported, local: imported },
-		]);
-		if (parsed) imports.push(parsed);
-	}
-	return imports;
+	return parseJavaImports(rawContent).map((imp) => ({
+		specifier: imp.specifier,
+		importType: imp.importType,
+		importedSymbols: imp.bindings.map((binding) => binding.imported),
+		bindings: imp.bindings,
+		reExport: false,
+	}));
 }
 
 /**

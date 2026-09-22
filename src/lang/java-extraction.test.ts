@@ -82,7 +82,9 @@ describe('JAVA_SYMBOL_GRAMMAR', () => {
 	});
 
 	test('imports matches the import_declaration node', () => {
-		expect(JAVA_SYMBOL_GRAMMAR.imports).toContain('(import_declaration) @import');
+		expect(JAVA_SYMBOL_GRAMMAR.imports).toContain(
+			'(import_declaration) @import',
+		);
 	});
 
 	test('refs matches both identifier and type_identifier nodes', () => {
