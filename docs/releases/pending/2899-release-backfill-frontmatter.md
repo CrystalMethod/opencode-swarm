@@ -41,5 +41,7 @@ back-fill PRs materialize the v7.167.0..v7.186.0 archive this change protects.
   acceptance of raw and rendered bodies (including a non-first-position
   frontmatter fragment and workspace reconstruction), update-mode wiring,
   error-surface contract, idempotency.
-- Full fragments suite family green (236 tests across 14 files), including the
-  frozen acceptance checks C1-C6 for the issue trace.
+- Full fragments suite family green at the shipped head (194 tests across the
+  12 family files, 0 fail; 209 across 14 files including both back-fill
+  acceptance tests), independently re-run by the implementation reviewer and
+  the final critic; frozen acceptance checks C1-C6 RED-to-GREEN.
