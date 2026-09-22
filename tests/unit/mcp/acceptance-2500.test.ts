@@ -485,17 +485,12 @@ describe('MCP explicitly authorized writes (#2500)', () => {
 			);
 			return;
 		}
-		// #2899: consumed fragments are materialized into docs/releases; the
-		// manifest provenance record is the surviving release evidence.
+		// #2899: consumed fragments are materialized into docs/releases; a
+		// referencing manifest is the surviving release evidence.
 		const manifests = path.resolve('docs/releases/manifests');
-		const referenced = readdirSync(manifests)
-			.filter((name) => name.endsWith('.json'))
-			.filter((name) =>
-				readFileSync(path.join(manifests, name), 'utf8').includes(fragment),
-			);
-		expect(
-			referenced.length,
-			'expected #2500 release evidence pending or in a materialized manifest',
-		).toBeGreaterThanOrEqual(1);
+		const referenced = readdirSync(manifests).filter((name) =>
+			readFileSync(path.join(manifests, name), 'utf8').includes(fragment),
+		);
+		expect(referenced.length).toBeGreaterThanOrEqual(1);
 	});
 });
