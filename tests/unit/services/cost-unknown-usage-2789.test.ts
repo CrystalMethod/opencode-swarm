@@ -4,11 +4,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { recoverPendingCostCorrectionForTest } from '../../../src/index';
-import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 import {
 	buildDelegationCostFields,
 	summarizeTelemetryCosts,
 } from '../../../src/services/cost-accounting';
+import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 
 // Issue #2789: the cost fold and summaries preserve unknown (null) token
 // axes end-to-end — the producer never fabricates 0 for an absent axis, an
