@@ -144,6 +144,18 @@ function resolveMvnwCommand(dir: string): string {
 }
 
 /**
+ * Resolve the Gradle wrapper command name: Windows prefers `gradlew.bat` when
+ * it exists, otherwise the POSIX `./gradlew` script. Mirrors
+ * `resolveMvnwCommand` so the Gradle wrapper is Windows-aware symmetric to the
+ * Maven wrapper.
+ */
+function resolveGradlewCommand(dir: string): string {
+	const isWindows = process.platform === 'win32';
+	const hasGradlewBat = wrapperExists(dir, 'gradlew.bat');
+	return isWindows && hasGradlewBat ? 'gradlew.bat' : './gradlew';
+}
+
+/**
  * Prefer the Gradle wrapper when present, then the Maven wrapper; otherwise
  * defer to the default registry-driven selection (which checks binary
  * availability). Both wrapper checks are repo-local file probes, so they work
@@ -156,7 +168,7 @@ async function selectTestFramework(
 	if (wrapperExists(dir, 'gradlew')) {
 		return {
 			name: 'gradle',
-			cmd: ['./gradlew', 'test', '-q'],
+			cmd: [resolveGradlewCommand(dir), 'test', '-q'],
 			cwd: dir,
 			detectedVia: './gradlew',
 			filesIgnored: false,
@@ -226,10 +238,12 @@ export const _internals: {
 	detectFramework: typeof detectFramework;
 	wrapperExists: typeof wrapperExists;
 	resolveMvnwCommand: typeof resolveMvnwCommand;
+	resolveGradlewCommand: typeof resolveGradlewCommand;
 } = {
 	extractImports,
 	isMainClass,
 	detectFramework,
 	wrapperExists,
 	resolveMvnwCommand,
+	resolveGradlewCommand,
 };

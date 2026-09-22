@@ -158,6 +158,46 @@ describe('selectTestFramework', () => {
 		const sel = await backend.selectTestFramework!(tmpDir);
 		expect(sel).toBeNull();
 	});
+
+	test('resolves to gradlew.bat on Windows when gradlew.bat is present', async () => {
+		const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		try {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+			fs.writeFileSync(path.join(tmpDir, 'gradlew.bat'), '@echo off\n');
+			const sel = await backend.selectTestFramework!(tmpDir);
+			expect(sel?.name).toBe('gradle');
+			expect(sel?.cmd).toEqual(['gradlew.bat', 'test', '-q']);
+		} finally {
+			if (origPlatform) {
+				Object.defineProperty(process, 'platform', origPlatform);
+			}
+		}
+	});
+
+	test('resolves to ./gradlew on Windows when gradlew.bat is absent', async () => {
+		const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		try {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+			const sel = await backend.selectTestFramework!(tmpDir);
+			expect(sel?.name).toBe('gradle');
+			expect(sel?.cmd).toEqual(['./gradlew', 'test', '-q']);
+		} finally {
+			if (origPlatform) {
+				Object.defineProperty(process, 'platform', origPlatform);
+			}
+		}
+	});
+
+	test('resolves to ./gradlew on non-Windows even when gradlew.bat is present', async () => {
+		if (process.platform === 'win32') return;
+		fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+		fs.writeFileSync(path.join(tmpDir, 'gradlew.bat'), '@echo off\n');
+		const sel = await backend.selectTestFramework!(tmpDir);
+		expect(sel?.name).toBe('gradle');
+		expect(sel?.cmd).toEqual(['./gradlew', 'test', '-q']);
+	});
 });
 
 describe('selectEntryPoints', () => {
@@ -343,6 +383,7 @@ describe('_internals seam', () => {
 	test('exposes the extracted wrapper helpers for direct testing', () => {
 		expect(typeof _internals.wrapperExists).toBe('function');
 		expect(typeof _internals.resolveMvnwCommand).toBe('function');
+		expect(typeof _internals.resolveGradlewCommand).toBe('function');
 	});
 });
 
@@ -401,5 +442,57 @@ describe('resolveMvnwCommand', () => {
 		fs.writeFileSync(path.join(tmpDir, 'mvnw'), '#!/bin/sh\nexit 0\n');
 		fs.writeFileSync(path.join(tmpDir, 'mvnw.cmd'), '@echo off\n');
 		expect(_internals.resolveMvnwCommand(tmpDir)).toBe('./mvnw');
+	});
+});
+
+describe('resolveGradlewCommand', () => {
+	let tmpDir: string;
+
+	beforeEach(() => {
+		tmpDir = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-gradlew-')),
+		);
+	});
+
+	afterEach(() => {
+		try {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		} catch {
+			// best-effort
+		}
+	});
+
+	test('returns gradlew.bat on Windows when gradlew.bat is present', () => {
+		const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		try {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+			fs.writeFileSync(path.join(tmpDir, 'gradlew.bat'), '@echo off\n');
+			expect(_internals.resolveGradlewCommand(tmpDir)).toBe('gradlew.bat');
+		} finally {
+			if (origPlatform) {
+				Object.defineProperty(process, 'platform', origPlatform);
+			}
+		}
+	});
+
+	test('returns ./gradlew on Windows when gradlew.bat is absent', () => {
+		const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+		try {
+			Object.defineProperty(process, 'platform', { value: 'win32' });
+			fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+			expect(_internals.resolveGradlewCommand(tmpDir)).toBe('./gradlew');
+		} finally {
+			if (origPlatform) {
+				Object.defineProperty(process, 'platform', origPlatform);
+			}
+		}
+	});
+
+	test('returns ./gradlew on non-Windows even when gradlew.bat is present', () => {
+		if (process.platform === 'win32') return;
+		fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+		fs.writeFileSync(path.join(tmpDir, 'gradlew.bat'), '@echo off\n');
+		expect(_internals.resolveGradlewCommand(tmpDir)).toBe('./gradlew');
 	});
 });
