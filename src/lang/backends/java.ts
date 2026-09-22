@@ -7,8 +7,9 @@
  *     `../java-extraction` (Approach A) rather than reimplementing a parser,
  *     mapping each parsed import to its `.specifier` string.
  *   - `selectTestFramework` prefers the Gradle wrapper `./gradlew` when
- *     present (a real Java-specific behavior the default misses), falling
- *     back to `defaultSelectTestFramework`.
+ *     present, then the Maven wrapper `./mvnw`, falling back to
+ *     `defaultSelectTestFramework`. The wrapper checks are repo-local, so
+ *     they do not depend on `gradle`/`mvn` being resolvable on PATH.
  *   - `selectEntryPoints` scans the tree for `.java` files declaring
  *     `public static void main`.
  *   - `selectFramework` detects Spring vs Servlet from pom.xml / build.gradle.
@@ -124,8 +125,11 @@ function extractImports(_sourceFile: string, source: string): string[] {
 }
 
 /**
- * Prefer the Gradle wrapper when present; otherwise defer to the default
- * registry-driven selection (which checks binary availability).
+ * Prefer the Gradle wrapper when present, then the Maven wrapper; otherwise
+ * defer to the default registry-driven selection (which checks binary
+ * availability). Both wrapper checks are repo-local file probes, so they work
+ * even when `gradle`/`mvn` are not resolvable on PATH. Gradle wins if both
+ * wrappers exist (Gradle can wrap Maven repos too).
  */
 async function selectTestFramework(
 	dir: string,
@@ -137,6 +141,21 @@ async function selectTestFramework(
 			cmd: ['./gradlew', 'test', '-q'],
 			cwd: dir,
 			detectedVia: './gradlew',
+			filesIgnored: false,
+		};
+	} catch {
+		// no gradle wrapper — try the Maven wrapper
+	}
+	try {
+		fs.accessSync(path.join(dir, 'mvnw'));
+		const isWindows = process.platform === 'win32';
+		const hasMvnwCmd = fs.existsSync(path.join(dir, 'mvnw.cmd'));
+		const mvnw = isWindows && hasMvnwCmd ? 'mvnw.cmd' : './mvnw';
+		return {
+			name: 'maven',
+			cmd: [mvnw, 'test', '-q'],
+			cwd: dir,
+			detectedVia: './mvnw',
 			filesIgnored: false,
 		};
 	} catch {

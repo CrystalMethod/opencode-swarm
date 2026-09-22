@@ -129,6 +129,29 @@ describe('selectTestFramework', () => {
 		expect(sel?.detectedVia).toBe('./gradlew');
 	});
 
+	test('prefers ./mvnw for a Maven project with the wrapper present', async () => {
+		// Fresh Spring Initializr Maven fixture: pom.xml + mvnw, no
+		// build.gradle, no gradlew. The wrapper is repo-local, so selection
+		// must not depend on `mvn` being resolvable on PATH.
+		fs.writeFileSync(path.join(tmpDir, 'pom.xml'), '<project/>\n');
+		fs.writeFileSync(path.join(tmpDir, 'mvnw'), '#!/bin/sh\nexit 0\n');
+		const sel = await backend.selectTestFramework!(tmpDir);
+		expect(sel).not.toBeNull();
+		expect(sel?.name).toBe('maven');
+		expect(sel?.cmd).toEqual(['./mvnw', 'test', '-q']);
+		expect(sel?.cwd).toBe(tmpDir);
+		expect(sel?.detectedVia).toBe('./mvnw');
+	});
+
+	test('gradlew wins when both wrappers are present', async () => {
+		fs.writeFileSync(path.join(tmpDir, 'gradlew'), '#!/bin/sh\nexit 0\n');
+		fs.writeFileSync(path.join(tmpDir, 'mvnw'), '#!/bin/sh\nexit 0\n');
+		fs.writeFileSync(path.join(tmpDir, 'pom.xml'), '<project/>\n');
+		const sel = await backend.selectTestFramework!(tmpDir);
+		expect(sel?.name).toBe('gradle');
+		expect(sel?.detectedVia).toBe('./gradlew');
+	});
+
 	test('falls back to the default selection when no gradlew is present', async () => {
 		// Empty dir: no gradlew, no pom.xml/build.gradle detect file → the
 		// default registry-driven selection finds no framework and returns null.
