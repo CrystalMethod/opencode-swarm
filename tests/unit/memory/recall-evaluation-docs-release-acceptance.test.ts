@@ -52,7 +52,7 @@ describe('issue #2490 AC13 — evaluator documentation and release evidence', ()
 		}
 	});
 
-	test('has one unique pending release fragment naming both issues', () => {
+	test('has release evidence naming both issues (pending or materialized)', () => {
 		const pendingDirectory = path.join(repositoryRoot, 'docs/releases/pending');
 		const matches = readdirSync(pendingDirectory)
 			.filter((file) => file.endsWith('.md'))
@@ -60,9 +60,27 @@ describe('issue #2490 AC13 — evaluator documentation and release evidence', ()
 				const content = readFileSync(path.join(pendingDirectory, file), 'utf8');
 				return content.includes('#2489') && content.includes('#2490');
 			});
+		if (matches.length > 0) {
+			expect(
+				matches,
+				'expected one pending fragment mentioning #2489 and #2490',
+			).toHaveLength(1);
+			return;
+		}
+		// #2899: once the fragment is consumed by a shipped release, the
+		// fragment cleanup materializes its content into docs/releases/v*.md
+		// and removes the pending copy — the release evidence survives in the
+		// archive instead of the pending directory.
+		const releasesDirectory = path.join(repositoryRoot, 'docs/releases');
+		const materialized = readdirSync(releasesDirectory)
+			.filter((file) => file.startsWith('v') && file.endsWith('.md'))
+			.filter((file) => {
+				const content = readFileSync(path.join(releasesDirectory, file), 'utf8');
+				return content.includes('#2489') && content.includes('#2490');
+			});
 		expect(
-			matches,
-			'expected one pending fragment mentioning #2489 and #2490',
-		).toHaveLength(1);
+			materialized.length,
+			'expected the #2489/#2490 release evidence to be pending or materialized in docs/releases',
+		).toBeGreaterThanOrEqual(1);
 	});
 });
