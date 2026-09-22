@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { AutoReviewConfigSchema } from '../../../src/config/schema';
 import type { ReviewDiffResult } from '../../../src/review/diff-source';
+import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir';
 import { _internals, runReviewEngine } from '../../../src/review/engine';
 
 // Issue #2789: the review engine accumulates only KNOWN token contributions;
