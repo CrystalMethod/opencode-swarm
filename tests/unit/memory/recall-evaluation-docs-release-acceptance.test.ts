@@ -75,7 +75,10 @@ describe('issue #2490 AC13 — evaluator documentation and release evidence', ()
 		const materialized = readdirSync(releasesDirectory)
 			.filter((file) => file.startsWith('v') && file.endsWith('.md'))
 			.filter((file) => {
-				const content = readFileSync(path.join(releasesDirectory, file), 'utf8');
+				const content = readFileSync(
+					path.join(releasesDirectory, file),
+					'utf8',
+				);
 				return content.includes('#2489') && content.includes('#2490');
 			});
 		expect(
