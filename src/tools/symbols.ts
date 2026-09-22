@@ -48,6 +48,7 @@ const SYMBOL_EXTENSIONS = new Set([
 	'.gemspec',
 	'.php',
 	'.phtml',
+	'.java',
 ]);
 
 // Directories to skip during workspace scanning
@@ -1084,6 +1085,121 @@ export function extractPhpSymbols(filePath: string, cwd: string): SymbolInfo[] {
 	return sortSymbols(symbols);
 }
 
+/**
+ * Java reserved keywords excluded from method-name extraction so control-flow
+ * lines (e.g. `if (x)`, `for (...)`) are not misreported as methods.
+ */
+const JAVA_KEYWORDS = new Set([
+	'abstract',
+	'assert',
+	'boolean',
+	'break',
+	'byte',
+	'case',
+	'catch',
+	'char',
+	'class',
+	'const',
+	'continue',
+	'default',
+	'do',
+	'double',
+	'else',
+	'enum',
+	'extends',
+	'final',
+	'finally',
+	'float',
+	'for',
+	'goto',
+	'if',
+	'implements',
+	'import',
+	'instanceof',
+	'int',
+	'interface',
+	'long',
+	'native',
+	'new',
+	'package',
+	'private',
+	'protected',
+	'public',
+	'return',
+	'short',
+	'static',
+	'strictfp',
+	'super',
+	'switch',
+	'synchronized',
+	'this',
+	'throw',
+	'throws',
+	'transient',
+	'try',
+	'void',
+	'volatile',
+	'while',
+]);
+
+/**
+ * Java symbols: class/interface/enum/record declarations plus methods and
+ * constructors. Best-effort regex line parsing; `exported` reflects Java
+ * `public` visibility. Records map to the `class` kind (no `record` kind in
+ * SymbolInfo). Java keywords are excluded from method names to avoid false
+ * positives from control-flow lines (e.g. `if (x)`).
+ */
+export function extractJavaSymbols(
+	filePath: string,
+	cwd: string,
+): SymbolInfo[] {
+	const content = readValidatedSourceFile(filePath, cwd);
+	if (content === null) return [];
+
+	const symbols: SymbolInfo[] = [];
+	const lines = content.split('\n');
+	for (let i = 0; i < lines.length; i++) {
+		const line = lines[i];
+
+		const typeDecl = line.match(
+			/^(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
+		);
+		if (typeDecl) {
+			symbols.push({
+				name: typeDecl[2],
+				kind:
+					typeDecl[1] === 'interface'
+						? 'interface'
+						: typeDecl[1] === 'enum'
+							? 'enum'
+							: 'class',
+				exported: /^\s*public\b/.test(line),
+				signature: line.trim().substring(0, 100),
+				line: i + 1,
+			});
+			continue;
+		}
+
+		const method = line.match(
+			/^(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
+		);
+		if (method && !JAVA_KEYWORDS.has(method[1])) {
+			symbols.push({
+				name: method[1],
+				kind: 'method',
+				exported: /^\s*public\b/.test(line),
+				signature: line.trim().substring(0, 100),
+				line: i + 1,
+			});
+		}
+	}
+
+	return symbols.sort((a, b) => {
+		if (a.line !== b.line) return a.line - b.line;
+		return a.name.localeCompare(b.name);
+	});
+}
+
 // ============ Workspace File Discovery ============
 
 /**
@@ -1187,6 +1303,9 @@ function searchWorkspaceSymbols(
 			case '.php':
 			case '.phtml':
 				syms = _internals.extractPhpSymbols(relFile, cwd);
+				break;
+			case '.java':
+				syms = _internals.extractJavaSymbols(relFile, cwd);
 				break;
 			default:
 				continue;
@@ -1404,11 +1523,14 @@ export const symbols: ToolDefinition = createSwarmTool({
 			case '.phtml':
 				syms = _internals.extractPhpSymbols(file, cwd);
 				break;
+			case '.java':
+				syms = _internals.extractJavaSymbols(file, cwd);
+				break;
 			default:
 				return JSON.stringify(
 					{
 						file,
-						error: `Unsupported file extension: ${ext}. Supported: .ts, .tsx, .js, .jsx, .mjs, .cjs, .py, .pyw, .rs, .go, .dart, .rb, .rake, .gemspec, .php, .phtml`,
+						error: `Unsupported file extension: ${ext}. Supported: .ts, .tsx, .js, .jsx, .mjs, .cjs, .py, .pyw, .rs, .go, .dart, .rb, .rake, .gemspec, .php, .phtml, .java`,
 						symbols: [],
 					},
 					null,
@@ -1446,4 +1568,5 @@ export const _internals = {
 	extractDartSymbols,
 	extractRubySymbols,
 	extractPhpSymbols,
+	extractJavaSymbols,
 };
