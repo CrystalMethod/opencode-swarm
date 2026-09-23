@@ -114,14 +114,20 @@ export function createPreflightIntegration(
 			// message, mirroring formatPreflightMarkdown.
 			const testsCheck = report.checks.find((c) => c.type === 'tests');
 			const detectedOnly = testsCheck?.details?.detectedOnly === true;
-			const state = detectedOnly
-				? 'skipped'
-				: report.overall === 'pass'
-					? 'success'
-					: 'failure';
-			const message = detectedOnly
-				? 'detected only — tests not executed'
-				: report.message;
+			const state =
+				report.overall === 'fail'
+					? 'failure'
+					: detectedOnly
+						? 'skipped'
+						: report.overall === 'pass'
+							? 'success'
+							: 'failure';
+			const message =
+				report.overall === 'fail'
+					? report.message
+					: detectedOnly
+						? 'detected only — tests not executed'
+						: report.message;
 			try {
 				statusArtifact.recordOutcome(state, request.currentPhase, message);
 				// Success line lives inside the try so a contained failure is

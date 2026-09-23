@@ -1199,6 +1199,14 @@ export async function runPreflight(
 		message = 'Preflight passed all checks';
 	}
 
+	const testsCheckForMessage = checks.find((c) => c.type === 'tests');
+	const testsDetectedOnlyForMessage =
+		testsCheckForMessage?.details?.detectedOnly === true;
+	if (overall === 'pass' && testsDetectedOnlyForMessage) {
+		message =
+			'Preflight passed all checks except tests (detected only — not executed)';
+	}
+
 	log(`[Preflight] Complete: ${overall} ${message}`);
 
 	return {
@@ -1216,11 +1224,22 @@ export async function runPreflight(
  * Format preflight report as markdown
  */
 export function formatPreflightMarkdown(report: PreflightReport): string {
+	const testsDetectedOnlyOverall = report.checks.some(
+		(c) => c.type === 'tests' && c.details?.detectedOnly === true,
+	);
 	const lines = [
 		'## Preflight Report',
 		'',
 		`**Phase**: ${report.phase}`,
-		`**Overall**: ${report.overall === 'pass' ? '✅ PASS' : report.overall === 'fail' ? '❌ FAIL' : '⏭️ SKIPPED'}`,
+		`**Overall**: ${
+			report.overall === 'fail'
+				? '❌ FAIL'
+				: report.overall === 'skipped'
+					? '⏭️ SKIPPED'
+					: testsDetectedOnlyOverall
+						? '⏭️ PARTIAL (tests detected only)'
+						: '✅ PASS'
+		}`,
 		`**Duration**: ${(report.totalDurationMs / 1000).toFixed(2)}s`,
 		'',
 		'### Checks',

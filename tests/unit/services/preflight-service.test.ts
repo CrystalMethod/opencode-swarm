@@ -749,6 +749,74 @@ describe('Preflight Service', () => {
 			expect(result.details?.framework).toBe('none');
 			expect(result.details?.detectedOnly).toBeUndefined();
 		});
+
+		it('should qualify pass messaging when tests are detectedOnly and render overall as partial', async () => {
+			const originalRunLintCheck = _internals.runLintCheck;
+			const originalRunTestsCheck = _internals.runTestsCheck;
+			const originalRunSecretsCheck = _internals.runSecretsCheck;
+			const originalRunEvidenceCheck = _internals.runEvidenceCheck;
+			const originalRunRequirementCoverageCheck =
+				_internals.runRequirementCoverageCheck;
+			const originalRunVersionCheck = _internals.runVersionCheck;
+
+			_internals.runLintCheck = mock(async () => ({
+				type: 'lint',
+				status: 'pass',
+				message: 'Lint check passed',
+				durationMs: 1,
+			}));
+			_internals.runTestsCheck = mock(async () => ({
+				type: 'tests',
+				status: 'pass',
+				message: 'Test framework detected: vitest',
+				details: { framework: 'vitest', detectedOnly: true },
+				durationMs: 1,
+			}));
+			_internals.runSecretsCheck = mock(async () => ({
+				type: 'secrets',
+				status: 'pass',
+				message: 'No secrets detected',
+				durationMs: 1,
+			}));
+			_internals.runEvidenceCheck = mock(async () => ({
+				type: 'evidence',
+				status: 'pass',
+				message: 'All completed tasks have evidence',
+				durationMs: 1,
+			}));
+			_internals.runRequirementCoverageCheck = mock(async () => ({
+				type: 'req_coverage',
+				status: 'pass',
+				message: 'Requirement coverage report found',
+				durationMs: 1,
+			}));
+			_internals.runVersionCheck = mock(async () => ({
+				type: 'version',
+				status: 'pass',
+				message: 'Version consistent',
+				durationMs: 1,
+			}));
+
+			try {
+				const report = await runPreflight(testDir, 1);
+				expect(report.overall).toBe('pass');
+				expect(report.message).toBe(
+					'Preflight passed all checks except tests (detected only — not executed)',
+				);
+
+				const markdown = formatPreflightMarkdown(report);
+				expect(markdown).toContain('PARTIAL (tests detected only)');
+				expect(markdown).not.toContain('**Overall**: ✅ PASS');
+			} finally {
+				_internals.runLintCheck = originalRunLintCheck;
+				_internals.runTestsCheck = originalRunTestsCheck;
+				_internals.runSecretsCheck = originalRunSecretsCheck;
+				_internals.runEvidenceCheck = originalRunEvidenceCheck;
+				_internals.runRequirementCoverageCheck =
+					originalRunRequirementCoverageCheck;
+				_internals.runVersionCheck = originalRunVersionCheck;
+			}
+		});
 	});
 
 	describe('handlePreflightCommand', () => {

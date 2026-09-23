@@ -196,4 +196,38 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 		expect(outcome?.state).toBe('success');
 		expect(outcome?.message).not.toContain('tests not executed');
 	});
+
+	it('should preserve failure outcome and real failure message even when tests are detectedOnly', async () => {
+		const swarmDir = path.join(tmpdir(), `preflight-fail-${Date.now()}`);
+		const failureMessage = 'Preflight failed: 1 check(s) failed';
+
+		await triggerPreflight(swarmDir, {
+			id: 'report-2',
+			timestamp: Date.now(),
+			phase: 1,
+			overall: 'fail',
+			checks: [
+				{
+					type: 'lint',
+					status: 'fail',
+					message: 'Lint found 1 issue(s)',
+				},
+				{
+					type: 'tests',
+					status: 'pass',
+					message: 'Test framework detected: vitest',
+					details: { framework: 'vitest', detectedOnly: true },
+				},
+			],
+			totalDurationMs: 12,
+			message: failureMessage,
+		});
+
+		const artifact = getSharedAutomationStatusArtifact(swarmDir);
+		const outcome = artifact.getSnapshot().lastOutcome;
+
+		expect(outcome?.state).toBe('failure');
+		expect(outcome?.message).toBe(failureMessage);
+		expect(outcome?.message).not.toContain('tests not executed');
+	});
 });
