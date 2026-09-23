@@ -166,7 +166,8 @@ public class App {}
 	});
 
 	test('does not lose imports after a block comment containing an apostrophe', () => {
-		const src = "/* (c) Foo's Inc. */\nimport a.b.C;\npublic class X {}\n";
+		const src =
+			"/* (c) Foo's Inc. */\nimport a.b.C;\n/* later comment */\npublic class X {}\n";
 		const imports = parseJavaImports(src);
 		expect(imports).toEqual([
 			{
@@ -179,7 +180,7 @@ public class App {}
 
 	test('does not lose imports after a block comment with an apostrophe followed by more code', () => {
 		const src =
-			"/* Don't strip this comment's terminator */\nimport x.y.Z;\npublic class Y {}\n";
+			"/* Don't strip this comment's terminator */\nimport x.y.Z;\nclass Y { /* trailing comment */ }\n";
 		const imports = parseJavaImports(src);
 		expect(imports).toEqual([
 			{
