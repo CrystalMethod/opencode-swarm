@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.186.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.1...v7.186.2) (2026-09-23)
+
+
+### Bug Fixes
+
+* **observability:** correct 4 catalog citations mis-pinned by the re-pin codemod ([7956307](https://github.com/ZaxbyHub/opencode-swarm/commit/79563073fc5428045021776d3f5faf427aa9145d))
+* **release:** strip fragment frontmatter at render time with a dual-form provenance oracle ([#2899](https://github.com/ZaxbyHub/opencode-swarm/issues/2899)) ([af25466](https://github.com/ZaxbyHub/opencode-swarm/commit/af254669be4c72b2c2e93612cd715666933e8d0d))
+* **release:** strip fragment frontmatter at render time with a dual-form provenance oracle ([#2899](https://github.com/ZaxbyHub/opencode-swarm/issues/2899)) ([2a9a3db](https://github.com/ZaxbyHub/opencode-swarm/commit/2a9a3db114c72196823922a03c2988b5d3d04374))
+* **telemetry:** null-preserving unknown semantics for legacy cost surfaces ([#2789](https://github.com/ZaxbyHub/opencode-swarm/issues/2789)) ([eed4d25](https://github.com/ZaxbyHub/opencode-swarm/commit/eed4d25a3db188b2ac883398ba9592fc8f8440ae))
+* **telemetry:** null-preserving unknown semantics for legacy cost surfaces ([#2789](https://github.com/ZaxbyHub/opencode-swarm/issues/2789)) ([0aa7225](https://github.com/ZaxbyHub/opencode-swarm/commit/0aa72259650e31c6e4e6c057084a200be1e35fb4))
+
 ## [7.186.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.0...v7.186.1) (2026-09-22)
 
 
