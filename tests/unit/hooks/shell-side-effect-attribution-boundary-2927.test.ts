@@ -104,17 +104,20 @@ async function decidedBoundaryFixture(): Promise<string> {
 }
 
 /**
- * Same shape, but the side-effect is an UNSTAGED modification of a tracked
- * file (committed earlier, then modified without `git add`) — the canonical
- * formatter/codegen case. Pins that the legacy repo-wide leg keeps its
- * working-tree-inclusive diff basis (module contract: "working tree
- * included"): an index-only weakening (`--staged`) must fail this leg.
+ * Same shape, but the side-effect is an UNSTAGED modification of a file that
+ * is already tracked at or before HEAD~1 (committed early, the in-scope
+ * direct write committed last, then modified without `git add`) — the
+ * canonical formatter/codegen case that isolates the worktree leg. Pins that
+ * the legacy repo-wide leg keeps its working-tree-inclusive diff basis
+ * (module contract: "working tree included"): an index-only weakening
+ * (`--staged`) sees only the in-scope HEAD commit and must fail this leg,
+ * because the side-effect file's index entry is unchanged.
  */
 async function unstagedSideEffectFixture(): Promise<string> {
 	const dir = canonicalMkdtemp('diff-scope-2927-');
 	await gitInit(dir);
-	await commitFile(dir, 'src/a.ts');
 	await commitFile(dir, 'src/generated.ts');
+	await commitFile(dir, 'src/a.ts');
 	fs.writeFileSync(
 		path.join(dir, 'src', 'generated.ts'),
 		'formatter rewrite, not staged',
