@@ -117,6 +117,58 @@ protected void protectedMethod() {}
 		).toBe(false);
 	});
 
+	test('exported is derived from matched modifier text, not the raw line (F-3 regression)', () => {
+		write(
+			'ExportFlag.java',
+			`public class PublicThing {}
+private class PrivateThing {}
+public void publicMethod() {}
+private void privateMethod() {}
+protected void protectedMethod() {}
+void packageMethod() {}
+// a call-statement-shaped line with "public" inside a string literal:
+setVisibility("public");
+throw new IllegalArgumentException("must be public");
+// a private method with "public" only in a trailing comment:
+private void commented() {} // TODO: make public
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('ExportFlag.java', root);
+
+		// genuine public declarations still report exported:true
+		expect(symbolsList.find((s) => s.name === 'PublicThing')?.exported).toBe(
+			true,
+		);
+		expect(symbolsList.find((s) => s.name === 'publicMethod')?.exported).toBe(
+			true,
+		);
+		// private/protected/package-private report exported:false
+		expect(symbolsList.find((s) => s.name === 'PrivateThing')?.exported).toBe(
+			false,
+		);
+		expect(symbolsList.find((s) => s.name === 'privateMethod')?.exported).toBe(
+			false,
+		);
+		expect(
+			symbolsList.find((s) => s.name === 'protectedMethod')?.exported,
+		).toBe(false);
+		expect(symbolsList.find((s) => s.name === 'packageMethod')?.exported).toBe(
+			false,
+		);
+		// a private method whose only "public" is in a trailing comment is not exported
+		expect(symbolsList.find((s) => s.name === 'commented')?.exported).toBe(
+			false,
+		);
+		// call-statement-shaped lines with "public" in a string are not exported
+		expect(symbolsList.find((s) => s.name === 'setVisibility')?.exported).toBe(
+			false,
+		);
+		expect(
+			symbolsList.find((s) => s.name === 'IllegalArgumentException')?.exported,
+		).toBe(false);
+	});
+
 	test('records map to the class kind', () => {
 		write(
 			'Point.java',

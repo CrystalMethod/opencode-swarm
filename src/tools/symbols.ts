@@ -1165,6 +1165,11 @@ export function extractJavaSymbols(
 			/^(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
 		);
 		if (typeDecl) {
+			// Derive visibility from the matched modifier text, not the raw
+			// whole line (a comment/string containing "public" must not flip
+			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
+			const modifiers = typeDecl[0].slice(0, typeDecl[0].indexOf(typeDecl[1]));
+			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: typeDecl[2],
 				kind:
@@ -1173,7 +1178,7 @@ export function extractJavaSymbols(
 						: typeDecl[1] === 'enum'
 							? 'enum'
 							: 'class',
-				exported: /\bpublic\b/.test(line),
+				exported: visibility === 'public',
 				signature: line.trim().substring(0, 100),
 				line: i + 1,
 			});
@@ -1184,10 +1189,15 @@ export function extractJavaSymbols(
 			/^\s*(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+){0,6}(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
 		);
 		if (method && !JAVA_KEYWORDS.has(method[1])) {
+			// Derive visibility from the matched modifier text, not the raw
+			// whole line (a call-statement string or trailing comment
+			// containing "public" must not flip the flag).
+			const modifiers = method[0].slice(0, method[0].indexOf(method[1]));
+			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: method[1],
 				kind: 'method',
-				exported: /\bpublic\b/.test(line),
+				exported: visibility === 'public',
 				signature: line.trim().substring(0, 100),
 				line: i + 1,
 			});
