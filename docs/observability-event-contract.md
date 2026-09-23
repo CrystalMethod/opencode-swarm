@@ -1021,11 +1021,12 @@ intent the implementation follows):
    to `0`, `""`, `false`, or `null`. The guarantee stops at the adapter
    boundary: a producer that pre-coerces its own defaults defeats it, because
    the adapter only ever sees the coerced value. The known instance is
-   `delegation_end` (`src/telemetry.ts` `delegationEnd`, pre-existing and not
-   introduced by this PR), which coerces `?? 0` / `?? null` /
-   `?? 'unavailable'` before emitting — so its cost fields can never appear in
-   `legacy.unknown`. There, `cost_source: 'unavailable'` is the field that keeps
-   absence recoverable.
+   `delegation_end` (`src/telemetry.ts` `delegationEnd`). Before issue #2789 it
+   coerced token axes with `?? 0`; it now emits held-null token axes
+   (`?? null`, matching `cost_usd`) and `?? 'unavailable'` for `cost_source` —
+   so its token fields still never appear in `legacy.unknown` (null is a
+   present value, not `undefined`). There, `cost_source: 'unavailable'` is the
+   field that keeps absence recoverable.
 6. **Missing lineage stays missing.** An absent correlation ID stays
    `undefined` and is never synthesized to make a join succeed.
 7. **Never drop unrecognized fields.** No allowlist filter is applied to the

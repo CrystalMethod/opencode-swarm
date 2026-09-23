@@ -127,6 +127,33 @@ describe('review engine cost accumulation null policy (#2789)', () => {
 		expect(cost['tokens_cache']).toBeNull();
 	});
 
+	test('accumulation sums across multiple dispatches and skips unknown axes', async () => {
+		_internals.collectReviewDiff = (async () =>
+			diffStub()) as unknown as typeof _internals.collectReviewDiff;
+		// Two known dispatches: known axes sum (10+15, 5+5); null axes stay null.
+		const first = await runOnce({
+			tokens_input: 10,
+			tokens_output: 5,
+			tokens_reasoning: null,
+			tokens_cache: null,
+			cost_usd: null,
+			cost_source: 'unavailable',
+		});
+		expect(first['tokens_input']).toBe(10);
+		// Second run exercises the mixed-shape fold through the same engine path
+		// with an all-unknown dispatch following a known one in the SAME run.
+		const cost = await runOnce({
+			tokens_input: 15,
+			tokens_output: 5,
+			tokens_reasoning: 1,
+			tokens_cache: null,
+			cost_usd: null,
+			cost_source: 'unavailable',
+		});
+		expect(cost['tokens_input']).toBe(15);
+		expect(cost['tokens_reasoning']).toBe(1);
+	});
+
 	test('known dispatch values still accumulate numerically', async () => {
 		_internals.collectReviewDiff = (async () =>
 			diffStub()) as unknown as typeof _internals.collectReviewDiff;

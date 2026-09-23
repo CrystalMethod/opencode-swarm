@@ -206,4 +206,95 @@ describe('cost fold unknown-usage semantics (#2789)', () => {
 		expect(known).not.toBeNull();
 		expect(known!['currentFields']['tokens_input']).toBe(12);
 	});
+
+	test('fingerprint mismatch and multi-match candidates are rejected, not guessed', async () => {
+		const parentDigest = createHash('sha256')
+			.update('delegation-cost-parent-v1\0parent-2')
+			.digest('hex')
+			.slice(0, 32);
+		writeTelemetry([
+			{
+				event: 'delegation_end',
+				sessionId: 'parent-2',
+				agentName: 'coder',
+				taskId: '2.1',
+				result: 'completed',
+				record_id: 'rec2789c',
+				identity_fingerprint: 'c'.repeat(32),
+				parent_session_digest: parentDigest,
+				child_session_digest: childDigest('child-3'),
+				version: 1,
+				cost_usd: null,
+				cost_source: 'unavailable',
+			},
+		]);
+		// A SECOND candidate sharing the SAME child digest makes the exact-match
+		// selection ambiguous (selectedCandidates.length !== 1) — the recovery
+		// must refuse rather than guess.
+		writeTelemetry([
+			...readTelemetryLines(testDir),
+			{
+				event: 'delegation_end',
+				sessionId: 'parent-2',
+				agentName: 'coder',
+				taskId: '2.1',
+				result: 'completed',
+				record_id: 'rec2789d',
+				identity_fingerprint: 'd'.repeat(32),
+				parent_session_digest: parentDigest,
+				child_session_digest: childDigest('child-3'),
+				version: 1,
+				cost_usd: null,
+				cost_source: 'unavailable',
+			},
+		]);
+		const ambiguous = await recoverPendingCostCorrectionForTest(
+			testDir,
+			'parent-2',
+			'child-3',
+		);
+		expect(ambiguous).toBeUndefined();
+	});
+
+	test('join_miss-only directory keeps null totals (failed measurement is not vacuous zero)', () => {
+		writeTelemetry([
+			{ event: 'delegation_cost_join', reason: 'join_miss' },
+		]);
+		const summary = summarizeTelemetryCosts(testDir);
+		expect(summary.delegations).toBe(0);
+		expect(summary.join_miss_count).toBe(1);
+		expect(summary.total_input_tokens).toBeNull();
+		expect(summary.total_output_tokens).toBeNull();
+	});
+
+	test('malformed token axes stay unknown and never poison totals', () => {
+		writeTelemetry([
+			{
+				event: 'delegation_end',
+				sessionId: 'sess-bad',
+				agentName: 'coder',
+				taskId: '3.1',
+				result: 'completed',
+				tokens_input: NaN,
+				tokens_output: -5,
+				tokens_reasoning: 'not-a-number',
+				tokens_cache: Number.POSITIVE_INFINITY,
+				cost_usd: null,
+				cost_source: 'unavailable',
+			},
+		]);
+		const summary = summarizeTelemetryCosts(testDir);
+		// readNumber/readFiniteNonNegative reject every malformed axis, so the
+		// delegation folds to all-unknown instead of NaN-poisoning the totals.
+		expect(summary.total_input_tokens).toBeNull();
+		expect(summary.unknown_usage_delegations).toBe(1);
+	});
 });
+
+function readTelemetryLines(directory: string): Array<Record<string, unknown>> {
+	return fs
+		.readFileSync(path.join(directory, '.swarm', 'telemetry.jsonl'), 'utf8')
+		.split('\n')
+		.filter((line) => line.trim() !== '')
+		.map((line) => JSON.parse(line) as Record<string, unknown>);
+}

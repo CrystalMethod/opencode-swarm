@@ -36,12 +36,20 @@ const FORBIDDEN_PATTERNS: ReadonlyArray<{ name: string; re: RegExp }> = [
 		re: /readFiniteNonNegative\([^;{}]*\)\s*\?\?\s*0\b/,
 	},
 	{
+		name: 'readNumber([...]) ?? 0 token fold',
+		re: /tokens_(?:input|output|reasoning|cache):\s*readNumber\([^;{}]*\)\s*\?\?\s*0\b/,
+	},
+	{
 		name: '||= ... ?? 0 token fold',
 		re: /tokens_(?:input|output|reasoning|cache)\s*\|\|=\s*[^;\n]*\?\?\s*0\b/,
 	},
 	{
 		name: "typeof tokens_* === 'number' ? x : 0 collapse",
 		re: /tokens_(?:input|output|reasoning|cache)[^;\n]*===\s*'number'[^;\n]*:\s*0\b/,
+	},
+	{
+		name: 'Math.max fold over token axes (Math.max coerces null to 0)',
+		re: /Math\.max\([^;{}]*(?:tokens_(?:input|output|reasoning|cache)|acc\.tokens_)[^;{}]*\)/,
 	},
 ];
 

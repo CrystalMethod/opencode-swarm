@@ -210,7 +210,7 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   canonical event and derives the written `.swarm/telemetry.jsonl` line from
   it as a documented lossy projection (`toLegacyTelemetryLine`) — output is
   byte-identical to before this change, verified against a checked-in golden
-  corpus captured from the unmodified tree at `e50386b9`. **One documented
+  corpus originally captured from the unmodified tree at `e50386b9` (deliberately regenerated at `0aa722596` by issue #2789; see the capture-script docblock). **One documented
   exception:** a payload carrying an own *accessor* (getter) property is read
   more than once on the new path (`extractWorkflowIds`, `extractOutcome` and
   the adapter's shallow key scan all read own keys before the spread), whereas

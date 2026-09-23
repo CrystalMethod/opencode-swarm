@@ -23,9 +23,9 @@
  *
  * The script refuses to run if `src/telemetry.ts` has uncommitted modifications.
  *
- * COVERAGE — 33 of the 39 catalogued kinds. PARTIAL, deliberately.
+ * COVERAGE — 34 of the 65 catalogued kinds. PARTIAL, deliberately.
  * ---------------------------------------------------------------
- * This script replays 33 kinds: the 26 `telemetry.*` convenience helpers, plus
+ * This script replays 34 kinds: the 27 `telemetry.*` convenience helpers, plus
  * the 7 kinds emitted by direct `emit(...)` calls elsewhere in `src/`, with their
  * real payload shapes (not synthesized ones):
  *   - src/evidence/lock.ts:86,94,129

@@ -521,6 +521,7 @@ export async function handleBenchmarkCommand(
 			total_output_tokens: costSummary.total_output_tokens,
 			total_reasoning_tokens: costSummary.total_reasoning_tokens,
 			total_cache_tokens: costSummary.total_cache_tokens,
+			unknown_usage_delegations: costSummary.unknown_usage_delegations,
 			delegations: costSummary.delegations,
 			unavailable_delegations: costSummary.unavailable_delegations,
 		};

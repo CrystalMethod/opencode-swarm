@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { handleCostsCommand } from '../../../src/commands/costs';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let testDir: string;
 
 beforeEach(() => {
-	testDir = path.join(
-		os.tmpdir(),
-		`costs-command-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-	);
+	testDir = canonicalMkdtemp('costs-command-test-');
 	mkdirSync(path.join(testDir, '.swarm'), { recursive: true });
 });
 
@@ -117,5 +114,13 @@ describe('handleCostsCommand', () => {
 		expect(parsed.by_agent[0].name).toBe('coder');
 		expect(parsed.by_gate[0].name).toBe('unknown');
 		expect(parsed.by_retry[0].name).toBe('0');
+		// #2789: the delegation carries no token axes, so the --json shape must
+		// report unknown totals (never coerced 0) and count the delegation.
+		expect(parsed.total_input_tokens).toBeNull();
+		expect(parsed.total_output_tokens).toBeNull();
+		expect(parsed.total_reasoning_tokens).toBeNull();
+		expect(parsed.total_cache_tokens).toBeNull();
+		expect(parsed.unknown_usage_delegations).toBe(1);
+		expect(parsed.by_agent[0].input_tokens).toBeNull();
 	});
 });

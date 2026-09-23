@@ -15,6 +15,7 @@ import {
 	removeReviewReceipt,
 } from '../hooks/review-receipt.js';
 import { parseReviewerOutput } from '../hooks/review-receipt-collector.js';
+import { sumKnownAxis } from '../services/cost-accounting.js';
 import { telemetry } from '../telemetry.js';
 import type { ModelOverride } from '../utils/model-dispatch-fallback.js';
 import { isQuotaError } from '../utils/provider-error-classification.js';
@@ -639,12 +640,6 @@ async function dispatchReviewerWithFallback(
 	return { result: attempts[0], attempts };
 }
 
-/** #2789: additive accumulation over KNOWN values only; unknown stays unknown. */
-function sumKnown(total: number | null, value: number | null): number | null {
-	if (value === null) return total;
-	return total === null ? value : total + value;
-}
-
 function addCost(
 	evidence: AutoReviewEvidence,
 	dispatches: ReviewDispatchResult[],
@@ -667,19 +662,19 @@ function addCost(
 		}
 		// #2789: accumulate KNOWN token contributions only; an all-unknown
 		// dispatch set leaves the axes null (unknown), never a fabricated 0.
-		evidence.cost.tokens_input = sumKnown(
+		evidence.cost.tokens_input = sumKnownAxis(
 			evidence.cost.tokens_input,
 			fields?.tokens_input ?? null,
 		);
-		evidence.cost.tokens_output = sumKnown(
+		evidence.cost.tokens_output = sumKnownAxis(
 			evidence.cost.tokens_output,
 			fields?.tokens_output ?? null,
 		);
-		evidence.cost.tokens_reasoning = sumKnown(
+		evidence.cost.tokens_reasoning = sumKnownAxis(
 			evidence.cost.tokens_reasoning,
 			fields?.tokens_reasoning ?? null,
 		);
-		evidence.cost.tokens_cache = sumKnown(
+		evidence.cost.tokens_cache = sumKnownAxis(
 			evidence.cost.tokens_cache,
 			fields?.tokens_cache ?? null,
 		);
