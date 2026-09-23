@@ -29,7 +29,11 @@ import {
 	type SecretscanErrorResult,
 	type SecretscanResult,
 } from '../tools/secretscan';
-import { runTests, type TestResult } from '../tools/test-runner';
+import {
+	detectTestFrameworkViaDispatch,
+	runTests,
+	type TestResult,
+} from '../tools/test-runner';
 import { log } from '../utils';
 
 /** Preflight check types */
@@ -402,6 +406,29 @@ async function runTestsCheck(
 	const startTime = Date.now();
 
 	try {
+		// Reach the real language-backend framework detection instead of the
+		// legacy `runTests('none', ...)` path, whose hard guard returns
+		// `framework: 'none'` for empty scope/files/targets before dispatch
+		// detection ever runs. When a supported project structure is present
+		// we report the detected framework without executing the test suite;
+		// only genuinely undetectable projects fall through to the legacy
+		// "No test framework detected" behavior below.
+		const detectedFramework = await detectTestFrameworkViaDispatch(_dir);
+
+		if (detectedFramework !== 'none') {
+			return {
+				type: 'tests',
+				status: 'pass',
+				message: `Test framework detected: ${detectedFramework}`,
+				details: {
+					framework: detectedFramework,
+					scope,
+					detectedOnly: true,
+				},
+				durationMs: Date.now() - startTime,
+			};
+		}
+
 		const result: TestResult = await runTests(
 			'none', // Auto-detect
 			scope,

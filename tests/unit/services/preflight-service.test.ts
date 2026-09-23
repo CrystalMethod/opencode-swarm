@@ -658,6 +658,46 @@ describe('Preflight Service', () => {
 		});
 	});
 
+	describe('tests check framework detection', () => {
+		it('should report the detected framework when a supported project structure is present', async () => {
+			// A package.json with a scripts.test is detected from file presence
+			// alone by the language-backend dispatch layer — no real test runner
+			// toolchain is required on PATH, and no test suite is executed.
+			fs.writeFileSync(
+				path.join(testDir, 'package.json'),
+				JSON.stringify({ scripts: { test: 'vitest run' } }),
+			);
+
+			const result = await _internals.runTestsCheck(
+				testDir,
+				'convention',
+				60000,
+			);
+
+			expect(result.type).toBe('tests');
+			expect(result.status).toBe('pass');
+			expect(result.details?.framework).toBe('vitest');
+			expect(result.details?.detectedOnly).toBe(true);
+			expect(result.message).toContain('Test framework detected');
+		});
+
+		it('should preserve original behavior when no framework is detected', async () => {
+			// Empty temp dir — no manifest, so dispatch detection returns 'none'
+			// and the legacy runTests('none', ...) path runs unchanged, surfacing
+			// the original error result.
+			const result = await _internals.runTestsCheck(
+				testDir,
+				'convention',
+				60000,
+			);
+
+			expect(result.type).toBe('tests');
+			expect(result.status).toBe('error');
+			expect(result.details?.framework).toBe('none');
+			expect(result.details?.detectedOnly).toBeUndefined();
+		});
+	});
+
 	describe('handlePreflightCommand', () => {
 		it('should return formatted markdown for valid directory', async () => {
 			const result = await handlePreflightCommand(testDir, []);
