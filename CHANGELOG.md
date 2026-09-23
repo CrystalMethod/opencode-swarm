@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.186.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.3...v7.186.4) (2026-09-23)
+
+
+### Bug Fixes
+
+* **costs:** harden [#2789](https://github.com/ZaxbyHub/opencode-swarm/issues/2789) null semantics per post-merge review (PRR-003..021) ([e1ca53f](https://github.com/ZaxbyHub/opencode-swarm/commit/e1ca53fc63a2af2c434a9651de64209f6359512a))
+
 ## [7.186.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.2...v7.186.3) (2026-09-23)
 
 
