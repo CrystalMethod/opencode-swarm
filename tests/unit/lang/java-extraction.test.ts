@@ -165,6 +165,31 @@ public class App {}
 		expect(parseJavaImports(src)).toEqual([]);
 	});
 
+	test('does not lose imports after a block comment containing an apostrophe', () => {
+		const src = "/* (c) Foo's Inc. */\nimport a.b.C;\npublic class X {}\n";
+		const imports = parseJavaImports(src);
+		expect(imports).toEqual([
+			{
+				specifier: 'a.b.C',
+				importType: 'named',
+				bindings: [{ imported: 'C', local: 'C' }],
+			},
+		]);
+	});
+
+	test('does not lose imports after a block comment with an apostrophe followed by more code', () => {
+		const src =
+			"/* Don't strip this comment's terminator */\nimport x.y.Z;\npublic class Y {}\n";
+		const imports = parseJavaImports(src);
+		expect(imports).toEqual([
+			{
+				specifier: 'x.y.Z',
+				importType: 'named',
+				bindings: [{ imported: 'Z', local: 'Z' }],
+			},
+		]);
+	});
+
 	test('does not fabricate imports from Java text blocks', () => {
 		const src = `public class App {
 	String s = """

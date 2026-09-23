@@ -55,9 +55,7 @@ export interface JavaImport {
  */
 export function parseJavaImports(rawContent: string): JavaImport[] {
 	const imports: JavaImport[] = [];
-	const content = maskMultilineStringLiterals(
-		stripComments(maskStringLiterals(rawContent)),
-	);
+	const content = maskCommentsAndLiterals(rawContent);
 	const re =
 		/^[ \t]*import[ \t]+(static[ \t]+)?([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;?[ \t]*\r?$/gm;
 	for (let m = re.exec(content); m !== null; m = re.exec(content)) {
@@ -80,85 +78,111 @@ export function parseJavaImports(rawContent: string): JavaImport[] {
 	return imports;
 }
 
-/** Returns the final dotted segment of a path, or the path itself if undotted. */
-function finalDottedSegment(path: string): string {
-	const lastDot = path.lastIndexOf('.');
-	return lastDot === -1 ? path : path.slice(lastDot + 1);
-}
-
 /**
- * Removes line and block comments, preserving string literals verbatim.
- * Mirrors the masking behavior of the repo-graph fallback so imports inside
- * comments are not matched.
+ * Masks comments (line, block), string/char literals, and Java text blocks in
+ * a single left-to-right pass, so entering a comment always takes priority
+ * over quote characters found inside it. This fixes a bug where a quote
+ * character inside a comment (e.g. an apostrophe in `/* Foo's Inc. *\/`) was
+ * previously treated as starting a string/char literal by a separate masking
+ * pass that ran before comment-stripping, causing the literal-masking logic
+ * to consume the comment's own closing `*\/` and corrupt subsequent
+ * comment-stripping across the rest of the file.
  */
-function stripComments(content: string): string {
-	return content.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
-}
-
-/**
- * Masks the contents of single-line double-quoted string literals and
- * single-quoted char literals so an import-looking line inside a string is
- * never fabricated as a real import. Runs before `stripComments` so a string
- * containing `//` or `/*` is not corrupted by comment-stripping.
- *
- * The surrounding quotes are preserved so Java text-block delimiters (`"""`)
- * remain detectable by `maskMultilineStringLiterals`. Escaped quotes (`\"`,
- * `\'`) do not terminate the literal, and a raw newline terminates it
- * (single-line literals cannot span lines), so a quote inside a comment cannot
- * bleed across lines and mask a real import.
- */
-function maskStringLiterals(content: string): string {
+function maskCommentsAndLiterals(content: string): string {
 	let out = '';
-	let inLiteral = false;
-	let quote = '';
-	for (let i = 0; i < content.length; i++) {
+	let i = 0;
+	const n = content.length;
+	while (i < n) {
 		const ch = content[i];
-		if (inLiteral) {
-			if (ch === '\\') {
-				// Escape sequence: mask the backslash and the escaped char,
-				// preserving a line-continuation newline.
-				out += ' ';
-				if (i + 1 < content.length) {
-					const next = content[i + 1];
-					out += next === '\n' ? next : ' ';
-					i++;
+		const next = i + 1 < n ? content[i + 1] : '';
+		const next2 = i + 2 < n ? content[i + 2] : '';
+
+		// Java text block: """ ... """
+		if (ch === '"' && next === '"' && next2 === '"') {
+			out += '   ';
+			i += 3;
+			while (i < n) {
+				if (
+					content[i] === '"' &&
+					content[i + 1] === '"' &&
+					content[i + 2] === '"'
+				) {
+					out += '   ';
+					i += 3;
+					break;
 				}
-				continue;
+				out += content[i] === '\n' ? '\n' : ' ';
+				i++;
 			}
-			if (ch === '\n') {
-				// A single-line literal cannot span a newline.
-				inLiteral = false;
-				out += ch;
-				continue;
-			}
-			if (ch === quote) {
-				// Closing quote: preserve it and exit the literal.
-				inLiteral = false;
-				out += ch;
-				continue;
-			}
-			out += ' ';
 			continue;
 		}
+
+		// Line comment
+		if (ch === '/' && next === '/') {
+			while (i < n && content[i] !== '\n') {
+				out += ' ';
+				i++;
+			}
+			continue;
+		}
+
+		// Block comment
+		if (ch === '/' && next === '*') {
+			out += '  ';
+			i += 2;
+			while (i < n) {
+				if (content[i] === '*' && content[i + 1] === '/') {
+					out += '  ';
+					i += 2;
+					break;
+				}
+				out += content[i] === '\n' ? '\n' : ' ';
+				i++;
+			}
+			continue;
+		}
+
+		// String or char literal
 		if (ch === '"' || ch === "'") {
-			inLiteral = true;
-			quote = ch;
-			out += ch; // preserve the opening quote
+			const quote = ch;
+			out += ch;
+			i++;
+			while (i < n) {
+				const c = content[i];
+				if (c === '\\') {
+					out += ' ';
+					i++;
+					if (i < n) {
+						out += content[i] === '\n' ? content[i] : ' ';
+						i++;
+					}
+					continue;
+				}
+				if (c === '\n') {
+					// A single-line literal cannot span a newline.
+					break;
+				}
+				if (c === quote) {
+					out += c;
+					i++;
+					break;
+				}
+				out += ' ';
+				i++;
+			}
 			continue;
 		}
+
 		out += ch;
+		i++;
 	}
 	return out;
 }
 
-/**
- * Masks the contents of Java text blocks (`""" ... """`) so a line-initial
- * `import ...;` inside a text block cannot be misread as a real import.
- */
-function maskMultilineStringLiterals(content: string): string {
-	return content.replace(/"""[\s\S]*?"""/g, (block) =>
-		block.replace(/[^\n]/g, ' '),
-	);
+/** Returns the final dotted segment of a path, or the path itself if undotted. */
+function finalDottedSegment(path: string): string {
+	const lastDot = path.lastIndexOf('.');
+	return lastDot === -1 ? path : path.slice(lastDot + 1);
 }
 
 /**
