@@ -100,6 +100,29 @@ async function decidedBoundaryFixture(): Promise<string> {
 	await gitInit(dir);
 	await commitFile(dir, 'src/a.ts');
 	await stageFile(dir, 'src/generated.ts');
+	return dir;
+}
+
+/**
+ * Same shape, but the side-effect is an UNSTAGED modification of a tracked
+ * file (committed earlier, then modified without `git add`) — the canonical
+ * formatter/codegen case. Pins that the legacy repo-wide leg keeps its
+ * working-tree-inclusive diff basis (module contract: "working tree
+ * included"): an index-only weakening (`--staged`) must fail this leg.
+ */
+async function unstagedSideEffectFixture(): Promise<string> {
+	const dir = canonicalMkdtemp('diff-scope-2927-');
+	await gitInit(dir);
+	await commitFile(dir, 'src/a.ts');
+	await commitFile(dir, 'src/generated.ts');
+	fs.writeFileSync(
+		path.join(dir, 'src', 'generated.ts'),
+		'formatter rewrite, not staged',
+	);
+	return dir;
+}
+
+function writePlanJson(dir: string): void {
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	fs.writeFileSync(
 		path.join(dir, '.swarm', 'plan.json'),
@@ -113,12 +136,12 @@ async function decidedBoundaryFixture(): Promise<string> {
 			],
 		}),
 	);
-	return dir;
 }
 
 describe('validateDiffScope legs under the decided #2927 contract', () => {
 	test('Leg 1: attribution present — shell side-effect file is invisible (no warning)', async () => {
 		const dir = await decidedBoundaryFixture();
+		writePlanJson(dir);
 		try {
 			const result = await validateDiffScope('1.1', dir, {
 				attributedFiles: ['src/a.ts'],
@@ -131,6 +154,20 @@ describe('validateDiffScope legs under the decided #2927 contract', () => {
 
 	test('Leg 2: attribution absent — legacy repo-wide leg flags the side-effect file', async () => {
 		const dir = await decidedBoundaryFixture();
+		writePlanJson(dir);
+		try {
+			const result = await validateDiffScope('1.1', dir);
+			expect(result).not.toBeNull();
+			expect(result).toContain('src/generated.ts');
+			expect(result).toContain('repository-wide');
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test('Leg 2b: UNSTAGED working-tree side-effect (tracked file, no git add) still flagged — pins the working-tree-inclusive diff basis', async () => {
+		const dir = await unstagedSideEffectFixture();
+		writePlanJson(dir);
 		try {
 			const result = await validateDiffScope('1.1', dir);
 			expect(result).not.toBeNull();
@@ -143,6 +180,7 @@ describe('validateDiffScope legs under the decided #2927 contract', () => {
 
 	test('Leg 3: empty-but-present attributedFiles falls to the legacy leg (length > 0 branch)', async () => {
 		const dir = await decidedBoundaryFixture();
+		writePlanJson(dir);
 		try {
 			const result = await validateDiffScope('1.1', dir, {
 				attributedFiles: [],
