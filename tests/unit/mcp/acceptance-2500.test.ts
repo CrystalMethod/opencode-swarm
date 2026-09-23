@@ -476,21 +476,24 @@ describe('MCP explicitly authorized writes (#2500)', () => {
 	});
 
 	test('AC9: release fragment evidence exists and describes the feature', () => {
-		const pending = path.resolve('docs/releases/pending');
-		expect(existsSync(pending)).toBe(true);
-		const fragment = '2500-authorized-mcp-writes.md';
-		if (existsSync(path.join(pending, fragment))) {
-			expect(readFileSync(path.join(pending, fragment), 'utf8')).toMatch(
-				/explicitly authorized|MCP/i,
-			);
-			return;
-		}
-		// #2899: consumed fragments are materialized into docs/releases; a
-		// referencing manifest is the surviving release evidence.
+		const featureRe = /explicitly authorized|MCP/i;
+		const rd = (d: string, n: string) => readFileSync(path.join(d, n), 'utf8');
+		const pendingRef = 'docs/releases/pending/2500-authorized-mcp-writes.md';
 		const manifests = path.resolve('docs/releases/manifests');
-		const referenced = readdirSync(manifests).filter((name) =>
-			readFileSync(path.join(manifests, name), 'utf8').includes(fragment),
+		const structural = readdirSync(manifests).filter((n) =>
+			(JSON.parse(rd(manifests, n)).fragments ?? []).some(
+				(f: { path?: string }) => f?.path === pendingRef,
+			),
 		);
-		expect(referenced.length).toBeGreaterThanOrEqual(1);
+		const releases = path.resolve('docs/releases');
+		const describes = readdirSync(releases).some(
+			(n) => /^v[\d.]+\.md$/.test(n) && featureRe.test(rd(releases, n)),
+		);
+		if (existsSync(pendingRef)) {
+			expect(readFileSync(pendingRef, 'utf8')).toMatch(featureRe);
+		} else {
+			expect(structural.length).toBeGreaterThanOrEqual(1);
+		}
+		expect(describes).toBe(true);
 	});
 });
