@@ -693,15 +693,17 @@ export const telemetry = {
 			agentName,
 			taskId,
 			result,
+			...costFields,
 			// #2789: null-preserving unknown semantics — an axis the producer did
 			// not hold is emitted as null (like cost_usd below), never fabricated
-			// as 0. An explicit 0 remains a legal KNOWN value.
+			// as 0. Placing these defaults AFTER the spread also means a caller
+			// passing an explicitly-undefined axis still normalizes to null
+			// instead of leaking an absent key onto the wire.
 			tokens_input: costFields?.tokens_input ?? null,
 			tokens_output: costFields?.tokens_output ?? null,
 			tokens_reasoning: costFields?.tokens_reasoning ?? null,
 			tokens_cache: costFields?.tokens_cache ?? null,
 			cost_usd: costFields?.cost_usd ?? null,
-			...costFields,
 			cost_source: costFields?.cost_source ?? 'unavailable',
 			model: costFields?.model,
 			gate: costFields?.gate,

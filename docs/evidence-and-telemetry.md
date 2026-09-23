@@ -217,6 +217,7 @@ Every `delegation_end` event includes token and cost fields:
 | `tokens_reasoning` | Reasoning tokens attributed to the delegation, or `null` when unknown |
 | `tokens_cache` | Cache-read/input tokens attributed to the delegation, or `null` when unknown |
 | `cost_usd` | Reported or estimated USD cost, or `null` when unavailable |
+| `unknown_usage_delegations` | `/swarm costs --json` only: count of delegations whose four token axes were all unknown. Note this includes a `cost_source: 'reported'` line that carried no usage evidence — "reported" attests the cost basis, not the token axes |
 | `cost_source` | `reported`, `estimated`, or `unavailable` |
 | `model` | Model id used for attribution when known |
 | `gate` | Delegation gate/reason when known |

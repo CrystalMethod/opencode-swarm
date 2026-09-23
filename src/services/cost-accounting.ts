@@ -175,7 +175,7 @@ function maxKnownAxis(a: number | null, b: number | null): number | null {
 }
 
 /** Per-axis additive policy: known values sum; unknown never fabricates 0. */
-function sumKnownAxis(
+export function sumKnownAxis(
 	total: number | null,
 	value: number | null,
 ): number | null {
@@ -1505,9 +1505,15 @@ function finalizeSummary(summary: CostSummary): CostSummary {
 	summary.total_estimated_usd = roundUsd(summary.total_estimated_usd);
 	summary.total_legacy_usd = roundUsd(summary.total_legacy_usd);
 	// #2789: an empty directory has no measurement at all; keep the historical
-	// vacuous numeric-0 shape for that case only. With >=1 delegation a null
-	// token total honestly means "no delegation held a known value".
-	if (summary.delegations === 0) {
+	// vacuous numeric-0 shape for that case only — and only when nothing went
+	// wrong during the read (a join_miss/unreadable-only directory is non-empty
+	// evidence of FAILED measurement, so its totals stay honestly null). With
+	// >=1 delegation a null token total means "no delegation held a known value".
+	if (
+		summary.delegations === 0 &&
+		summary.join_miss_count === 0 &&
+		summary.telemetry_error_count === 0
+	) {
 		summary.total_input_tokens ??= 0;
 		summary.total_output_tokens ??= 0;
 		summary.total_reasoning_tokens ??= 0;

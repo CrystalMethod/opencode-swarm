@@ -83,7 +83,7 @@ function appendCostRows(
 	);
 	for (const row of rows) {
 		lines.push(
-			`| ${row.name} | ${row.delegations} | ${formatUsd(row.cost_usd)} | ${formatTokens(row.input_tokens)} | ${formatTokens(row.output_tokens)} | ${formatTokens(row.reasoning_tokens)} | ${formatTokens(row.cache_tokens)} | ${row.unavailable_delegations} |`,
+			`| ${sanitizeTableCell(row.name)} | ${row.delegations} | ${formatUsd(row.cost_usd)} | ${formatTokens(row.input_tokens)} | ${formatTokens(row.output_tokens)} | ${formatTokens(row.reasoning_tokens)} | ${formatTokens(row.cache_tokens)} | ${row.unavailable_delegations} |`,
 		);
 	}
 }
@@ -91,10 +91,21 @@ function appendCostRows(
 /**
  * #2789: an unknown (null) token axis renders as the literal word `unknown`,
  * never as a fabricated 0; known values — including an explicit 0 — keep
- * their numeric rendering.
+ * their numeric rendering. The locale is pinned so the rendered grouping is
+ * deterministic across hosts (tests and log parsers rely on `1,000`).
  */
 function formatTokens(value: number | null): string {
-	return value === null ? 'unknown' : value.toLocaleString();
+	return value === null ? 'unknown' : value.toLocaleString('en-US');
+}
+
+/**
+ * Escapes characters that would break the markdown table structure (pipe
+ * cells, row/column separators, any line-break form including a bare carriage
+ * return) when untrusted telemetry strings (agentName/taskId/gate) are
+ * rendered into the human-readable output.
+ */
+function sanitizeTableCell(value: string): string {
+	return value.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
 }
 
 export function formatUsd(value: number): string {

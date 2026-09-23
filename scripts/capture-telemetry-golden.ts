@@ -23,10 +23,13 @@
  *
  * The script refuses to run if `src/telemetry.ts` has uncommitted modifications.
  *
- * COVERAGE — 33 of the 39 catalogued kinds. PARTIAL, deliberately.
+ * COVERAGE — 33 of the 65 catalogued kinds (34 captured lines). PARTIAL,
+ * deliberately.
  * ---------------------------------------------------------------
- * This script replays 33 kinds: the 26 `telemetry.*` convenience helpers, plus
- * the 7 kinds emitted by direct `emit(...)` calls elsewhere in `src/`, with their
+ * This script replays 33 distinct kinds over 34 lines: 27 invocations of the
+ * `telemetry.*` convenience helpers covering 26 distinct helpers (delegationEnd
+ * is invoked twice with different payload shapes), plus the 7 kinds emitted by
+ * direct `emit(...)` calls elsewhere in `src/`, with their
  * real payload shapes (not synthesized ones):
  *   - src/evidence/lock.ts:86,94,129
  *   - src/plan/ledger.ts:681
@@ -39,20 +42,20 @@
  * literal timestamp distinct from FIXED_ISO so the collision stays observable even
  * when the parity test freezes the clock.
  *
- * The remaining SIX catalogued kinds have NO golden line and therefore NO
- * byte-parity coverage:
+ * The other 32 catalogued kinds have NO golden line and therefore NO
+ * byte-parity coverage. Among them, the SIX kinds added by #2063/#2065 are:
  *   `no_op_strong_warning`, `gate_denial_loop`, `execution_stall_warning`,
  *   `execution_stall_denied`, `swarm_internals_read_denied`,
  *   `prm_hard_stop_delivered`
- * They were added by #2063/#2065 — after the corpus was originally captured at
+ * They arrived after the corpus was originally captured at
  * `capturedFromSha` e50386b9 (frozen on purpose back then: regenerating would
  * have captured the POST-wiring tree and made the parity test tautological).
  * Issue #2789 later performed a DELIBERATE, reviewed regeneration at
  * `0aa722596` because the delegation_end contract itself changed — its 2-line
  * fixture diff was the reviewed artifact, which is what keeps the regen
- * non-tautological. The six kinds above still have no golden line (regenerating
+ * non-tautological. The 32 kinds above still have no golden line (regenerating
  * only for them would still be tautological for them); that remains a named
- * coverage gap. Do NOT restate this as "all 39 kinds", and do NOT regenerate
+ * coverage gap. Do NOT restate this as "all 65 kinds", and do NOT regenerate
  * incidentally — a regen must always move the capture-telemetry-golden-guard
  * pin deliberately.
  */
