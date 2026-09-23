@@ -126,7 +126,10 @@ protected void protectedMethod() {}
 `,
 		);
 
-		const symbolsList = extractJavaSymbols('MethodModifierCollision.java', root);
+		const symbolsList = extractJavaSymbols(
+			'MethodModifierCollision.java',
+			root,
+		);
 
 		expect(symbolsList.find((s) => s.name === 'b')?.exported).toBe(true);
 	});
