@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.5",
+  "tagCommit": "2b4878f653e54570d9f1d8571db3720035df2921",
+  "targetCommitish": "2b4878f653e54570d9f1d8571db3720035df2921",
+  "releaseBodySha256": "7e9a653894f83e6057eeef3bc0c0d47fbb6d32bcaaec781b2c8934db74480d09",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2899-swarm-pr-review-followup-hardening.md",
+      "sha256": "c5557332f10a5469ba2e56955ff7f76f20aba007942103d320a349013a1e2eb3"
+    }
+  ]
+}
