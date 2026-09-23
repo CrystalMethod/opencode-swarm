@@ -217,9 +217,10 @@ describe('update modes inject the rendered form (#2899 wiring)', () => {
 		const lines = source.split('\n');
 		const regionOf = (line: number): string => {
 			for (let i = line; i >= 0; i -= 1) {
-				const m = /^(?:export )?(?:async )?function ([A-Za-z_][A-Za-z0-9_]*)\(/.exec(
-					lines[i] ?? '',
-				);
+				const m =
+					/^(?:export )?(?:async )?function ([A-Za-z_][A-Za-z0-9_]*)\(/.exec(
+						lines[i] ?? '',
+					);
 				if (m) return m[1];
 			}
 			return '<module>';

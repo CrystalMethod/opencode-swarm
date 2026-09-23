@@ -476,28 +476,21 @@ describe('MCP explicitly authorized writes (#2500)', () => {
 	});
 
 	test('AC9: release fragment evidence exists and describes the feature', () => {
-		const fragment = '2500-authorized-mcp-writes.md';
 		const featureRe = /explicitly authorized|MCP/i;
-		// #2899: once consumed, evidence = a STRUCTURAL manifest fragments[]
-		// match plus a materialized release body that still describes it.
+		const rd = (d: string, n: string) => readFileSync(path.join(d, n), 'utf8');
+		const pendingRef = 'docs/releases/pending/2500-authorized-mcp-writes.md';
 		const manifests = path.resolve('docs/releases/manifests');
-		const structural = readdirSync(manifests).filter((name) => {
-			const m = JSON.parse(readFileSync(path.join(manifests, name), 'utf8'));
-			return (m.fragments ?? []).some(
-				(f: { path?: string }) =>
-					f?.path === `docs/releases/pending/${fragment}`,
-			);
-		});
+		const structural = readdirSync(manifests).filter((n) =>
+			(JSON.parse(rd(manifests, n)).fragments ?? []).some(
+				(f: { path?: string }) => f?.path === pendingRef,
+			),
+		);
 		const releases = path.resolve('docs/releases');
 		const describes = readdirSync(releases).some(
-			(name) =>
-				name.startsWith('v') &&
-				name.endsWith('.md') &&
-				featureRe.test(readFileSync(path.join(releases, name), 'utf8')),
+			(n) => /^v[\d.]+\.md$/.test(n) && featureRe.test(rd(releases, n)),
 		);
-		const pendingPath = path.join('docs/releases/pending', fragment);
-		if (existsSync(pendingPath)) {
-			expect(readFileSync(pendingPath, 'utf8')).toMatch(featureRe);
+		if (existsSync(pendingRef)) {
+			expect(readFileSync(pendingRef, 'utf8')).toMatch(featureRe);
 		} else {
 			expect(structural.length).toBeGreaterThanOrEqual(1);
 		}
