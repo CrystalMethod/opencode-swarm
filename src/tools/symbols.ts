@@ -1181,7 +1181,7 @@ export function extractJavaSymbols(
 		}
 
 		const method = line.match(
-			/^\s*(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
+			/^\s*(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+){0,6}(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
 		);
 		if (method && !JAVA_KEYWORDS.has(method[1])) {
 			symbols.push({

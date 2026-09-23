@@ -190,6 +190,48 @@ public void alpha() {}
 		expect(extractJavaSymbols('Empty.java', root)).toEqual([]);
 		expect(extractJavaSymbols('Missing.java', root)).toEqual([]);
 	});
+
+	test('adversarial repeated-modifier input does not hang extraction (ReDoS regression)', () => {
+		// The method-declaration modifier group is bounded to {0,6}; an
+		// unbounded star would be quadratic on repeated modifier keywords.
+		const adversarial = 'public '.repeat(500) + 'void foo() {}';
+		write('Adversarial.java', adversarial);
+
+		const start = performance.now();
+		const symbolsList = extractJavaSymbols('Adversarial.java', root);
+		const elapsed = performance.now() - start;
+
+		// Extraction must complete well under a generous wall-clock bound.
+		expect(elapsed).toBeLessThan(1000);
+		// The trailing real declaration is still extracted.
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'foo', kind: 'method' }),
+		);
+	});
+
+	test('legitimate multi-modifier method declarations (up to 6) still extract', () => {
+		write(
+			'Modifiers.java',
+			`public static final synchronized void a() {}
+public abstract void b() {}
+private static native void c() {}
+protected final strictfp void d() {}
+public static synchronized final native void e() {}
+public static final synchronized native abstract void f() {}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Modifiers.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).toContain('a');
+		expect(names).toContain('b');
+		expect(names).toContain('c');
+		expect(names).toContain('d');
+		expect(names).toContain('e');
+		// 6 modifiers — the {0,6} bound must not break this
+		expect(names).toContain('f');
+	});
 });
 
 describe('symbols tool — java routing (DS-3)', () => {
