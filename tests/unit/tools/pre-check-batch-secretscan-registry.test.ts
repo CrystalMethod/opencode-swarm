@@ -182,11 +182,21 @@ describe('Stripe integration - end-to-end gate', () => {
 
 describe('vacuous-pass guard (F-002)', () => {
 	/**
-	 * F-002: When files are provided but ALL are excluded by extension,
-	 * files_scanned === 0. The gate must fail closed (gates_passed === false)
-	 * to prevent a vacuous pass — a scan that scanned nothing reporting success.
+	 * F-002 pinned that an all-excluded batch fails closed — "a scan that
+	 * scanned nothing REPORTING success". #2918 supersedes that pin for the
+	 * one PROVABLE subclass: every requested file deliberately skipped by
+	 * secretscan scan policy (extension exclusion), surfaced via the dedicated
+	 * policy_skipped_files counter and an explicit vacuous-coverage summary.
+	 *
+	 * F-002's unforgeability target remains fail-closed and is separately
+	 * pinned: binary-content skips and missing files do NOT increment the
+	 * policy counter (secretscan-file-accounting.test.ts), dropped/invalid
+	 * entries keep requested_files above the counter (pre-check-docs-only-
+	 * gate-2918.test.ts), and a zero-scan WITHOUT the policy counters stays
+	 * a gate failure. Only the scanner's own extension-exclusion site can
+	 * prove vacuous coverage.
 	 */
-	test('fails the gate when all provided files are excluded by extension', async () => {
+	test('passes the gate (vacuous coverage) when all provided files are excluded by extension', async () => {
 		// .png is in DEFAULT_EXCLUDE_EXTENSIONS — file exists but is never scanned
 		fs.writeFileSync(
 			path.join(tempDir, 'screenshot.png'),
@@ -199,13 +209,17 @@ describe('vacuous-pass guard (F-002)', () => {
 		});
 
 		expect(result.secretscan.ran).toBe(true);
-		expect(result.gates_passed).toBe(false);
+		expect(result.gates_passed).toBe(true);
 		const scanResult = result.secretscan.result as {
 			files_scanned: number;
 			skipped_files: number;
+			policy_skipped_files: number;
+			requested_files: number;
 		};
 		expect(scanResult.files_scanned).toBe(0);
 		expect(scanResult.skipped_files).toBe(1);
+		expect(scanResult.policy_skipped_files).toBe(1);
+		expect(scanResult.requested_files).toBe(1);
 	});
 });
 

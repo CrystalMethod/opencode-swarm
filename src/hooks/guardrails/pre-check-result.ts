@@ -185,12 +185,32 @@ function hardGateExplicitlyFailed(
 		) {
 			return true;
 		}
+		// #2918 vacuous coverage — decoder parity with the tool-side gate.
+		// Normative predicate (identical shape at every enforcing site):
+		// files_scanned === 0 && policy_skipped_files >= requested_files &&
+		// requested_files > 0 && count === 0 && findings empty &&
+		// incomplete_files === 0 && incomplete_paths empty. A record MISSING
+		// policy_skipped_files/requested_files is non-vacuous (predicate false,
+		// previous fail-closed behavior) and never invalid.
+		const vacuousCoverage =
+			result.files_scanned === 0 &&
+			typeof result.policy_skipped_files === 'number' &&
+			Number.isSafeInteger(result.policy_skipped_files) &&
+			result.policy_skipped_files >= 0 &&
+			typeof result.requested_files === 'number' &&
+			Number.isSafeInteger(result.requested_files) &&
+			result.requested_files > 0 &&
+			result.policy_skipped_files >= result.requested_files &&
+			result.count === 0 &&
+			result.findings.length === 0 &&
+			result.incomplete_files === 0 &&
+			result.incomplete_paths.length === 0;
 		return (
 			result.count > 0 ||
 			result.findings.length > 0 ||
 			result.incomplete_files > 0 ||
 			result.incomplete_paths.length > 0 ||
-			result.files_scanned === 0
+			(result.files_scanned === 0 && !vacuousCoverage)
 		);
 	}
 

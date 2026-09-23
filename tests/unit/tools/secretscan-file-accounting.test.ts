@@ -42,6 +42,12 @@ describe('truthful per-file accounting', () => {
 			expect(result.skipped_files).toBe(1);
 			expect(result.incomplete_files).toBe(0);
 			expect(result.incomplete_paths).toEqual([]);
+			// #2918: a binary-content skip is NOT a policy skip — a .txt with
+			// embedded NULs is a scannable surface the scanner declined to
+			// read. The policy counter stays 0 so the vacuous-coverage
+			// predicate can never be satisfied over binary content (the
+			// zero-coverage arm keeps failing it).
+			expect(result.policy_skipped_files).toBe(0);
 		}
 	});
 
@@ -113,15 +119,25 @@ describe('truthful per-file accounting', () => {
 		]);
 	});
 
-	test('skips an explicitly requested file that disappeared', async () => {
+	test('counts an explicitly requested file that disappeared as incomplete', async () => {
 		const result = successful(
 			await runSecretscanOnFiles(['missing.txt'], tempDir),
 		);
 
 		expect(result.files_scanned).toBe(0);
 		expect(result.skipped_files).toBe(1);
-		expect(result.incomplete_files).toBe(0);
-		expect(result.incomplete_paths).toEqual([]);
+		// #2918 supersession of the old "skipped without incomplete" pin: a
+		// requested-but-absent file is a coverage gap, not a policy skip. Under
+		// the old accounting a vacuous-pass predicate built on these numbers
+		// would let a batch of nonexistent paths pass a security gate; the
+		// extension-exclusion site is now the ONLY policy_skipped_files
+		// increment site, so 'missing' must count as incomplete.
+		expect(result.incomplete_files).toBe(1);
+		expect(result.incomplete_paths).toEqual([
+			{ path: 'missing.txt', reason: 'missing' },
+		]);
+		expect(result.policy_skipped_files).toBe(0);
+		expect(result.requested_files).toBe(1);
 	});
 
 	test('bounds incomplete path diagnostics and marks truncation', async () => {

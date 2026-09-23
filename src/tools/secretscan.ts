@@ -64,6 +64,23 @@ export interface SecretscanResult {
 	count: number;
 	files_scanned: number;
 	skipped_files: number;
+	/**
+	 * Skips attributable specifically to scan-policy extension exclusion
+	 * (#2918). The extension-exclusion site in runSecretscanOnFiles is the
+	 * ONLY increment site: binary-content skips, missing files, invalid
+	 * entries, and every incomplete route deliberately do NOT count, so
+	 * `policy_skipped_files === requested_files` with zero findings and zero
+	 * incomplete coverage proves vacuous coverage (nothing the scan policy
+	 * allows scanning was requested).
+	 */
+	policy_skipped_files: number;
+	/**
+	 * Raw declared file count backing the scan, captured BEFORE any caller
+	 * validation-drop (#2918). Direct callers default to `files.length`; the
+	 * pre_check batch passes its pre-drop declared count so a dropped entry
+	 * keeps requested > policy counter (non-vacuous, fail-closed).
+	 */
+	requested_files: number;
 	/** Files requested or discovered but not completely examined. */
 	incomplete_files: number;
 	incomplete_paths: IncompletePath[];
@@ -76,7 +93,9 @@ export interface IncompletePath {
 		| 'cleanup_failed'
 		| 'deadline'
 		| 'directory_limit'
+		| 'invalid_entry'
 		| 'max_files'
+		| 'missing'
 		| 'non_file'
 		| 'oversized'
 		| 'read_error'
@@ -1362,6 +1381,18 @@ export const secretscan: ReturnType<typeof createSwarmTool> = createSwarmTool({
 				count: allFindings.length,
 				files_scanned: filesScanned,
 				skipped_files: skippedFiles + stats.fileErrors + stats.symlinkSkipped,
+				// #2918: this standalone directory scan discovers its own file set,
+				// so there is no caller-declared request basis and no per-file
+				// extension-policy skip accounting. Both counters are deliberately
+				// INERT (0/0): no enforcing site evaluates the vacuous-coverage
+				// predicate on directory-mode output (evaluateSecretscanGate is
+				// module-private with a single files-mode call site, and the only
+				// SecretscanEvidence writer is the batch). Do NOT start populating
+				// these here without also auditing every predicate site — a
+				// directory scan that finds zero scannable files in a code repo is
+				// anomalous and must stay fail-closed (see preflight-service).
+				policy_skipped_files: 0,
+				requested_files: 0,
 				incomplete_files: incompleteFiles,
 				incomplete_paths: discovery.incompletePaths,
 			};
@@ -1459,11 +1490,20 @@ export async function runSecretscan(
 export async function runSecretscanOnFiles(
 	files: string[],
 	directory: string,
+	/**
+	 * Raw declared file count from BEFORE any caller-side validation drop
+	 * (#2918). Defaults to `files.length` for direct callers; the pre_check
+	 * batch passes its pre-drop capture so a dropped entry keeps
+	 * requested_files above the policy-skip counter (non-vacuous).
+	 */
+	rawRequestedFiles?: number,
 ): Promise<SecretscanResult | SecretscanErrorResult> {
 	try {
 		const findings: SecretFinding[] = [];
 		let filesScanned = 0;
 		let skippedFiles = 0;
+		let policySkippedFiles = 0;
+		const requestedFiles = Math.max(0, rawRequestedFiles ?? files.length);
 		const incompletePaths: IncompletePath[] = [];
 		const rawRoot = path.resolve(directory);
 		const canonicalRoot = (() => {
@@ -1535,7 +1575,17 @@ export async function runSecretscanOnFiles(
 
 			const file = filesToScan[index];
 			if (typeof file !== 'string') {
+				// #2918: a non-string entry is a coverage gap (invalid request),
+				// not a policy skip — count it incomplete so a vacuous-coverage
+				// predicate can never be satisfied over garbage input.
 				skippedFiles++;
+				incompleteFiles++;
+				recordIncompletePath(
+					incompletePaths,
+					canonicalRoot,
+					canonicalRoot,
+					'invalid_entry',
+				);
 				continue;
 			}
 
@@ -1561,7 +1611,17 @@ export async function runSecretscanOnFiles(
 			} catch (error) {
 				const err = error as NodeJS.ErrnoException;
 				if (err.code === 'ENOENT') {
+					// #2918: a requested-but-absent file is a coverage gap, not a
+					// policy skip — otherwise a batch of nonexistent paths could
+					// satisfy a vacuous-coverage predicate and pass a security gate.
 					skippedFiles++;
+					incompleteFiles++;
+					recordIncompletePath(
+						incompletePaths,
+						canonicalRoot,
+						resolvedPath,
+						'missing',
+					);
 					continue;
 				}
 				skippedFiles++;
@@ -1601,7 +1661,12 @@ export async function runSecretscanOnFiles(
 
 			const ext = path.extname(resolvedPath).toLowerCase();
 			if (DEFAULT_EXCLUDE_EXTENSIONS.has(ext)) {
+				// #2918: the ONLY policy_skipped_files increment site. This is the
+				// single "skipped-without-incomplete" route left after the missing/
+				// invalid_entry tightening, so an all-policy-skipped batch with zero
+				// findings and zero incomplete coverage is provably vacuous.
 				skippedFiles++;
+				policySkippedFiles++;
 				continue;
 			}
 
@@ -1611,7 +1676,15 @@ export async function runSecretscanOnFiles(
 			} catch (error) {
 				const err = error as NodeJS.ErrnoException;
 				if (err.code === 'ENOENT') {
+					// #2918: same missing-file floor as the lstat ENOENT route above.
 					skippedFiles++;
+					incompleteFiles++;
+					recordIncompletePath(
+						incompletePaths,
+						canonicalRoot,
+						resolvedPath,
+						'missing',
+					);
 					continue;
 				}
 				skippedFiles++;
@@ -1677,6 +1750,8 @@ export async function runSecretscanOnFiles(
 			count: findings.length,
 			files_scanned: filesScanned,
 			skipped_files: skippedFiles,
+			policy_skipped_files: policySkippedFiles,
+			requested_files: requestedFiles,
 			incomplete_files: incompleteFiles,
 			incomplete_paths: incompletePaths,
 		};

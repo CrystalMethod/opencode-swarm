@@ -319,7 +319,21 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 						const hasIncompleteCoverage =
 							incompleteFiles > 0 || incompletePaths.length > 0;
 						const hasFindings = findingsCount > 0;
-						const hasZeroCoverage = lastSecretscan.files_scanned === 0;
+						// #2918 vacuous coverage — same normative predicate as the
+						// pre_check gate and the decoder, evaluated over the persisted
+						// evidence fields (optional; missing ⇒ non-vacuous ⇒ strict).
+						const vacuousCoverage =
+							lastSecretscan.files_scanned === 0 &&
+							typeof lastSecretscan.policy_skipped_files === 'number' &&
+							typeof lastSecretscan.requested_files === 'number' &&
+							lastSecretscan.requested_files > 0 &&
+							lastSecretscan.policy_skipped_files >=
+								lastSecretscan.requested_files &&
+							findingsCount === 0 &&
+							incompleteFiles === 0 &&
+							incompletePaths.length === 0;
+						const hasZeroCoverage =
+							lastSecretscan.files_scanned === 0 && !vacuousCoverage;
 						if (
 							hasIncompleteCoverage ||
 							hasFindings ||
@@ -361,6 +375,11 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 							lastSecretscan.verdict === 'info'
 						) {
 							secretscanVerdict = 'pass';
+							if (vacuousCoverage) {
+								// Satisfied, with a note: the pass rests on provable
+								// extension-policy exclusion, not on scanned files.
+								message += ` Advisory: Secretscan coverage was vacuous (${lastSecretscan.policy_skipped_files} of ${lastSecretscan.requested_files} requested file(s) skipped by scan policy).`;
+							}
 						}
 					}
 				} else {

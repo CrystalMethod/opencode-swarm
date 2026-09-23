@@ -1229,19 +1229,30 @@ async function runResolvedLint(
 	}
 
 	const exitCode = runResult.exitCode ?? 0;
+	const combinedOutput = combineOutput(runResult);
 	const result: LintSuccessResult = {
 		success: true,
 		mode,
 		linter: command.linter,
 		command: displayCommand,
 		exitCode,
-		output: combineOutput(runResult),
+		output: combinedOutput,
 	};
 
 	if (exitCode === 0) {
 		result.message = `${command.linter} ${mode} completed successfully with no issues`;
 	} else if (mode === 'fix') {
 		result.message = `${command.linter} fix completed with exit code ${exitCode}. Run check mode to see remaining issues.`;
+	} else if (
+		command.linter === 'biome' &&
+		combinedOutput.includes('No files were processed')
+	) {
+		// #2918: biome exits 1 with "No files were processed in the specified
+		// paths" when every path is ignored by its configuration (docs-only
+		// batches). The old message claimed issues were found — false when
+		// zero files were processed. Informational semantics unchanged
+		// (success stays true); detection is biome-gated.
+		result.message = `${command.linter} check processed no files (all specified paths ignored by biome configuration)`;
 	} else {
 		result.message = `${command.linter} check found issues (exit code ${exitCode}).`;
 	}

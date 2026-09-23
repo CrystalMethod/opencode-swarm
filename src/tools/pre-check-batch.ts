@@ -193,6 +193,23 @@ function evaluateSecretscanGate(
 	}
 	const findingsCount = Math.max(result.count, result.findings.length);
 	const failures: string[] = [];
+	// #2918 vacuous coverage: every requested file was deliberately skipped by
+	// secretscan scan policy (extension exclusion), with zero findings and zero
+	// incomplete coverage — there was nothing the policy allows scanning.
+	// Normative predicate, identical shape at every enforcing site (gate,
+	// decoder, check_gate_status, stage-a-repair): evaluated over the result
+	// fields; a result MISSING policy_skipped_files/requested_files is
+	// non-vacuous (fail-closed) and never invalid.
+	const vacuousCoverage =
+		result.files_scanned === 0 &&
+		typeof result.policy_skipped_files === 'number' &&
+		typeof result.requested_files === 'number' &&
+		result.requested_files > 0 &&
+		result.policy_skipped_files >= result.requested_files &&
+		result.count === 0 &&
+		result.findings.length === 0 &&
+		result.incomplete_files === 0 &&
+		result.incomplete_paths.length === 0;
 	if (findingsCount > 0) failures.push(`${findingsCount} secret finding(s)`);
 	if (result.incomplete_files > 0 || result.incomplete_paths.length > 0) {
 		const incompletePaths =
@@ -208,11 +225,14 @@ function evaluateSecretscanGate(
 			`findings/count mismatch (reported ${result.count}, actual ${result.findings.length})`,
 		);
 	}
-	if (requestedFiles > 0 && result.files_scanned === 0) {
+	if (requestedFiles > 0 && result.files_scanned === 0 && !vacuousCoverage) {
 		failures.push('zero requested files scanned');
 	}
 
-	const statistics = `Secretscan: ${findingsCount} finding(s), ${result.files_scanned} files scanned, ${result.skipped_files} skipped`;
+	let statistics = `Secretscan: ${findingsCount} finding(s), ${result.files_scanned} files scanned, ${result.skipped_files} skipped`;
+	if (vacuousCoverage) {
+		statistics += `, all ${result.requested_files} requested file(s) skipped by secretscan scan policy (vacuous coverage)`;
+	}
 	return {
 		passed: failures.length === 0,
 		summary:
@@ -675,6 +695,15 @@ async function runLintOnFiles(
 
 		if (exitCode === 0) {
 			result.message = `${resolvedLinter.linter} check completed successfully with no issues`;
+		} else if (
+			resolvedLinter.linter === 'biome' &&
+			output.includes('No files were processed')
+		) {
+			// #2918: biome exits 1 with "No files were processed in the specified
+			// paths" when every path is ignored by its configuration (docs-only
+			// batches). The old message claimed issues were found — false when
+			// zero files were processed. Informational semantics unchanged.
+			result.message = `${resolvedLinter.linter} check processed no files (all specified paths ignored by biome configuration)`;
 		} else {
 			result.message = `${resolvedLinter.linter} check found issues (exit code ${exitCode}).`;
 		}
@@ -702,6 +731,13 @@ async function runSecretscanWrapped(
 	directory: string,
 	_gates?: GateConfigOverrides,
 	abortSignal?: AbortSignal,
+	/**
+	 * #2918: raw declared file count captured BEFORE the batch's validation
+	 * drop loop — the gate's request basis. Plumbed into the scan result's
+	 * requested_files so a dropped entry keeps requested > policy counter
+	 * (non-vacuous, fail-closed).
+	 */
+	rawRequestedFiles?: number,
 ): Promise<ToolResult<SecretscanResult | SecretscanErrorResult>> {
 	const start = process.hrtime.bigint();
 
@@ -709,7 +745,7 @@ async function runSecretscanWrapped(
 		// If files are provided, run secretscan with explicit file scope
 		if (files && files.length > 0) {
 			const result = await runWithTimeout(
-				() => runSecretscanOnFiles(files, directory),
+				() => runSecretscanOnFiles(files, directory, rawRequestedFiles),
 				TOOL_TIMEOUT_MS,
 				abortSignal,
 			);
@@ -1353,6 +1389,11 @@ export async function runPreCheckBatch(
 	// If files are provided, use them; otherwise scan directory for changed files
 	// For simplicity in batch mode, we'll scan the entire directory
 	const changedFiles: string[] = [];
+	// #2918: the gate's request basis is the RAW declared count, captured
+	// BEFORE the validation drop loop below — a dropped entry (invalid path,
+	// non-string) keeps requested_files above the policy-skip counter, so the
+	// vacuous-coverage predicate can never be satisfied over a laundered batch.
+	const rawDeclaredCount = files.length;
 
 	// Validate each file path
 	for (const file of files) {
@@ -1444,6 +1485,7 @@ export async function runPreCheckBatch(
 					directory,
 					gates,
 					abortSignal,
+					rawDeclaredCount,
 				),
 			),
 			sast_enabled && !sastDisabledByConfig
@@ -1496,9 +1538,11 @@ export async function runPreCheckBatch(
 	}
 
 	// Check secretscan (hard gate - MUST pass)
+	// #2918: request basis is the raw declared count (pre-drop), matching the
+	// scan result's requested_files — not the post-drop changedFiles.length.
 	const secretscanDecision = evaluateSecretscanGate(
 		secretscanResult,
-		changedFiles.length,
+		rawDeclaredCount,
 	);
 	if (!secretscanDecision.passed) {
 		gatesPassed = false;
@@ -1520,6 +1564,11 @@ export async function runPreCheckBatch(
 				scan_directory: scanResult?.scan_dir ?? directory,
 				files_scanned: scanResult?.files_scanned ?? 0,
 				skipped_files: scanResult?.skipped_files ?? 0,
+				// #2918: vacuous-coverage predicate inputs for downstream
+				// consumers (decoder parity, check_gate_status, stage-a-repair).
+				// Missing on legacy evidence ⇒ non-vacuous ⇒ previous behavior.
+				policy_skipped_files: scanResult?.policy_skipped_files ?? 0,
+				requested_files: scanResult?.requested_files ?? rawDeclaredCount,
 				incomplete_files: scanResult?.incomplete_files ?? changedFiles.length,
 				incomplete_paths: scanResult?.incomplete_paths ?? [
 					{ path: '.', reason: 'missing_coverage_metadata' },
