@@ -377,7 +377,7 @@ describe('issue #2918: honest biome no-files lint message', () => {
 
 describe('issue #2918: check_gate_status secretscan evidence (third enforcing site)', () => {
 	// Placed here rather than in check-gate-status-secretscan.test.ts: that
-	// file is over the FR-006 500-line cap (494 base) and must not grow. Its
+	// file sits at 494 of the FR-006 500-line cap and must not grow. Its
 	// existing zero-coverage pins (fixtures WITHOUT the #2918 fields) stay in
 	// place and green — missing fields are non-vacuous by contract.
 	let restoreClock: (() => void) | undefined;

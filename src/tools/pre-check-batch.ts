@@ -196,7 +196,7 @@ function evaluateSecretscanGate(
 	// #2918 vacuous coverage: every requested file was deliberately skipped by
 	// secretscan scan policy (extension exclusion), with zero findings and zero
 	// incomplete coverage — there was nothing the policy allows scanning.
-	// Normative predicate, identical shape at every enforcing site (gate,
+	// Normative predicate, semantically equivalent at every enforcing site (gate,
 	// decoder, check_gate_status, stage-a-repair): evaluated over the result
 	// fields; a result MISSING policy_skipped_files/requested_files is
 	// non-vacuous (fail-closed) and never invalid.
