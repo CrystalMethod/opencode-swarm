@@ -410,9 +410,12 @@ async function runTestsCheck(
 		// legacy `runTests('none', ...)` path, whose hard guard returns
 		// `framework: 'none'` for empty scope/files/targets before dispatch
 		// detection ever runs. When a supported project structure is present
-		// we report the detected framework without executing the test suite;
-		// only genuinely undetectable projects fall through to the legacy
-		// "No test framework detected" behavior below.
+		// we report the detected framework WITHOUT executing the test suite:
+		// the result carries `detectedOnly: true`, which consumers render as a
+		// distinct informational/skip status ("tests not executed") rather than
+		// a plain pass. Only genuinely undetectable projects fall through to
+		// the legacy `runTests('none', ...)` path below, which DOES execute the
+		// suite.
 		const detectedFramework = await detectTestFrameworkViaDispatch(_dir);
 
 		if (detectedFramework !== 'none') {
@@ -1225,15 +1228,25 @@ export function formatPreflightMarkdown(report: PreflightReport): string {
 	];
 
 	for (const check of report.checks) {
-		const icon =
-			check.status === 'pass'
+		// A tests check that only detected a framework (no suite executed)
+		// must not render as a plain pass — it is surfaced as a distinct
+		// informational/skip status with an explicit "tests not executed"
+		// message so it is not mistaken for a real test run.
+		const detectedOnly =
+			check.type === 'tests' && check.details?.detectedOnly === true;
+		const icon = detectedOnly
+			? '⏭️'
+			: check.status === 'pass'
 				? '✅'
 				: check.status === 'fail'
 					? '❌'
 					: check.status === 'error'
 						? '⚠️'
 						: '⏭️';
-		lines.push(`- ${icon} **${check.type}**: ${check.message}`);
+		const message = detectedOnly
+			? 'detected only — tests not executed'
+			: check.message;
+		lines.push(`- ${icon} **${check.type}**: ${message}`);
 	}
 
 	lines.push('');

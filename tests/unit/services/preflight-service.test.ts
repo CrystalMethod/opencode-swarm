@@ -619,6 +619,59 @@ describe('Preflight Service', () => {
 			const markdown = formatPreflightMarkdown(report);
 			expect(markdown).toContain('**Overall**: ⏭️ SKIPPED');
 		});
+
+		it('should render a detectedOnly tests check as informational/skip with a tests-not-executed message', () => {
+			const report: PreflightReport = {
+				id: 'test-detected-only',
+				timestamp: Date.now(),
+				phase: 1,
+				overall: 'pass',
+				checks: [
+					{
+						type: 'tests',
+						status: 'pass',
+						message: 'Test framework detected: vitest',
+						details: { framework: 'vitest', detectedOnly: true },
+					},
+				],
+				totalDurationMs: 10,
+				message: 'Preflight passed all checks',
+			};
+
+			const markdown = formatPreflightMarkdown(report);
+
+			// The detectedOnly flag must surface as a distinct informational/skip
+			// rendering with an explicit "tests not executed" message, not as a
+			// plain pass indistinguishable from a real test run.
+			expect(markdown).toContain('⏭️');
+			expect(markdown).toContain('detected only — tests not executed');
+			expect(markdown).not.toContain('Test framework detected: vitest');
+		});
+
+		it('should render a tests check without detectedOnly as a normal pass', () => {
+			const report: PreflightReport = {
+				id: 'test-real-pass',
+				timestamp: Date.now(),
+				phase: 1,
+				overall: 'pass',
+				checks: [
+					{
+						type: 'tests',
+						status: 'pass',
+						message: 'Tests passed: 3 passed',
+						details: { framework: 'vitest' },
+					},
+				],
+				totalDurationMs: 10,
+				message: 'Preflight passed all checks',
+			};
+
+			const markdown = formatPreflightMarkdown(report);
+
+			expect(markdown).toContain('✅');
+			expect(markdown).toContain('Tests passed: 3 passed');
+			expect(markdown).not.toContain('tests not executed');
+		});
 	});
 
 	describe('overall result calculation', () => {
