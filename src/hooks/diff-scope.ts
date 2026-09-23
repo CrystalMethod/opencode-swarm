@@ -19,6 +19,7 @@ import * as path from 'node:path';
 import { bunSpawn } from '../utils/bun-compat';
 import { resolveGitExecutable } from '../utils/git-executable.js';
 import { ENSURE_SWARM_GIT_EXCLUDED_PER_CALL_TIMEOUT_MS } from '../utils/gitignore-warning';
+import { normalizePath } from '../utils/path.js';
 
 /**
  * Test-only dependency-injection seam — see `gitignore-warning.ts:_internals`
@@ -197,11 +198,12 @@ async function getChangedFiles(directory: string): Promise<ChangedFilesResult> {
 
 /**
  * Latest commit identity for the warning's evidence clause (issue #2818).
- * Only invoked when a warning is about to fire on the repository-wide path,
- * so it never adds subprocess cost to the in-scope / no-scope / unavailable
- * paths. Same bounded spawn discipline as the diff legs (issue #2236 shape),
- * routed through the `_internals` seam so the bounded-spawn suite keeps
- * counting every call.
+ * Fired only when a warning is about to be emitted on the repository-wide
+ * path, so it never adds subprocess cost to the in-scope / no-scope /
+ * unavailable paths. Same bounded spawn discipline as the diff legs (issue
+ * #2236 shape), routed through the `_internals` seam so the new spawn is
+ * countable by a seam-stubbing test (the bounded-spawn suite's own stubbed
+ * path returns before this point and intentionally does not reach it).
  */
 async function getLatestCommitShortSha(directory: string): Promise<string> {
 	try {
@@ -260,6 +262,24 @@ export async function validateDiffScope(
 		const isSwarmPath = (p: string) => normalise(p).startsWith('.swarm/');
 		const normScope = new Set(declaredScope.map(normalise));
 
+		// Canonicalize one raw attribution entry to a repo-relative path, or
+		// null when it does not resolve inside `directory`. Writers record raw
+		// tool-arg paths (absolute, `..`-bearing, or case-mismatched), so the
+		// comparison must canonicalize before matching — the same contract as
+		// `src/full-auto/severe-result.ts` — otherwise a task's own in-scope
+		// work false-warns and absolute `.swarm/` entries escape the filter.
+		const canonicaliseAttributionEntry = (raw: string): string | null => {
+			const resolved = path.isAbsolute(raw)
+				? path.normalize(raw)
+				: path.resolve(directory, raw);
+			const relative = path.relative(directory, resolved);
+			if (!relative) return null;
+			if (relative.startsWith('..') || path.isAbsolute(relative)) {
+				return null;
+			}
+			return relative;
+		};
+
 		const attributed = attribution?.attributedFiles;
 		let undeclared: string[];
 		let evidence: string;
@@ -267,11 +287,17 @@ export async function validateDiffScope(
 		if (Array.isArray(attributed) && attributed.length > 0) {
 			// Per-task attribution record: compare the task's OWN files against
 			// its declared scope; the repository-wide diff is not consulted.
+			// Scope matching case-folds on win32 via normalizePath (the legacy
+			// repo-wide branch below keeps git's exact-output comparison,
+			// which is already repo-relative and host-exact).
+			const normScopeAttribution = new Set(declaredScope.map(normalizePath));
 			undeclared = attributed
 				.filter((f) => typeof f === 'string' && f.length > 0)
-				.filter((f) => !isSwarmPath(f))
+				.map(canonicaliseAttributionEntry)
+				.filter((entry): entry is string => entry !== null)
 				.map(normalise)
-				.filter((f) => !normScope.has(f));
+				.filter((f) => !isSwarmPath(f))
+				.filter((f) => !normScopeAttribution.has(normalizePath(f)));
 			evidence = 'task attribution record';
 		} else {
 			// No attribution record (legacy session / CLI / record released at

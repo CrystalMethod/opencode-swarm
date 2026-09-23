@@ -2,6 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { canonicalMkdtemp } from '../../tests/helpers/tmpdir.js';
+import {
+	advanceTaskState,
+	ensureAgentSession,
+	recordModifiedFilesForTask,
+	recordStageBCompletion,
+} from '../state';
+import { checkReviewerGateWithScope } from '../tools/update-task-status';
 import { _internals, validateDiffScope } from './diff-scope';
 
 /**
@@ -12,8 +19,10 @@ import { _internals, validateDiffScope } from './diff-scope';
  * belong to a DIFFERENT task — mis-attributing that task's files to whichever
  * task update_task_status was checking. These tests pin the fix: the session's
  * task-keyed attribution record (`modifiedFilesByTask`) is used as the
- * changed-file set when supplied (zero git spawns), and the legacy
- * repository-wide warning names its evidence (diff basis + latest commit).
+ * changed-file set when supplied (zero git spawns), entries are canonicalized
+ * against the workspace before comparison (writers record raw tool-arg paths:
+ * absolute, `..`-bearing, or case-mismatched), and the legacy repository-wide
+ * warning names its evidence (diff basis + latest commit).
  */
 
 function mkTempDir(): string {
@@ -198,6 +207,11 @@ describe('validateDiffScope per-task attribution (#2818)', () => {
 		const result = await validateDiffScope('1.1', dir);
 		expect(result).not.toBeNull();
 		expect(result!.includes('SCOPE WARNING')).toBe(true);
+		// Joint assertion: the evidence clause and the trailing advisory
+		// sentence coexist on the SAME call (format-compatibility contract).
+		expect(
+			result!.includes('(evidence: repository-wide diff vs latest commit'),
+		).toBe(true);
 		expect(
 			result!.includes('Reviewer should verify these changes are intentional.'),
 		).toBe(true);
@@ -213,6 +227,132 @@ describe('validateDiffScope per-task attribution (#2818)', () => {
 			attributedFiles: ['.swarm/plan.json', '.swarm/evidence/x.json'],
 		});
 		expect(result).toBeNull();
+	});
+
+	test('AC1-abs: ABSOLUTE in-scope attribution path produces no warning', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		// Writers record raw tool-arg paths, which can be absolute; without
+		// canonicalization this false-warned the task's own in-scope work.
+		const result = await validateDiffScope('1.1', dir, {
+			attributedFiles: [path.join(dir, 'src', 'a.ts')],
+		});
+		expect(result).toBeNull();
+	});
+
+	test('AC2-abs: ABSOLUTE out-of-scope attribution path is named (relativized)', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		const result = await validateDiffScope('1.1', dir, {
+			attributedFiles: [path.join(dir, 'src', 'x.ts')],
+		});
+		expect(result).not.toBeNull();
+		expect(result!.includes('src/x.ts')).toBe(true);
+		expect(result!.includes('task attribution record')).toBe(true);
+	});
+
+	test('AC6-abs: ABSOLUTE .swarm attribution path stays filtered to null', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+		createPlanJson(dir, [{ id: '4.1', files_touched: ['src/a.ts'] }]);
+
+		const result = await validateDiffScope('4.1', dir, {
+			attributedFiles: [path.join(dir, '.swarm', 'evidence', 'x.json')],
+		});
+		expect(result).toBeNull();
+	});
+
+	test('AC2-trav: ..-segments resolve; entries escaping the workspace are dropped', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		// Dot segments resolve before comparison: in scope → null.
+		const resolved = await validateDiffScope('1.1', dir, {
+			attributedFiles: ['src/../src/a.ts'],
+		});
+		expect(resolved).toBeNull();
+
+		// An entry escaping the workspace cannot be matched against any scope
+		// and is dropped rather than echoed into a warning.
+		const escaped = await validateDiffScope('1.1', dir, {
+			attributedFiles: ['../outside-repo/x.ts'],
+		});
+		expect(escaped).toBeNull();
+	});
+
+	test('AC1-case: case-mismatched attribution matches scope case-insensitively on win32', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		const result = await validateDiffScope('1.1', dir, {
+			attributedFiles: ['SRC/A.ts'],
+		});
+		if (process.platform === 'win32') {
+			// normalizePath case-folds on win32 (severe-result contract).
+			expect(result).toBeNull();
+		} else {
+			expect(result).not.toBeNull();
+		}
+	});
+
+	test('AC3c: rev-parse failure degrades the evidence clause with no sha suffix', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		const originalBunSpawn = _internals.bunSpawn;
+		const spawnCalls: Array<{ argv: string[]; opts: Record<string, unknown> }> =
+			[];
+		let killCalls = 0;
+		_internals.bunSpawn = ((argv: string[], opts: never) => {
+			const isRevParse = argv.includes('rev-parse');
+			spawnCalls.push({ argv, opts: opts as Record<string, unknown> });
+			return {
+				exited: Promise.resolve(isRevParse ? 1 : 0),
+				stdout: { text: async () => (isRevParse ? '' : 'src/b.ts\n') },
+				stderr: { text: async () => '' },
+				kill: () => {
+					killCalls += 1;
+				},
+			} as never;
+		}) as typeof _internals.bunSpawn;
+		try {
+			const result = await validateDiffScope('1.1', dir);
+			expect(result).not.toBeNull();
+			// No-sha generic wording retains "repository-wide" (frozen C3
+			// alternation) and still carries the advisory tail.
+			expect(result!.includes('repository-wide diff vs latest commit')).toBe(
+				true,
+			);
+			const insideEvidence =
+				result!.match(/latest commit([^)]*)\)/)?.[1] ?? 'X';
+			expect(insideEvidence.trim()).toBe('');
+			expect(
+				result!.includes(
+					'Reviewer should verify these changes are intentional.',
+				),
+			).toBe(true);
+			// The rev-parse spawn ran through the seam with the bounded-spawn
+			// discipline and was killed.
+			const revParse = spawnCalls.find((c) => c.argv.includes('rev-parse'));
+			expect(revParse).toBeDefined();
+			expect(revParse!.opts).toMatchObject({
+				cwd: dir,
+				stdin: 'ignore',
+				stdout: 'pipe',
+			});
+			expect(typeof revParse!.opts.timeout).toBe('number');
+			expect(killCalls).toBe(2);
+		} finally {
+			_internals.bunSpawn = originalBunSpawn;
+		}
 	});
 
 	test('zero git spawns when per-task attribution is supplied', async () => {
@@ -278,5 +418,51 @@ describe('validateDiffScope per-task attribution (#2818)', () => {
 			),
 		).toBe(true);
 		expect(window.includes('sessionID')).toBe(true);
+	});
+
+	test('AC4-behavioral: gate wrapper threads session attribution end to end (in-scope → silent)', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		// Behavioral wiring: a real session whose attribution record holds the
+		// task's own ABSOLUTE paths. If the wiring argument is removed or
+		// neutered, validateDiffScope falls back to the repo-wide diff and this
+		// assertion fails (the foreign src/b.ts would warn).
+		const sessionID = 'wire-2818-in-scope';
+		const session = ensureAgentSession(sessionID);
+		advanceTaskState(session, '1.1', 'coder_delegated');
+		recordStageBCompletion(session, '1.1', 'reviewer');
+		recordStageBCompletion(session, '1.1', 'test_engineer');
+		expect(
+			recordModifiedFilesForTask(session, '1.1', [
+				path.join(dir, 'src', 'a.ts'),
+			]),
+		).toBe(true);
+
+		const result = await checkReviewerGateWithScope('1.1', dir, sessionID);
+		expect(result.reason ?? '').not.toContain('SCOPE WARNING');
+	});
+
+	test('AC4-behavioral-oos: out-of-scope session attribution surfaces in the gate reason', async () => {
+		const dir = mkTempDir();
+		tmpDirToClean = dir;
+		await twoTaskFixture(dir);
+
+		const sessionID = 'wire-2818-oos';
+		const session = ensureAgentSession(sessionID);
+		advanceTaskState(session, '1.1', 'coder_delegated');
+		recordStageBCompletion(session, '1.1', 'reviewer');
+		recordStageBCompletion(session, '1.1', 'test_engineer');
+		expect(
+			recordModifiedFilesForTask(session, '1.1', [
+				path.join(dir, 'src', 'a.ts'),
+				path.join(dir, 'src', 'x.ts'),
+			]),
+		).toBe(true);
+
+		const result = await checkReviewerGateWithScope('1.1', dir, sessionID);
+		expect(result.reason ?? '').toContain('SCOPE WARNING');
+		expect(result.reason ?? '').toContain('task attribution record');
 	});
 });
