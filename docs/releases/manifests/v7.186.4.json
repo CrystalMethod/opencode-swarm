@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.4",
+  "tagCommit": "271d764ef66937ead417ba52b7b9cf6eeeaff3f5",
+  "targetCommitish": "271d764ef66937ead417ba52b7b9cf6eeeaff3f5",
+  "releaseBodySha256": "03cb8261cbf2eb0c543a1aea596c1b07b791a2155024b10f1b314a1f82e16be0",
+  "fragments": [
+    {
+      "prNumber": 2930,
+      "path": "docs/releases/pending/2789-legacy-cost-null-semantics.md",
+      "sha256": "1ab194e995229b410ea2c49c1cae1cb24138338b7a7c8c17a274c1705b3e1a3d"
+    },
+    {
+      "prNumber": 2930,
+      "path": "docs/releases/pending/2930-cost-review-hardening.md",
+      "sha256": "662694a8f945e40a17c486d148eb5011bb7167b0074a7e7b1040a12ab7e4c929"
+    }
+  ]
+}
