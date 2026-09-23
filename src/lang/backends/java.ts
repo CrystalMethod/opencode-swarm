@@ -37,6 +37,19 @@ const PROFILE_ID = 'java';
 /** Bounds for the entry-point tree scan — no unbounded recursion. */
 const MAX_ENTRY_POINT_DEPTH = 8;
 const MAX_ENTRY_POINT_FILES = 1000;
+/**
+ * Per-file size cap for the entry-point scan. A single oversized `.java` file
+ * is skipped rather than read in full, keeping the synchronous init-path scan
+ * bounded (a few hundred KB is far beyond any realistic main-class source).
+ */
+const MAX_ENTRY_POINT_FILE_BYTES = 256 * 1024;
+/**
+ * Total-byte cap across all `.java` files read during the entry-point scan.
+ * The scan stops once cumulative bytes read would exceed this, bounding the
+ * synchronous init-path work well under the ~50ms budget (the measured 80-90ms
+ * warm-cache case read ~9.6MB; 512KB is ~5% of that).
+ */
+const MAX_ENTRY_POINT_TOTAL_BYTES = 512 * 1024;
 /** Directories never worth scanning for main classes. */
 const IGNORED_ENTRY_POINT_DIRS = new Set([
 	'.git',
@@ -63,6 +76,7 @@ function scanForMainClasses(dir: string): string[] {
 	const results: string[] = [];
 	const stack: Array<{ dir: string; depth: number }> = [{ dir, depth: 0 }];
 	let visited = 0;
+	let totalBytes = 0;
 	while (stack.length > 0) {
 		const current = stack.pop();
 		if (!current || current.depth > MAX_ENTRY_POINT_DEPTH) continue;
@@ -80,8 +94,22 @@ function scanForMainClasses(dir: string): string[] {
 				stack.push({ dir: full, depth: current.depth + 1 });
 			} else if (entry.isFile() && entry.name.endsWith('.java')) {
 				visited++;
+				let size: number;
 				try {
-					if (isMainClass(fs.readFileSync(full, 'utf-8'))) {
+					size = fs.statSync(full).size;
+				} catch {
+					// unreadable file — skip
+					continue;
+				}
+				// Per-file cap: skip oversized files rather than reading them.
+				if (size > MAX_ENTRY_POINT_FILE_BYTES) continue;
+				// Total-byte cap: stop the scan once cumulative bytes would
+				// exceed the fixed maximum, bounding the synchronous init work.
+				if (totalBytes + size > MAX_ENTRY_POINT_TOTAL_BYTES) return results;
+				try {
+					const source = fs.readFileSync(full, 'utf-8');
+					totalBytes += size;
+					if (isMainClass(source)) {
 						results.push(path.relative(dir, full));
 					}
 				} catch {
