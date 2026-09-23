@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.186.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.4...v7.186.5) (2026-09-23)
+
+
+### Bug Fixes
+
+* **release:** swarm-pr-review follow-ups for [#2899](https://github.com/ZaxbyHub/opencode-swarm/issues/2899) (describeModeError hardening, empty-part render skip, AC9 structural fallback, cwd-safe + census tests) ([b2d37a8](https://github.com/ZaxbyHub/opencode-swarm/commit/b2d37a896a489f0970febf6e39dcffeb71de5a8a))
+
 ## [7.186.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.3...v7.186.4) (2026-09-23)
 
 
