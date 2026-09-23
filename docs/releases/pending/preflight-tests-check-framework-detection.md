@@ -33,6 +33,12 @@ suite; it only reports the detected framework when one is found.
 
 ## Known caveats
 
-- The check remains detection-only by design: a detected framework is reported
-  as an informational pass without running tests, so it does not validate that
+- The check remains detection-only by design: when a framework is detected,
+  `runTestsCheck` sets `details.detectedOnly = true` and does not execute tests.
+  This result is now surfaced distinctly by both consumers: `formatPreflightMarkdown`
+  (src/services/preflight-service.ts) renders a distinct informational/skip line
+  ("detected only — tests not executed") instead of a plain pass, and the
+  automation-status artifact consumer (src/services/preflight-integration.ts)
+  records the outcome as state `'skipped'` with message `'detected only — tests not executed'`
+  (not `'success'`). The detection-only result therefore does not validate that
   the suite actually passes.
