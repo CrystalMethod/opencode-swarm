@@ -110,13 +110,30 @@ function normalizePublishedFragmentText(text) {
 	return text.replace(/\x07/g, '^G');
 }
 
-function publishedBlockMatchesEntries(releaseBody, entries) {
-	const combined = combineFragments(entries);
+/**
+ * Whether a published marker-block part matches a fragment's content in
+ * EITHER authored form: raw (pre-#2899 bodies published frontmatter verbatim)
+ * or rendered (post-#2899 bodies publish the frontmatter-stripped form).
+ */
+function publishedPartMatchesEntryContent(part, content) {
 	return (
-		upsertReleaseNotesBlock(releaseBody, combined) === releaseBody ||
+		normalizePublishedFragmentText(content.replace(/\s+$/, '')) === part ||
+		normalizePublishedFragmentText(renderFragmentBody(content).replace(/\s+$/, '')) ===
+			part
+	);
+}
+
+function publishedBlockMatchesEntries(releaseBody, entries) {
+	const raw = combineFragments(entries);
+	const rendered = combineRenderedFragments(entries);
+	return (
+		upsertReleaseNotesBlock(releaseBody, raw) === releaseBody ||
+		upsertReleaseNotesBlock(releaseBody, normalizePublishedFragmentText(raw)) ===
+			releaseBody ||
+		upsertReleaseNotesBlock(releaseBody, rendered) === releaseBody ||
 		upsertReleaseNotesBlock(
 			releaseBody,
-			normalizePublishedFragmentText(combined),
+			normalizePublishedFragmentText(rendered),
 		) === releaseBody
 	);
 }
@@ -131,8 +148,7 @@ export function selectEntriesForPublishedBlock(entries, releaseBody) {
 			(entry) =>
 				typeof entry?.filePath === 'string' &&
 				typeof entry?.content === 'string' &&
-				normalizePublishedFragmentText(entry.content.replace(/\s+$/, '')) ===
-					part &&
+				publishedPartMatchesEntryContent(part, entry.content) &&
 				!usedPaths.has(entry.filePath),
 		);
 		if (matches.length !== 1) return null;
@@ -183,8 +199,7 @@ export function reconstructPublishedBlockFromWorkspace(
 	for (let order = 0; order < parts.length; order += 1) {
 		const matches = available.filter(
 			(entry) =>
-				normalizePublishedFragmentText(entry.content.replace(/\s+$/, '')) ===
-					parts[order] &&
+				publishedPartMatchesEntryContent(parts[order], entry.content) &&
 				!usedPaths.has(entry.filePath),
 		);
 		if (matches.length !== 1) {
@@ -340,6 +355,21 @@ export function filterPendingFragmentPaths(files) {
  * appear twice in the output even if multiple PRs touched it.
  */
 export function combineFragments(entries) {
+	return combineOrderedFragments(entries, (content) => content);
+}
+
+/**
+ * Same deterministic dedup/ordering/join as `combineFragments`, but each
+ * fragment's content passes through `renderFragmentBody` first — the form the
+ * update modes INJECT into PR/release bodies. Provenance comparisons keep
+ * using the raw `combineFragments` output; the oracle tolerates BOTH forms
+ * (see `publishedBlockMatchesEntries`).
+ */
+export function combineRenderedFragments(entries) {
+	return combineOrderedFragments(entries, renderFragmentBody);
+}
+
+function combineOrderedFragments(entries, render) {
 	if (!Array.isArray(entries) || entries.length === 0) return '';
 	const dedup = new Map();
 	for (const e of entries) {
@@ -359,7 +389,7 @@ export function combineFragments(entries) {
 		if (pa !== pb) return pa - pb;
 		return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0;
 	});
-	const parts = sorted.map((e) => e.content.replace(/\s+$/, ''));
+	const parts = sorted.map((e) => render(e.content).replace(/\s+$/, ''));
 	return parts.join('\n\n---\n\n');
 }
 
@@ -376,6 +406,64 @@ function neutralizeMarkers(text) {
 	return text
 		.replace(/<!-- custom-release-notes:start -->/g, '<!-- custom-release-notes-start (literal) -->')
 		.replace(/<!-- custom-release-notes:end -->/g, '<!-- custom-release-notes-end (literal) -->');
+}
+
+// -----------------------------------------------------------------------------
+// Frontmatter rendering (issue #2899). Rendering is deliberately SPLIT from
+// the provenance oracle: `combineFragments` keeps the raw join so already
+// published bodies stay reconcilable, while the update modes inject the
+// rendered form so YAML frontmatter never leaks into release notes.
+// -----------------------------------------------------------------------------
+
+/**
+ * Maximum number of lines considered for a leading YAML frontmatter block.
+ * Real fragments carry a handful of keys; the cap keeps a pathological
+ * fragment from being treated as one giant frontmatter document.
+ */
+export const FRONTMATTER_MAX_LINES = 32;
+
+/**
+ * A line is frontmatter-shaped if it is blank, a comment, or a YAML mapping
+ * key (`key: value`, quoted keys included). Prose lines — including a bare
+ * horizontal-rule context — make the block NOT frontmatter.
+ */
+function isYamlFrontmatterLine(line) {
+	if (line.trim() === '' || line.trimStart().startsWith('#')) return true;
+	return /^(?:"[^"]*"|'[^']*'|[A-Za-z_][A-Za-z0-9_. -]*)(?:\s*:(?:\s|$))/.test(line);
+}
+
+/**
+ * Strip a leading YAML frontmatter block for RENDERING only.
+ *
+ * A block is stripped iff the first line is exactly `---` (CRLF-tolerant), a
+ * subsequent line within FRONTMATTER_MAX_LINES is exactly `---`, and every
+ * line between is frontmatter-shaped. This deliberately refuses a fragment
+ * that legitimately starts with a horizontal rule followed by prose: those
+ * lines are not mappings, so the content is returned unchanged.
+ *
+ * When a block IS stripped, the immediately-following blank line(s) are
+ * consumed too, so the rendered form is position-independent: the publish
+ * path trims the whole marker payload (position 1 loses leading whitespace)
+ * while inner parts keep theirs, so the oracle's tolerance arm must compare
+ * against a deterministic, whitespace-normalized rendered form.
+ */
+export function renderFragmentBody(content) {
+	if (typeof content !== 'string' || content.length === 0) return content ?? '';
+	const lines = content.split('\n');
+	if (lines[0].trimEnd() !== '---') return content;
+	let close = -1;
+	for (let i = 1; i < lines.length && i <= FRONTMATTER_MAX_LINES + 1; i += 1) {
+		const line = lines[i].trimEnd();
+		if (line === '---') {
+			close = i;
+			break;
+		}
+		if (!isYamlFrontmatterLine(line)) return content;
+	}
+	if (close === -1) return content;
+	const rest = lines.slice(close + 1);
+	while (rest.length > 0 && rest[0].trim() === '') rest.shift();
+	return rest.join('\n');
 }
 
 /**
@@ -1634,7 +1722,9 @@ async function modeUpdatePr(log) {
 			attemptLog('No pending fragments found across referenced PRs');
 			return { body, blockExpected: false };
 		}
-		const combined = combineFragments(entries);
+		// Rendered form (issue #2899): strip fragment frontmatter for display;
+		// provenance comparisons keep the raw join and tolerate both forms.
+		const combined = combineRenderedFragments(entries);
 		const newBody = upsertReleaseNotesBlock(body, combined);
 		if (newBody !== body) {
 			await applyEdit(newBody);
@@ -1729,7 +1819,9 @@ async function modeUpdateRelease(log) {
 		log('No pending fragments found across referenced PRs — exiting 0');
 		return 0;
 	}
-	const combined = combineFragments(entries);
+	// Rendered form (issue #2899): strip fragment frontmatter for display;
+	// provenance comparisons keep the raw join and tolerate both forms.
+	const combined = combineRenderedFragments(entries);
 	const newBody = upsertReleaseNotesBlock(releaseBody, combined);
 	if (newBody === releaseBody) {
 		log(`Release ${tagName} body already up to date — exiting 0`);
@@ -2281,6 +2373,22 @@ function modeVerifyRetention(log, args) {
 // CLI dispatch.
 // -----------------------------------------------------------------------------
 
+/**
+ * Reduce a mode failure to one clean GitHub Actions error annotation naming
+ * the failing input where the error carries one (e.g. a decode failure names
+ * its fragment file). The full stack is still printed separately by the CLI
+ * handler; this is the operator-facing line (issue #2899).
+ */
+export function describeModeError(error) {
+	const message =
+		error instanceof Error &&
+		typeof error.message === 'string' &&
+		error.message.trim().length > 0
+			? error.message.split('\n')[0].trim()
+			: 'release-notes-fragments failed with a non-error value';
+	return `::error::${message}`;
+}
+
 // Issue #2898 contract: exactly the CLI modes whose execution path reaches the
 // `gh` binary (ghJson / ghInput / tryGhJson). Workflow steps invoking one of
 // these modes must carry GH_TOKEN (and GITHUB_REPOSITORY where slug resolution
@@ -2421,6 +2529,10 @@ if (isDirectInvocation) {
 	main().then(
 		(code) => process.exit(code ?? 0),
 		(err) => {
+			// One clean, file-naming line first (GitHub Actions renders the
+			// ::error:: annotation; a decode failure names its fragment),
+			// then the full stack for debugging (issue #2899).
+			process.stderr.write(describeModeError(err) + '\n');
 			process.stderr.write(`[release-notes-fragments] ERROR: ${err?.stack ?? err}\n`);
 			process.exit(1);
 		},
