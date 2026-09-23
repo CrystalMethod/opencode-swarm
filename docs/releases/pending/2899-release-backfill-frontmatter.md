@@ -3,6 +3,8 @@ issue: 2899
 title: Render-only frontmatter strip for release notes, with a dual-form provenance oracle
 ---
 
+# Render-only frontmatter strip for release notes (#2899)
+
 ## What changed
 
 - `scripts/release-notes-fragments.mjs` now separates rendering from provenance:
