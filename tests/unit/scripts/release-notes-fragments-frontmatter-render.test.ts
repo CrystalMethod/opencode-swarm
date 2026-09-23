@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import path from 'node:path';
 import {
 	combineFragments,
 	combineRenderedFragments,
@@ -206,19 +207,55 @@ describe('oracle tolerates both published forms (#2899)', () => {
 });
 
 describe('update modes inject the rendered form (#2899 wiring)', () => {
-	test('modeUpdatePr and modeUpdateRelease build the injected block via combineRenderedFragments', async () => {
-		const source = await Bun.file('scripts/release-notes-fragments.mjs').text();
-		const prStart = source.indexOf('async function modeUpdatePr(');
-		const relStart = source.indexOf('async function modeUpdateRelease(');
-		const relEnd = source.indexOf('const MAX_TAG_PEEL_DEPTH');
-		expect(prStart).toBeGreaterThan(-1);
-		expect(relStart).toBeGreaterThan(prStart);
-		const prBody = source.slice(prStart, relStart);
-		const relBody = source.slice(relStart, relEnd);
-		expect(prBody).toContain('combineRenderedFragments(');
-		expect(relBody).toContain('combineRenderedFragments(');
-		expect(prBody).not.toMatch(/\bcombineFragments\(/);
-		expect(relBody).not.toMatch(/\bcombineFragments\(/);
+	test('every combine* call site sits in its allowed region (call-site census)', async () => {
+		const source = await Bun.file(
+			path.join(
+				import.meta.dir,
+				'../../../scripts/release-notes-fragments.mjs',
+			),
+		).text();
+		const lines = source.split('\n');
+		const regionOf = (line: number): string => {
+			for (let i = line; i >= 0; i -= 1) {
+				const m = /^(?:export )?(?:async )?function ([A-Za-z_][A-Za-z0-9_]*)\(/.exec(
+					lines[i] ?? '',
+				);
+				if (m) return m[1];
+			}
+			return '<module>';
+		};
+		const callSites: { name: string; region: string; line: number }[] = [];
+		lines.forEach((line, idx) => {
+			for (const match of line.matchAll(
+				/(?<!function )\b(combineFragments|combineRenderedFragments)\(/g,
+			)) {
+				callSites.push({
+					name: match[1],
+					region: regionOf(idx),
+					line: idx + 1,
+				});
+			}
+		});
+		expect(callSites.length).toBeGreaterThan(0);
+		expect(
+			callSites.some((site) => site.name === 'combineRenderedFragments'),
+		).toBe(true);
+		for (const site of callSites) {
+			if (site.name === 'combineRenderedFragments') {
+				expect(
+					site.region === 'modeUpdatePr' ||
+						site.region === 'modeUpdateRelease' ||
+						site.region === 'publishedBlockMatchesEntries',
+					`combineRenderedFragments called outside the two update modes or the oracle rendered arm at line ${site.line} (region ${site.region})`,
+				).toBe(true);
+			} else {
+				expect(
+					site.region === 'publishedBlockMatchesEntries' ||
+						site.region === 'combineFragments',
+					`combineFragments called outside the oracle/definition at line ${site.line} (region ${site.region})`,
+				).toBe(true);
+			}
+		}
 	});
 });
 
@@ -240,6 +277,7 @@ describe('describeModeError (#2899)', () => {
 		expect(clean).toContain('docs/releases/pending/probe.md');
 		expect(clean).not.toContain('    at ');
 		expect(clean).not.toContain('\n');
+		expect(clean).not.toContain('\r');
 	});
 
 	test('handles non-error rejections without throwing', () => {
@@ -250,9 +288,125 @@ describe('describeModeError (#2899)', () => {
 	});
 
 	test('CLI main() rejection handler is wired through describeModeError', async () => {
-		const source = await Bun.file('scripts/release-notes-fragments.mjs').text();
+		const source = await Bun.file(
+			path.join(
+				import.meta.dir,
+				'../../../scripts/release-notes-fragments.mjs',
+			),
+		).text();
 		const handlerIdx = source.indexOf('main().then(');
 		expect(handlerIdx).toBeGreaterThan(-1);
 		expect(source.slice(handlerIdx)).toContain('describeModeError');
+	});
+});
+
+describe('review follow-up hardening (#2899 swarm-pr-review)', () => {
+	test('describeModeError skips leading blank lines and never emits a bare ::error::', () => {
+		expect(describeModeError(new Error('   \n\nreal content\nsecond'))).toBe(
+			'::error::real content',
+		);
+		expect(describeModeError(new Error('\r\nreal content'))).toBe(
+			'::error::real content',
+		);
+	});
+
+	test('describeModeError does not double-prefix an already-annotated message', () => {
+		expect(describeModeError(new Error('::error::fragment is bad'))).toBe(
+			'::error::fragment is bad',
+		);
+	});
+
+	test('rendered combine omits empty parts; raw combine keeps them', () => {
+		const real = {
+			prNumber: 1,
+			filePath: 'docs/releases/pending/a.md',
+			content: '## A\n',
+		};
+		const empty = {
+			prNumber: 2,
+			filePath: 'docs/releases/pending/b.md',
+			content: '',
+		};
+		expect(combineRenderedFragments([real, empty])).toBe('## A');
+		expect(combineFragments([real, empty])).toBe('## A\n\n---\n\n');
+		const frontmatterOnly = {
+			prNumber: 3,
+			filePath: 'docs/releases/pending/c.md',
+			content: '---\ntitle: only\n---\n',
+		};
+		expect(combineRenderedFragments([real, frontmatterOnly])).toBe('## A');
+	});
+
+	test('upsert over a pre-existing RAW block rewrites it to the rendered form, then converges', () => {
+		const entries = [
+			{
+				prNumber: 1,
+				filePath: 'docs/releases/pending/a.md',
+				content: FRONTMATTER_FRAGMENT,
+			},
+		];
+		const rawBody = upsertReleaseNotesBlock('base', combineFragments(entries));
+		const rendered = combineRenderedFragments(entries);
+		const first = upsertReleaseNotesBlock(rawBody, rendered);
+		expect(first).not.toBe(rawBody);
+		expect(first).toContain('## What changed');
+		expect(first).not.toContain('title:');
+		const second = upsertReleaseNotesBlock(first, rendered);
+		expect(second).toBe(first);
+	});
+
+	test('CRLF frontmatter fragment resolves at position 2 of a multi-fragment body', () => {
+		const multi = [
+			{
+				prNumber: 1,
+				filePath: 'docs/releases/pending/a.md',
+				content: PLAIN_FRAGMENT,
+			},
+			{
+				prNumber: 2,
+				filePath: 'docs/releases/pending/b.md',
+				content: CRLF_FRONTMATTER_FRAGMENT,
+			},
+		];
+		const body = upsertReleaseNotesBlock(
+			'body',
+			combineRenderedFragments(multi),
+		);
+		expect(body.includes('\r')).toBe(true);
+		const selected = selectEntriesForPublishedBlock(multi, body);
+		expect(selected?.map((e) => e.filePath)).toEqual([
+			'docs/releases/pending/a.md',
+			'docs/releases/pending/b.md',
+		]);
+	});
+
+	test('mixed raw+rendered parts in one published body fail closed (cleanup refuses)', () => {
+		const contentA = '---\ntitle: A\n---\n\n## A\n';
+		const contentB = '---\ntitle: B\n---\n\n## B\n';
+		const entries = [
+			{
+				prNumber: 1,
+				filePath: 'docs/releases/pending/a.md',
+				content: contentA,
+			},
+			{
+				prNumber: 2,
+				filePath: 'docs/releases/pending/b.md',
+				content: contentB,
+			},
+		];
+		// part 1 published in raw form, part 2 in rendered form
+		const body = upsertReleaseNotesBlock(
+			'body',
+			`${contentA.replace(/\s+$/, '')}\n\n---\n\n## B`,
+		);
+		expect(selectEntriesForPublishedBlock(entries, body)).toBeNull();
+	});
+
+	test('renderFragmentBody refuses unusual YAML shapes (documented fail-closed leak)', () => {
+		const tabIndented = '---\n\ttitle: foo\n---\nbody\n';
+		expect(renderFragmentBody(tabIndented)).toBe(tabIndented);
+		const blockScalar = '---\ndesc: |\n  literal block\n---\nbody\n';
+		expect(renderFragmentBody(blockScalar)).toBe(blockScalar);
 	});
 });

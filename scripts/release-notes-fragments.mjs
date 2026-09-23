@@ -363,13 +363,15 @@ export function combineFragments(entries) {
  * fragment's content passes through `renderFragmentBody` first — the form the
  * update modes INJECT into PR/release bodies. Provenance comparisons keep
  * using the raw `combineFragments` output; the oracle tolerates BOTH forms
- * (see `publishedBlockMatchesEntries`).
+ * (see `publishedBlockMatchesEntries`). Fragments whose rendered body is
+ * empty (e.g. frontmatter-only) are omitted so the join never emits a
+ * dangling `\n\n---\n\n` separator before the closing marker.
  */
 export function combineRenderedFragments(entries) {
-	return combineOrderedFragments(entries, renderFragmentBody);
+	return combineOrderedFragments(entries, renderFragmentBody, true);
 }
 
-function combineOrderedFragments(entries, render) {
+function combineOrderedFragments(entries, render, skipEmpty = false) {
 	if (!Array.isArray(entries) || entries.length === 0) return '';
 	const dedup = new Map();
 	for (const e of entries) {
@@ -389,7 +391,12 @@ function combineOrderedFragments(entries, render) {
 		if (pa !== pb) return pa - pb;
 		return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0;
 	});
-	const parts = sorted.map((e) => render(e.content).replace(/\s+$/, ''));
+	const parts = [];
+	for (const entry of sorted) {
+		const part = render(entry.content).replace(/\s+$/, '');
+		if (skipEmpty && part === '') continue;
+		parts.push(part);
+	}
 	return parts.join('\n\n---\n\n');
 }
 
@@ -2377,14 +2384,23 @@ function modeVerifyRetention(log, args) {
  * Reduce a mode failure to one clean GitHub Actions error annotation naming
  * the failing input where the error carries one (e.g. a decode failure names
  * its fragment file). The full stack is still printed separately by the CLI
- * handler; this is the operator-facing line (issue #2899).
+ * handler; this is the operator-facing line (issue #2899). Leading blank
+ * lines are skipped so the annotation is never empty, an already-annotated
+ * message is not double-prefixed, and CR is stripped alongside LF.
  */
 export function describeModeError(error) {
+	const raw =
+		error instanceof Error && typeof error.message === 'string'
+			? error.message
+			: '';
+	const firstLine =
+		raw
+			.split(/\r?\n/)
+			.map((line) => line.trim())
+			.find((line) => line.length > 0) ?? '';
 	const message =
-		error instanceof Error &&
-		typeof error.message === 'string' &&
-		error.message.trim().length > 0
-			? error.message.split('\n')[0].trim()
+		firstLine.length > 0
+			? firstLine.replace(/^::error::/, '')
 			: 'release-notes-fragments failed with a non-error value';
 	return `::error::${message}`;
 }
