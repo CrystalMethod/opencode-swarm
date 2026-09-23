@@ -117,6 +117,30 @@ protected void protectedMethod() {}
 		).toBe(false);
 	});
 
+	test('public method with short name colliding with modifier substring remains exported', () => {
+		write(
+			'MethodModifierCollision.java',
+			`public class MethodModifierCollision {
+    public abstract void b() {}
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('MethodModifierCollision.java', root);
+
+		expect(symbolsList.find((s) => s.name === 'b')?.exported).toBe(true);
+	});
+
+	test('public type with short name colliding with modifier substring remains exported', () => {
+		write('TypeModifierCollision.java', 'public final class l {}\n');
+
+		const symbolsList = extractJavaSymbols('TypeModifierCollision.java', root);
+
+		expect(
+			symbolsList.find((s) => s.name === 'l' && s.kind === 'class')?.exported,
+		).toBe(true);
+	});
+
 	test('exported is derived from matched modifier text, not the raw line (F-3 regression)', () => {
 		write(
 			'ExportFlag.java',

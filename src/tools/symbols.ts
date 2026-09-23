@@ -1168,7 +1168,10 @@ export function extractJavaSymbols(
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a comment/string containing "public" must not flip
 			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
-			const modifiers = typeDecl[0].slice(0, typeDecl[0].indexOf(typeDecl[1]));
+			const modifiers = typeDecl[0].slice(
+				0,
+				typeDecl[0].lastIndexOf(typeDecl[1]),
+			);
 			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: typeDecl[2],
@@ -1192,7 +1195,7 @@ export function extractJavaSymbols(
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a call-statement string or trailing comment
 			// containing "public" must not flip the flag).
-			const modifiers = method[0].slice(0, method[0].indexOf(method[1]));
+			const modifiers = method[0].slice(0, method[0].lastIndexOf(method[1]));
 			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: method[1],
