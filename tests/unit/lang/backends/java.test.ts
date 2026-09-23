@@ -259,6 +259,14 @@ describe('selectEntryPoints', () => {
 	});
 
 	test('does not crash on an unreadable subdirectory', async () => {
+		if (process.getuid && process.getuid() === 0) {
+			// root ignores chmod — skip
+			return;
+		}
+		if (process.platform === 'win32') {
+			// Windows permissions don't work the same way — skip
+			return;
+		}
 		// A directory that cannot be read is skipped rather than throwing.
 		const locked = path.join(tmpDir, 'locked');
 		fs.mkdirSync(locked, { recursive: true });
