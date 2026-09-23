@@ -46,16 +46,18 @@ export interface JavaImport {
  *
  * Handles single, multiple, static, wildcard, and package-private imports
  * (imports appearing in a file regardless of surrounding package/access
- * context). Comments and Java text-block contents are masked before matching so
- * a line-initial `import ...;` inside a text block is never fabricated as a
- * real import.
+ * context). Single-line string/char literals, comments, and Java text-block
+ * contents are masked before matching so a line-initial `import ...;` inside a
+ * string literal, comment, or text block is never fabricated as a real import.
  *
  * @param rawContent - Full Java source text.
  * @returns The parsed import statements in source order.
  */
 export function parseJavaImports(rawContent: string): JavaImport[] {
 	const imports: JavaImport[] = [];
-	const content = maskMultilineStringLiterals(stripComments(rawContent));
+	const content = maskMultilineStringLiterals(
+		stripComments(maskStringLiterals(rawContent)),
+	);
 	const re =
 		/^[ \t]*import[ \t]+(static[ \t]+)?([A-Za-z_][\w.]*(?:\.\*)?)[ \t]*;?[ \t]*\r?$/gm;
 	for (let m = re.exec(content); m !== null; m = re.exec(content)) {
@@ -91,6 +93,62 @@ function finalDottedSegment(path: string): string {
  */
 function stripComments(content: string): string {
 	return content.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+}
+
+/**
+ * Masks the contents of single-line double-quoted string literals and
+ * single-quoted char literals so an import-looking line inside a string is
+ * never fabricated as a real import. Runs before `stripComments` so a string
+ * containing `//` or `/*` is not corrupted by comment-stripping.
+ *
+ * The surrounding quotes are preserved so Java text-block delimiters (`"""`)
+ * remain detectable by `maskMultilineStringLiterals`. Escaped quotes (`\"`,
+ * `\'`) do not terminate the literal, and a raw newline terminates it
+ * (single-line literals cannot span lines), so a quote inside a comment cannot
+ * bleed across lines and mask a real import.
+ */
+function maskStringLiterals(content: string): string {
+	let out = '';
+	let inLiteral = false;
+	let quote = '';
+	for (let i = 0; i < content.length; i++) {
+		const ch = content[i];
+		if (inLiteral) {
+			if (ch === '\\') {
+				// Escape sequence: mask the backslash and the escaped char,
+				// preserving a line-continuation newline.
+				out += ' ';
+				if (i + 1 < content.length) {
+					const next = content[i + 1];
+					out += next === '\n' ? next : ' ';
+					i++;
+				}
+				continue;
+			}
+			if (ch === '\n') {
+				// A single-line literal cannot span a newline.
+				inLiteral = false;
+				out += ch;
+				continue;
+			}
+			if (ch === quote) {
+				// Closing quote: preserve it and exit the literal.
+				inLiteral = false;
+				out += ch;
+				continue;
+			}
+			out += ' ';
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			inLiteral = true;
+			quote = ch;
+			out += ch; // preserve the opening quote
+			continue;
+		}
+		out += ch;
+	}
+	return out;
 }
 
 /**

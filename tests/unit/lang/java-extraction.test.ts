@@ -176,6 +176,70 @@ public class App {}
 		expect(parseJavaImports(src)).toEqual([]);
 	});
 
+	test('does not fabricate imports from a single-line string literal', () => {
+		const src = `public class App {
+	String s = "import java.util.Fake;";
+}
+`;
+		expect(parseJavaImports(src)).toEqual([]);
+	});
+
+	test('does not corrupt a string literal containing //', () => {
+		const src = `public class App {
+	String url = "https://example.com/import java.util.Fake;";
+}
+`;
+		expect(parseJavaImports(src)).toEqual([]);
+	});
+
+	test('does not corrupt a string literal containing /*', () => {
+		const src = `public class App {
+	String s = "a /* import java.util.Fake; */ b";
+}
+`;
+		expect(parseJavaImports(src)).toEqual([]);
+	});
+
+	test('does not fabricate imports from a char literal', () => {
+		const src = `public class App {
+	char c = 'i';
+}
+`;
+		expect(parseJavaImports(src)).toEqual([]);
+	});
+
+	test('does not fabricate imports from a char literal containing a double quote', () => {
+		// A char literal holding a double-quote must not be mistaken for the
+		// opening of a string literal that would swallow a following import.
+		const src = `public class App {
+	char q = '"';
+}
+import java.util.List;
+`;
+		expect(parseJavaImports(src).map((i) => i.specifier)).toEqual([
+			'java.util.List',
+		]);
+	});
+
+	test('does not fabricate imports from a char literal containing an escaped quote', () => {
+		const src = `public class App {
+	char q = '\\'';
+}
+import java.util.Map;
+`;
+		expect(parseJavaImports(src).map((i) => i.specifier)).toEqual([
+			'java.util.Map',
+		]);
+	});
+
+	test('does not fabricate imports from a string containing an escaped quote', () => {
+		const src = `public class App {
+	String s = "a \\" import java.util.Fake;";
+}
+`;
+		expect(parseJavaImports(src)).toEqual([]);
+	});
+
 	test('parses real imports that surround a text block', () => {
 		const src = `import java.util.List;
 public class App {
