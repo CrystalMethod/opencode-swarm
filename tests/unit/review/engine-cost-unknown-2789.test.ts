@@ -127,31 +127,81 @@ describe('review engine cost accumulation null policy (#2789)', () => {
 		expect(cost['tokens_cache']).toBeNull();
 	});
 
-	test('accumulation sums across multiple dispatches and skips unknown axes', async () => {
+	test('accumulation sums across multiple dispatches in ONE run and skips unknown axes', async () => {
 		_internals.collectReviewDiff = (async () =>
 			diffStub()) as unknown as typeof _internals.collectReviewDiff;
-		// Two known dispatches: known axes sum (10+15, 5+5); null axes stay null.
-		const first = await runOnce({
-			tokens_input: 10,
-			tokens_output: 5,
-			tokens_reasoning: null,
-			tokens_cache: null,
-			cost_usd: null,
-			cost_source: 'unavailable',
-		});
-		expect(first['tokens_input']).toBe(10);
-		// Second run exercises the mixed-shape fold through the same engine path
-		// with an all-unknown dispatch following a known one in the SAME run.
-		const cost = await runOnce({
-			tokens_input: 15,
-			tokens_output: 5,
-			tokens_reasoning: 1,
-			tokens_cache: null,
-			cost_usd: null,
-			cost_source: 'unavailable',
-		});
-		expect(cost['tokens_input']).toBe(15);
-		expect(cost['tokens_reasoning']).toBe(1);
+		// ONE runReviewEngine call, TWO dispatch attempts: the primary dispatch
+		// fails with a transient 429 (retryable provider failure), so the engine
+		// falls back to the next model and completes there. Both attempts carry
+		// costFields and both land in dispatched.attempts, so the addCost fold
+		// must sum across them (input 10+15, output 5+5, reasoning 1) while null
+		// axes stay null. This is the reviewer-fallback path — the only
+		// in-engine producer of a multi-attempt dispatch set in advisory mode.
+		fs.mkdirSync(path.join(tmpDir, '.swarm'), { recursive: true });
+		let call = 0;
+		const result = await runReviewEngine({
+			directory: tmpDir,
+			sessionID: 'sess-2789',
+			trigger: 'manual',
+			config: AutoReviewConfigSchema.parse({
+				enabled: true,
+				validate_findings: false,
+				final_review: { mode: 'advisory' },
+			}),
+			reviewerModel: { providerID: 'p', modelID: 'primary' },
+			reviewerFallbackModels: [{ providerID: 'p', modelID: 'fallback' }],
+			dispatcher: {
+				async dispatch(request: { agentName: string; prompt: string }) {
+					call += 1;
+					if (call === 1) {
+						return {
+							status: 'error' as const,
+							error: 'HTTP 429 rate limit exceeded',
+							agentName: request.agentName,
+							durationMs: 1,
+							promptBytes: request.prompt.length,
+							responseBytes: 0,
+							costFields: {
+								tokens_input: 10,
+								tokens_output: 5,
+								tokens_reasoning: null,
+								tokens_cache: null,
+								cost_usd: null,
+								cost_source: 'unavailable',
+							},
+						};
+					}
+					return {
+						status: 'completed' as const,
+						text: REVIEWER_TEXT,
+						agentName: request.agentName,
+						durationMs: 1,
+						promptBytes: request.prompt.length,
+						responseBytes: REVIEWER_TEXT.length,
+						costFields: {
+							tokens_input: 15,
+							tokens_output: 5,
+							tokens_reasoning: 1,
+							tokens_cache: null,
+							cost_usd: null,
+							cost_source: 'unavailable',
+						},
+					};
+				},
+			},
+			reviewerAgent: 'reviewer',
+			validatorAgent: 'critic_finding_validator',
+			injectAdvisory: () => {},
+		} as never);
+		expect(call).toBe(2);
+		expect(result.evidencePath).toBeDefined();
+		const evidence = JSON.parse(
+			fs.readFileSync(result.evidencePath!, 'utf8'),
+		) as { cost: Record<string, unknown> };
+		expect(evidence.cost['tokens_input']).toBe(25);
+		expect(evidence.cost['tokens_output']).toBe(10);
+		expect(evidence.cost['tokens_reasoning']).toBe(1);
+		expect(evidence.cost['tokens_cache']).toBeNull();
 	});
 
 	test('known dispatch values still accumulate numerically', async () => {

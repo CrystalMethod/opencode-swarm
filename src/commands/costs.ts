@@ -100,11 +100,12 @@ function formatTokens(value: number | null): string {
 
 /**
  * Escapes characters that would break the markdown table structure (pipe
- * cells, row/column separators, newlines) when untrusted telemetry strings
- * (agentName/taskId/gate) are rendered into the human-readable output.
+ * cells, row/column separators, any line-break form including a bare carriage
+ * return) when untrusted telemetry strings (agentName/taskId/gate) are
+ * rendered into the human-readable output.
  */
 function sanitizeTableCell(value: string): string {
-	return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+	return value.replace(/\|/g, '\\|').replace(/[\r\n]+/g, ' ');
 }
 
 export function formatUsd(value: number): string {

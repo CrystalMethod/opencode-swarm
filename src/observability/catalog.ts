@@ -153,7 +153,7 @@ const REQUIRE_COUNCIL_ROUND: readonly WorkflowIdKey[] = Object.freeze([
 /**
  * `hostSessionId` is FORBIDDEN on the kinds whose producer genuinely has no
  * session in scope. Verified against source, not assumed:
- * `gate_parse_error` (`src/telemetry.ts:747-748`) takes only `taskId` and the
+ * `gate_parse_error` (`src/telemetry.ts:749-755`) takes only `taskId` and the
  * error; the three evidence-lock kinds and the three plan kinds are emitted from
  * modules that never receive a session id. If one of these ever arrives with a
  * session id, it was manufactured.
@@ -513,7 +513,7 @@ const CATALOG_SOURCE: readonly (readonly [string, CatalogEntryInput])[] = [
 			consumers: NO_CONSUMERS,
 			futureOwnerIssue: ISSUE_SINK,
 			retentionOwnerIssue: ISSUE_LIFECYCLE_RETENTION,
-			// Verified at src/telemetry.ts:747-748: the producer takes only
+			// Verified at src/telemetry.ts:749-755: the producer takes only
 			// (taskId, error). It has NO sessionId, so requiring hostSessionId
 			// would violate on every event; it is forbidden instead.
 			requiredWorkflowIds: REQUIRE_TASK,

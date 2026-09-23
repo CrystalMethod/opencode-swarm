@@ -123,4 +123,23 @@ describe('handleCostsCommand', () => {
 		expect(parsed.unknown_usage_delegations).toBe(1);
 		expect(parsed.by_agent[0].input_tokens).toBeNull();
 	});
+
+	it('escapes pipe and line-break characters in untrusted row names', async () => {
+		writeTelemetry([
+			{
+				event: 'delegation_end',
+				agentName: 'co|der\r\nextra',
+				taskId: '4.1',
+				tokens_input: 1,
+				cost_source: 'unavailable',
+			},
+		]);
+
+		const result = await handleCostsCommand(testDir, []);
+
+		// A crafted telemetry name must not break the markdown table: the pipe
+		// is escaped and every line-break form (CRLF or a bare carriage
+		// return) collapses to a space, keeping the row on one line.
+		expect(result).toContain('| co\\|der extra | 1 |');
+	});
 });

@@ -207,7 +207,7 @@ describe('cost fold unknown-usage semantics (#2789)', () => {
 		expect(known!['currentFields']['tokens_input']).toBe(12);
 	});
 
-	test('fingerprint mismatch and multi-match candidates are rejected, not guessed', async () => {
+	test('multi-match child-digest candidates are rejected, not guessed', async () => {
 		const parentDigest = createHash('sha256')
 			.update('delegation-cost-parent-v1\0parent-2')
 			.digest('hex')
@@ -230,7 +230,9 @@ describe('cost fold unknown-usage semantics (#2789)', () => {
 		]);
 		// A SECOND candidate sharing the SAME child digest makes the exact-match
 		// selection ambiguous (selectedCandidates.length !== 1) — the recovery
-		// must refuse rather than guess.
+		// must refuse rather than guess. (The differing identity_fingerprints
+		// are record identity only; the recovery path has no fingerprint-mismatch
+		// rejection branch — the ambiguity alone triggers the refusal.)
 		writeTelemetry([
 			...readTelemetryLines(testDir),
 			{
@@ -257,12 +259,25 @@ describe('cost fold unknown-usage semantics (#2789)', () => {
 	});
 
 	test('join_miss-only directory keeps null totals (failed measurement is not vacuous zero)', () => {
-		writeTelemetry([
-			{ event: 'delegation_cost_join', reason: 'join_miss' },
-		]);
+		writeTelemetry([{ event: 'delegation_cost_join', reason: 'join_miss' }]);
 		const summary = summarizeTelemetryCosts(testDir);
 		expect(summary.delegations).toBe(0);
 		expect(summary.join_miss_count).toBe(1);
+		expect(summary.total_input_tokens).toBeNull();
+		expect(summary.total_output_tokens).toBeNull();
+	});
+
+	test('telemetry-error-only directory keeps null totals (failed measurement is not vacuous zero)', () => {
+		// A single unparseable JSONL line: delegations 0, join misses 0, but
+		// telemetry_error_count 1. The finalizeSummary vacuous-zero gate must
+		// stay closed on the error signal alone.
+		fs.writeFileSync(
+			path.join(testDir, '.swarm', 'telemetry.jsonl'),
+			'{broken json\n',
+		);
+		const summary = summarizeTelemetryCosts(testDir);
+		expect(summary.delegations).toBe(0);
+		expect(summary.telemetry_error_count).toBe(1);
 		expect(summary.total_input_tokens).toBeNull();
 		expect(summary.total_output_tokens).toBeNull();
 	});
