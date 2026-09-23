@@ -134,7 +134,8 @@ protected void protectedMethod() {}
 		expect(symbolsList.find((s) => s.name === 'b')?.exported).toBe(true);
 	});
 
-	test('public type with short name colliding with modifier substring remains exported', () => {
+	test('public type declaration is unaffected by the method-branch lastIndexOf change (defensive parity check)', () => {
+		// Defensive parity guard: typeDecl[1] is the declaration keyword (not type name), so this branch cannot hit the method-name collision bug with current modifiers.
 		write('TypeModifierCollision.java', 'public final class l {}\n');
 
 		const symbolsList = extractJavaSymbols('TypeModifierCollision.java', root);
