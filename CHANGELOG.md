@@ -1,5 +1,14 @@
 # Changelog
 
+## [7.186.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.2...v7.186.3) (2026-09-23)
+
+
+### Bug Fixes
+
+* **hooks:** canonicalize attribution entries and add behavioral wiring coverage ([702a63d](https://github.com/ZaxbyHub/opencode-swarm/commit/702a63d1b9e510fe7700951db63bd7078fef264c))
+* **hooks:** source scope warning from the checked task's attribution record ([aa58de0](https://github.com/ZaxbyHub/opencode-swarm/commit/aa58de009cc7496276135a3b4dcdcfdd76465afb))
+* **hooks:** source scope warning from the checked task's attribution record ([a75538a](https://github.com/ZaxbyHub/opencode-swarm/commit/a75538a8559b9f0e69e28539bd7ed8c9bd0057fe))
+
 ## [7.186.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.1...v7.186.2) (2026-09-23)
 
 
