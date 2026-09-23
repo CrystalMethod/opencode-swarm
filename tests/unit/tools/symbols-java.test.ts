@@ -274,15 +274,23 @@ public void alpha() {}
 	test('adversarial repeated-modifier input does not hang extraction (ReDoS regression)', () => {
 		// The method-declaration modifier group is bounded to {0,6}; an
 		// unbounded star would be quadratic on repeated modifier keywords.
-		const adversarial = 'public '.repeat(500) + 'void foo() {}';
+		// 20000 repeats (~140KB) is in the range the original PRR report
+		// measured as a ~5.6s hang against the unbounded-star regex (at
+		// roughly 16000 repeats / 112KB) — the OLD code would fail this
+		// test's tight bound, and only the {0,6}-bounded fix passes it.
+		const adversarial = 'public '.repeat(20000) + 'void foo() {}';
 		write('Adversarial.java', adversarial);
 
 		const start = performance.now();
 		const symbolsList = extractJavaSymbols('Adversarial.java', root);
 		const elapsed = performance.now() - start;
 
-		// Extraction must complete well under a generous wall-clock bound.
-		expect(elapsed).toBeLessThan(1000);
+		// Extraction must complete well under a tight wall-clock bound —
+		// tight enough that the pre-fix unbounded-star regex (which the
+		// original PRR measured at ~5.6s for a similarly-sized input) would
+		// fail this assertion, while the {0,6}-bounded fix comfortably
+		// passes it.
+		expect(elapsed).toBeLessThan(500);
 		// The trailing real declaration is still extracted.
 		expect(symbolsList).toContainEqual(
 			expect.objectContaining({ name: 'foo', kind: 'method' }),
