@@ -43,6 +43,8 @@ import {
 	type AgentSessionState,
 	advanceTaskState,
 	ensureAgentSession,
+	getAgentSession,
+	getModifiedFilesForTask,
 	getStageBRouteEvidence,
 	getTaskState,
 	hasActiveLeanTurbo,
@@ -1133,9 +1135,20 @@ export async function checkReviewerGateWithScope(
 		sessionID,
 		fallbackDir,
 	);
-	const scopeWarning = await validateDiffScope(taskId, workingDirectory!).catch(
-		() => null,
-	);
+	// Issue #2818: the repository's latest commit belongs to whichever task
+	// committed last, not to the task being checked. Source the changed-file
+	// set from this session's per-task attribution record when it has one;
+	// validateDiffScope keeps the repository-wide comparison (now with the
+	// evidence named) when it does not.
+	const session = sessionID ? getAgentSession(sessionID) : undefined;
+	const attributedFiles = session
+		? getModifiedFilesForTask(session, taskId)
+		: [];
+	const scopeWarning = await validateDiffScope(
+		taskId,
+		workingDirectory!,
+		sessionID && attributedFiles.length > 0 ? { attributedFiles } : undefined,
+	).catch(() => null);
 	if (!scopeWarning) return result;
 	return {
 		...result,

@@ -3,6 +3,15 @@
  * for a given task in plan.json. Returns a warning string if undeclared files
  * were modified, or null if in-scope, no scope declared, or git unavailable.
  * Never throws.
+ *
+ * Issue #2818: the repository's latest commit belongs to whichever task
+ * committed last, so a repository-wide `git diff HEAD~1` mis-attributes a
+ * concurrent task's files to the task being checked. When the caller can
+ * supply the task's own attribution record (`modifiedFilesByTask`), the
+ * comparison runs against that per-task file set instead. Without an
+ * attribution record the legacy repository-wide comparison is kept, and the
+ * warning names its evidence (diff basis + latest commit) so a reader can
+ * detect possible mis-attribution.
  */
 
 import * as fs from 'node:fs';
@@ -10,6 +19,7 @@ import * as path from 'node:path';
 import { bunSpawn } from '../utils/bun-compat';
 import { resolveGitExecutable } from '../utils/git-executable.js';
 import { ENSURE_SWARM_GIT_EXCLUDED_PER_CALL_TIMEOUT_MS } from '../utils/gitignore-warning';
+import { normalizePath } from '../utils/path.js';
 
 /**
  * Test-only dependency-injection seam — see `gitignore-warning.ts:_internals`
@@ -26,6 +36,16 @@ export const _internals: {
 	 */
 	resolveGitExecutable: typeof resolveGitExecutable;
 } = { bunSpawn, resolveGitExecutable };
+
+/**
+ * Optional per-task attribution source supplied by the caller.
+ * When `attributedFiles` is a non-empty array it is the task's own
+ * modified-file set (the session's coder-settlement attribution record) and
+ * the repository-wide git diff is not consulted at all.
+ */
+export interface DiffScopeAttribution {
+	attributedFiles?: readonly string[];
+}
 
 /**
  * Read the declared file scope for a task from .swarm/plan.json.
@@ -66,11 +86,22 @@ function getDeclaredScope(taskId: string, directory: string): string[] | null {
 }
 
 /**
- * Run git diff --name-only to get files changed since HEAD~1.
- * Returns array of changed file paths, or null if git is unavailable.
+ * Which git diff leg produced the changed-file set.
+ */
+type DiffBasis = 'HEAD~1' | 'HEAD';
+
+interface ChangedFilesResult {
+	files: string[] | null;
+	basis: DiffBasis;
+}
+
+/**
+ * Run git diff --name-only to get files changed since HEAD~1 (working tree
+ * included). Returns the changed file paths plus the leg that produced them,
+ * or { files: null } if git is unavailable.
  */
 /**
- * Spawn options shared by both `git diff` invocations below.
+ * Spawn options shared by the `git diff` / `git rev-parse` invocations below.
  *
  * `timeout` and `stdin: 'ignore'` are required to make the call hang-free on
  * every supported platform — see `gitignore-warning.ts` for full rationale.
@@ -86,7 +117,7 @@ const GIT_DIFF_SPAWN_OPTIONS = {
 	stderr: 'pipe',
 } as const;
 
-async function getChangedFiles(directory: string): Promise<string[] | null> {
+async function getChangedFiles(directory: string): Promise<ChangedFilesResult> {
 	try {
 		// Issue #2236 hardening (lane C1b): resolve the git binary ONCE for
 		// both spawn calls below.
@@ -114,11 +145,14 @@ async function getChangedFiles(directory: string): Promise<string[] | null> {
 		}
 
 		if (exitCode === 0) {
-			return stdout
-				.trim()
-				.split('\n')
-				.map((f) => f.trim())
-				.filter((f) => f.length > 0);
+			return {
+				files: stdout
+					.trim()
+					.split('\n')
+					.map((f) => f.trim())
+					.filter((f) => f.length > 0),
+				basis: 'HEAD~1',
+			};
 		}
 
 		// Fallback: uncommitted changes vs HEAD
@@ -146,16 +180,61 @@ async function getChangedFiles(directory: string): Promise<string[] | null> {
 		}
 
 		if (exitCode2 === 0) {
-			return stdout2
-				.trim()
-				.split('\n')
-				.map((f) => f.trim())
-				.filter((f) => f.length > 0);
+			return {
+				files: stdout2
+					.trim()
+					.split('\n')
+					.map((f) => f.trim())
+					.filter((f) => f.length > 0),
+				basis: 'HEAD',
+			};
 		}
 
-		return null;
+		return { files: null, basis: 'HEAD~1' };
 	} catch {
-		return null; // git not available
+		return { files: null, basis: 'HEAD~1' }; // git not available
+	}
+}
+
+/**
+ * Latest commit identity for the warning's evidence clause (issue #2818).
+ * Fired only when a warning is about to be emitted on the repository-wide
+ * path, so it never adds subprocess cost to the in-scope / no-scope /
+ * unavailable paths. Same bounded spawn discipline as the diff legs (issue
+ * #2236 shape), routed through the `_internals` seam so the new spawn is
+ * countable by a seam-stubbing test (the bounded-spawn suite's own stubbed
+ * path returns before this point and intentionally does not reach it).
+ */
+async function getLatestCommitShortSha(directory: string): Promise<string> {
+	try {
+		const gitExecutable = _internals.resolveGitExecutable();
+		const proc = _internals.bunSpawn(
+			[gitExecutable, 'rev-parse', '--short', 'HEAD'],
+			{
+				cwd: directory,
+				...GIT_DIFF_SPAWN_OPTIONS,
+			},
+		);
+
+		let exitCode: number;
+		let stdout: string;
+		try {
+			[exitCode, stdout] = await Promise.all([proc.exited, proc.stdout.text()]);
+		} finally {
+			try {
+				proc.kill();
+			} catch {
+				// Already exited — kill is a no-op.
+			}
+		}
+
+		if (exitCode === 0) {
+			const sha = stdout.trim();
+			if (sha.length > 0 && !/\s/.test(sha)) return sha;
+		}
+		return '';
+	} catch {
+		return '';
 	}
 }
 
@@ -163,33 +242,88 @@ async function getChangedFiles(directory: string): Promise<string[] | null> {
  * Validate that git-changed files match the declared scope for a task.
  * Returns a warning string if undeclared files were modified, null otherwise.
  * Never throws.
+ *
+ * When `attribution.attributedFiles` is a non-empty array it is used as the
+ * changed-file set (per-task truth) and no git command runs. Otherwise the
+ * repository-wide diff is compared, and any warning names its evidence
+ * (diff basis + latest commit) so mis-attribution is detectable.
  */
 export async function validateDiffScope(
 	taskId: string,
 	directory: string,
+	attribution?: DiffScopeAttribution,
 ): Promise<string | null> {
 	try {
 		const declaredScope = getDeclaredScope(taskId, directory);
 		if (!declaredScope) return null; // No scope declared — skip
 
-		const changedFiles = await getChangedFiles(directory);
-		if (!changedFiles) return null; // git unavailable — skip
-
-		// Filter .swarm/ runtime paths — tracked .swarm files must not produce
-		// spurious scope warnings in QA review. .swarm/ is always local runtime state.
-		// Normalize ./ prefix before the startsWith check so that git output of the
-		// form ./.swarm/foo (rare but theoretically possible) is also filtered.
-		const nonSwarmFiles = changedFiles.filter(
-			(f) => !f.replace(/\\/g, '/').replace(/^\.\//, '').startsWith('.swarm/'),
-		);
-
 		// Normalise paths for comparison (forward slashes, no leading ./)
 		const normalise = (p: string) => p.replace(/\\/g, '/').replace(/^\.\//, '');
-
+		const isSwarmPath = (p: string) => normalise(p).startsWith('.swarm/');
 		const normScope = new Set(declaredScope.map(normalise));
-		const undeclared = nonSwarmFiles
-			.map(normalise)
-			.filter((f) => !normScope.has(f));
+
+		// Canonicalize one raw attribution entry to a repo-relative path, or
+		// null when it does not resolve inside `directory`. Writers record raw
+		// tool-arg paths (absolute, `..`-bearing, or case-mismatched), so the
+		// comparison must canonicalize before matching — the same contract as
+		// `src/full-auto/severe-result.ts` — otherwise a task's own in-scope
+		// work false-warns and absolute `.swarm/` entries escape the filter.
+		const canonicaliseAttributionEntry = (raw: string): string | null => {
+			const resolved = path.isAbsolute(raw)
+				? path.normalize(raw)
+				: path.resolve(directory, raw);
+			const relative = path.relative(directory, resolved);
+			if (!relative) return null;
+			if (relative.startsWith('..') || path.isAbsolute(relative)) {
+				return null;
+			}
+			return relative;
+		};
+
+		const attributed = attribution?.attributedFiles;
+		let undeclared: string[];
+		let evidence: string;
+
+		if (Array.isArray(attributed) && attributed.length > 0) {
+			// Per-task attribution record: compare the task's OWN files against
+			// its declared scope; the repository-wide diff is not consulted.
+			// Scope matching case-folds on win32 via normalizePath (the legacy
+			// repo-wide branch below keeps git's exact-output comparison,
+			// which is already repo-relative and host-exact).
+			const normScopeAttribution = new Set(declaredScope.map(normalizePath));
+			undeclared = attributed
+				.filter((f) => typeof f === 'string' && f.length > 0)
+				.map(canonicaliseAttributionEntry)
+				.filter((entry): entry is string => entry !== null)
+				.map(normalise)
+				.filter((f) => !isSwarmPath(f))
+				.filter((f) => !normScopeAttribution.has(normalizePath(f)));
+			evidence = 'task attribution record';
+		} else {
+			// No attribution record (legacy session / CLI / record released at
+			// workflow-complete / evicted at the bounded cap): keep the
+			// repository-wide comparison.
+			const { files, basis } = await getChangedFiles(directory);
+			if (!files) return null; // git unavailable — skip
+
+			undeclared = files
+				.filter((f) => !isSwarmPath(f))
+				.map(normalise)
+				.filter((f) => !normScope.has(f));
+
+			if (undeclared.length === 0) return null;
+
+			// A warning is about to fire — name the evidence so a reader can
+			// detect a possible cross-task mis-attribution (issue #2818). The
+			// generic no-sha wording retains "repository-wide" so the evidence
+			// clause is recognisable even when rev-parse fails.
+			const sha = await getLatestCommitShortSha(directory);
+			const shaSuffix = sha ? ` ${sha}` : '';
+			evidence =
+				basis === 'HEAD'
+					? `repository-wide uncommitted diff vs HEAD${shaSuffix}`
+					: `repository-wide diff vs latest commit${shaSuffix}`;
+		}
 
 		if (undeclared.length === 0) return null;
 
@@ -198,7 +332,7 @@ export async function validateDiffScope(
 		const extra =
 			undeclared.length > 5 ? ` (+${undeclared.length - 5} more)` : '';
 
-		return `SCOPE WARNING: Task ${taskId} declared scope [${scopeStr}] but also modified [${undeclaredStr}${extra}]. Reviewer should verify these changes are intentional.`;
+		return `SCOPE WARNING: Task ${taskId} declared scope [${scopeStr}] but also modified [${undeclaredStr}${extra}] (evidence: ${evidence}). Reviewer should verify these changes are intentional.`;
 	} catch {
 		return null;
 	}
