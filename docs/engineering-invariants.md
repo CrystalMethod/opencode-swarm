@@ -488,6 +488,67 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Maps to AGENTS.md:** invariant 9 (guardrails/retry — bounded, action-local,
   exactly-once semantics preserved).
 
+### Issue #2927 — Scope-warning coverage contract for shell side-effects (decided: Option 1)
+
+- **Decision (2026-09-23):** the after-the-fact advisory `SCOPE WARNING` is a
+  **direct-write attribution check** on foreground paths, and that boundary is
+  the contract — Option 1 (accept + keep documented) of the three options
+  recorded in issue #2927. This is a standing decision record, not an outage
+  entry; the release fragment `docs/releases/pending/2927-scope-warning-coverage-contract.md`
+  carries the user-visible disclosure.
+- **Symptom being decided:** since PR #2917 (issue #2818),
+  `validateDiffScope` (`src/hooks/diff-scope.ts`) compares the checked task's
+  own attribution record (`modifiedFilesByTask`) against its declared scope
+  and does not consult git whenever that record is non-empty. Foreground
+  attribution records are written only by the direct-write tool loop in
+  `src/hooks/guardrails/tool-before.ts` (`recordModifiedFileForTask`, sole
+  call site, under `if (trackingSession?.delegationActive)`) — bash/shell is
+  intentionally outside `WRITE_TOOL_NAMES` (`src/config/constants.ts`,
+  issue #1778). A shell side-effect file change (formatter, codegen,
+  `git checkout -- file`) therefore reaches no after-the-fact advisory check
+  once the task has any attribution record: it is not in attribution (by
+  design), the per-task check skips git, and pre-execution shell-write
+  enforcement (the coder default) is the only gate. Observe mode and
+  scope-lenient roles have no after-the-fact coverage for such changes —
+  disclosed and accepted.
+- **Non-gap (do not "fix" this):** background settlement attribution is
+  git-derived — `changedFilesSinceSnapshot` (`src/background/workspace-snapshot.ts`)
+  feeds `recordModifiedFilesForTask` (the plural producer, distinct from the
+  foreground singular writer) into the parent session's attribution record
+  (`src/background/stage-b-gates.ts`). Background attribution therefore DOES
+  see shell side-effects; the decided boundary is foreground-only. Any wording
+  that says "attribution records only contain direct-write files" without the
+  foreground qualifier is wrong.
+- **Rejected alternatives (trade-offs recorded per the issue):**
+  **Option 2** — union the attribution set with a task-windowed git diff —
+  rejected: adds per-check git cost and a "task start ref" bookkeeping
+  surface, and re-admits exactly the cross-task mis-attribution noise that
+  #2818/#2917 removed. **Option 3** — record shell-detected writes into
+  attribution — rejected: silently changes what "attributed" means for every
+  consumer of the attribution record (settlement, evidence), not just the
+  advisory check, and needs observe-mode telemetry limits. Neither is
+  justified without operator evidence.
+- **Revisit trigger:** operator reports of formatter/codegen drift escaping
+  review on foreground paths. A revisit that lands on Option 2 or Option 3 is
+  a behavior change: it must reopen AGENTS.md invariant 9 and the PR
+  invariant audit, and supersede this entry.
+- **Legacy leg (unchanged):** sessions without a non-empty attribution record
+  (legacy sessions, CLI-direct runs, records released at workflow-complete,
+  entries evicted at the bounded 128-task cap, and empty-but-present
+  `attributedFiles` arrays) keep the repository-wide comparison, with the
+  warning naming its evidence (diff basis + latest commit short SHA).
+- **Guardrail:** `tests/unit/hooks/shell-side-effect-attribution-boundary-2927.test.ts`
+  pins both consumer legs and the producer boundary (behavioral: a
+  shell-mediated write creates no attribution record while a direct write
+  does; static: the shell-write region of `tool-before.ts` contains neither
+  producer spelling).
+- **Maps to AGENTS.md:** none (no operational rule changes; this entry is the
+  long-form home AGENTS.md's charter assigns to this doc). Related open
+  siblings from the same review: #2925 (normalize attribution paths at the
+  write site), #2926 (session-mismatch attribution fallback — its repo-wide
+  fallback partially re-exposes shell side-effects by design of the legacy
+  leg; any resolution there must stay consistent with this decision).
+
 
 ## Invariants — anti-pattern, required pattern, verification
 
