@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.186.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.5...v7.186.6) (2026-09-24)
+
+
+### Bug Fixes
+
+* **test:** drop real-clock fixture timestamps from stage-a-repair vacuous pin ([#2918](https://github.com/ZaxbyHub/opencode-swarm/issues/2918)) ([0873b2c](https://github.com/ZaxbyHub/opencode-swarm/commit/0873b2c3b26f62e28d60a454399b4dd6a487ea75))
+* **tools:** scope [#2918](https://github.com/ZaxbyHub/opencode-swarm/issues/2918) vacuous pass to docs-safe extensions (SEC-1) + review follow-ups ([5c34352](https://github.com/ZaxbyHub/opencode-swarm/commit/5c343522a756a5479ec60aa31abb59a375a657ac))
+* **tools:** vacuous secretscan coverage passes pre_check for docs-only batches ([#2918](https://github.com/ZaxbyHub/opencode-swarm/issues/2918)) ([068df78](https://github.com/ZaxbyHub/opencode-swarm/commit/068df787cecd93aa164497168697895e5685f373))
+* **tools:** vacuous secretscan coverage passes pre_check for docs-only batches ([#2918](https://github.com/ZaxbyHub/opencode-swarm/issues/2918)) ([1a89e6d](https://github.com/ZaxbyHub/opencode-swarm/commit/1a89e6d72e492e3d79c4deef8d97efb7b0ede367))
+
 ## [7.186.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.4...v7.186.5) (2026-09-23)
 
 
