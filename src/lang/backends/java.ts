@@ -220,6 +220,10 @@ async function selectTestFramework(
  * Identify entry points: `.java` files declaring `public static void main`.
  */
 async function selectEntryPoints(dir: string): Promise<string[]> {
+	// Yield to the event loop before running the synchronous, potentially
+	// slow scan, so a caller on a hot synchronous path is never blocked
+	// within the same tick (defense in depth alongside the 2.3 size caps).
+	await new Promise<void>((resolve) => setImmediate(resolve));
 	return scanForMainClasses(dir);
 }
 

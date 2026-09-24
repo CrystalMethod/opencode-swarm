@@ -258,6 +258,23 @@ describe('selectEntryPoints', () => {
 		expect(eps).toEqual([]);
 	});
 
+	test('defers resolution past the current microtask turn', async () => {
+		let resolved = false;
+		const entryPointsPromise = backend.selectEntryPoints!(tmpDir).then((eps) => {
+			resolved = true;
+			return eps;
+		});
+
+		let resolvedDuringMicrotask = true;
+		await Promise.resolve().then(() => {
+			resolvedDuringMicrotask = resolved;
+		});
+
+		expect(resolvedDuringMicrotask).toBe(false);
+		await entryPointsPromise;
+		expect(resolved).toBe(true);
+	});
+
 	test('does not crash on an unreadable subdirectory', async () => {
 		if (process.getuid && process.getuid() === 0) {
 			// root ignores chmod — skip
