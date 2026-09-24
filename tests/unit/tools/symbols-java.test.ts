@@ -284,7 +284,10 @@ public void alpha() {}
 		write('AdversarialMatching.java', matching);
 
 		const matchStart = performance.now();
-		const matchingSymbols = extractJavaSymbols('AdversarialMatching.java', root);
+		const matchingSymbols = extractJavaSymbols(
+			'AdversarialMatching.java',
+			root,
+		);
 		const matchElapsed = performance.now() - matchStart;
 		expect(matchElapsed).toBeLessThan(1000);
 		expect(matchingSymbols).toContainEqual(
