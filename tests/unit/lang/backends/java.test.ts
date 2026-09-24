@@ -260,10 +260,12 @@ describe('selectEntryPoints', () => {
 
 	test('defers resolution past the current microtask turn', async () => {
 		let resolved = false;
-		const entryPointsPromise = backend.selectEntryPoints!(tmpDir).then((eps) => {
-			resolved = true;
-			return eps;
-		});
+		const entryPointsPromise = backend.selectEntryPoints!(tmpDir).then(
+			(eps) => {
+				resolved = true;
+				return eps;
+			},
+		);
 
 		let resolvedDuringMicrotask = true;
 		await Promise.resolve().then(() => {
