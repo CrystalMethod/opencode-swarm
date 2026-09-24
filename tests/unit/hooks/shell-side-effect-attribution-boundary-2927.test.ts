@@ -57,8 +57,26 @@ function defaultConfig(): GuardrailsConfig {
 }
 
 async function run(cmd: string[], cwd: string): Promise<number> {
-	const proc = Bun.spawn(cmd, { cwd, stdout: 'ignore', stderr: 'ignore' });
-	return proc.exited;
+	const proc = Bun.spawn(cmd, {
+		cwd,
+		stdin: 'ignore',
+		stdout: 'ignore',
+		stderr: 'ignore',
+	});
+	try {
+		return await Promise.race([
+			proc.exited,
+			new Promise<number>((resolve) => setTimeout(() => resolve(-1), 30_000)),
+		]);
+	} finally {
+		setTimeout(() => {
+			try {
+				proc.kill();
+			} catch {
+				// already exited
+			}
+		}, 31_000).unref?.();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -70,6 +88,9 @@ async function gitInit(cwd: string): Promise<void> {
 		throw new Error('git init failed');
 	await run(['git', 'config', 'user.email', 'test@test.com'], cwd);
 	await run(['git', 'config', 'user.name', 'Test'], cwd);
+	// Defuse a host-global commit.gpgsign=true (7 repo precedents): a signing
+	// prompt here would silently fail the fixture commit.
+	await run(['git', 'config', 'commit.gpgsign', 'false'], cwd);
 	fs.writeFileSync(path.join(cwd, 'dummy.txt'), 'initial');
 	await run(['git', 'add', '.'], cwd);
 	await run(['git', 'commit', '-m', 'initial'], cwd);

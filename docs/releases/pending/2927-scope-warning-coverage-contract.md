@@ -10,7 +10,8 @@ issue: 2927
   attribution is now DECIDED (issue #2927, Option 1: accept + keep
   documented) and recorded as a standing entry in
   `docs/engineering-invariants.md` — previously the boundary existed only in
-  the #2817 release fragment's disclosure and code docstrings.
+  the #2818 release fragment's disclosure (shipped via PR #2917) and code
+  docstrings.
 - Added `tests/unit/hooks/shell-side-effect-attribution-boundary-2927.test.ts`,
   which pins the decided boundary so it cannot drift silently: the consumer
   legs (attribution present — a formatter/codegen-style shell side-effect
@@ -26,8 +27,11 @@ issue: 2927
 - No behavior changed. The decision ratifies the post-#2818 semantics: the
   after-the-fact advisory check is a direct-write attribution check on
   foreground paths; shell coverage on those paths is pre-execution
-  shell-write enforcement (the coder default). Background settlement
-  attribution is git-derived and still sees shell side-effects — the
+  shell-write enforcement (the coder default — observe mode and
+  scope-lenient roles have no after-the-fact coverage for such changes,
+  a gap the invariant entry records as disclosed and accepted). Background
+  settlement attribution is git-derived and still sees shell side-effects —
+  the
   foreground/background producer distinction is spelled out in the new doc
   entry.
 - Revisit trigger: operator reports of formatter/codegen drift escaping
