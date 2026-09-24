@@ -488,6 +488,49 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Maps to AGENTS.md:** invariant 9 (guardrails/retry — bounded, action-local,
   exactly-once semantics preserved).
 
+### Issue #2926 — session-keyed attribution read by a foreign session key (decision: disclosure-first)
+
+- **Symptom:** the per-task attribution record (`AgentSessionState.modifiedFilesByTask`,
+  issue #2818's fix) is written under the writer's session key (foreground coder session at
+  `src/hooks/guardrails/tool-before.ts`; parent session at `src/background/stage-b-gates.ts`)
+  but read under the CHECKING session's key (`checkReviewerGateWithScope` ←
+  `ctx.sessionID`). Whenever writer≠checker (multi-session swarms, restart, snapshot restored
+  for the wrong session, 128-cap eviction, workflow-complete release), the read came back
+  empty and the SCOPE WARNING silently fell back to the repository-wide `git diff` — #2818's
+  cross-task mis-attribution, resurrected for that subset, with an evidence clause that could
+  not distinguish the degraded mode from a legitimate legacy run.
+- **Decision (issue option 3, disclosure-first):** keep the session keying and the fallback;
+  make the degraded mode non-silent. `checkReviewerGateWithScope` appends a `SCOPE ADVISORY:`
+  line to the gate reason on every in-session scoped completion that did not use a per-task
+  record — including when the repo-wide comparison produced no warning (clean set). The
+  advisory states only always-true facts (never claims a comparison ran): a bounded fail-open
+  probe of the other live sessions distinguishes `attribution record … exists under another
+  session — not used for scope verification` from `no attribution record in this session —
+  not used for scope verification`. In clean-set completions the producing source is
+  disclosed by the attribution-record/repository-wide dichotomy; explicit source naming rides
+  the warning's own evidence clause when a warning fires.
+- **Rejected-for-now:** option 1 (consult the parent/advancing session's record) — two
+  writers can hold divergent records for one task (incremental coder-session appends vs the
+  parent's atomic replace) and coder-session records provably miss shell side-effects
+  (#2927's accepted narrowing), so a foreign partial record can silently false-CLEAR a real
+  violation; option 2 (persisted `(workspace, taskId)` store) — L-tier persistence blast
+  radius plus a staleness/invalidation hazard for an advisory evidence source. Revisit
+  trigger: operators needing actual cross-session scoping, or #2925/#2927 converging on
+  durable per-task file records.
+- **Honest limits:** post-restart the probe finds only snapshot-restored records (released /
+  evicted / never-snapshotted records read as "no record", deliberately conflating
+  never-recorded with recorded-then-lost); attribution accuracy for the mismatch subset is
+  unchanged; Epic-retained completed-task records can still produce a context-free
+  foreign-session wording; two plan.json reads per scoped no-record completion remain racy
+  against concurrent plan rewrites (evaluated pre-spawn to bound the window;
+  advisory-text-only consequence).
+- **Invariant:** session-private `AgentSessionState` data read through a foreign session key
+  must fail LOUD (advisory disclosure), never silently, and never by guessing another
+  session's record. Guardrail:
+  `tests/unit/hooks/attribution-session-contract-2926.test.ts`.
+- **Maps to AGENTS.md:** invariant 8 (session and global state — keyed and bounded); the
+  advisory is text-only (invariant 9 posture: never blocks, never widens attribution).
+
 
 ## Invariants — anti-pattern, required pattern, verification
 

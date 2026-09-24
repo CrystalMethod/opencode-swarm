@@ -25,7 +25,7 @@ import {
 	readTaskEvidenceRaw,
 	TASK_GATE_REQUIREMENTS_RECONSTRUCTION_SENTINEL,
 } from '../gate-evidence.js';
-import { validateDiffScope } from '../hooks/diff-scope';
+import { hasDeclaredDiffScope, validateDiffScope } from '../hooks/diff-scope';
 import { validateSwarmPath } from '../hooks/utils.js';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { matchesTier3 } from '../parallel/tier3-classifier.js';
@@ -1111,6 +1111,34 @@ export function checkReviewerGate(
 }
 
 /**
+ * Whether any other live session holds a non-empty attribution record for the
+ * task (exact taskId match; checking session excluded; per-project when both
+ * sides declare one). Bounded fail-open probe: read-only, one pass with early
+ * exit, per-entry Map guard so one malformed legacy entry skips only itself
+ * instead of aborting the pass.
+ */
+function findForeignAttributionHolder(
+	taskId: string,
+	checkingSessionId: string,
+): boolean {
+	try {
+		const checker = swarmState.agentSessions.get(checkingSessionId);
+		const checkerProject = checker?.owningProjectKey;
+		for (const [sessionId, session] of swarmState.agentSessions) {
+			if (sessionId === checkingSessionId) continue;
+			if (!(session.modifiedFilesByTask instanceof Map)) continue;
+			const project = session.owningProjectKey;
+			if (checkerProject && project && project !== checkerProject) continue;
+			const entry = session.modifiedFilesByTask.get(taskId);
+			if (Array.isArray(entry) && entry.length > 0) return true;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Wrapper around checkReviewerGate that appends a diff-scope advisory warning.
  * Keeps checkReviewerGate synchronous for backward compatibility.
  * Stage B parallel is hardcoded (not config-driven).
@@ -1138,21 +1166,42 @@ export async function checkReviewerGateWithScope(
 	// Issue #2818: the repository's latest commit belongs to whichever task
 	// committed last, not to the task being checked. Source the changed-file
 	// set from this session's per-task attribution record when it has one;
-	// validateDiffScope keeps the repository-wide comparison (now with the
-	// evidence named) when it does not.
+	// the repo-wide comparison (with the evidence named) is kept when not.
 	const session = sessionID ? getAgentSession(sessionID) : undefined;
 	const attributedFiles = session
 		? getModifiedFilesForTask(session, taskId)
 		: [];
+	// Issue #2926: evaluate the fallback condition before the diff await so
+	// both plan reads precede any git spawn (bounded plan-rewrite race).
+	const scopeFallbackDeclared =
+		!!sessionID &&
+		attributedFiles.length === 0 &&
+		!!workingDirectory &&
+		hasDeclaredDiffScope(taskId, workingDirectory);
 	const scopeWarning = await validateDiffScope(
 		taskId,
 		workingDirectory!,
 		sessionID && attributedFiles.length > 0 ? { attributedFiles } : undefined,
 	).catch(() => null);
-	if (!scopeWarning) return result;
+	// Issue #2926: the session-keyed read losing the writer session's record
+	// (multi-session swarms, restart, snapshot miss, cap eviction, release)
+	// must not degrade silently. Disclose — advisory-only, never blocking —
+	// on every in-session scoped completion that did not use the per-task
+	// record, including when the comparison produced no warning (clean set).
+	const advisoryLine =
+		scopeFallbackDeclared && sessionID
+			? findForeignAttributionHolder(taskId, sessionID)
+				? `SCOPE ADVISORY: attribution record for task ${taskId} exists under another session — not used for scope verification`
+				: 'SCOPE ADVISORY: no attribution record in this session — not used for scope verification'
+			: null;
+	if (!scopeWarning && !advisoryLine) return result;
 	return {
 		...result,
-		reason: result.reason ? `${result.reason}\n${scopeWarning}` : scopeWarning,
+		reason: [result.reason, scopeWarning, advisoryLine]
+			.filter(
+				(part): part is string => typeof part === 'string' && part.length > 0,
+			)
+			.join('\n'),
 	};
 }
 
