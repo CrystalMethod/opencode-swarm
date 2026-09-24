@@ -193,12 +193,10 @@ private void commented() {} // later: make public
 		expect(
 			symbolsList.find((s) => s.name === 'setVisibility'),
 		).toBeUndefined();
-		// a line with a non-empty token prefix ("throw new") still matches the
-		// method regex, so the F-3 regression asserts exported is derived from
-		// the matched prefix rather than the string literal "public" inside it
+		// a throw-statement-shaped line must not be reported as a declaration
 		expect(
-			symbolsList.find((s) => s.name === 'IllegalArgumentException')?.exported,
-		).toBe(false);
+			symbolsList.find((s) => s.name === 'IllegalArgumentException'),
+		).toBeUndefined();
 	});
 
 	test('records map to the class kind', () => {
@@ -278,6 +276,26 @@ record Named(String name) {}
 
 		expect(symbolsList).toContainEqual(
 			expect.objectContaining({ name: 'foo', kind: 'method' }),
+		);
+	});
+
+	test('package-private constructor matching enclosing class is preserved as a method symbol', () => {
+		write(
+			'Foo.java',
+			`class Foo {
+	Foo() {}
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Foo.java', root);
+
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'Foo',
+				kind: 'method',
+				exported: false,
+			}),
 		);
 	});
 

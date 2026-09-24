@@ -1183,6 +1183,7 @@ export function extractJavaSymbols(
 			/^(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
 		);
 		if (typeDecl) {
+			lastTypeName = typeDecl[2];
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a comment/string containing "public" must not flip
 			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
