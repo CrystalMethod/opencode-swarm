@@ -147,12 +147,17 @@ export async function hasGreenPostSettlementPreCheck(
 				// for repair. Same normative predicate as every other enforcing
 				// site; evidence missing the optional policy counters is
 				// non-vacuous and keeps the previous strict bar.
+				const policySkipped = last.policy_skipped_files;
+				const requestedFiles = last.requested_files;
 				const vacuousCoverage =
 					(last.files_scanned ?? 0) === 0 &&
-					typeof last.policy_skipped_files === 'number' &&
-					typeof last.requested_files === 'number' &&
-					last.requested_files > 0 &&
-					last.policy_skipped_files >= last.requested_files &&
+					typeof policySkipped === 'number' &&
+					Number.isSafeInteger(policySkipped) &&
+					policySkipped >= 0 &&
+					typeof requestedFiles === 'number' &&
+					Number.isSafeInteger(requestedFiles) &&
+					requestedFiles > 0 &&
+					policySkipped >= requestedFiles &&
 					(last.findings_count ?? 0) === 0 &&
 					(last.incomplete_files ?? 0) === 0 &&
 					last.incomplete_paths.length === 0;

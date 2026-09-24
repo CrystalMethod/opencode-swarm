@@ -186,7 +186,8 @@ function hardGateExplicitlyFailed(
 			return true;
 		}
 		// #2918 vacuous coverage — decoder parity with the tool-side gate.
-		// Normative predicate (semantically equivalent at every enforcing site;
+		// Normative predicate (this site adds stricter integer-format guards; semantically
+		// equivalent on producer-emitted integers at every enforcing site;
 		// files_scanned === 0 && policy_skipped_files >= requested_files &&
 		// requested_files > 0 && count === 0 && findings empty &&
 		// incomplete_files === 0 && incomplete_paths empty. A record MISSING

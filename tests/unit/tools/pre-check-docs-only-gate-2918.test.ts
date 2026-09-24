@@ -13,8 +13,7 @@
  * entries never satisfy the predicate, and legacy shapes without the new
  * fields behave exactly as before (never invalid).
  *
- * Real-tool integration (real batch + decoder + persisted evidence + real git
- * fixtures, no mock.module), mirroring diff-scope-attribution-2818.test.ts.
+ * Real-tool integration (real batch + decoder + evidence + git fixtures).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -50,6 +49,9 @@ async function newGitProject(): Promise<string> {
 	await run(['git', 'init'], dir);
 	await run(['git', 'config', 'user.email', 'test@test.com'], dir);
 	await run(['git', 'config', 'user.name', 'Test'], dir);
+	// Defuse a host-global commit.gpgsign=true (8 repo precedents): a signing
+	// prompt here would silently fail the fixture commit.
+	await run(['git', 'config', 'commit.gpgsign', 'false'], dir);
 	await run(['git', 'commit', '--allow-empty', '-m', 'init'], dir);
 	tempProject = dir;
 	return dir;

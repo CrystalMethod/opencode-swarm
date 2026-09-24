@@ -185,27 +185,29 @@ describe('vacuous-pass guard (F-002)', () => {
 	 * F-002 pinned that an all-excluded batch fails closed — "a scan that
 	 * scanned nothing REPORTING success". #2918 supersedes that pin for the
 	 * one PROVABLE subclass: every requested file deliberately skipped by
-	 * secretscan scan policy (extension exclusion), surfaced via the dedicated
+	 * secretscan scan policy AND docs-safe (.md/.markdown/.mdx — types with
+	 * no plausible secret-bearing content), surfaced via the dedicated
 	 * policy_skipped_files counter and an explicit vacuous-coverage summary.
 	 *
-	 * F-002's unforgeability target remains fail-closed and is separately
+	 * F-002's original guard is RESTORED for every non-docs policy exclusion:
+	 * .png (this test's sibling below) and the secret-bearing .db/.sqlite/
+	 * .dat/.bin/.lock/.log types keep policy_skipped_files at 0, so such
+	 * batches still trip the zero-coverage fail-closed arm (SEC-1, review run
+	 * 20260923-pr2940). F-002's unforgeability target remains separately
 	 * pinned: binary-content skips and missing files do NOT increment the
 	 * policy counter (secretscan-file-accounting.test.ts), dropped/invalid
 	 * entries keep requested_files above the counter (pre-check-docs-only-
 	 * gate-2918.test.ts), and a zero-scan WITHOUT the policy counters stays
-	 * a gate failure. Only the scanner's own extension-exclusion site can
-	 * prove vacuous coverage.
+	 * a gate failure. Only the scanner's own docs-safe extension-exclusion
+	 * site can prove vacuous coverage.
 	 */
-	test('passes the gate (vacuous coverage) when all provided files are excluded by extension', async () => {
-		// .png is in DEFAULT_EXCLUDE_EXTENSIONS — file exists but is never scanned
-		fs.writeFileSync(
-			path.join(tempDir, 'screenshot.png'),
-			Buffer.from([0x89, 0x50, 0x4e, 0x47]), // minimal PNG header
-		);
+	test('passes the gate (vacuous coverage) when all provided files are docs-safe and excluded by extension', async () => {
+		// .md is in DEFAULT_EXCLUDE_EXTENSIONS and docs-safe — never scanned
+		fs.writeFileSync(path.join(tempDir, 'notes.md'), '# notes\n');
 
 		const result = await runPreCheckBatch({
 			directory: tempDir,
-			files: ['screenshot.png'],
+			files: ['notes.md'],
 		});
 
 		expect(result.secretscan.ran).toBe(true);
@@ -219,6 +221,34 @@ describe('vacuous-pass guard (F-002)', () => {
 		expect(scanResult.files_scanned).toBe(0);
 		expect(scanResult.skipped_files).toBe(1);
 		expect(scanResult.policy_skipped_files).toBe(1);
+		expect(scanResult.requested_files).toBe(1);
+	});
+
+	test('F-002 holds for non-docs policy exclusions: an all-.png batch stays fail-closed', async () => {
+		// .png is policy-excluded but NOT docs-safe (SEC-1): policy_skipped
+		// stays 0, so the zero-coverage arm fails the batch exactly as F-002
+		// originally pinned.
+		fs.writeFileSync(
+			path.join(tempDir, 'screenshot.png'),
+			Buffer.from([0x89, 0x50, 0x4e, 0x47]), // minimal PNG header
+		);
+
+		const result = await runPreCheckBatch({
+			directory: tempDir,
+			files: ['screenshot.png'],
+		});
+
+		expect(result.secretscan.ran).toBe(true);
+		expect(result.gates_passed).toBe(false);
+		const scanResult = result.secretscan.result as {
+			files_scanned: number;
+			skipped_files: number;
+			policy_skipped_files: number;
+			requested_files: number;
+		};
+		expect(scanResult.files_scanned).toBe(0);
+		expect(scanResult.skipped_files).toBe(1);
+		expect(scanResult.policy_skipped_files).toBe(0);
 		expect(scanResult.requested_files).toBe(1);
 	});
 });

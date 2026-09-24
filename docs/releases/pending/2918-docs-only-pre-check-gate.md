@@ -6,14 +6,21 @@ issue: 2918
 ## What changed
 
 A files-mode `pre_check_batch` whose every requested file is deliberately
-skipped by secretscan scan policy (extension exclusion — the docs-only
-deliverable shape: only `.md`/image/archive files) no longer trips the
-zero-coverage fail-closed arm forever. Such a batch is now recognized as
-VACUOUS COVERAGE and passes the hard gates, with the secretscan summary
-naming it explicitly ("all N requested file(s) skipped by secretscan scan
-policy (vacuous coverage)"). This aligns the pre_check hard gates with the
-repo's existing docs-only semantics (the markdown-only test_engineer gate
-exemption).
+skipped by secretscan scan policy (extension exclusion) no longer trips
+the zero-coverage fail-closed arm forever when the skip is docs-safe:
+markdown-family policy exclusions, per the `.md`/`.markdown`/`.mdx`
+docs-safe allowlist. Today `.md` is the only extension both policy-excluded
+and docs-safe — `.markdown`/`.mdx` remain content-scanned and can still
+hard-fail on embedded secrets — so `.md`-only batches are the shape that
+passes. Such a batch is now recognized as VACUOUS COVERAGE and passes the
+hard gates, with the secretscan summary naming it explicitly ("all N
+requested file(s) skipped by secretscan scan policy (vacuous coverage)").
+Policy exclusions that are NOT docs-safe — binaries, archives, and
+secret-bearing containers like `.db`/`.sqlite`/`.dat`/`.bin`/`.lock`/
+`.log` — never count toward the pass: a batch made up solely of such files
+still fails the zero-coverage arm. This aligns the pre_check hard gates
+with the repo's existing docs-only semantics (the markdown-only
+test_engineer gate exemption).
 
 The same vacuous-coverage predicate is enforced at every site that
 previously treated `files_scanned === 0` as a failure:
@@ -54,10 +61,12 @@ Lint remains informational and never blocks `gates_passed`.
   policy counter, and the gate's request basis is the RAW pre-drop declared
   count (`requested_files`), so a validation-dropped entry keeps requested
   above the policy counter and fails closed.
-- The F-002 vacuous-pass guard pin (all-excluded `.png` batch must fail) is
-  superseded: F-002's target — a scan that scanned nothing REPORTING success
-  — remains fail-closed for every non-provable subclass; only provable
-  extension-policy exclusion passes, surfaced via the dedicated counter and
+- The F-002 vacuous-pass guard pin (an all-excluded batch must fail) is
+  narrowed to docs-safe types: only docs-safe policy exclusions count
+  toward vacuous coverage, so an all-`.png` batch still fails closed
+  exactly as F-002 originally pinned. F-002's target — a scan that scanned
+  nothing REPORTING success — remains fail-closed for every non-docs
+  subclass; the docs-safe pass is surfaced via the dedicated counter and
   summary.
 - The standalone directory-mode scan (`secretscan` / preflight) populates
   the new counters with 0/0 and stays strictly fail-closed on zero

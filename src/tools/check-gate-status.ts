@@ -322,13 +322,17 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 						// #2918 vacuous coverage — same normative predicate as the
 						// pre_check gate and the decoder, evaluated over the persisted
 						// evidence fields (optional; missing ⇒ non-vacuous ⇒ strict).
+						const policySkipped: unknown = lastSecretscan.policy_skipped_files;
+						const requestedFilesCount: unknown = lastSecretscan.requested_files;
 						const vacuousCoverage =
 							lastSecretscan.files_scanned === 0 &&
-							typeof lastSecretscan.policy_skipped_files === 'number' &&
-							typeof lastSecretscan.requested_files === 'number' &&
-							lastSecretscan.requested_files > 0 &&
-							lastSecretscan.policy_skipped_files >=
-								lastSecretscan.requested_files &&
+							typeof policySkipped === 'number' &&
+							Number.isSafeInteger(policySkipped) &&
+							policySkipped >= 0 &&
+							typeof requestedFilesCount === 'number' &&
+							Number.isSafeInteger(requestedFilesCount) &&
+							requestedFilesCount > 0 &&
+							policySkipped >= requestedFilesCount &&
 							findingsCount === 0 &&
 							incompleteFiles === 0 &&
 							incompletePaths.length === 0;

@@ -179,6 +179,26 @@ const DEFAULT_EXCLUDE_EXTENSIONS = new Set([
 	'.md',
 ]) as Set<string>;
 
+/**
+ * Docs-safe allowlist for policy skips (#2918): markdown-family file types
+ * with no plausible secret-bearing content, for which a policy skip is a
+ * provable no-coverage-needed signal. The increment site also requires
+ * DEFAULT_EXCLUDE_EXTENSIONS.has(ext), so the effective docs-safe set is
+ * the intersection — today `.md` alone (.markdown/.mdx are not in the
+ * policy exclusion list and stay content-scanned; their entries here keep
+ * this allowlist correct if the policy list ever grows). Every OTHER
+ * policy exclusion (binaries, archives, secret-bearing containers like
+ * .db/.sqlite/.dat/.bin/.lock/.log) keeps skippedFiles accounting ONLY —
+ * it never counts toward policy_skipped_files, so a batch made up solely
+ * of such files still trips the zero-coverage fail-closed arm instead of
+ * passing vacuously (swarm-pr-review run 20260923-pr2940, SEC-1).
+ */
+const DOCS_SAFE_EXCLUDE_EXTENSIONS = new Set([
+	'.md',
+	'.markdown',
+	'.mdx',
+]) as Set<string>;
+
 // ============ Secret Detection Patterns ============
 interface SecretPattern {
 	type: SecretType;
@@ -1661,18 +1681,25 @@ export async function runSecretscanOnFiles(
 
 			const ext = path.extname(resolvedPath).toLowerCase();
 			if (DEFAULT_EXCLUDE_EXTENSIONS.has(ext)) {
-				// #2918: the ONLY policy_skipped_files increment site. This is the
-				// single "skipped-without-incomplete" route left after the missing/
-				// invalid_entry tightening, so an all-policy-skipped batch with zero
-				// findings and zero incomplete coverage is provably vacuous.
+				// #2918: the ONLY policy_skipped_files increment site — and only
+				// for DOCS-SAFE extensions. Non-docs policy exclusions
+				// (.db/.log/.lock/binaries/archives) increment skippedFiles ONLY,
+				// so a batch made up solely of such files keeps
+				// policy_skipped_files < requested_files and the zero-coverage
+				// arm still fails it (SEC-1, review run 20260923-pr2940): an
+				// all-policy-skipped batch with zero findings and zero
+				// incomplete coverage is provably vacuous ONLY when every
+				// skipped file was docs-safe.
 				skippedFiles++;
-				policySkippedFiles++;
+				if (DOCS_SAFE_EXCLUDE_EXTENSIONS.has(ext)) {
+					policySkippedFiles++;
+				}
 				continue;
 			}
 
 			let scanPath = resolvedPath;
 			try {
-				scanPath = fs.realpathSync(resolvedPath);
+				scanPath = _internals.realpathSync(resolvedPath);
 			} catch (error) {
 				const err = error as NodeJS.ErrnoException;
 				if (err.code === 'ENOENT') {
@@ -1786,6 +1813,7 @@ export const _internals: {
 	readFileChunk: typeof fs.readSync;
 	closeFile: typeof fs.closeSync;
 	lstatFile: (path: fs.PathLike) => fs.BigIntStats;
+	realpathSync: (path: fs.PathLike) => string;
 	closeDirectory: (directory: fs.Dir) => void;
 } = {
 	secretscan,
@@ -1799,5 +1827,6 @@ export const _internals: {
 	readFileChunk: fs.readSync,
 	closeFile: fs.closeSync,
 	lstatFile: (path) => fs.lstatSync(path, { bigint: true }),
+	realpathSync: (path) => fs.realpathSync(path),
 	closeDirectory: (directory) => directory.closeSync(),
 } as const;
