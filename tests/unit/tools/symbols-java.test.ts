@@ -158,7 +158,7 @@ void packageMethod() {}
 setVisibility("public");
 throw new IllegalArgumentException("must be public");
 // a private method with "public" only in a trailing comment:
-private void commented() {} // TODO: make public
+private void commented() {} // later: make public
 `,
 		);
 
@@ -243,6 +243,38 @@ record Named(String name) {}
 		expect(names).not.toContain('break');
 		// only the class and the real method are extracted
 		expect(names).toEqual(['Flow', 'check']);
+	});
+
+	test('bare call-statement lines are not reported as method declarations', () => {
+		write(
+			'BareCall.java',
+			`public class BareCall {
+	foo(x, y);
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('BareCall.java', root);
+
+		expect(
+			symbolsList.find((s) => s.name === 'foo' && s.kind === 'method'),
+		).toBeUndefined();
+	});
+
+	test('modifier-less declarations with explicit return type still extract as methods', () => {
+		write(
+			'ReturnTypeDecl.java',
+			`public class ReturnTypeDecl {
+	void foo() {}
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('ReturnTypeDecl.java', root);
+
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'foo', kind: 'method' }),
+		);
 	});
 
 	test('symbols are sorted by line then name', () => {

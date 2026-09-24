@@ -1196,14 +1196,24 @@ export function extractJavaSymbols(
 			// whole line (a call-statement string or trailing comment
 			// containing "public" must not flip the flag).
 			const modifiers = method[0].slice(0, method[0].lastIndexOf(method[1]));
-			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
-			symbols.push({
-				name: method[1],
-				kind: 'method',
-				exported: visibility === 'public',
-				signature: line.trim().substring(0, 100),
-				line: i + 1,
-			});
+			// A bare call statement (e.g. `foo(x, y);`) matches with zero
+			// modifiers and zero preceding type tokens — the modifiers
+			// slice is then empty/whitespace-only. Only treat this as a
+			// method DECLARATION when at least one modifier or return-type
+			// token precedes the name; a real declaration always has one
+			// (a return type at minimum, `void` if nothing else).
+			if (modifiers.trim().length === 0) {
+				// Not a declaration — skip (bare call statement).
+			} else {
+				const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
+				symbols.push({
+					name: method[1],
+					kind: 'method',
+					exported: visibility === 'public',
+					signature: line.trim().substring(0, 100),
+					line: i + 1,
+				});
+			}
 		}
 	}
 
