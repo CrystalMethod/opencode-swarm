@@ -1143,6 +1143,22 @@ const JAVA_KEYWORDS = new Set([
 ]);
 
 /**
+ * Statement-leading keywords that can precede a call-shaped `name(` token
+ * without that call being a declaration (e.g. `throw new Foo(...)`, `return
+ * new Foo(...)`). These satisfy the method regex's type-token group (a bare
+ * identifier followed by whitespace) purely because they look like a type
+ * name syntactically, so a match whose modifier/type-token prefix begins
+ * with one of these must be rejected as a statement, not a declaration.
+ */
+const JAVA_STATEMENT_KEYWORDS = new Set([
+	'throw',
+	'return',
+	'new',
+	'yield',
+	'assert',
+]);
+
+/**
  * Java symbols: class/interface/enum/record declarations plus methods and
  * constructors. Best-effort regex line parsing; `exported` reflects Java
  * `public` visibility. Records map to the `class` kind (no `record` kind in
@@ -1155,6 +1171,8 @@ export function extractJavaSymbols(
 ): SymbolInfo[] {
 	const content = readValidatedSourceFile(filePath, cwd);
 	if (content === null) return [];
+
+	let lastTypeName: string | null = null;
 
 	const symbols: SymbolInfo[] = [];
 	const lines = content.split('\n');
@@ -1196,16 +1214,38 @@ export function extractJavaSymbols(
 			// whole line (a call-statement string or trailing comment
 			// containing "public" must not flip the flag).
 			const modifiers = method[0].slice(0, method[0].lastIndexOf(method[1]));
+			const trimmedModifiers = modifiers.trim();
 			// A bare call statement (e.g. `foo(x, y);`) matches with zero
 			// modifiers and zero preceding type tokens — the modifiers
-			// slice is then empty/whitespace-only. Only treat this as a
-			// method DECLARATION when at least one modifier or return-type
-			// token precedes the name; a real declaration always has one
-			// (a return type at minimum, `void` if nothing else).
-			if (modifiers.trim().length === 0) {
+			// slice is then empty/whitespace-only. A package-private
+			// constructor (e.g. `Foo() {}`) also has an empty prefix but
+			// IS a real declaration when its captured name matches the
+			// most recently seen enclosing type name.
+			const isConstructorLike =
+				trimmedModifiers.length === 0 &&
+				lastTypeName !== null &&
+				method[1] === lastTypeName;
+			// A statement invoking or referencing another symbol (`throw new
+			// Foo(...)`, `return new Foo(...)`, etc.) matches the same regex
+			// because `throw`/`return`/`new`/... satisfy the type-token
+			// group. These are never declarations, regardless of a
+			// non-empty modifier/type-token prefix — exclude them by their
+			// leading statement keyword.
+			const leadingStatementKeyword = trimmedModifiers
+				.split(/\s+/)[0]
+				?.toLowerCase();
+			const isStatementKeyword =
+				leadingStatementKeyword !== undefined &&
+				JAVA_STATEMENT_KEYWORDS.has(leadingStatementKeyword);
+			if (isStatementKeyword) {
+				// Not a declaration — skip (statement invoking/referencing
+				// another symbol, e.g. `throw new Foo(...)`).
+			} else if (trimmedModifiers.length === 0 && !isConstructorLike) {
 				// Not a declaration — skip (bare call statement).
 			} else {
-				const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
+				const visibility = modifiers.match(
+					/\b(public|protected|private)\b/,
+				)?.[1];
 				symbols.push({
 					name: method[1],
 					kind: 'method',
