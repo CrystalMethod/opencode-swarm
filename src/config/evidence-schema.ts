@@ -352,6 +352,15 @@ export const SecretscanEvidenceSchema = BaseEvidenceSchema.extend({
 	scan_directory: z.string().optional(),
 	files_scanned: z.number().int().min(0).default(0),
 	skipped_files: z.number().int().min(0).default(0),
+	/**
+	 * #2918 vacuous-coverage predicate inputs (optional and additive):
+	 * skips attributable specifically to scan-policy extension exclusion, and
+	 * the raw declared file count backing the scan. Legacy evidence without
+	 * them decodes and validates unchanged — downstream consumers treat a
+	 * missing field as non-vacuous (previous fail-closed behavior).
+	 */
+	policy_skipped_files: z.number().int().min(0).optional(),
+	requested_files: z.number().int().min(0).optional(),
 	incomplete_files: z.number().int().min(0),
 	incomplete_paths: z.array(
 		z.object({
