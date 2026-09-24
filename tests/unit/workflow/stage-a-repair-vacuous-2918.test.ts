@@ -28,7 +28,9 @@ async function writeGreenSast(): Promise<void> {
 	await saveEvidence(directory, 'sast_scan', {
 		task_id: 'sast_scan',
 		type: 'sast',
-		timestamp: new Date().toISOString(),
+		// Literal fixture timestamp: inert for these tests (settledAfterMs=null
+		// skips the staleness parse) and keeps check:test-clock clean.
+		timestamp: '2026-09-24T12:00:00.000Z',
 		agent: 'pre_check_batch',
 		verdict: 'pass',
 		summary: 'no findings',
@@ -45,7 +47,10 @@ describe('hasGreenPostSettlementPreCheck vacuous coverage (#2918 site 4)', () =>
 		await saveEvidence(directory, 'secretscan', {
 			task_id: 'secretscan',
 			type: 'secretscan',
-			timestamp: new Date().toISOString(),
+			// Literal fixture timestamp: inert for these tests (they pass
+			// settledAfterMs=null, so hasGreenPostSettlementPreCheck never
+			// parses it) and keeps check:test-clock clean of raw clock reads.
+			timestamp: '2026-09-24T12:00:00.000Z',
 			agent: 'pre_check_batch',
 			verdict: 'pass',
 			summary: 'all 1 requested file(s) skipped by secretscan scan policy',
@@ -66,7 +71,10 @@ describe('hasGreenPostSettlementPreCheck vacuous coverage (#2918 site 4)', () =>
 		await saveEvidence(directory, 'secretscan', {
 			task_id: 'secretscan',
 			type: 'secretscan',
-			timestamp: new Date().toISOString(),
+			// Literal fixture timestamp: inert for these tests (they pass
+			// settledAfterMs=null, so hasGreenPostSettlementPreCheck never
+			// parses it) and keeps check:test-clock clean of raw clock reads.
+			timestamp: '2026-09-24T12:00:00.000Z',
 			agent: 'pre_check_batch',
 			verdict: 'pass',
 			summary: 'no secrets found',
