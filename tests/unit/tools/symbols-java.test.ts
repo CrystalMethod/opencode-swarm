@@ -273,28 +273,46 @@ public void alpha() {}
 
 	test('adversarial repeated-modifier input does not hang extraction (ReDoS regression)', () => {
 		// The method-declaration modifier group is bounded to {0,6}; an
-		// unbounded star would be quadratic on repeated modifier keywords.
-		// 20000 repeats (~140KB) is in the range the original PRR report
-		// measured as a ~5.6s hang against the unbounded-star regex (at
-		// roughly 16000 repeats / 112KB) — the OLD code would fail this
-		// test's tight bound, and only the {0,6}-bounded fix passes it.
-		const adversarial = 'public '.repeat(20000) + 'void foo() {}';
-		write('Adversarial.java', adversarial);
+		// unbounded star would be quadratic on repeated modifier keywords
+		// WHEN THE OVERALL MATCH FAILS (catastrophic backtracking only
+		// triggers on a failed match, forcing the engine to retry every
+		// split of the modifier run before giving up). A matching line
+		// (ending in a real method declaration) succeeds on the FIRST
+		// greedy attempt under both the old and new regex, so it does not
+		// exercise the vulnerability — only a NON-matching line does.
+		const matching = 'public '.repeat(500) + 'void foo() {}';
+		write('AdversarialMatching.java', matching);
+
+		const matchStart = performance.now();
+		const matchingSymbols = extractJavaSymbols('AdversarialMatching.java', root);
+		const matchElapsed = performance.now() - matchStart;
+		expect(matchElapsed).toBeLessThan(1000);
+		expect(matchingSymbols).toContainEqual(
+			expect.objectContaining({ name: 'foo', kind: 'method' }),
+		);
+
+		// Non-matching adversarial case: a long run of the modifier keyword
+		// with NO trailing method declaration at all, so the method regex's
+		// modifier group can match many different split points but the
+		// required trailing name+`(` is never found — forcing the old
+		// unbounded-star regex into catastrophic backtracking. 20000
+		// repeats (~140KB) is in the range the original PRR report measured
+		// as a ~5.6s hang against the unbounded-star regex (at roughly
+		// 16000 repeats / 112KB); the {0,6}-bounded fix stays linear.
+		const nonMatching = 'public '.repeat(20000);
+		write('AdversarialNonMatching.java', nonMatching);
 
 		const start = performance.now();
-		const symbolsList = extractJavaSymbols('Adversarial.java', root);
+		const symbolsList = extractJavaSymbols('AdversarialNonMatching.java', root);
 		const elapsed = performance.now() - start;
 
 		// Extraction must complete well under a tight wall-clock bound —
-		// tight enough that the pre-fix unbounded-star regex (which the
-		// original PRR measured at ~5.6s for a similarly-sized input) would
-		// fail this assertion, while the {0,6}-bounded fix comfortably
-		// passes it.
+		// tight enough that the pre-fix unbounded-star regex would fail
+		// this assertion on the non-matching case, while the {0,6}-bounded
+		// fix comfortably passes it.
 		expect(elapsed).toBeLessThan(500);
-		// The trailing real declaration is still extracted.
-		expect(symbolsList).toContainEqual(
-			expect.objectContaining({ name: 'foo', kind: 'method' }),
-		);
+		// No method or type declaration is extracted from this input.
+		expect(symbolsList).toEqual([]);
 	});
 
 	test('legitimate multi-modifier method declarations (up to 6) still extract', () => {
