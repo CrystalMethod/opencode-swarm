@@ -190,9 +190,7 @@ private void commented() {} // later: make public
 		);
 		// a bare call statement is not a method declaration and must not be
 		// reported as a symbol at all (N-7 guard)
-		expect(
-			symbolsList.find((s) => s.name === 'setVisibility'),
-		).toBeUndefined();
+		expect(symbolsList.find((s) => s.name === 'setVisibility')).toBeUndefined();
 		// a throw-statement-shaped line must not be reported as a declaration
 		expect(
 			symbolsList.find((s) => s.name === 'IllegalArgumentException'),
