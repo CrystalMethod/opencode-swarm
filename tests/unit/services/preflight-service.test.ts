@@ -20,6 +20,7 @@ import {
 	type PreflightReport,
 	runPreflight,
 } from '../../../src/services/preflight-service';
+import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 
 const originalRunSecretscan = _internals.runSecretscan;
 
@@ -228,7 +229,7 @@ describe('Preflight Service', () => {
 		it('should show pass/fail status correctly', async () => {
 			const report: PreflightReport = {
 				id: 'test-123',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'pass',
 				checks: [
@@ -249,7 +250,7 @@ describe('Preflight Service', () => {
 		it('should show fail status correctly', async () => {
 			const report: PreflightReport = {
 				id: 'test-123',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'fail',
 				checks: [
@@ -327,9 +328,12 @@ describe('Preflight Service', () => {
 				skipVersion: true,
 			};
 
-			const startTime = Date.now();
-			const report = await runPreflight(testDir, 1, config);
-			const duration = Date.now() - startTime;
+			const { report, duration } = await withFrozenClockAsync(async () => {
+				const startTime = Date.now();
+				const report = await runPreflight(testDir, 1, config);
+				const duration = Date.now() - startTime;
+				return { report, duration };
+			});
 
 			// Should complete quickly with all checks except lint skipped
 			expect(duration).toBeLessThan(5000); // Should complete in reasonable time
@@ -541,7 +545,7 @@ describe('Preflight Service', () => {
 		it('should format error status with warning icon', () => {
 			const report: PreflightReport = {
 				id: 'test-err',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'fail',
 				checks: [
@@ -563,7 +567,7 @@ describe('Preflight Service', () => {
 		it('should format skip status with skip icon', () => {
 			const report: PreflightReport = {
 				id: 'test-skip',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'skipped',
 				checks: [
@@ -585,7 +589,7 @@ describe('Preflight Service', () => {
 		it('should handle mixed status checks', () => {
 			const report: PreflightReport = {
 				id: 'test-mixed',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 2,
 				overall: 'fail',
 				checks: [
@@ -608,7 +612,7 @@ describe('Preflight Service', () => {
 		it('should format overall skipped status correctly', () => {
 			const report: PreflightReport = {
 				id: 'test-overall-skip',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 3,
 				overall: 'skipped',
 				checks: [{ type: 'lint', status: 'skip', message: 'Skipped' }],
