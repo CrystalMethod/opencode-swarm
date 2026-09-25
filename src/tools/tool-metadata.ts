@@ -941,7 +941,7 @@ export const TOOL_METADATA = {
 	},
 	cancel_lane_batch: {
 		description:
-			'explicitly cancel ACTIVE lanes of a dispatch_lanes_async batch — the only cancellation surface; collect_lane_results cannot cancel. Destructive and authorization-gated: requires confirm: true plus a bounded reason, recorded on cancelled terminals as the distinct operator_cancelled class (never liveness). Race-safe: a fresh liveness snapshot refuses busy/retry lanes (live work is never destroyed here — human force path is /swarm abort-pr-workflow); a degraded or absent status probe refuses the whole batch fail-closed; a session the host affirmatively does not know (absent from a successful status map) or reports idle may be cancelled; a child completing between preflight and abort is preserved, never overwritten; an abort timeout never claims cancellation. Operator-cancelled dimensions are not auto-retryable and never consume the retry budget — re-dispatch explicitly.',
+			'cancel ACTIVE lanes of a dispatch_lanes_async batch — the only cancellation surface (collect_lane_results cannot cancel). Destructive and authorization-gated: requires confirm: true + a bounded reason, recorded on cancelled terminals as the distinct operator_cancelled class (never liveness; not auto-retryable, never consumes retry budget — re-dispatch explicitly). Race-safe per lane: busy/retry refused (live work is never destroyed — human force path: /swarm abort-pr-workflow); degraded/absent status probe refuses the whole batch fail-closed; idle or host-unknown sessions may be cancelled; a child completing in the race window is preserved; an abort timeout never claims cancellation.',
 		agents: ['architect'],
 	},
 	summarize_work: {

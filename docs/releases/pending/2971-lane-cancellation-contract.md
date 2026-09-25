@@ -66,3 +66,7 @@ misreported as host/provider failure.
   fold drops them from the folded view; the JSONL data stays on disk and
   becomes readable again on upgrade) — these are terminal audit rows of an
   operator action, not live workflow state.
+- The architect prompt budget ceiling rises 161,000 -> 161,500 chars
+  (`ARCHITECT_PROMPT_BUDGET_CHARS`, docs/configuration.md updated): the new
+  cancel_lane_batch controller tool joins the architect render, and the
+  prefixed feature-heavy + General Council cell measured 161,277 chars.
