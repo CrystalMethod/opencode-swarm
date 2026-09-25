@@ -13009,7 +13009,7 @@ export async function completePrWorkflow(
 					// operator-visible receipt and must still fire.
 				}
 				throw new Error(
-					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async, or record an operator-confirmed abandonment via cancel_lane_batch (confirm: true + reason) or the human force path (/swarm abort-pr-workflow) to complete truthfully.`,
+					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async to consume the retry budget, or end the workflow through the human force path (/swarm abort-pr-workflow). If lanes are still live at an earlier stage, settle them explicitly first — cancel_lane_batch (confirm: true + reason) refuses busy/retry lanes, so live work is never destroyed on the model path.`,
 				);
 			}
 		}
@@ -14002,6 +14002,10 @@ function containsProtectedWorkflowPath(value: string): boolean {
 
 const PR_WORKFLOW_SHARED_CONTROLLER_TOOLS = new Set([
 	'abort_pr_workflow',
+	// Issue #2971: the authorized cancellation surface is a controller tool —
+	// it must stay reachable during an active PR_REVIEW/PR_FEEDBACK gate (the
+	// read-only name classifier would otherwise reject the 'cancel' token).
+	'cancel_lane_batch',
 	'collect_lane_results',
 	'complete_pr_workflow',
 	'dispatch_lanes_async',

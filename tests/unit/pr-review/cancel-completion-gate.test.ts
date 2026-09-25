@@ -343,7 +343,12 @@ describe('PR_REVIEW completion retryable-remainder gate + operator_cancelled adm
 		expect(message).toMatch(/refused while eligible retryable work remains/);
 		expect(message).toContain(missingDimension);
 		expect(message).toContain('Retry budget');
-		expect(message).toContain('cancel_lane_batch');
+		// Issue #2971 review round 1: the BLOCKED message no longer advertises
+		// cancel_lane_batch as an escape HERE (it fires only after every lane is
+		// terminal, which cancel_lane_batch cannot act on) — it now points at
+		// re-dispatch and the human force path.
+		expect(message).toContain('/swarm abort-pr-workflow');
+		expect(message).toContain('dispatch_lanes_async');
 	});
 
 	test('the same shape completes once the legacy contract retry is consumed', async () => {

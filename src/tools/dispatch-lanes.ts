@@ -4042,7 +4042,7 @@ async function probeLaneStatusTypesForPass(
 }
 
 const CANCELLATION_REFUSAL_NEXT_ACTION =
-	'cancel_lane_results cannot cancel: issue cancel_lane_batch (confirm: true + reason) for an authorized cancellation';
+	'collect_lane_results cannot cancel: issue cancel_lane_batch (confirm: true + reason) for an authorized cancellation';
 
 /**
  * Issue #2971: typed refusal entries for a guidance-only cancel_pending
