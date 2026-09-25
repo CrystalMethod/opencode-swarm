@@ -19,11 +19,15 @@ export interface ResetBackupResult {
 /** How many backup directories to retain under .swarm/reset-backups/. */
 export const RESET_BACKUP_RETENTION = 5;
 
+/** Which `.swarm/` subdirectory a backup family lands under (#2946). */
+export type ResetBackupsRoot = 'reset-backups' | 'rollback-backups';
+
 /**
  * Copy the swarm-state entries a reset is about to delete into a durable,
- * timestamped directory under `.swarm/reset-backups/` BEFORE deletion, so the
- * user can recover by copying the files back. The backup directory is not part
- * of any reset deletion set, so it survives the reset.
+ * timestamped directory under `.swarm/reset-backups/` (or
+ * `.swarm/rollback-backups/` for rollback restores, #2946) BEFORE deletion,
+ * so the user can recover by copying the files back. The backup directory is
+ * not part of any reset deletion set, so it survives the reset.
  *
  * This deliberately does NOT use the git checkpoint tool: that tool excludes
  * `.swarm/` (`git add ... :!.swarm/`) — i.e. it excludes exactly the state a
@@ -32,13 +36,15 @@ export const RESET_BACKUP_RETENTION = 5;
  * non-surprising backup. (#1692)
  *
  * @param directory  project root (contains `.swarm/`)
- * @param kind       backup label prefix ('reset' | 'reset-session')
+ * @param kind       backup label prefix ('reset' | 'reset-session' | 'rollback')
  * @param relEntries entries relative to `.swarm/` to back up (files or dirs)
+ * @param opts       backups root override (rollback restores use 'rollback-backups')
  */
 export function backupSwarmStateBeforeReset(
 	directory: string,
-	kind: 'reset' | 'reset-session',
+	kind: 'reset' | 'reset-session' | 'rollback',
 	relEntries: string[],
+	opts?: { backupsRoot?: ResetBackupsRoot },
 ): ResetBackupResult {
 	const warnings: string[] = [];
 	const copied: string[] = [];
@@ -58,7 +64,7 @@ export function backupSwarmStateBeforeReset(
 
 	// Deterministic, filesystem-safe timestamp; ISO strings sort chronologically.
 	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-	const backupsRoot = path.join(swarmDir, 'reset-backups');
+	const backupsRoot = path.join(swarmDir, opts?.backupsRoot ?? 'reset-backups');
 	const backupDir = path.join(backupsRoot, `${kind}-${timestamp}`);
 
 	let backupDirCreated = false;
@@ -111,8 +117,9 @@ export function backupSwarmStateBeforeReset(
 
 /**
  * Keep only the newest RESET_BACKUP_RETENTION backup directories under
- * `.swarm/reset-backups/`, deleting older ones. Names are `<kind>-<ISO>` which
- * sort chronologically, so lexical sort descending yields newest-first.
+ * `.swarm/reset-backups/` (or the rollback root), deleting older ones. Names
+ * are `<kind>-<ISO>` which sort chronologically, so lexical sort descending
+ * yields newest-first.
  */
 function pruneOldResetBackups(backupsRoot: string, warnings: string[]): void {
 	try {
@@ -139,4 +146,73 @@ function pruneOldResetBackups(backupsRoot: string, warnings: string[]): void {
 			`failed to prune old reset backups: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
+}
+
+/**
+ * Back up the current bytes of each dirty tracked file a git-checkpoint
+ * rollback is about to destroy via `git reset --hard` (#2946). Files are
+ * copied by their REPO-RELATIVE paths into
+ * `.swarm/rollback-backups/rollback-git-<ISO>/tracked/<repo-rel-path>`, so a
+ * confirmed rollback is recoverable by copying the files back. Fail-open by
+ * contract (same as the swarm-state backup): per-entry failures are warnings.
+ */
+export function backupTrackedChangesBeforeRollback(
+	directory: string,
+	repoRelPaths: string[],
+): ResetBackupResult {
+	const warnings: string[] = [];
+	const copied: string[] = [];
+
+	const swarmDir = path.join(directory, '.swarm');
+	try {
+		const stat = fs.lstatSync(swarmDir);
+		if (stat.isSymbolicLink() || !stat.isDirectory()) {
+			return { backupDir: null, copied, warnings };
+		}
+	} catch {
+		return { backupDir: null, copied, warnings };
+	}
+
+	const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+	const backupsRoot = path.join(swarmDir, 'rollback-backups');
+	const backupDir = path.join(backupsRoot, `rollback-git-${timestamp}`);
+
+	let backupDirCreated = false;
+	const ensureBackupDir = (): void => {
+		if (!backupDirCreated) {
+			fs.mkdirSync(backupDir, { recursive: true });
+			backupDirCreated = true;
+		}
+	};
+
+	for (const rel of repoRelPaths) {
+		if (!rel) continue;
+		const src = path.join(directory, rel);
+		if (!fs.existsSync(src)) continue;
+		try {
+			ensureBackupDir();
+			const dest = path.join(backupDir, 'tracked', rel);
+			fs.mkdirSync(path.dirname(dest), { recursive: true });
+			fs.cpSync(src, dest, { recursive: true });
+			copied.push(rel);
+		} catch (err) {
+			warnings.push(
+				`failed to back up ${rel}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	if (copied.length === 0) {
+		if (backupDirCreated) {
+			try {
+				fs.rmSync(backupDir, { recursive: true, force: true });
+			} catch {
+				// best-effort
+			}
+		}
+		return { backupDir: null, copied, warnings };
+	}
+
+	pruneOldResetBackups(backupsRoot, warnings);
+	return { backupDir, copied, warnings };
 }

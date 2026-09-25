@@ -1,0 +1,23 @@
+# Validated exceptions to Check 9 (destructive-command registry enumeration,
+# scripts/check-invariants.ts, issue #2946). One entry per line:
+#   key | owner | reason
+# A key here is exempt from the two-step marker requirement. The list is
+# non-growing: a line whose key is no longer enumerated is itself a violation,
+# and adding a line is a review-visible act (the check prints the count).
+reset | swarm-core | Legacy --confirm + auto-backup contract (reset-backups) predates the destructive-purge primitive; migrating it onto the primitive is tracked in epic #2945.
+guardrail reset | guardrails | Resets in-memory guardrail filter configuration only; performs no file, branch, or swarm-state destruction.
+guardrail-explain | guardrails | Read-only explanation surface; enumerated by prose mentioning filter resets, mutates nothing.
+guardrail-reset | guardrails | Dash alias of 'guardrail reset'; resets in-memory filter configuration only.
+skill-opt | evolution | The rollback subcommand restores a prior skill-store version and is human-only with --expected-content-hash stale-base refusal; primitive migration tracked in epic #2945.
+skill-opt rollback | evolution | Human-only store-version restore guarded by --expected-content-hash; same contract as 'skill-opt'.
+harness-opt | evolution | The rollback subcommand restores a prior harness-store version under /swarm approve-write + --expected-content-hash; primitive migration tracked in epic #2945.
+concurrency | swarm-core | Prose 'reset' refers to clearing session concurrency overrides; configuration-level, no destructive mutation.
+recover | swarm-core | Prose 'post-reset' names the wedge class it repairs; recover is additive repair and never destroys work.
+turbo | swarm-core | Prose 'resets' refers to restoring the session's Turbo strategy default; in-memory session state only.
+knowledge unactionable | knowledge | Resets entry status flags; entry payloads are preserved, no deletion.
+knowledge retry-hardening | knowledge | Resets retry-hardening counters only; no knowledge entries are deleted or rewritten.
+tool:repair_gate_evidence | evidence | Rebuilds recoverable gate evidence from durable requirements and receipt-verified wedges; prose 'reset' names the sentinel-only historical path, which is refused without a receipt.
+tool:consensus_mine | knowledge | Prunes only its own previously generated consensus reports (self-scoped artifacts) and appends to the dedup ledger; no user work is destroyed.
+tool:knowledge_remove | knowledge | Deletes knowledge entries with no confirm token today; surfaced by this enumeration and tracked for two-step adoption in epic #2945.
+tool:knowledge_archive | knowledge | Quarantine/archive purge; J4 (#2950) owns its reporting contract and primitive adoption is tracked in epic #2945.
+tool:external_skill_delete | skills | Deletes external skill directories with no confirm token today; surfaced by this enumeration and tracked in epic #2945.

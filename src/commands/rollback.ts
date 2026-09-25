@@ -14,6 +14,15 @@ import { checkpoint as checkpointTool } from '../tools/checkpoint.js';
 import type { ToolResult } from '../tools/create-tool';
 import { log } from '../utils/logger';
 import { resetSwarmArtifactCache } from '../utils/swarm-artifact-cache';
+import { consumeConfirmToken, issueConfirmToken } from './destructive-purge';
+import { backupSwarmStateBeforeReset } from './reset-backup';
+import {
+	measureGitDestruction,
+	ROLLBACK_GIT_KIND,
+	ROLLBACK_PHASE_KIND,
+	swarmOverwriteCandidates,
+	trackedDirtyCandidates,
+} from './rollback-gate';
 
 /** Test-only seam for the atomic ledger re-root lifecycle transition. */
 export const _internals = {
@@ -87,17 +96,37 @@ function resolveGitCheckpoint(
 async function restoreGitCheckpoint(
 	directory: string,
 	selected: GitCheckpoint,
+	confirmToken?: string,
 ): Promise<string> {
 	const result = await checkpointTool.execute(
-		{ action: 'restore', label: selected.label },
+		confirmToken
+			? {
+					action: 'restore',
+					label: selected.label,
+					confirm_token: confirmToken,
+				}
+			: { action: 'restore', label: selected.label },
 		{ directory } as ToolContext,
 	);
 	const parsed = safeParseToolJson(result) as {
 		success?: boolean;
 		error?: string;
+		requires_confirm?: boolean;
+		preview?: string[];
+		confirm_token?: string;
+		message?: string;
 	};
 	if (!parsed) {
 		return `Error: Failed to parse checkpoint response for "${selected.label}"`;
+	}
+	if (parsed.requires_confirm && parsed.confirm_token) {
+		// The tool sink minted the token (same candidate derivation as the
+		// command layer); surface the preview instead of a bare error (#2946).
+		return [
+			...(parsed.preview ?? []),
+			'',
+			`🔐 Nothing was restored. Re-run /swarm rollback ${selected.label} --confirm=${parsed.confirm_token} (valid 15 minutes), or add --yes to confirm in one step.`,
+		].join('\n');
 	}
 	if (parsed.success !== true) {
 		return `Error: ${parsed.error || `Failed to restore checkpoint "${selected.label}"`}`;
@@ -124,6 +153,87 @@ async function restoreGitCheckpoint(
 }
 
 /**
+ * Parse /swarm rollback flags (#2946). Flags may appear anywhere in the arg
+ * list; the selector is the first non-flag element, so `--yes <label>`,
+ * `<label> --yes`, and `--confirm=<token> <label>` all parse.
+ */
+function parseRollbackArgs(args: string[]): {
+	selector: string | undefined;
+	confirmToken: string | undefined;
+	yes: boolean;
+} {
+	let selector: string | undefined;
+	let confirmToken: string | undefined;
+	let yes = false;
+	for (const arg of args) {
+		if (arg === '--yes') {
+			yes = true;
+			continue;
+		}
+		const confirmMatch = /^--confirm=(.+)$/.exec(arg);
+		if (confirmMatch) {
+			confirmToken = confirmMatch[1];
+			continue;
+		}
+		if (selector === undefined) selector = arg;
+	}
+	return { selector, confirmToken, yes };
+}
+
+/**
+ * Gate the git-checkpoint restore on the #2946 two-step contract. The
+ * candidate derivation lives in src/commands/rollback-gate.ts and is shared
+ * with the tool sink, so a token minted here is consumable at the sink.
+ */
+async function restoreGitCheckpointGated(
+	directory: string,
+	selected: GitCheckpoint,
+	flags: { confirmToken?: string; yes?: boolean },
+): Promise<string> {
+	const measurement = measureGitDestruction(directory);
+	if (measurement.kind === 'unreadable') {
+		return 'Error: cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.';
+	}
+	if (measurement.dirtyRelPaths.length === 0) {
+		// Clean tree — nothing tracked to destroy; single-call restore.
+		return restoreGitCheckpoint(directory, selected, flags.confirmToken);
+	}
+	const candidates = trackedDirtyCandidates(
+		directory,
+		measurement.dirtyRelPaths,
+	);
+	const scopeAnchor = candidates[0].path;
+	if (flags.yes) {
+		// Explicit operator consent: mint + consume in one invocation through
+		// the same primitive (still digest-bound, single-use). The tool sink
+		// consumes the fresh token.
+		const token = issueConfirmToken(scopeAnchor, directory, {
+			kind: ROLLBACK_GIT_KIND,
+			candidates,
+		});
+		return restoreGitCheckpoint(directory, selected, token);
+	}
+	if (flags.confirmToken) {
+		return restoreGitCheckpoint(directory, selected, flags.confirmToken);
+	}
+	// Bare invocation on a destructive scope: preview only, nothing restored.
+	const token = issueConfirmToken(scopeAnchor, directory, {
+		kind: ROLLBACK_GIT_KIND,
+		candidates,
+	});
+	const shown = measurement.dirtyRelPaths.slice(0, 10);
+	const overflow = measurement.dirtyRelPaths.length - shown.length;
+	return [
+		`⚠️ Restoring to checkpoint "${selected.label}" (${selected.sha.slice(0, 12)}) runs git reset --hard and would DESTROY ${candidates.length} uncommitted tracked file(s):`,
+		...shown.map((p) => `  - ${p}`),
+		...(overflow > 0 ? [`  (+${overflow} more)`] : []),
+		'',
+		'🔐 Nothing was restored. Destroyed bytes are backed up to .swarm/rollback-backups/ once confirmed.',
+		`Re-run /swarm rollback ${selected.label} --confirm=${token} (valid 15 minutes), or add --yes to confirm in one step.`,
+	].join('\n');
+}
+
+/**
  * Handle /swarm rollback command
  * Restores .swarm/ state from a checkpoint using direct overwrite
  */
@@ -131,8 +241,8 @@ export async function handleRollbackCommand(
 	directory: string,
 	args: string[],
 ): Promise<string> {
-	// Parse phase number from args[0]
-	const phaseArg = args[0];
+	// Parse phase selector + confirmation flags from args (#2946)
+	const { selector: phaseArg, confirmToken, yes } = parseRollbackArgs(args);
 
 	if (!phaseArg) {
 		// List available checkpoints
@@ -186,7 +296,10 @@ export async function handleRollbackCommand(
 		if (!selected) {
 			return `Error: Checkpoint "${phaseArg}" not found. Available checkpoints: ${gitCheckpoints.map((c) => `"${c.label}"`).join(', ') || 'none'}`;
 		}
-		return restoreGitCheckpoint(directory, selected);
+		return restoreGitCheckpointGated(directory, selected, {
+			confirmToken,
+			yes,
+		});
 	}
 
 	// Validate checkpoint exists
@@ -203,7 +316,10 @@ export async function handleRollbackCommand(
 		if (!selected) {
 			return `Error: Checkpoint ${phaseArg} not found. Available checkpoints: ${gitCheckpoints.map((c, index) => `${index + 1}="${c.label}"`).join(', ') || 'none'}`;
 		}
-		return restoreGitCheckpoint(directory, selected);
+		return restoreGitCheckpointGated(directory, selected, {
+			confirmToken,
+			yes,
+		});
 	}
 
 	let manifest: { checkpoints?: LegacyCheckpoint[] };
@@ -281,6 +397,76 @@ export async function handleRollbackCommand(
 		'plan-ledger.quarantine',
 	]);
 	const PLAN_PROJECTION_FILES = new Set(['plan.json', 'plan.md']);
+
+	// #2946 two-step gate: the copy below replaces live .swarm/ files
+	// wholesale; a destructive scope (existing live entries in the copy set)
+	// requires the preview + confirm-token contract before anything is
+	// touched. Plan projections are excluded here — they are published
+	// through the gated ledger lifecycle below — but their prior live bytes
+	// are still included in the execute-path backup.
+	const overwriteSet: string[] = [];
+	for (const file of checkpointFiles) {
+		if (EXCLUDE_FILES.has(file) || file.startsWith('plan-ledger.archived-')) {
+			continue;
+		}
+		if (checkpointPlan && PLAN_PROJECTION_FILES.has(file)) continue;
+		if (fs.existsSync(path.join(swarmDir, file))) overwriteSet.push(file);
+	}
+	let backupNote = '';
+	if (overwriteSet.length > 0) {
+		const candidates = swarmOverwriteCandidates(directory, overwriteSet);
+		const scopeAnchor = candidates[0].path;
+		if (!confirmToken && !yes) {
+			const token = issueConfirmToken(scopeAnchor, directory, {
+				kind: ROLLBACK_PHASE_KIND,
+				candidates,
+			});
+			return [
+				`⚠️ Rolling back to phase ${targetPhase} replaces ${overwriteSet.length} live .swarm/ entry/entries with checkpoint copies:`,
+				...overwriteSet.slice(0, 10).map((f) => `  - ${f}`),
+				...(overwriteSet.length > 10
+					? [`  (+${overwriteSet.length - 10} more)`]
+					: []),
+				'',
+				'🔐 Nothing was restored. The replaced bytes are backed up to .swarm/rollback-backups/ once confirmed.',
+				`Re-run /swarm rollback ${targetPhase} --confirm=${token} (valid 15 minutes), or add --yes to confirm in one step.`,
+			].join('\n');
+		}
+		// --yes mints and immediately consumes through the same primitive
+		// (single use, digest-bound); --confirm consumes the operator's token
+		// against the re-derived scope (digest mismatch = scope changed).
+		const token = yes
+			? issueConfirmToken(scopeAnchor, directory, {
+					kind: ROLLBACK_PHASE_KIND,
+					candidates,
+				})
+			: (confirmToken as string);
+		const verdict = consumeConfirmToken(scopeAnchor, directory, token, {
+			kind: ROLLBACK_PHASE_KIND,
+			candidates,
+		});
+		if (!verdict.ok) {
+			return `Error: ${verdict.reason} 🔐 Nothing was restored.`;
+		}
+		const backupEntries = [...overwriteSet];
+		for (const file of PLAN_PROJECTION_FILES) {
+			if (
+				!backupEntries.includes(file) &&
+				fs.existsSync(path.join(swarmDir, file))
+			) {
+				backupEntries.push(file);
+			}
+		}
+		const backup = backupSwarmStateBeforeReset(
+			directory,
+			'rollback',
+			backupEntries,
+			{ backupsRoot: 'rollback-backups' },
+		);
+		if (backup.backupDir) {
+			backupNote = `; replaced bytes backed up to ${path.relative(directory, backup.backupDir)}`;
+		}
+	}
 
 	const successes: string[] = [];
 	const failures: { file: string; error: string }[] = [];
@@ -450,8 +636,8 @@ export async function handleRollbackCommand(
 		return [
 			...warnings,
 			'',
-			`Rolled back to phase ${targetPhase}: ${checkpoint.label || 'no label'}`,
+			`Rolled back to phase ${targetPhase}: ${checkpoint.label || 'no label'}${backupNote}`,
 		].join('\n');
 	}
-	return `Rolled back to phase ${targetPhase}: ${checkpoint.label || 'no label'}`;
+	return `Rolled back to phase ${targetPhase}: ${checkpoint.label || 'no label'}${backupNote}`;
 }

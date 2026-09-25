@@ -741,9 +741,9 @@ Settles stale coder-settlement WALs in .swarm/coder-settlements/ — the CODER_D
 
 Restore swarm state or project files to a checkpoint
 
-**Args:** `<phase-number|label|list-number>`
+**Args:** `<phase-number|label|list-number> [--confirm=<token>] [--yes]`
 
-Restores legacy .swarm/ phase checkpoints from checkpoints/phase-<N> when present. Otherwise restores named git checkpoints from .swarm/checkpoints.json by label or list number. Writes rollback event to events.jsonl. Without an argument, lists available checkpoints.
+Restores legacy .swarm/ phase checkpoints from checkpoints/phase-<N> when present. Otherwise restores named git checkpoints from .swarm/checkpoints.json by label or list number. SAFETY (#2946): a restore that would DESTROY work (uncommitted tracked changes on the git path, live .swarm state the legacy path would overwrite) previews the exact destruction first and issues a 15-minute single-use --confirm token; nothing is restored until you re-run with --confirm=<token>. --yes confirms in one invocation through the same token machinery. Every executing restore backs up the destroyed bytes to .swarm/rollback-backups/<timestamp>/ (newest 5 kept) so it can be recovered by copying files back. Clean trees keep the single-call behavior. Writes rollback event to events.jsonl. Without an argument, lists available checkpoints.
 
 ### `/swarm retrieve`
 
@@ -934,9 +934,9 @@ Stop sharing memory; copies the cohort memory family back to local .swarm/memory
 
 Manage project checkpoints [save|restore|delete|list] <label>
 
-**Args:** `<save|restore|delete|list> <label>`
+**Args:** `<save|restore|delete|list> <label> [--confirm=<token>] [--yes]`
 
-save: creates named git checkpoint. restore: hard-resets tracked files to the checkpoint. delete: removes named checkpoint metadata. list: shows all checkpoints with timestamps. All subcommands require a label except list.
+save: creates named git checkpoint. restore: hard-resets tracked files to the checkpoint — when uncommitted tracked work would be destroyed, restore previews first and requires --confirm=<token> (or --yes to confirm in one step); destroyed bytes are backed up to .swarm/rollback-backups/ (#2946). delete: removes named checkpoint metadata. list: shows all checkpoints with timestamps. All subcommands require a label except list.
 
 **Claude Code conflict:** name clash with `/checkpoint` — always use the full `/swarm checkpoint` form.
 

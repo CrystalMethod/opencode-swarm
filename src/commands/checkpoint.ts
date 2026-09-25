@@ -36,17 +36,36 @@ export async function handleCheckpointCommand(
 ): Promise<string> {
 	const subcommand = args[0] || 'list';
 	const label = args[1];
+	const rest = args.slice(2);
 
 	switch (subcommand) {
 		case 'save':
 			return handleSave(directory, label);
 		case 'restore':
-			return handleRestore(directory, label);
+			return handleRestore(directory, label, rest);
 		case 'delete':
 			return handleDelete(directory, label);
 		default:
 			return handleList(directory);
 	}
+}
+
+/** Extract --confirm=<token> / --yes from /swarm checkpoint restore args (#2946). */
+function parseRestoreFlags(args: string[]): {
+	confirmToken?: string;
+	yes: boolean;
+} {
+	let confirmToken: string | undefined;
+	let yes = false;
+	for (const arg of args) {
+		if (arg === '--yes') {
+			yes = true;
+			continue;
+		}
+		const match = /^--confirm=(.+)$/.exec(arg);
+		if (match) confirmToken = match[1];
+	}
+	return { confirmToken, yes };
 }
 
 async function handleSave(directory: string, label?: string): Promise<string> {
@@ -73,23 +92,61 @@ async function handleSave(directory: string, label?: string): Promise<string> {
 
 async function handleRestore(
 	directory: string,
-	label?: string,
+	label: string | undefined,
+	extraArgs: string[] = [],
 ): Promise<string> {
 	if (!label) {
 		return 'Error: Label required. Usage: `/swarm checkpoint restore <label>`';
 	}
 
+	// #2946: a destructive restore (uncommitted tracked work present) previews
+	// first and requires --confirm=<token> (or --yes) to execute. The token is
+	// minted and consumed at the checkpoint tool sink; this wrapper only
+	// passes it through and renders the preview honestly.
+	const { confirmToken, yes } = parseRestoreFlags(extraArgs);
 	try {
-		const result = await checkpoint.execute({ action: 'restore', label }, {
-			directory,
-		} as ToolContext);
-		const parsed = safeParseResult(result);
+		const result = await checkpoint.execute(
+			confirmToken
+				? { action: 'restore', label, confirm_token: confirmToken }
+				: { action: 'restore', label },
+			{ directory } as ToolContext,
+		);
+		const parsed = safeParseResult(result) as {
+			success?: boolean;
+			error?: string;
+			requires_confirm?: boolean;
+			preview?: string[];
+			confirm_token?: string;
+		};
 
+		if (parsed.requires_confirm && parsed.confirm_token) {
+			if (yes) {
+				// --yes: consume the freshly minted token at the sink in the
+				// same invocation (still digest-bound and single-use).
+				const confirmed = await checkpoint.execute(
+					{ action: 'restore', label, confirm_token: parsed.confirm_token },
+					{ directory } as ToolContext,
+				);
+				const confirmedParsed = safeParseResult(confirmed);
+				if (confirmedParsed.success) {
+					return `✓ Restored to checkpoint: "${label}" (--yes)`;
+				}
+				return `Error: ${confirmedParsed.error || 'Failed to restore checkpoint'}`;
+			}
+			// Preview invocation: surface the tool-minted token.
+			return [
+				...(parsed.preview ?? []),
+				'',
+				`🔐 Nothing was restored. Re-run /swarm checkpoint restore ${label} --confirm=${parsed.confirm_token} (valid 15 minutes), or add --yes to confirm in one step.`,
+			].join('\n');
+		}
 		if (parsed.success) {
 			return `✓ Restored to checkpoint: "${label}"`;
-		} else {
-			return `Error: ${parsed.error || 'Failed to restore checkpoint'}`;
 		}
+		if (yes && parsed.error?.includes('no pending purge')) {
+			return `Error: ${parsed.error} Re-run /swarm checkpoint restore ${label} to get a fresh preview token.`;
+		}
+		return `Error: ${parsed.error || 'Failed to restore checkpoint'}`;
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		return `Error: ${msg}`;

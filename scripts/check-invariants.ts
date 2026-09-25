@@ -975,6 +975,283 @@ export function checkRawAdvisoryPush(repoRoot: string): CheckResult {
 }
 
 
+// --- Check 9: destructive-command registry enumeration (issue #2946) ---
+
+/**
+ * Registry keys that are destructive BY NAME and must always be enumerated,
+ * regardless of what their description/details prose says — rewording a
+ * destructive command's help text can never silently leave the set (#2946).
+ * Every key here must EXIST in COMMAND_REGISTRY; a rename or removal is
+ * itself a violation (fix the seed list in the same change, deliberately).
+ */
+const DESTRUCTIVE_SEED_KEYS = [
+	'rollback',
+	'reset',
+	'reset-session',
+	'finalize',
+	'close',
+	'knowledge hive-quarantine',
+	'dataset consent',
+	'dataset withdraw',
+	'dataset export',
+] as const;
+
+const DESTRUCTIVE_EXCEPTIONS_FILE = 'scripts/destructive-command-exceptions.txt';
+
+/**
+ * Case-insensitive, word-bounded destructive vocabulary. Deliberately broad:
+ * a false positive costs one justified exception line; a false negative costs
+ * an ungated destructive command.
+ */
+const DESTRUCTIVE_VOCABULARY =
+	/\b(?:DELETES?|DESTROYS?|DESTROYED|DESTROYING|purge[sd]?|purging|reset(?:s|ting|ted)?|rollback|rollbacks|discard(?:s|ed|ing)?)\b|\bgit reset\b/i;
+
+/**
+ * Marker names that prove a handler family sits behind a two-step confirm
+ * contract: the shared #2527/#2508 primitive, or a validated equivalent token
+ * contract (dataset/training family, knowledge hive-quarantine).
+ */
+const TWO_STEP_MARKERS = [
+	'previewDestructivePurge',
+	'issueConfirmToken',
+	'consumeConfirmToken',
+	'executeDestructivePurge',
+	'recheckBeforeDestructive',
+	'issueTrainingConfirmToken',
+	'checkTrainingConfirmToken',
+	'commitHiveQuarantine',
+];
+
+interface RegistryEntrySpan {
+	key: string;
+	text: string;
+}
+
+function parseRegistryEntries(source: string): RegistryEntrySpan[] {
+	const entries: RegistryEntrySpan[] = [];
+	const keyPattern = /^\t(?:'([^']+)'|([A-Za-z0-9_-]+)):\s*\{/gm;
+	const matches = [...source.matchAll(keyPattern)];
+	for (let i = 0; i < matches.length; i += 1) {
+		const start = matches[i].index ?? 0;
+		const end =
+			i + 1 < matches.length
+				? (matches[i + 1].index ?? source.length)
+				: source.length;
+		entries.push({
+			key: matches[i][1] ?? matches[i][2],
+			text: source.slice(start, end),
+		});
+	}
+	return entries;
+}
+
+function readTextOrEmpty(file: string): string {
+	try {
+		return fs.readFileSync(file, 'utf-8');
+	} catch {
+		return '';
+	}
+}
+
+/** Resolve the entry's handler module (following `aliasOf` to the target). */
+function resolveEntryModules(
+	entry: RegistryEntrySpan,
+	registrySource: string,
+	repoRoot: string,
+): string[] {
+	const aliasMatch = /aliasOf:\s*'([^']+)'/.exec(entry.text);
+	const targetKey = aliasMatch ? aliasMatch[1] : entry.key;
+	const target =
+		parseRegistryEntries(registrySource).find((e) => e.key === targetKey) ??
+		entry;
+	const handlerMatch = /handler:[^=]*=>\s*(?:await\s+)?(handle\w+)/.exec(
+		target.text,
+	);
+	if (!handlerMatch) return [];
+	const fn = handlerMatch[1];
+	const importPattern = new RegExp(
+		`import[^;]*\\b${fn}\\b[^;]*from\\s+'([^']+)'`,
+	);
+	const importMatch = importPattern.exec(registrySource);
+	if (!importMatch) return [];
+	const specifier = importMatch[1];
+	if (!specifier.startsWith('.')) return [];
+	const resolved = path.resolve(
+		path.join(repoRoot, 'src', 'commands'),
+		specifier.replace(/\.js$/, '.ts'),
+	);
+	return [resolved];
+}
+
+/**
+ * Bounded transitive walk over LOCAL relative imports (depth <= 3), returning
+ * the concatenated source text of the module and its local import tree.
+ */
+function collectModuleTree(entryModules: string[]): string {
+	const seen = new Set<string>();
+	let frontier = entryModules.filter((m) => fs.existsSync(m));
+	let text = '';
+	for (let depth = 0; depth < 3 && frontier.length > 0; depth += 1) {
+		const next: string[] = [];
+		for (const file of frontier) {
+			if (seen.has(file)) continue;
+			seen.add(file);
+			const source = readTextOrEmpty(file);
+			text += `\n${source}`;
+			for (const spec of source.matchAll(/from\s+'(\.[^']+)'/g)) {
+				const resolved = path.resolve(
+					path.dirname(file),
+					spec[1].replace(/\.js$/, '.ts'),
+				);
+				if (fs.existsSync(resolved)) next.push(resolved);
+			}
+		}
+		frontier = next;
+	}
+	return text;
+}
+
+export function checkDestructiveCommandRegistry(repoRoot: string): CheckResult {
+	const messages = [
+		'=== Check 9: destructive commands adopt the two-step confirm contract (issue #2946) ===',
+	];
+	let violations = 0;
+
+	const registryRel = 'src/commands/registry.ts';
+	const registrySource = readTextOrEmpty(path.join(repoRoot, registryRel));
+	if (registrySource === '') {
+		messages.push(`ERROR: ${registryRel} not found or unreadable.`);
+		return { messages, violations: 1 };
+	}
+	const entries = parseRegistryEntries(registrySource);
+	const entryKeys = new Set(entries.map((e) => e.key));
+
+	// Enumerated set = vocabulary-flagged keys UNION the name-pinned seed list.
+	const flagged = entries.filter((e) => DESTRUCTIVE_VOCABULARY.test(e.text));
+	const enumerated = new Map<string, RegistryEntrySpan>();
+	for (const e of flagged) enumerated.set(e.key, e);
+	for (const seed of DESTRUCTIVE_SEED_KEYS) {
+		if (!entryKeys.has(seed)) {
+			messages.push(
+				`ERROR: seed key '${seed}' is missing from COMMAND_REGISTRY — destructive commands cannot be renamed out of the enumeration without updating the seed list deliberately.`,
+			);
+			violations += 1;
+			continue;
+		}
+		const entry = entries.find((e) => e.key === seed);
+		if (entry) enumerated.set(seed, entry);
+	}
+
+	// Exceptions: `key | owner | reason` lines (# comments allowed).
+	const exceptionsRel = DESTRUCTIVE_EXCEPTIONS_FILE;
+	const exceptionsFile = path.join(repoRoot, ...exceptionsRel.split('/'));
+	const exceptionOwners = new Map<string, { owner: string; reason: string }>();
+	if (!fs.existsSync(exceptionsFile)) {
+		messages.push(
+			`ERROR: ${exceptionsRel} not found — the validated exception list is required.`,
+		);
+		violations += 1;
+	} else {
+		const lines = readTextOrEmpty(exceptionsFile).split(/\r?\n/);
+		for (const raw of lines) {
+			const line = raw.trim();
+			if (line === '' || line.startsWith('#')) continue;
+			const parts = line.split('|').map((p) => p.trim());
+			if (
+				parts.length !== 3 ||
+				parts[0] === '' ||
+				parts[1] === '' ||
+				parts[2] === ''
+			) {
+				messages.push(
+					`ERROR: malformed exception line (expected 'key | owner | reason'): ${JSON.stringify(line)}`,
+				);
+				violations += 1;
+				continue;
+			}
+			exceptionOwners.set(parts[0], { owner: parts[1], reason: parts[2] });
+		}
+	}
+
+	// Every enumerated key needs marker coverage or a validated exception.
+	let exceptionCount = 0;
+	const enumeratedToolKeys = new Set<string>();
+	for (const [key, entry] of enumerated) {
+		const exception = exceptionOwners.get(key);
+		if (exception) {
+			exceptionCount += 1;
+			continue;
+		}
+		const modules = resolveEntryModules(entry, registrySource, repoRoot);
+		const treeText = collectModuleTree(modules);
+		const covered = TWO_STEP_MARKERS.some((m) => treeText.includes(m));
+		if (!covered) {
+			messages.push(
+				`ERROR: '${key}' matches the destructive vocabulary but its handler tree has no two-step contract marker — adopt the shared primitive or add a justified line to ${exceptionsRel}.`,
+			);
+			violations += 1;
+		}
+	}
+
+	// Tool registry: same rule for agent-reachable tool surfaces.
+	const toolMetadataRel = 'src/tools/tool-metadata.ts';
+	const toolSource = readTextOrEmpty(path.join(repoRoot, toolMetadataRel));
+	if (toolSource === '') {
+		messages.push(`ERROR: ${toolMetadataRel} not found or unreadable.`);
+		violations += 1;
+	} else {
+		const toolEntries = [...toolSource.matchAll(/^\t(\w+):\s*\{/gm)];
+		for (let i = 0; i < toolEntries.length; i += 1) {
+			const start = toolEntries[i].index ?? 0;
+			const end =
+				i + 1 < toolEntries.length
+					? (toolEntries[i + 1].index ?? toolSource.length)
+					: toolSource.length;
+			const key = toolEntries[i][1];
+			const span = toolSource.slice(start, end);
+			if (!DESTRUCTIVE_VOCABULARY.test(span)) continue;
+			enumeratedToolKeys.add(`tool:${key}`);
+			if (exceptionOwners.has(`tool:${key}`)) {
+				exceptionCount += 1;
+				continue;
+			}
+			const toolModule = path.join(
+				repoRoot,
+				'src',
+				'tools',
+				`${key}.ts`,
+			);
+			const treeText = fs.existsSync(toolModule)
+				? collectModuleTree([toolModule])
+				: '';
+			const covered = TWO_STEP_MARKERS.some((m) => treeText.includes(m));
+			if (!covered) {
+				messages.push(
+					`ERROR: tool '${key}' matches the destructive vocabulary but src/tools/${key}.ts has no two-step contract marker — adopt the shared primitive or add a justified 'tool:${key} | owner | reason' line to ${exceptionsRel}.`,
+				);
+				violations += 1;
+			}
+		}
+	}
+
+	// Stale exceptions keep the list non-growing: a line for a key that no
+	// longer needs it (or never existed) is a violation, not a warning. Runs
+	// AFTER the tool scan so tool: keys are known.
+	for (const key of exceptionOwners.keys()) {
+		if (!enumerated.has(key) && !enumeratedToolKeys.has(key)) {
+			messages.push(
+				`ERROR: stale exception for '${key}' — the key is not in the enumerated destructive set; remove the line.`,
+			);
+			violations += 1;
+		}
+	}
+
+	messages.push(
+		`Destructive registry enumeration: ${enumerated.size} command key(s), ${exceptionCount} exception line(s) in use.`,
+	);
+	return { messages, violations };
+}
+
 /**
  * Check 8 (issue #2577): the family-migration engines' DESTINATION lock
  * acquisition must fail closed. A catch that swallows the acquisition failure
@@ -1227,6 +1504,7 @@ export async function main(startDir: string = process.cwd()): Promise<number> {
 		},
 		checkQuarantineMetadata(repoRoot),
 		checkMigrationLockAdmission(repoRoot),
+		checkDestructiveCommandRegistry(repoRoot),
 	];
 
 	for (const output of outputs) {
@@ -1252,7 +1530,10 @@ export async function main(startDir: string = process.cwd()): Promise<number> {
 		'            7 (quarantine OWNER/EXPIRY metadata) |',
 	);
 	console.log(
-		'            8 (family-migration destination lock admission)',
+		'            8 (family-migration destination lock admission) |',
+	);
+	console.log(
+		'            9 (destructive-command registry enumeration, #2946)',
 	);
 	if (violations > 0) {
 		console.log(`${violations} invariant violation(s) found.`);
