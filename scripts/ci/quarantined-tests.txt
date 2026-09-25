@@ -29,13 +29,13 @@
 # then pass on retry when the runner has settled. The temp dir per test is
 # also mkdtempSync/rmSync'd. Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
-# OWNER: zaxbysauce — issue #2740 (ubuntu-latest merge-group retry-flake,
-#   run 34726206593 `unit (ubuntu-latest, 2)`; attempts 1+2 failed, passed on
-#   retry 2; no per-OS ledger exists for ubuntu so this uses the general one,
-#   matching the #2368 dispatch-lanes precedent)
-# EXPIRY: 2026-10-14 — root-fix the 500ms wall-clock budget (e.g. freeze the
-#   clock or widen the margin) or renew with an updated criterion. After
-#   EXPIRY, Check 7 warns for 14 days, then hard-fails on day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2740, block history above)
+# EXPIRY: 2026-11-18 — retire when the 500ms wall-clock budget of the slow
+#   event-handler case is root-fixed without freezing its real setTimeout
+#   (the test-stability runbook forbids freezeClock for deadline waits) and
+#   the file passes on ubuntu-latest merge-group runs (#2973 cohort row 11).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/services/evidence-summary-adversarial.test.ts
 
 # tests/unit/telemetry/init-rehome.test.ts (issue #2660)
@@ -65,12 +65,12 @@ tests/unit/services/evidence-summary-adversarial.test.ts
 # assertion text exists to drive a root-cause fix. Pre-existing, unrelated
 # to any specific PR.
 # Quarantined per issue #2660; tracked under #1782 (test-stability sprint).
-# OWNER: zaxbysauce — issue #2660 (ubuntu-only merge-group coverage-shard
-#   flake; general-ledger target because run-coverage-gate.sh never
-#   branches per-OS)
-# EXPIRY: 2026-10-15 — root-fix the coverage/isolate retry-flake or renew
-#   with an updated criterion. Check 7 is silent until EXPIRY passes,
-#   then warns for 14 days and hard-fails on day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2660, block history above)
+# EXPIRY: 2026-11-18 — retire when the coverage/isolate retry-flake is
+#   root-fixed or three consecutive coverage-gate runs execute the file green
+#   (#2973 cohort row 12).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-15.
 tests/unit/telemetry/init-rehome.test.ts
 #
 # pr-workflow-gate-batch-gc.test.ts (issue #2761) — CORE-TREE
@@ -105,16 +105,11 @@ tests/unit/telemetry/init-rehome.test.ts
 # quarantined-tests-{macos,windows}.txt. Pre-existing, unrelated to any
 # specific PR. Quarantined per issue #2761; tracked under #1737 (test
 # quarantine debt) pending a dedicated test-stability sprint (#1782).
-# OWNER: @zaxbysauce — issue #2761 (CORE-TREE entry: tests/unit/hooks/** per
-#   rule C of scripts/ci/detect-and-quarantine-flakes.sh; flaky-by-construction
-#   per the file's own header comment; cross-OS timing sensitivity routes to
-#   general ledger; see merge-group run 34797415390 + flake-annotations
-#   artifact 10331335105)
-# EXPIRY: 2026-10-16 — either (a) shorten the suite's per-test work
-#   (e.g. shrink MAX_WORKFLOW_BATCHES for these tests via test-only override,
-#   or pre-seed minimal fixtures so the full-cap loop is unnecessary), or
-#   (b) raise the per-test timeout floor used by merge_group windows-latest /
-#   ubuntu-latest cold-FS shards from 60s to 120s; root-fix the test's
-#   inherent slowness, or renew with an updated diagnosis under
-#   #1737/#2477
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2761, block history above)
+# EXPIRY: 2026-11-18 — retire when the suite's inherent slowness is root-fixed
+#   (shrink per-test work via a MAX_WORKFLOW_BATCHES test-only override or
+#   pre-seeded minimal fixtures, or raise the cold-shard per-test timeout
+#   floor) and the file passes on merge-group shards (#2973 cohort row 13).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-16.
 tests/unit/hooks/pr-workflow-gate-batch-gc.test.ts
