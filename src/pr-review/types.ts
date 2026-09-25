@@ -164,7 +164,8 @@ export interface PrReviewCriticSettledReceipt {
  * whose production authority lives at a richer executor boundary — transcript
  * downgrade protection (`validateExactStructuredReceiptCoverage`), provider
  * terminal evidence classification (`classifyPrReviewCircuitSignal`),
- * operator lane cancellation (`collectOnce` cancel_pending), publication
+ * operator lane cancellation (`cancel_lane_batch`, issue #2971; the
+ * collector's `cancel_pending` is observation-only guidance), publication
  * arming/settlement (`completePrWorkflow`), and reviewer re-entry consumption
  * (`reservePrReviewReentryAuthorizationAgainstBinding`) — are deliberately
  * RETIRED from this union rather than declared without a dispatch site.

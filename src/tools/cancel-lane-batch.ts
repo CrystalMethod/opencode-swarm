@@ -31,6 +31,7 @@ import {
 	findByCorrelationIdDetailed,
 } from '../background/pending-delegations';
 import { swarmState } from '../state';
+import { stripControlCharacters } from '../utils/sanitize-display';
 import { createSwarmTool } from './create-tool';
 import type { SessionOps } from './dispatch-lanes';
 
@@ -79,6 +80,7 @@ export interface CancelLaneBatchResult {
 		| 'invalid_args'
 		| 'not_found'
 		| 'no_client'
+		| 'probe_degraded'
 		| 'store_unreadable';
 	message?: string;
 	batch_id: string;
@@ -236,7 +238,10 @@ export async function executeCancelLaneBatch(
 			errors: [],
 		};
 	}
-	const { batch_id, reason, lanes } = parsed.data;
+	// Review PRR-012: the reason is operator-authored but flows into durable
+	// audit surfaces — strip control characters before any persistence.
+	const { batch_id, lanes } = parsed.data;
+	const reason = stripControlCharacters(parsed.data.reason);
 	const batchFilter = context.sessionID
 		? { parentSessionId: context.sessionID }
 		: undefined;
@@ -309,17 +314,15 @@ export async function executeCancelLaneBatch(
 	}
 
 	const probe = await probeBatchStatus(session, directory);
+	if (probe.kind === 'degraded') {
+		result.success = false;
+		result.failure_class = 'probe_degraded';
+		result.message = `cancel_lane_batch refused: liveness probe degraded (${probe.reason}); no lane was aborted or settled; ${DEGRADED_NEXT_ACTION}`;
+		return result;
+	}
 	const totalDeadline = _internals.now() + _internals.totalBudgetMs;
 	for (const record of activeRecords) {
 		const laneId = record.laneId ?? record.correlationId;
-		if (probe.kind === 'degraded') {
-			result.refused.push({
-				lane_id: laneId,
-				degraded_reason: probe.reason,
-				next_action: DEGRADED_NEXT_ACTION,
-			});
-			continue;
-		}
 		const sessionEntry = record.subagentSessionId
 			? probe.map[record.subagentSessionId]
 			: undefined;
@@ -399,6 +402,14 @@ export async function executeCancelLaneBatch(
 			);
 			continue;
 		}
+		if (abortOutcome === 'error') {
+			// Review PRR-014: an ordinary abort error still settles cancelled
+			// (best-effort), but the caller gets a structured signal that the
+			// host abort itself did not succeed.
+			result.errors.push(
+				`session.abort for lane session "${current.subagentSessionId}" failed; lane settled cancelled via the exactly-once claim`,
+			);
+		}
 
 		// Post-abort re-read: a child that completed in the race window wins.
 		const afterRead = findByCorrelationIdDetailed(
@@ -446,10 +457,14 @@ export async function executeCancelLaneBatch(
 		}
 	}
 
+	// Review PRR-003: surface the budget-skipped population in the message so
+	// a partial cancel is visible without inspecting errors[].
+	const skipped = result.errors.length;
+	const tail = skipped > 0 ? `; ${skipped} not processed (see errors[])` : '';
 	result.message =
 		result.cancelled > 0
-			? `cancel_lane_batch: ${result.cancelled} lane(s) cancelled (operator_cancelled); ${result.refused.length} refused; ${result.preserved_completions.length} preserved completions`
-			: `cancel_lane_batch: no lanes cancelled; ${result.refused.length} refused, ${result.already_settled.length} already settled, ${result.preserved_completions.length} preserved completions`;
+			? `cancel_lane_batch: ${result.cancelled} lane(s) cancelled (operator_cancelled); ${result.refused.length} refused; ${result.preserved_completions.length} preserved completions${tail}`
+			: `cancel_lane_batch: no lanes cancelled; ${result.refused.length} refused, ${result.already_settled.length} already settled, ${result.preserved_completions.length} preserved completions${tail}`;
 	return result;
 }
 

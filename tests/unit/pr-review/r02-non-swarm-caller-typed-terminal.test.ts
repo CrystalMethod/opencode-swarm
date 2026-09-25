@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { CANDIDATE_HEADERS } from '../../../src/background/candidate-contract.js';
+import { settleDelegationTerminal } from '../../../src/background/delegation-lifecycle.js';
 import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
 import {
 	claimTerminalResult,
@@ -331,17 +333,54 @@ describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
 			await submitOne(record);
 			await finishLane(record);
 		}
-		const cancelled = await tool('collect_lane_results', {
-			batch_id: 'r02-base-ok',
-			cancel_pending: true,
-			timeout_ms: 5_000,
-		});
-		expect(cancelled).toMatchObject({ success: false, cancelled: 1 });
+		// #2971: collect_lane_results is observation-only — cancel_pending is
+		// answered with typed refusal guidance and nothing is settled. The dead
+		// lane then settles through the production typed-terminal writer with
+		// the same liveness shape the presumed-stale sweep writes, which is the
+		// shape the #2615 admission below consumes.
+		const cancelled = JSON.parse(
+			await plugin.tool.collect_lane_results.execute(
+				{
+					batch_id: 'r02-base-ok',
+					cancel_pending: true,
+					timeout_ms: 5_000,
+				},
+				{ directory, sessionID: SESSION_ID },
+			),
+		) as {
+			success: boolean;
+			cancelled: number;
+			cancellation_refused?: unknown[];
+		};
+		expect(cancelled.success).toBe(false);
+		expect(cancelled.cancelled).toBe(0);
+		expect(cancelled.cancellation_refused).toHaveLength(1);
+		const deadRecord = findByBatchId(directory, 'r02-base-ok', SESSION_ID).find(
+			(record) => record.workflowLane === deadDimension,
+		)!;
+		const settledOutcome = await settleDelegationTerminal(
+			directory,
+			deadRecord,
+			{
+				status: 'cancelled',
+				result: {
+					error: 'lane presumed stale without an observed host terminal event',
+					chars: 0,
+					truncated: false,
+					digest: createHash('sha256').update('').digest('hex'),
+					workflowLaneFailureClass: 'liveness',
+				},
+			},
+			{},
+		);
+		expect(settledOutcome.kind).toBe('claimed');
 		const settled = findByBatchId(directory, 'r02-base-ok', SESSION_ID).find(
 			(record) => record.workflowLane === deadDimension,
 		)!;
 		expect(settled.status).toBe('cancelled');
-		expect(settled.result?.workflowLaneFailureClass).toBe('liveness');
+		expect(settled.terminalResult?.result?.workflowLaneFailureClass).toBe(
+			'liveness',
+		);
 		expect(
 			findByCorrelationId(directory, settled.subagentSessionId)?.result
 				?.workflowLaneFailureClass,

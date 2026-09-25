@@ -98,7 +98,10 @@ function incompleteEnvelope(): PrReviewLaneResultEnvelope {
 		unresolved: [
 			{
 				workflowLane: DIMENSION,
-				reason: 'NOT_EXECUTED',
+				// #2971: NOT_EXECUTED derives the retryable 'contract' class, which the
+				// completion gate now refuses while legacy retry budget remains. This
+				// dead-lane disclosure shape uses the non-retryable legacy class.
+				reason: 'RESOURCE_LIMIT',
 				detail:
 					'Child died before submitting; the architect parent records the truthful unresolved-terminal state.',
 			},

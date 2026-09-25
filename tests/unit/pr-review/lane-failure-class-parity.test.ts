@@ -28,17 +28,19 @@ import {
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 /**
- * Vocabulary mirror: the `satisfies Record<...>` forces this key set to be
- * EXACT — adding a `BackgroundDelegationWorkflowLaneFailureClass` member
- * without extending this map breaks compilation, and the source-anchor test
- * below then fails until a `workflowLaneFailureClass: '<member>'` producer
- * exists. A declared-but-unproduced member can no longer slip in silently
- * (the 'deadline' gap of #2381).
+ * Vocabulary mirror: this key set must be EXACT against the union. Note the
+ * `satisfies` check does NOT compile-guard it (tsconfig excludes tests/), so
+ * the source-anchor test below is the real enforcement: every member needs a
+ * `workflowLaneFailureClass: '<member>'` producer. A declared-but-unproduced
+ * member can no longer slip in silently (the 'deadline' gap of #2381).
  */
 const FAILURE_CLASS_MEMBERS = {
 	contract: 'contract',
 	resource: 'resource',
 	liveness: 'liveness',
+	// Issue #2971: explicit operator cancellation (cancel_lane_batch / the
+	// /swarm abort-pr-workflow force override) — never host liveness.
+	operator_cancelled: 'operator_cancelled',
 } as const satisfies Record<
 	BackgroundDelegationWorkflowLaneFailureClass,
 	string

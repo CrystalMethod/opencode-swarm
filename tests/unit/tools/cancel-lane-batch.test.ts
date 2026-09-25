@@ -139,6 +139,37 @@ describe('cancel_lane_batch (issue #2971)', () => {
 		}
 	});
 
+	test('a mixed busy+idle batch partitions per lane: only the idle lane aborts', async () => {
+		const busy = await seedPendingLane('batch-mixed', 'busy');
+		const idle = await seedPendingLane('batch-mixed', 'idle');
+		const { ops, abort } = scriptHost({
+			[busy.correlationId]: { type: 'busy' },
+			[idle.correlationId]: { type: 'idle' },
+		});
+		_internals.getSessionOps = () => ops;
+		const result = await executeCancelLaneBatch(
+			confirmedArgs('batch-mixed'),
+			dir,
+		);
+		expect(result.success).toBe(true);
+		expect(result.cancelled).toBe(1);
+		expect(result.refused).toHaveLength(1);
+		expect(result.refused[0]?.lane_id).toBe(busy.laneId);
+		expect(result.refused[0]?.host_status).toBe('busy');
+		expect(abort).toHaveBeenCalledTimes(1);
+		expect((abort.mock.calls[0]?.[0] as { path: { id: string } }).path.id).toBe(
+			idle.correlationId,
+		);
+		const records = findByBatchId(dir, 'batch-mixed');
+		const busyRecord = records.find((entry) => entry.laneId === busy.laneId);
+		const idleRecord = records.find((entry) => entry.laneId === idle.laneId);
+		expect(busyRecord?.status).toBe('pending');
+		expect(idleRecord?.status).toBe('cancelled');
+		expect(idleRecord?.terminalResult?.result?.workflowLaneFailureClass).toBe(
+			'operator_cancelled',
+		);
+	});
+
 	test('an idle lane cancels exactly once with the operator_cancelled class', async () => {
 		const lane = await seedPendingLane('batch-idle', '1');
 		const { ops, abort } = scriptHost({
@@ -233,10 +264,15 @@ describe('cancel_lane_batch (issue #2971)', () => {
 			const { ops, abort } = testCase.host();
 			_internals.getSessionOps = () => ops;
 			const result = await executeCancelLaneBatch(confirmedArgs(batchId), dir);
+			// ra-2-1: a degraded preflight refuses the whole batch — a request NOT
+			// fulfilled, so it reports success=false with a typed failure class
+			// instead of a success-shaped per-lane refusal list.
+			expect(result.success).toBe(false);
+			expect(result.failure_class).toBe('probe_degraded');
+			expect(result.message).toContain(testCase.reason);
+			expect(result.message).toContain('no lane was aborted or settled');
 			expect(result.cancelled).toBe(0);
-			expect(result.refused).toHaveLength(1);
-			expect(result.refused[0]?.degraded_reason).toBe(testCase.reason);
-			expect(result.refused[0]?.next_action).toContain('observer degraded');
+			expect(result.refused).toHaveLength(0);
 			expect(abort).not.toHaveBeenCalled();
 			expect(findByBatchId(dir, batchId)[0]?.status).toBe('pending');
 		}

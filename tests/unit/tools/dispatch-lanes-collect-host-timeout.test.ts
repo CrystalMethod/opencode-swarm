@@ -489,6 +489,7 @@ describe('collect_lane_results host-call deadline', () => {
 		// contract lives on cancel_lane_batch: a hung session.abort under a
 		// CONFIRMED cancellation must never claim cancellation — the lane is
 		// left pending and the abort timeout is reported in errors[].
+		const realAbortBudgetMs = cancelInternals.abortBudgetMs;
 		cancelInternals.abortBudgetMs = 25;
 		const realCancelOps = cancelInternals.getSessionOps;
 		cancelInternals.getSessionOps = () =>
@@ -519,7 +520,7 @@ describe('collect_lane_results host-call deadline', () => {
 			expect(abort).toHaveBeenCalledTimes(1);
 		} finally {
 			cancelInternals.getSessionOps = realCancelOps;
-			cancelInternals.abortBudgetMs = 2_000;
+			cancelInternals.abortBudgetMs = realAbortBudgetMs;
 		}
 	});
 });

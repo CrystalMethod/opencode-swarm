@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type BigIntStats, type Dirent, readFileSync } from 'node:fs';
+import { type BigIntStats, type Dirent } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SessionStatus } from '@opencode-ai/sdk';
@@ -12948,8 +12948,12 @@ export async function completePrWorkflow(
 				`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion allows report_verdict ${allowedList}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
 			);
 		};
-		// Issue #2971: strictly-additive retryable-remainder rejection. The
-		// gate only ever BLOCKS earlier — it never removes an admissible path.
+		// Issue #2971: retryable-remainder rejection. Deliberately NOT purely
+		// additive: a legacy-policy PARTIAL/NO_COVERAGE whose unresolved dims
+		// still carry unconsumed contract retry budget was previously
+		// admissible and is now BLOCKED (issue AC8). Everything else —
+		// operator_cancelled, liveness, classless unresolved sets — keeps the
+		// existing admission path unchanged.
 		// Unresolved dimensions whose terminal class is NOT retryable
 		// (operator_cancelled, liveness, classless/armed-recovery) never
 		// trigger it, so the existing truthful INCOMPLETE/NO_COVERAGE

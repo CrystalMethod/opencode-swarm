@@ -21,7 +21,8 @@
  * client-absence / parser / stale-sweep evidence classification
  * (`classifyPrReviewCircuitSignal`), structured-receipt downgrade protection
  * (`validateExactStructuredReceiptCoverage`), operator lane cancellation
- * (`collectOnce` cancel_pending), publication arming/settlement
+ * (`cancel_lane_batch`, issue #2971; the collector's `cancel_pending` is
+ * observation-only guidance), publication arming/settlement
  * (`completePrWorkflow` + `allowedPrReviewReportVerdicts`), and reviewer
  * re-entry consumption (`reservePrReviewReentryAuthorizationAgainstBinding` —
  * a pure reducer cannot independently observe a concurrent storage mutation).

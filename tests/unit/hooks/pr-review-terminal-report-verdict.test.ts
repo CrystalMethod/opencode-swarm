@@ -98,7 +98,7 @@ async function establishZeroCoverage(): Promise<void> {
 			batchId,
 			'swarm-pr-review:base',
 			lanes,
-			{ status: 'error', workflowLaneFailureClass: 'contract' },
+			{ status: 'cancelled', workflowLaneFailureClass: 'operator_cancelled' }, // #2971: non-retryable operator abandonment — the W5 gate would BLOCK the legacy contract shape,
 		);
 	}
 }

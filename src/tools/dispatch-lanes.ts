@@ -590,9 +590,11 @@ const DispatchLanesArgsSchema = z
  * A base dispatch cannot carry a micro trigger id and vice versa — the invalid
  * namespace must fail ARGUMENT PARSING, before a child session is created.
  * Generic (non-PR-review) modes keep the free-form lane label. Mode matching
- * uses the same raw `startsWith('swarm-pr-review:')` convention as every
- * downstream dispatch check, so the parse-time gate and the runtime gates
- * classify identical mode strings.
+ * uses the same raw `startsWith('swarm-pr-review:')` convention as the
+ * downstream namespace checks. This gate is a namespace check only — it is
+ * deliberately the looser side; stricter downstream mode-equality checks
+ * still fail closed on their own terms for a mode that parses but does not
+ * match at runtime.
  */
 const PR_REVIEW_MICRO_TRIGGER_LANE_IDS: ReadonlySet<string> = new Set(
 	PR_REVIEW_TRIGGER_DEFINITIONS.map((definition) => definition.id),

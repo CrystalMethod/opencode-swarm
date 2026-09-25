@@ -1944,7 +1944,7 @@ describe('executeDispatchLanesAsync and executeCollectLaneResults', () => {
 		expect(ops.create).toHaveBeenCalledTimes(1);
 	});
 
-	test('marks cancelled lanes as unsuccessful collection gaps', async () => {
+	test('answers cancel_pending with typed refusal guidance (observation-only, #2971)', async () => {
 		const directory = makeTempDir();
 		const ops: SessionOps = {
 			create: mock(async () => ({
@@ -1974,9 +1974,17 @@ describe('executeDispatchLanesAsync and executeCollectLaneResults', () => {
 			directory,
 		);
 
+		// #2971: the collector is observation-only — cancel_pending is answered
+		// with typed refusal guidance and nothing is aborted or settled. This
+		// harness has no messages client, so the response also carries the
+		// #2381 no_client observer diagnostic.
 		expect(result.success).toBe(false);
-		expect(result.cancelled).toBe(1);
-		expect(result.all_settled).toBe(true);
+		expect(result.cancelled).toBe(0);
+		expect(result.pending).toBe(1);
+		expect(result.cancellation_refused).toHaveLength(1);
+		expect(result.cancellation_refused?.[0]?.next_action).toContain(
+			'cancel_lane_batch',
+		);
 	});
 
 	test('sweeps stale async rows during collection and reports failure', async () => {
