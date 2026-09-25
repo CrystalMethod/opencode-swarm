@@ -2241,12 +2241,23 @@ export async function executeCollectLaneResults(
 	let pollIntervalMs = COLLECT_POLL_INTERVAL_MS;
 	let lastStatusTypes: ReadonlyMap<string, string> | null = null;
 	while (keepPolling) {
-		lastStatusTypes = await probeLaneStatusTypesForPass(
-			session,
-			directory,
-			deadline,
-			hostTimeouts,
-		);
+		// Liveness evidence is only consumed for lanes that could still be
+		// live: a pass where every record is already terminal (repeat collects
+		// served from the durable delivery cache) must spend ZERO host calls,
+		// so the batched status probe is skipped for it (wait-budget contract).
+		if (
+			records.some(
+				(record) =>
+					record.status === 'pending' || record.status === 'running',
+			)
+		) {
+			lastStatusTypes = await probeLaneStatusTypesForPass(
+				session,
+				directory,
+				deadline,
+				hostTimeouts,
+			);
+		}
 		await collectOnce(
 			session,
 			directory,
