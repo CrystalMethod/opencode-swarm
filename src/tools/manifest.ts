@@ -32,6 +32,7 @@ import { ast_grep } from './ast-grep';
 import { authorize_pr_review_reentry } from './authorize-pr-review-reentry';
 import { batch_symbols } from './batch-symbols';
 import { build_check } from './build-check';
+import { cancel_lane_batch } from './cancel-lane-batch';
 import { check_gate_status } from './check-gate-status';
 import { checkpoint } from './checkpoint';
 import { co_change_analyzer } from './co-change-analyzer';
@@ -199,6 +200,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	completion_verify: () => completion_verify,
 	complete_pr_workflow: () => complete_pr_workflow,
 	abort_pr_workflow: () => abort_pr_workflow,
+	cancel_lane_batch: () => cancel_lane_batch,
 	authorize_pr_review_reentry: () => authorize_pr_review_reentry,
 	submit_pr_review_result: () => submit_pr_review_result,
 	approve_plan_critic: () => approve_plan_critic,

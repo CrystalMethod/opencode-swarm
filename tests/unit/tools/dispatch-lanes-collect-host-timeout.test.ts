@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { findByBatchId } from '../../../src/background/pending-delegations';
+import {
+	_internals as cancelInternals,
+	executeCancelLaneBatch,
+} from '../../../src/tools/cancel-lane-batch';
 import {
 	_internals,
 	_test_exports,
@@ -362,7 +367,11 @@ describe('collect_lane_results host-call deadline', () => {
 			),
 		);
 
-		expect(status).toHaveBeenCalledTimes(2);
+		// Issue #2971: one BATCHED status probe per pass replaces the per-lane
+		// round-trip — the hung probe starves readiness for BOTH lanes (each
+		// then reads 'unknown'), and the salvage path still collects the later
+		// lane's transcript.
+		expect(status).toHaveBeenCalledTimes(1);
 		expect(messages).toHaveBeenCalledTimes(2);
 		expect(result.completed).toBe(1);
 		expect(result.pending).toBe(1);
@@ -428,7 +437,10 @@ describe('collect_lane_results host-call deadline', () => {
 			directory,
 		);
 
-		expect(status).toHaveBeenCalledTimes(8);
+		// Issue #2971: ONE batched status probe per pass (not 8 per-lane
+		// round-trips); every lane still gets exactly one bounded messages
+		// opportunity.
+		expect(status).toHaveBeenCalledTimes(1);
 		expect(messages).toHaveBeenCalledTimes(8);
 		expect(seenMessages).toEqual(
 			Array.from(
@@ -468,32 +480,46 @@ describe('collect_lane_results host-call deadline', () => {
 		expect(messages).toHaveBeenCalledTimes(1);
 	});
 
-	test('bounds a hung session.abort call without claiming cancellation', async () => {
+	test('bounds a hung session.abort call on the confirmed cancel surface without claiming cancellation (issue #2971)', async () => {
 		const directory = makeTempDir();
 		const batchId = 'hung-abort';
 		await recordPending({ directory, batchId });
 		const abort = mock(() => new Promise<never>(() => {}));
-		_internals.getSessionOps = () => ({
-			...baseOps(),
-			abort,
-			messages: mock(async () => ({ data: null })),
-		});
+		// The collector is observation-only post-#2971, so the bounded-abort
+		// contract lives on cancel_lane_batch: a hung session.abort under a
+		// CONFIRMED cancellation must never claim cancellation — the lane is
+		// left pending and the abort timeout is reported in errors[].
+		cancelInternals.abortBudgetMs = 25;
+		const realCancelOps = cancelInternals.getSessionOps;
+		cancelInternals.getSessionOps = () =>
+			({
+				...baseOps(),
+				abort,
+				status: mock(async () => ({
+					data: { [`${batchId}-session`]: { type: 'idle' } },
+					error: undefined,
+				})),
+			}) as never;
 
-		const result = await withTestDeadline(
-			executeCollectLaneResults(
-				{
-					batch_id: batchId,
-					cancel_pending: true,
-					include_pending: true,
-					timeout_ms: 25,
-				},
-				directory,
-			),
-		);
-		expect(result.cancelled).toBe(0);
-		expect(result.pending).toBe(1);
-		expect(result.message).toContain('Collection deadline exhausted');
-		expect(result.errors?.join('; ')).toContain('session.abort');
-		expect(abort).toHaveBeenCalledTimes(1);
+		try {
+			const result = await withTestDeadline(
+				executeCancelLaneBatch(
+					{
+						batch_id: batchId,
+						reason: 'hung-abort probe',
+						confirm: true,
+					},
+					directory,
+				),
+			);
+			expect(result.cancelled).toBe(0);
+			expect(result.errors.join('; ')).toContain('session.abort');
+			const record = findByBatchId(directory, batchId)[0];
+			expect(record.status).toBe('pending');
+			expect(abort).toHaveBeenCalledTimes(1);
+		} finally {
+			cancelInternals.getSessionOps = realCancelOps;
+			cancelInternals.abortBudgetMs = 2_000;
+		}
 	});
 });

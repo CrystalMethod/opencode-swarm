@@ -4015,6 +4015,13 @@ async function finalizeOverriddenProbeRetainedLanes(
 	sessionID: string,
 	correlationIds: readonly string[],
 	horizonMs: number = PR_WORKFLOW_STALE_LANE_TIMEOUT_MS,
+	/**
+	 * Issue #2971: the force override is an explicit, audited OPERATOR action,
+	 * so the lanes it finalizes carry the distinct `operator_cancelled` class
+	 * with a reason naming the force abort — never the host `liveness` class
+	 * (an operator abandonment must not masquerade as a provider failure).
+	 */
+	reason: string = '/swarm abort-pr-workflow force override',
 ): Promise<OverriddenProbeRetainedLaneOutcome> {
 	try {
 		await _test_exports.sweepStaleDelegationsAsync(
@@ -4029,6 +4036,8 @@ async function finalizeOverriddenProbeRetainedLanes(
 			{
 				statuses: PR_WORKFLOW_SWEEPABLE_LANE_STATUSES,
 				includeCorrelationIds: new Set(correlationIds),
+				failureClass: 'operator_cancelled',
+				reasonPrefix: `lane finalized by operator force abort: ${reason}`,
 			},
 		);
 	} catch {
@@ -4525,6 +4534,7 @@ export async function abortPrWorkflow(
 						options.laneLiveness?.laneLivenessWatchdog,
 						options.laneLiveness?.backgroundPendingTimeoutMs,
 					).horizonMs,
+					options.reason ?? '/swarm abort-pr-workflow force override',
 				)
 			: {
 					sessionOpenLaneIds: [],
@@ -12938,6 +12948,71 @@ export async function completePrWorkflow(
 				`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion allows report_verdict ${allowedList}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
 			);
 		};
+		// Issue #2971: strictly-additive retryable-remainder rejection. The
+		// gate only ever BLOCKS earlier — it never removes an admissible path.
+		// Unresolved dimensions whose terminal class is NOT retryable
+		// (operator_cancelled, liveness, classless/armed-recovery) never
+		// trigger it, so the existing truthful INCOMPLETE/NO_COVERAGE
+		// admissions keep working. It fires only while an ELIGIBLE retryable
+		// dimension remains AND retry budget is available, and the budget is
+		// finite and monotonically consumed, so the gate cannot livelock:
+		// every blocked attempt either leads to a re-dispatch (consuming
+		// budget) or to an explicit operator-confirmed abandonment.
+		if (settlement.kind === 'PARTIAL' || settlement.kind === 'NO_COVERAGE') {
+			const stagedPolicyEnabled =
+				state.prReviewResilience?.policy?.enabled === true;
+			const consumedLegacyContractRetry = new Set(
+				state.prReviewContractRetryDimensions ?? [],
+			);
+			const attemptsUsed = state.prReviewResilience?.attempts?.length ?? 0;
+			const maxAttempts =
+				1 +
+				(state.prReviewResilience?.policy?.maxRetryAttemptsAfterInitial ?? 0);
+			const retryableRemainder = settlement.unresolvedDimensions.filter(
+				(entry) => {
+					if (entry.failureClass === 'operator_cancelled') return false;
+					if (stagedPolicyEnabled) {
+						return (
+							entry.failureClass === 'contract' ||
+							entry.failureClass === 'resource'
+						);
+					}
+					// Legacy policy: the ONE contract-only retry per dimension
+					// is the entire budget; resource-class terminals are not
+					// auto-retryable under legacy and never block.
+					return (
+						entry.failureClass === 'contract' &&
+						!consumedLegacyContractRetry.has(entry.dimension)
+					);
+				},
+			);
+			if (retryableRemainder.length > 0 && attemptsUsed < maxAttempts) {
+				// Bounded reconciliation receipt (existing journal, no new
+				// ledger): observed remainder + budget, fail-open on write.
+				try {
+					appendCoreEventSync(directory, {
+						type: 'pr_review_completion_retryable_remainder',
+						timestamp: isoNow(),
+						sessionID: state.sessionID,
+						prHeadSha: state.prHeadSha,
+						coverageKind: settlement.kind,
+						remainingDimensions: retryableRemainder.map(
+							(entry) =>
+								`${entry.dimension}:${entry.terminalState}:${entry.failureClass ?? 'none'}`,
+						),
+						attemptsUsed,
+						maxAttempts,
+						stagedPolicyEnabled,
+					});
+				} catch {
+					// Observation only — the BLOCKED refusal below is the
+					// operator-visible receipt and must still fire.
+				}
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async, or record an operator-confirmed abandonment via cancel_lane_batch (confirm: true + reason) or the human force path (/swarm abort-pr-workflow) to complete truthfully.`,
+				);
+			}
+		}
 		dispatchCoverageFinalization(settlement);
 		if (settlement.kind === 'NO_COVERAGE') {
 			// NO_COVERAGE settles at completion (issue #2383): zero covered
