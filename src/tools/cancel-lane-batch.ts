@@ -321,9 +321,11 @@ export async function executeCancelLaneBatch(
 		return result;
 	}
 	const totalDeadline = _internals.now() + _internals.totalBudgetMs;
-	// Lanes this call does NOT carry to a terminal disposition (abort timeout,
-	// post-abort store unreadable). An ordinary abort-error lane is still
-	// settled below, so it never counts here (round-2 review F1).
+	// Lanes this call leaves pending without a terminal disposition: identity
+	// re-read store unreadable, total budget exhausted, abort timeout, and
+	// post-abort store unreadable. An ordinary abort-error lane is still
+	// settled below, so it never counts here (round-2 review F1 + critic
+	// F1-RESIDUAL).
 	let unprocessed = 0;
 	for (const record of activeRecords) {
 		const laneId = record.laneId ?? record.correlationId;
@@ -362,6 +364,7 @@ export async function executeCancelLaneBatch(
 			result.errors.push(
 				`lane ${laneId}: store unreadable (${reread.reason}); not cancelled`,
 			);
+			unprocessed += 1;
 			continue;
 		}
 		const current = reread.value;
@@ -392,6 +395,7 @@ export async function executeCancelLaneBatch(
 			result.errors.push(
 				`lane ${laneId}: cancel_lane_batch total budget exhausted before abort`,
 			);
+			unprocessed += 1;
 			continue;
 		}
 		const abortOutcome = await boundedAbort(
@@ -410,10 +414,10 @@ export async function executeCancelLaneBatch(
 		if (abortOutcome === 'error') {
 			// Review PRR-014 / round-2 F1: an ordinary abort error still gets
 			// the best-effort exactly-once settle, but errors[] reports ONLY
-			// the host-abort failure here — the settle outcome is claimed in
-			// its own list below, never pre-announced.
+			// the host-abort failure — never the outcome, which lands in the
+			// per-lane lists or, if the store turns unreadable, in errors[].
 			result.errors.push(
-				`session.abort for lane session "${current.subagentSessionId}" failed; best-effort settle still runs (outcome in cancelled/already_settled/preserved_completions)`,
+				`session.abort for lane session "${current.subagentSessionId}" failed; the best-effort exactly-once settle still runs`,
 			);
 		}
 

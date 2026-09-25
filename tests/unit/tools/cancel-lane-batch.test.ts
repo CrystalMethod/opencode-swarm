@@ -337,6 +337,35 @@ describe('cancel_lane_batch (issue #2971)', () => {
 		).toBe('operator_cancelled');
 	});
 
+	test('total-budget exhaustion counts every skipped lane as not processed (critic F1-RESIDUAL)', async () => {
+		const first = await seedPendingLane('batch-budget', '1');
+		const second = await seedPendingLane('batch-budget', '2');
+		const { ops, abort } = scriptHost({
+			[first.correlationId]: { type: 'idle' },
+			[second.correlationId]: { type: 'idle' },
+		});
+		// A zero total budget exhausts before the first abort: both idle lanes
+		// stay pending and must be reported as not processed, never cancelled.
+		const realTotalBudgetMs = _internals.totalBudgetMs;
+		_internals.totalBudgetMs = 0;
+		_internals.getSessionOps = () => ops;
+		try {
+			const result = await executeCancelLaneBatch(
+				confirmedArgs('batch-budget'),
+				dir,
+			);
+			expect(result.cancelled).toBe(0);
+			expect(abort).not.toHaveBeenCalled();
+			expect(result.errors).toHaveLength(2);
+			expect(result.message).toContain('2 not processed');
+			for (const record of findByBatchId(dir, 'batch-budget')) {
+				expect(record.status).toBe('pending');
+			}
+		} finally {
+			_internals.totalBudgetMs = realTotalBudgetMs;
+		}
+	});
+
 	test('the authorization boundary rejects malformed or unknown requests before any abort', async () => {
 		const lane = await seedPendingLane('batch-args', '1');
 		const { ops, abort } = scriptHost({
