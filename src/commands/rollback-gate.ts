@@ -64,24 +64,33 @@ export function isRealGitRepository(directory: string): boolean {
 }
 
 /**
- * Parse `git status --porcelain` output into repo-relative tracked-dirty
- * paths. Untracked ('??') entries survive `git reset --hard`; every other
- * porcelain code is tracked work the reset would discard. Renames put BOTH
- * sides at risk (#2508), so each side is listed.
+ * Parse `git status --porcelain -z` output into repo-relative tracked-dirty
+ * paths. The -z form is NUL-terminated and NEVER quotes paths (core.quotepath
+ * quoting — which mangles non-ASCII names into C-escaped octal and would
+ * silently break both the preview and the pre-restore backup — does not
+ * apply). Untracked ('??') entries survive `git reset --hard`; every other
+ * porcelain code is tracked work the reset would discard. Rename/copy records
+ * carry the ORIG_PATH as the next NUL token (#2508: both sides at risk), so
+ * each side is listed.
  */
 export function parseTrackedDirtyPaths(statusOutput: string): string[] {
 	const dirtyPaths: string[] = [];
-	for (const line of statusOutput.split('\n')) {
-		if (!line) continue;
-		if (line.startsWith('??')) continue;
-		const filePath = line.slice(3).trim().replace(/^"|"$/g, '');
+	const tokens = statusOutput.split('\0');
+	for (let i = 0; i < tokens.length; i += 1) {
+		const token = tokens[i];
+		if (token === '' || token.length < 4) continue;
+		const xy = token.slice(0, 2);
+		if (xy === '??') continue;
+		const filePath = token.slice(3);
 		if (!filePath) continue;
-		if (line.startsWith('R') && filePath.includes(' -> ')) {
-			for (const side of filePath.split(' -> ')) {
-				if (side) dirtyPaths.push(side);
-			}
-		} else {
-			dirtyPaths.push(filePath);
+		dirtyPaths.push(filePath);
+		if (
+			(xy.startsWith('R') || xy.startsWith('C')) &&
+			i + 1 < tokens.length &&
+			tokens[i + 1] !== ''
+		) {
+			dirtyPaths.push(tokens[i + 1]);
+			i += 1;
 		}
 	}
 	return dirtyPaths;
@@ -130,7 +139,7 @@ export function measureGitDestruction(
 		return { kind: 'ok', dirtyRelPaths: [] };
 	}
 	const status = _rollbackGateInternals.runGit(
-		['status', '--porcelain'],
+		['status', '--porcelain', '-z'],
 		directory,
 	);
 	if (status === null) {

@@ -194,6 +194,9 @@ async function restoreGitCheckpointGated(
 	if (measurement.kind === 'unreadable') {
 		return 'Error: cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.';
 	}
+	if (flags.yes && flags.confirmToken) {
+		return 'Error: pass either --yes or --confirm=<token>, not both.';
+	}
 	if (measurement.dirtyRelPaths.length === 0) {
 		// Clean tree — nothing tracked to destroy; single-call restore.
 		return restoreGitCheckpoint(directory, selected, flags.confirmToken);

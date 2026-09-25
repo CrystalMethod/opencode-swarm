@@ -104,6 +104,9 @@ async function handleRestore(
 	// minted and consumed at the checkpoint tool sink; this wrapper only
 	// passes it through and renders the preview honestly.
 	const { confirmToken, yes } = parseRestoreFlags(extraArgs);
+	if (yes && confirmToken) {
+		return 'Error: pass either --yes or --confirm=<token>, not both.';
+	}
 	try {
 		const result = await checkpoint.execute(
 			confirmToken

@@ -14,6 +14,13 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const fixtureDirs: string[] = [];
 
+const NUKER_SOURCE = [
+	'export async function handleNukerCommand(): Promise<string> {',
+	'\treturn "boom";',
+	'}',
+	'',
+].join('\n');
+
 function fixtureRepo(files: Record<string, string>): string {
 	const root = canonicalMkdtemp('check9-fixture-');
 	fixtureDirs.push(root);
@@ -116,6 +123,41 @@ describe('Check 9 — destructive registry enumeration (#2946)', () => {
 			),
 		).toBe(true);
 		expect(result.violations).toBeGreaterThan(0);
+	});
+
+	test('RED: an exception for a key outside the enumerated set is stale', () => {
+		const root = fixtureRepo({
+			'src/commands/registry.ts': registryWith(REAL_REGISTRY_ENTRY),
+			'src/commands/nuker.ts': NUKER_SOURCE,
+			'src/tools/tool-metadata.ts':
+				'export const TOOL_METADATA = {} as const;\n',
+			'scripts/destructive-command-exceptions.txt':
+				'nuker | fixtures | synthetic fixture entry\nghost-key | fixtures | line for a key nothing enumerates\n',
+		});
+		const result = checkDestructiveCommandRegistry(root);
+		expect(
+			result.messages.some((m) =>
+				m.includes("stale exception for 'ghost-key'"),
+			),
+		).toBe(true);
+		expect(result.violations).toBeGreaterThan(0);
+	});
+
+	test('a multiword tool with a HYPHENATED source resolves and passes via adoption (review finding 2)', () => {
+		const root = fixtureRepo({
+			'src/commands/registry.ts': registryWith(''),
+			'src/tools/tool-metadata.ts':
+				'export const TOOL_METADATA = {\n\ttool_purge: {\n\tdescription: "purges things",\n\tagents: [],\n\t},\n} as const;\n',
+			'src/tools/tool-purge.ts':
+				'import { consumeConfirmToken } from "../commands/destructive-purge.js";\nexport const toolPurge = { run: () => consumeConfirmToken("a", "b", "c", {}) };\n',
+			'scripts/destructive-command-exceptions.txt': '# none\n',
+		});
+		const result = checkDestructiveCommandRegistry(root);
+		expect(
+			result.messages.some(
+				(m) => m.includes("tool 'tool_purge'") && m.includes('two-step'),
+			),
+		).toBe(false);
 	});
 
 	test('a listed exception with owner and reason covers its key', () => {

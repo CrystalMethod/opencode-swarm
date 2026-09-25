@@ -197,6 +197,45 @@ describe('rollback two-step gate — git checkpoint path (#2946)', () => {
 		expect(sentinelFound(dir, 'BACKUP-SENTINEL-VIA-YES')).toBe(true);
 	});
 
+	test('non-ASCII filename survives the full preview → confirm → backup flow (#2946 review finding 1)', async () => {
+		const { dir, label } = await scratchRepo('café.txt');
+		const file = path.join(dir, 'café.txt');
+		fs.writeFileSync(file, 'PRÉCIEUX-CONTENU-UNICODE');
+
+		const preview = await handleRollbackCommand(dir, [label]);
+		expect(preview).toContain('--confirm=');
+		// The -z status parse must carry the verbatim name, not git's
+		// core.quotepath C-escaped form — the preview names the real file.
+		expect(preview).toContain('café.txt');
+		const token = /--confirm=([A-Za-z0-9]+)/.exec(preview)?.[1];
+
+		const out = await handleRollbackCommand(dir, [label, `--confirm=${token}`]);
+
+		expect(out).toContain('Rolled back to checkpoint');
+		expect(fs.readFileSync(file, 'utf-8')).toBe('committed-content-v1');
+		// The pre-reset bytes of the non-ASCII-named file are recoverable.
+		expect(backupDirs(dir).length).toBe(1);
+		expect(sentinelFound(dir, 'PRÉCIEUX-CONTENU-UNICODE')).toBe(true);
+	});
+
+	test('--yes together with --confirm is rejected as contradictory input', async () => {
+		const { dir, file, label } = await scratchRepo();
+		track(dir);
+		fs.writeFileSync(file, 'UNCOMMITTED-EDIT-MUST-SURVIVE');
+
+		const out = await handleRollbackCommand(dir, [
+			label,
+			'--yes',
+			'--confirm=whatever',
+		]);
+
+		expect(out).toContain('not both');
+		expect(out).not.toContain('Rolled back to checkpoint');
+		expect(fs.readFileSync(file, 'utf-8')).toBe(
+			'UNCOMMITTED-EDIT-MUST-SURVIVE',
+		);
+	});
+
 	test('unreadable git status fails closed (refuses without a clean read)', async () => {
 		const { dir, file, label } = await scratchRepo();
 		track(dir);

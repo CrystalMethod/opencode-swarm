@@ -1215,15 +1215,15 @@ export function checkDestructiveCommandRegistry(repoRoot: string): CheckResult {
 				exceptionCount += 1;
 				continue;
 			}
-			const toolModule = path.join(
-				repoRoot,
-				'src',
-				'tools',
-				`${key}.ts`,
-			);
-			const treeText = fs.existsSync(toolModule)
-				? collectModuleTree([toolModule])
-				: '';
+			// TOOL_METADATA keys are underscored; multiword tool sources are
+			// hyphenated (knowledge_remove -> knowledge-remove.ts). Resolve
+			// the first existing candidate so the "adopt the primitive" arm
+			// stays reachable for multiword tools (#2946 review finding 2).
+			const toolModule = [
+				path.join(repoRoot, 'src', 'tools', `${key}.ts`),
+				path.join(repoRoot, 'src', 'tools', `${key.replace(/_/g, '-')}.ts`),
+			].find((m) => fs.existsSync(m));
+			const treeText = toolModule ? collectModuleTree([toolModule]) : '';
 			const covered = TWO_STEP_MARKERS.some((m) => treeText.includes(m));
 			if (!covered) {
 				messages.push(
