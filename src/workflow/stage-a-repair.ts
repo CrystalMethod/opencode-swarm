@@ -139,13 +139,36 @@ export async function hasGreenPostSettlementPreCheck(
 				(last.verdict === 'pass' ||
 					last.verdict === 'approved' ||
 					last.verdict === 'info') &&
-				isSecretscanEvidence(last) &&
-				(last.incomplete_files ?? 0) === 0 &&
-				(last.files_scanned ?? 0) > 0 &&
-				(last.findings_count ?? 0) === 0
+				isSecretscanEvidence(last)
 			) {
-				sawSecretscanGreen = true;
-				continue;
+				// #2918: vacuous coverage — every requested file deliberately
+				// skipped by secretscan scan policy (extension exclusion), with
+				// zero findings and zero incomplete coverage — is green evidence
+				// for repair. Same normative predicate as every other enforcing
+				// site; evidence missing the optional policy counters is
+				// non-vacuous and keeps the previous strict bar.
+				const policySkipped = last.policy_skipped_files;
+				const requestedFiles = last.requested_files;
+				const vacuousCoverage =
+					(last.files_scanned ?? 0) === 0 &&
+					typeof policySkipped === 'number' &&
+					Number.isSafeInteger(policySkipped) &&
+					policySkipped >= 0 &&
+					typeof requestedFiles === 'number' &&
+					Number.isSafeInteger(requestedFiles) &&
+					requestedFiles > 0 &&
+					policySkipped >= requestedFiles &&
+					(last.findings_count ?? 0) === 0 &&
+					(last.incomplete_files ?? 0) === 0 &&
+					last.incomplete_paths.length === 0;
+				if (
+					(last.incomplete_files ?? 0) === 0 &&
+					((last.files_scanned ?? 0) > 0 || vacuousCoverage) &&
+					(last.findings_count ?? 0) === 0
+				) {
+					sawSecretscanGreen = true;
+					continue;
+				}
 			}
 		} else if (
 			last.verdict === 'pass' ||
