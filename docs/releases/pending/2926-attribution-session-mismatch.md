@@ -3,6 +3,8 @@ issue: 2926
 title: "Attribution fallback silently reverts to repo-wide scope diff when the checking session differs from the recording session"
 ---
 
+# Disclose the session-identity attribution fallback in the scope gate
+
 ## What changed
 
 The per-task attribution record that scopes the SCOPE WARNING (#2818 fix) is
@@ -18,13 +20,21 @@ Decided for #2926 (option 3, disclosure-first — the full option analysis and
 decision record live in `docs/engineering-invariants.md`'s historical failure
 map): the fallback itself stays, but it is never silent. `checkReviewerGateWithScope`
 now appends a `SCOPE ADVISORY:` line to the gate reason on every in-session
-scoped completion that did not use a per-task attribution record — including
-completions where the repo-wide comparison was clean (previously
-indistinguishable from an attribution-honored completion). A bounded,
-fail-open probe of the other live sessions distinguishes:
+scoped completion whose checking session has NO attribution record at all —
+including completions where the repo-wide comparison was clean (previously
+indistinguishable from an attribution-honored completion). A present-but-empty
+record (the coder delegation's own zero-file slot) is the task's legitimate
+record, not a degraded fallback, and does not disclose. A bounded,
+fail-open probe of the other live sessions (same project-identity class only)
+distinguishes:
 
 - `SCOPE ADVISORY: attribution record for task <id> exists under another session — not used for scope verification`
 - `SCOPE ADVISORY: no attribution record in this session — not used for scope verification`
+
+On successful completions the advisory additionally surfaces in the tool
+result's new `warnings` field (`UpdateTaskStatusResult.warnings`), so the
+disclosure reaches the operator on the common passing path, not only when the
+gate blocks.
 
 The advisory is text-only: it never blocks completion, never changes which
 files are compared, and never guesses a foreign session's record (options 1

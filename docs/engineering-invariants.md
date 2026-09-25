@@ -501,14 +501,24 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   not distinguish the degraded mode from a legitimate legacy run.
 - **Decision (issue option 3, disclosure-first):** keep the session keying and the fallback;
   make the degraded mode non-silent. `checkReviewerGateWithScope` appends a `SCOPE ADVISORY:`
-  line to the gate reason on every in-session scoped completion that did not use a per-task
-  record — including when the repo-wide comparison produced no warning (clean set). The
-  advisory states only always-true facts (never claims a comparison ran): a bounded fail-open
-  probe of the other live sessions distinguishes `attribution record … exists under another
-  session — not used for scope verification` from `no attribution record in this session —
-  not used for scope verification`. In clean-set completions the producing source is
-  disclosed by the attribution-record/repository-wide dichotomy; explicit source naming rides
-  the warning's own evidence clause when a warning fires.
+  line to the gate reason on every in-session scoped completion whose checking session has NO
+  attribution record at all — including when the repo-wide comparison produced no warning
+  (clean set). A present-but-empty record (the coder delegation's own zero-file slot, left by
+  `resetModifiedFilesForTask` at delegation) is the task's legitimate record, not a degraded
+  fallback, and does not disclose. The advisory states only always-true facts (never claims a
+  comparison ran): a bounded fail-open probe of the other live sessions — same
+  project-identity class only (both sessions keyed-and-equal, or both key-less; a key-less
+  checker cannot claim a keyed foreign record), exact taskId, non-empty entry, per-entry Map
+  guard — distinguishes `attribution record … exists under another session — not used for
+  scope verification` from `no attribution record in this session — not used for scope
+  verification`. Both the condition and the probe are evaluated BEFORE the diff await so the
+  plan reads and the live-session scan precede any git spawn (the live-session read remains
+  racy against concurrent session mutations; advisory-text-only consequence). On successful
+  completions the advisory additionally surfaces in `UpdateTaskStatusResult.warnings`, so the
+  disclosure reaches the operator on the common passing path, not only when the gate blocks.
+  In clean-set completions the producing source is disclosed by the
+  attribution-record/repository-wide dichotomy; explicit source naming rides the warning's
+  own evidence clause when a warning fires.
 - **Rejected-for-now:** option 1 (consult the parent/advancing session's record) — two
   writers can hold divergent records for one task (incremental coder-session appends vs the
   parent's atomic replace) and coder-session records provably miss shell side-effects
@@ -521,9 +531,9 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   evicted / never-snapshotted records read as "no record", deliberately conflating
   never-recorded with recorded-then-lost); attribution accuracy for the mismatch subset is
   unchanged; Epic-retained completed-task records can still produce a context-free
-  foreign-session wording; two plan.json reads per scoped no-record completion remain racy
-  against concurrent plan rewrites (evaluated pre-spawn to bound the window;
-  advisory-text-only consequence).
+  foreign-session wording; the plan.json read pair and the live-session scan are both
+  evaluated pre-spawn but remain racy against concurrent plan/session mutations
+  (advisory-text-only consequence).
 - **Invariant:** session-private `AgentSessionState` data read through a foreign session key
   must fail LOUD (advisory disclosure), never silently, and never by guessing another
   session's record. Guardrail:

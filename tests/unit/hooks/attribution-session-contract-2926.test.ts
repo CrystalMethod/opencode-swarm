@@ -14,7 +14,10 @@
  * This suite pins that contract end to end through the real
  * `checkReviewerGateWithScope`, with per-test swarm-state resets and unique
  * task ids (the probe matches on exact taskId; module-global state must not
- * leak between cases).
+ * leak between cases). The SUCCESS-path handler wiring (F-001,
+ * `executeUpdateTaskStatus` warnings) lives in the sibling
+ * attribution-session-contract-2926.handler.test.ts; shared fixtures live in
+ * _attribution-contract-2926-helpers.ts.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -22,97 +25,28 @@ import * as path from 'node:path';
 import {
 	advanceTaskState,
 	ensureAgentSession,
+	getModifiedFilesForTask,
+	hasModifiedFilesForTask,
 	recordModifiedFilesForTask,
 	recordStageBCompletion,
+	resetModifiedFilesForTask,
 	resetSwarmState,
 } from '../../../src/state';
-import { checkReviewerGateWithScope } from '../../../src/tools/update-task-status';
-import { canonicalMkdtemp } from '../../../tests/helpers/tmpdir.js';
-
-function mkTempDir(): string {
-	return canonicalMkdtemp('attribution-contract-2926-');
-}
-
-function run(cmd: string[], cwd: string): number {
-	const proc = Bun.spawnSync(cmd, { cwd, stdout: 'ignore', stderr: 'ignore' });
-	return proc.exitCode ?? 0;
-}
-
-async function gitInit(cwd: string): Promise<void> {
-	run(['git', 'init'], cwd);
-	run(['git', 'config', 'user.email', 'test@test.com'], cwd);
-	run(['git', 'config', 'user.name', 'Test'], cwd);
-	fs.writeFileSync(path.join(cwd, 'dummy.txt'), 'initial');
-	run(['git', 'add', '.'], cwd);
-	run(['git', 'commit', '-m', 'initial'], cwd);
-}
-
-function commitFile(cwd: string, file: string): void {
-	const fullPath = path.join(cwd, file);
-	fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-	fs.writeFileSync(fullPath, `content of ${file}`);
-	run(['git', 'add', file], cwd);
-	run(['git', 'commit', '-m', `add ${file}`], cwd);
-}
-
-function createPlanJson(cwd: string, taskId: string, scope: string[]): void {
-	const plan = {
-		phases: [
-			{
-				id: '1',
-				name: 'Phase 1',
-				tasks: [{ id: taskId, files_touched: scope }],
-			},
-		],
-	};
-	fs.mkdirSync(path.join(cwd, '.swarm'), { recursive: true });
-	fs.writeFileSync(
-		path.join(cwd, '.swarm', 'plan.json'),
-		JSON.stringify(plan, null, 2),
-	);
-}
-
-/** Foreign-latest-commit fixture: task scope [src/a.ts], latest commit src/b.ts. */
-async function foreignCommitFixture(
-	cwd: string,
-	taskId: string,
-): Promise<void> {
-	await gitInit(cwd);
-	commitFile(cwd, 'src/a.ts');
-	commitFile(cwd, 'src/b.ts');
-	createPlanJson(cwd, taskId, ['src/a.ts']);
-}
-
-/** Clean fixture: the repo-wide set is inside the declared scope (no warning). */
-async function cleanScopeFixture(cwd: string, taskId: string): Promise<void> {
-	await gitInit(cwd);
-	commitFile(cwd, 'src/a.ts');
-	createPlanJson(cwd, taskId, ['src/a.ts']);
-}
-
-function seedWriterSession(
-	sessionId: string,
-	taskId: string,
-	files: string[],
-): void {
-	const session = ensureAgentSession(sessionId);
-	advanceTaskState(session, taskId, 'coder_delegated');
-	recordStageBCompletion(session, taskId, 'reviewer');
-	recordStageBCompletion(session, taskId, 'test_engineer');
-	recordModifiedFilesForTask(session, taskId, files);
-}
-
-function seedCheckerSession(sessionId: string, taskId: string): void {
-	const session = ensureAgentSession(sessionId);
-	advanceTaskState(session, taskId, 'coder_delegated');
-	recordStageBCompletion(session, taskId, 'reviewer');
-	recordStageBCompletion(session, taskId, 'test_engineer');
-}
-
-const FOREIGN_ADVISORY =
-	'exists under another session — not used for scope verification';
-const NO_RECORD_ADVISORY =
-	'no attribution record in this session — not used for scope verification';
+import {
+	checkReviewerGate,
+	checkReviewerGateWithScope,
+} from '../../../src/tools/update-task-status';
+import {
+	cleanScopeFixture,
+	commitFile,
+	FOREIGN_ADVISORY,
+	foreignCommitFixture,
+	gitInit,
+	mkTempDir,
+	NO_RECORD_ADVISORY,
+	seedCheckerSession,
+	seedWriterSession,
+} from './_attribution-contract-2926-helpers.js';
 
 describe('attribution session-identity contract (#2926)', () => {
 	let tmpDir: string | undefined;
@@ -239,6 +173,56 @@ describe('attribution session-identity contract (#2926)', () => {
 		expect(result.reason ?? '').toContain(NO_RECORD_ADVISORY);
 	});
 
+	test('keyless checker cannot claim a keyed foreign record (F-003)', async () => {
+		tmpDir = mkTempDir();
+		const taskId = '2926-keyless-1';
+		await foreignCommitFixture(tmpDir, taskId);
+		const writer = ensureAgentSession('w-keyless-1');
+		writer.owningProjectKey = 'proj-other';
+		recordModifiedFilesForTask(writer, taskId, [
+			path.join(tmpDir, 'src', 'a.ts'),
+		]);
+		seedCheckerSession('c-keyless-1', taskId); // no owningProjectKey
+
+		const result = await checkReviewerGateWithScope(
+			taskId,
+			tmpDir,
+			'c-keyless-1',
+		);
+		expect(result.reason ?? '').toContain(NO_RECORD_ADVISORY);
+		expect(result.reason ?? '').not.toContain(FOREIGN_ADVISORY);
+	});
+
+	test('present-but-empty checking-session record is NOT a degraded fallback (F-002/F-005)', async () => {
+		tmpDir = mkTempDir();
+		const taskId = '2926-emptylocal-1';
+		await foreignCommitFixture(tmpDir, taskId);
+		// The delegation flow leaves a present-but-empty slot in the checking
+		// session itself (resetModifiedFilesForTask without remove): the task's
+		// own record exists and is legitimately empty, so the "no attribution
+		// record in this session" wording would be literally false. No advisory.
+		const checker = ensureAgentSession('c-emptylocal-1');
+		advanceTaskState(checker, taskId, 'coder_delegated');
+		recordStageBCompletion(checker, taskId, 'reviewer');
+		recordStageBCompletion(checker, taskId, 'test_engineer');
+		expect(resetModifiedFilesForTask(checker, taskId)).toBe(true);
+		expect(hasModifiedFilesForTask(checker, taskId)).toBe(true);
+		expect(getModifiedFilesForTask(checker, taskId)).toEqual([]);
+
+		const result = await checkReviewerGateWithScope(
+			taskId,
+			tmpDir,
+			'c-emptylocal-1',
+		);
+		expect(result.reason ?? '').not.toContain('SCOPE ADVISORY');
+		// The repo-wide fallback still runs for the zero-file record — the
+		// ordinary SCOPE WARNING (with its evidence clause) is unchanged.
+		expect(result.reason ?? '').toContain('SCOPE WARNING');
+		expect(result.reason ?? '').toContain(
+			'(evidence: repository-wide diff vs latest commit',
+		);
+	});
+
 	test('sessionID undefined: no advisory (CLI/direct path)', async () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-nosession-1';
@@ -309,21 +293,25 @@ describe('attribution session-identity contract (#2926)', () => {
 		expect(result.reason ?? '').toContain(FOREIGN_ADVISORY);
 	});
 
-	test('blocked parity: the advisory never flips the gate decision', async () => {
+	test('blocked parity: wrapper matches the plain gate on the same fixture (F-006)', async () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-parity-1';
 		await foreignCommitFixture(tmpDir, taskId);
 		seedWriterSession('w-parity-1', taskId, [path.join(tmpDir, 'src', 'a.ts')]);
 		seedCheckerSession('c-parity-1', taskId);
 
+		// Compare against the PLAIN sync gate on the same fixture and session —
+		// not two wrapper calls — so the assertion is a real cross-path parity
+		// anchor rather than two fixtures that are blocked for the same reason.
 		const withScope = await checkReviewerGateWithScope(
 			taskId,
 			tmpDir,
 			'c-parity-1',
 		);
-		const bare = await checkReviewerGateWithScope(taskId, tmpDir, 'w-parity-1');
-		expect(withScope.blocked).toBe(bare.blocked);
+		const plain = checkReviewerGate(taskId, tmpDir, true, 'c-parity-1');
+		expect(withScope.blocked).toBe(plain.blocked);
 		expect(withScope.reason ?? '').toContain('SCOPE ADVISORY');
+		expect(plain.reason ?? '').not.toContain('SCOPE ADVISORY');
 	});
 
 	test('placement pin: disclosure survives evidence-clause stripping', async () => {

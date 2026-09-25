@@ -50,6 +50,7 @@ import {
 	hasActiveLeanTurbo,
 	hasActiveTurboMode,
 	hasBothStageBCompletions,
+	hasModifiedFilesForTask,
 	isStageBRouteRequired,
 	recordStageBCompletion,
 	startAgentSession,
@@ -205,6 +206,13 @@ export interface UpdateTaskStatusResult {
 	new_status?: string;
 	current_phase?: number;
 	errors?: string[];
+	/**
+	 * Non-blocking advisory lines (issue #2926) — e.g. the SCOPE ADVISORY
+	 * disclosing that the completion's scope check ran without the session's
+	 * per-task attribution record. Present on successful completions so the
+	 * degraded-fallback disclosure reaches the operator on the common path.
+	 */
+	warnings?: string[];
 	/** Present when the call failed due to lock contention. Instructs the caller to retry. */
 	recovery_guidance?: string;
 }
@@ -1112,23 +1120,24 @@ export function checkReviewerGate(
 
 /**
  * Whether any other live session holds a non-empty attribution record for the
- * task (exact taskId match; checking session excluded; per-project when both
- * sides declare one). Bounded fail-open probe: read-only, one pass with early
- * exit, per-entry Map guard so one malformed legacy entry skips only itself
- * instead of aborting the pass.
+ * task (exact taskId match; checking session excluded; sessions are only
+ * compared within the same project-identity class — both keyed-and-equal, or
+ * both key-less — so a key-less checker cannot claim a cross-project record).
+ * Bounded fail-open probe: read-only, one pass with early exit, per-entry Map
+ * guard so one malformed legacy entry skips only itself instead of aborting
+ * the pass.
  */
-function findForeignAttributionHolder(
+function hasForeignAttributionRecord(
 	taskId: string,
 	checkingSessionId: string,
 ): boolean {
 	try {
 		const checker = swarmState.agentSessions.get(checkingSessionId);
-		const checkerProject = checker?.owningProjectKey;
+		const checkerProject = checker?.owningProjectKey ?? null;
 		for (const [sessionId, session] of swarmState.agentSessions) {
 			if (sessionId === checkingSessionId) continue;
 			if (!(session.modifiedFilesByTask instanceof Map)) continue;
-			const project = session.owningProjectKey;
-			if (checkerProject && project && project !== checkerProject) continue;
+			if ((session.owningProjectKey ?? null) !== checkerProject) continue;
 			const entry = session.modifiedFilesByTask.get(taskId);
 			if (Array.isArray(entry) && entry.length > 0) return true;
 		}
@@ -1171,33 +1180,35 @@ export async function checkReviewerGateWithScope(
 	const attributedFiles = session
 		? getModifiedFilesForTask(session, taskId)
 		: [];
-	// Issue #2926: evaluate the fallback condition before the diff await so
-	// both plan reads precede any git spawn (bounded plan-rewrite race).
-	const scopeFallbackDeclared =
+	// Issue #2926: the session-keyed read losing the writer session's record
+	// (multi-session swarms, restart, snapshot miss, cap eviction, release)
+	// must not degrade silently. Disclose — advisory-only, never blocking —
+	// on every in-session scoped completion whose checking session has NO
+	// attribution record at all, including when the comparison produced no
+	// warning (clean set). A present-but-empty record is the task's own
+	// legitimately empty slot, not a degraded fallback, so it does not
+	// disclose. Both the condition and the foreign-record probe are evaluated
+	// BEFORE the diff await so the plan reads and the live-session scan
+	// precede any git spawn (the live-state read remains racy against
+	// concurrent session mutations — advisory-text-only consequence).
+	const scopeAdvisoryLine =
 		!!sessionID &&
-		attributedFiles.length === 0 &&
+		!hasModifiedFilesForTask(session, taskId) &&
 		!!workingDirectory &&
-		hasDeclaredDiffScope(taskId, workingDirectory);
+		hasDeclaredDiffScope(taskId, workingDirectory)
+			? hasForeignAttributionRecord(taskId, sessionID)
+				? `SCOPE ADVISORY: attribution record for task ${taskId} exists under another session — not used for scope verification`
+				: 'SCOPE ADVISORY: no attribution record in this session — not used for scope verification'
+			: null;
 	const scopeWarning = await validateDiffScope(
 		taskId,
 		workingDirectory!,
 		sessionID && attributedFiles.length > 0 ? { attributedFiles } : undefined,
 	).catch(() => null);
-	// Issue #2926: the session-keyed read losing the writer session's record
-	// (multi-session swarms, restart, snapshot miss, cap eviction, release)
-	// must not degrade silently. Disclose — advisory-only, never blocking —
-	// on every in-session scoped completion that did not use the per-task
-	// record, including when the comparison produced no warning (clean set).
-	const advisoryLine =
-		scopeFallbackDeclared && sessionID
-			? findForeignAttributionHolder(taskId, sessionID)
-				? `SCOPE ADVISORY: attribution record for task ${taskId} exists under another session — not used for scope verification`
-				: 'SCOPE ADVISORY: no attribution record in this session — not used for scope verification'
-			: null;
-	if (!scopeWarning && !advisoryLine) return result;
+	if (!scopeWarning && !scopeAdvisoryLine) return result;
 	return {
 		...result,
-		reason: [result.reason, scopeWarning, advisoryLine]
+		reason: [result.reason, scopeWarning, scopeAdvisoryLine]
 			.filter(
 				(part): part is string => typeof part === 'string' && part.length > 0,
 			)
@@ -1905,6 +1916,10 @@ export async function executeUpdateTaskStatus(
 
 	// State machine check: task must have reached tests_run or complete state
 	// Uses the validated directory for plan.json fallback resolution
+	// Issue #2926: advisory lines captured here must stay visible to the
+	// success return below, so the variable is declared at this (outer)
+	// scope rather than inside the 'completed' block.
+	let scopeAdvisories: string[] | undefined;
 	if (args.status === 'completed') {
 		// Legacy direct-helper callers retain diagnostic recovery. Real tool
 		// execution is exact-evidence authoritative and must stay side-effect-free
@@ -1961,6 +1976,10 @@ export async function executeUpdateTaskStatus(
 			};
 		}
 
+		// Issue #2926: advisory lines from the scope gate must reach the
+		// operator on SUCCESSFUL completions too, not only when the gate
+		// blocks — otherwise the degraded-fallback disclosure is discarded
+		// on exactly the common path it exists to describe.
 		if (phaseRequiresReviewer && !councilCheck.active) {
 			const reviewerCheck = await checkReviewerGateWithScope(
 				args.task_id,
@@ -1968,6 +1987,12 @@ export async function executeUpdateTaskStatus(
 				ctx?.sessionID,
 				ctx?.sessionID ? fallbackDir : undefined,
 			);
+			if (reviewerCheck.reason) {
+				const advisoryLines = reviewerCheck.reason
+					.split('\n')
+					.filter((line) => line.length > 0);
+				if (advisoryLines.length > 0) scopeAdvisories = advisoryLines;
+			}
 			if (reviewerCheck.blocked) {
 				await recordRunMemoryOutcome(directory, {
 					taskId: args.task_id,
@@ -2301,6 +2326,9 @@ export async function executeUpdateTaskStatus(
 			task_id: args.task_id,
 			new_status: args.status,
 			current_phase: updatedPlan.current_phase,
+			...(scopeAdvisories && scopeAdvisories.length > 0
+				? { warnings: scopeAdvisories }
+				: {}),
 		};
 	} catch (error) {
 		// Lock will be released in finally block
