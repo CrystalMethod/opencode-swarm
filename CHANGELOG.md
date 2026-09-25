@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.186.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.6...v7.186.7) (2026-09-25)
+
+
+### Bug Fixes
+
+* **hooks:** disclose session-identity attribution fallback in scope gate ([39df1f2](https://github.com/ZaxbyHub/opencode-swarm/commit/39df1f29611e6a1bd3d4c946eb3dea70fe962ccf))
+* **hooks:** surface scope advisory on successful completions + tighten attribution probe ([#2926](https://github.com/ZaxbyHub/opencode-swarm/issues/2926)) ([59f83e6](https://github.com/ZaxbyHub/opencode-swarm/commit/59f83e6c149484123b0b75995d388f35b69b47bd))
+
 ## [7.186.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.5...v7.186.6) (2026-09-24)
 
 
