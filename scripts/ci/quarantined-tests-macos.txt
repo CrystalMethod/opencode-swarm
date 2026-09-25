@@ -19,8 +19,9 @@
 #   the crash fixture survives the delivered POSIX signal and exits 0 on
 #   macos-latest runners; 9/9 failures across PRs #2735/#2736 on 2026-09-12,
 #   ubuntu shards green; test already win32-skipped in-source)
-# EXPIRY: 2026-09-26 — remove when the fixture/harness signal handling is
-#   fixed and the test passes on macos-latest.
+# EXPIRY: 2026-11-18 — retire when the #2738 signal-fixture root fix (SIGKILL
+#   delivery or survival detection) lands and the file passes on macos-latest.
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-09-26.
 tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 #
 # tests/unit/utils/bun-compat-exit-first-2530.test.ts (issue #2740)
@@ -36,12 +37,12 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 # CPU contention trips the probe timeout, which surfaces as attempt-1 failure
 # with no product defect involved. Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
-# OWNER: zaxbysauce — issue #2740 (macos-latest merge-group retry-flake,
-#   run 34726206593 `unit (macos-latest, 4)`; siblings green)
-# EXPIRY: 2026-10-14 — root-fix the probe timeout sensitivity (e.g. raise
-#   PROBE_TIMEOUT_MS or pre-warm the build) or renew with an updated
-#   criterion. After EXPIRY, Check 7 warns for 14 days, then hard-fails on
-#   day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2740, macos-latest merge-group retry-flake run 34726206593 `unit (macos-latest, 4)`, siblings green; block history above)
+# EXPIRY: 2026-11-18 — retire when the probe-timeout sensitivity is root-fixed
+#   (raise PROBE_TIMEOUT_MS or pre-warm the bun build) and the file passes on
+#   macos-latest merge-group runs (#2973 cohort row 14).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/utils/bun-compat-exit-first-2530.test.ts
 #
 # tests/unit/commands/promote-registration.test.ts (issue #2740)
@@ -58,11 +59,12 @@ tests/unit/utils/bun-compat-exit-first-2530.test.ts
 # with cold-file / env-read sensitivity, not a product regression.
 # Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
-# OWNER: zaxbysauce — issue #2740 (macos-latest merge-group retry-flake,
-#   run 34726206593 `unit (macos-latest, 6)`; siblings green)
-# EXPIRY: 2026-10-14 — root-fix the per-test env mutation / temp-dir teardown
-#   or renew with an updated criterion. After EXPIRY, Check 7 warns for 14
-#   days, then hard-fails on day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2740, macos-latest merge-group retry-flake run 34726206593 `unit (macos-latest, 6)`, siblings green; block history above)
+# EXPIRY: 2026-11-18 — retire when the per-test env-mutation / temp-dir
+#   teardown flake is root-fixed and the file passes on macos-latest
+#   merge-group runs (#2973 cohort row 15).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/commands/promote-registration.test.ts
 #
 # tests/unit/hooks/pr-feedback-scope-controller.test.ts (issue #2730)
@@ -91,9 +93,10 @@ tests/unit/commands/promote-registration.test.ts
 # process-2675.test.ts in this ledger via issue #2738 — so this PR adds
 # only this entry and pins the no-duplicate invariant for the other three.
 # Quarantined per issue #2730; tracked under #1782 (test-stability sprint).
-# OWNER: zaxbysauce — issue #2730 (macos-latest-only merge-group flake;
-#   single-OS evidence: macos-1 retry-pass, siblings green)
-# EXPIRY: 2026-10-14 — root-fix the macos-only flake pattern or renew with
-#   an updated criterion. After EXPIRY, Check 7 warns for 14 days, then
-#   hard-fails on day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2730, block history above)
+# EXPIRY: 2026-11-18 — retire when the macos-only retry-flake has a
+#   reproducible diagnosis or a root fix and the file passes on macos-latest
+#   merge-group runs (#2973 cohort row 16).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/hooks/pr-feedback-scope-controller.test.ts

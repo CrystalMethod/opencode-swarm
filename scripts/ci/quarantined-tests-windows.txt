@@ -81,9 +81,13 @@
 # retire it under #1737 once green streak confirms (see also #1782).
 # Quarantined per issue #1982; tracked under #1737 (test quarantine debt)
 # pending a dedicated test-stability sprint (#1782).
-# OWNER: @zaxbysauce — issue #1982 (root-fixed by PR #2190)
-# EXPIRY: 2026-10-15 — retire once a merge-group windows-latest green streak
-# confirms the PR #2190 root fix (#1737/#1782/#2477)
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #1982, root-fixed mechanisms via PR
+#   #2190 — see block history above)
+# EXPIRY: 2026-11-18 — retire when a merge-group windows-latest run executes
+#   this file green after the entry is removed (the PR #2190 freezeClock +
+#   EBUSY-retry mechanism fixes prove out) (#2973 cohort row 3).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-15.
 tests/unit/commands/pr-monitor-status.test.ts
 #
 # win32-wrapper-runtime.test.ts: covers the WindowsSandboxExecutor fallback
@@ -104,9 +108,12 @@ tests/unit/commands/pr-monitor-status.test.ts
 # Pre-existing, unrelated to any specific PR. Quarantined per issue #2185;
 # tracked under #1737 (test quarantine debt) pending a dedicated
 # test-stability sprint (#1782).
-# OWNER: @zaxbysauce — issue #2185
-# EXPIRY: 2026-10-01 — root-fix the PowerShell cold-spawn flake or renew with
-#   an updated diagnosis under #1737/#2477
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2185, block history above)
+# EXPIRY: 2026-11-18 — retire when the PowerShell cold-spawn flake is
+#   root-fixed (spawn-timeout margin or pre-warm per the #2185 diagnosis)
+#   and the file passes on windows-latest merge-group runs (#2973 row 2).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-01.
 tests/unit/sandbox/win32-wrapper-runtime.test.ts
 #
 # completion-observer-coder.test.ts (issue #2692)
@@ -129,11 +136,12 @@ tests/unit/sandbox/win32-wrapper-runtime.test.ts
 # assertion text exists to drive a root-cause fix. Pre-existing, unrelated
 # to any specific PR. Quarantined per issue #2692; tracked under #1782
 # (test-stability sprint).
-# OWNER: @zaxbysauce — issue #2692 (windows-latest-only merge-group flake;
-#   single-OS evidence: windows-1 retry-pass, ubuntu-1/macos-1 green)
-# EXPIRY: 2026-10-31 — root-fix the windows git-spawn/observer-timing flake
-#   or renew with an updated criterion. Inside the 14-day grace window
-#   Check 7 only warns.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2692, block history above)
+# EXPIRY: 2026-11-18 — retire when the windows git-spawn / observer-timing
+#   flake is root-fixed and the file passes on windows-latest merge-group
+#   runs (#2973 cohort row 4).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-31.
 tests/unit/background/completion-observer-coder.test.ts
 #
 # index-pr-workflow-session-lifecycle-2602.test.ts: regression coverage for
@@ -156,14 +164,13 @@ tests/unit/background/completion-observer-coder.test.ts
 # bun:test, 2.4s for 2602 specifically). Pre-existing, unrelated to any
 # specific PR. Quarantined per issue #2761; tracked under #1737 (test
 # quarantine debt) pending a dedicated test-stability sprint (#1782).
-# OWNER: @zaxbysauce — issue #2761 (windows-only retry-flake on
-#   unit (windows-latest, 5); see merge-group run 34797415390,
-#   `unit (windows-latest, 5)` job 103839563148 for the attempt/retry trace)
-# EXPIRY: 2026-10-16 — root-fix the Windows cold-FS cleanup race (candidate
-#   helper: tests/helpers/safe-test-dir.ts safeRmRecursive with closed
-#   project-db handle + bounded EBUSY/EPERM/ENOTEMPTY retries, the same
-#   pattern already root-fixed for pr-monitor-status.test.ts via PR #2190)
-#   or renew with an updated diagnosis under #1737/#2477
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2761, block history above)
+# EXPIRY: 2026-11-18 — retire when the Windows cold-FS cleanup race is
+#   root-fixed via safeRmRecursive-style teardown (tests/helpers/
+#   safe-test-dir.ts with bounded EBUSY/EPERM/ENOTEMPTY retries) and the
+#   file passes on windows-latest merge-group runs (#2973 cohort row 5).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-16.
 tests/unit/index-pr-workflow-session-lifecycle-2602.test.ts
 #
 # tests/unit/background/pr-subscriptions-checkpoint.test.ts (issue #2812)
@@ -178,12 +185,12 @@ tests/unit/index-pr-workflow-session-lifecycle-2602.test.ts
 # blocked PR today). Per the #2738 playbook, quarantined on the blocked
 # branch instead of re-running. Candidate also listed by auto-filed issue
 # #2812. Pre-existing, unrelated to any specific PR.
-# OWNER: zaxbysauce — issue #2812 (windows-latest-only load timeout, 30s
-#   hard cap; third blocked PR 2026-09-17)
-# EXPIRY: 2026-10-17 — root-fix the poll-loop wall-clock sensitivity (e.g.
-#   freeze the clock or lower the update count) or renew with an updated
-#   criterion. After EXPIRY, Check 7 warns for 14 days, then hard-fails on
-#   day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2812, block history above)
+# EXPIRY: 2026-11-18 — retire when the poll-loop wall-clock sensitivity is
+#   root-fixed (freeze the clock or lower the update count) and the file
+#   passes on windows-latest merge-group runs (#2973 cohort row 6).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-17.
 tests/unit/background/pr-subscriptions-checkpoint.test.ts
 #
 # tests/unit/memory/recall-evaluation-profile-isolation.test.ts (issue #2812)
@@ -198,11 +205,12 @@ tests/unit/background/pr-subscriptions-checkpoint.test.ts
 # Per the #2738 playbook, quarantined on the blocked branch instead of
 # re-running. Candidate also listed by auto-filed issue #2812.
 # Pre-existing, unrelated to any specific PR.
-# OWNER: zaxbysauce — issue #2812 (windows-latest-only load timeout, 15s
-#   cap; third blocked PR 2026-09-17)
-# EXPIRY: 2026-10-17 — root-fix the embedding-cache test's wall-clock
-#   sensitivity or renew with an updated criterion. After EXPIRY, Check 7
-#   warns for 14 days, then hard-fails on day 15.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2812, block history above)
+# EXPIRY: 2026-11-18 — retire when the embedding-cache test's wall-clock
+#   sensitivity is root-fixed and the file passes on windows-latest
+#   merge-group runs (#2973 cohort row 7).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-17.
 tests/unit/memory/recall-evaluation-profile-isolation.test.ts
 
 #
@@ -224,12 +232,12 @@ tests/unit/memory/recall-evaluation-profile-isolation.test.ts
 # assertion text exists to drive a root-cause fix. Pre-existing, unrelated
 # to any specific PR. Quarantined per issue #2812; tracked under #1782
 # (test-stability sprint).
-# OWNER: @zaxbysauce — issue #2812 (windows-latest-only merge-group flake;
-#   single-OS evidence: windows-5 retry-pass, ubuntu 1..6 / macos 1..6 /
-#   windows 1..4/6 green)
-# EXPIRY: 2026-10-31 — root-fix the windows archive temp-dir teardown flake
-#   or renew with an updated criterion. Inside the 14-day grace window
-#   Check 7 only warns.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2812, block history above)
+# EXPIRY: 2026-11-18 — retire when the windows archive temp-dir teardown
+#   flake is root-fixed (safeRmRecursive pattern) and the file passes on
+#   windows-latest merge-group runs (#2973 cohort row 8).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-31.
 tests/unit/commands/archive.test.ts
 
 #
@@ -254,12 +262,12 @@ tests/unit/commands/archive.test.ts
 # attempt-1 output when a retry passes, so no assertion text exists to
 # drive a root-cause fix. Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2812; tracked under #1782 (test-stability sprint).
-# OWNER: @zaxbysauce — issue #2812 (windows-latest-only merge-group flake;
-#   single-OS evidence: windows-5 retry-pass, ubuntu 1..6 / macos 1..6 /
-#   windows 1..4/6 green)
-# EXPIRY: 2026-10-31 — root-fix the windows cold-FS / AV-handle teardown
-#   sensitivity or renew with an updated criterion. Inside the 14-day
-#   grace window Check 7 only warns.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2812, block history above)
+# EXPIRY: 2026-11-18 — retire when the windows cold-FS / AV-handle teardown
+#   sensitivity is root-fixed and the file passes on windows-latest
+#   merge-group runs (#2973 cohort row 9).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-31.
 tests/unit/mcp/write-receipts-feedback-2500.test.ts
 
 #
@@ -291,14 +299,11 @@ tests/unit/mcp/write-receipts-feedback-2500.test.ts
 # the Windows cold-FS / AV-handle handle-race class. Pre-existing,
 # unrelated to any specific PR. Quarantined per issue #2812; tracked
 # under #1782 (test-stability sprint).
-# OWNER: @zaxbysauce — issue #2812 (windows-latest-only merge-group hard
-#   failure; single-OS evidence: windows-1 all-3-retries-failed with
-#   "blocked" status instead of "incomplete", ubuntu 1..6 / macos 1..6 /
-#   windows 2..6 green)
-# EXPIRY: 2026-10-31 — root-fix the windows lock-handle race (e.g. wrap
-#   the rmSync teardown in safeRmRecursive with bounded EBUSY/EPERM
-#   retries, matching the PR #2807 pattern for issue #2602 / #1782
-#   handle-race), or renew with an updated criterion. Inside the 14-day
-#   grace window Check 7 only warns.
+# OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
+#   original flake evidence: closed #2812, block history above)
+# EXPIRY: 2026-11-18 — retire when the windows lock-handle race is root-fixed
+#   (safeRmRecursive with bounded EBUSY/EPERM retries, the PR #2807 pattern)
+#   and the file passes on windows-latest merge-group runs (#2973 row 10).
+# Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-31.
 tests/unit/tools/phase-complete.lock-adversarial.test.ts
 
