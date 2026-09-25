@@ -354,9 +354,10 @@ entry (batchId idempotence prevents double-counting on a retry of the same
 dispatch call, and the over-count direction is conservative because the cited
 batch must still exist as a real stale delegation record to be disclosed at
 all); the ledger is bounded at 128 records with a fail-closed BLOCKED refusal
-at the cap — never silent eviction. An operator-cancelled lane does NOT qualify — `cancel_pending` is
-a controlled act by the controller; re-dispatch the family instead of
-disclosing it.
+at the cap — never silent eviction. An operator-cancelled lane does NOT qualify — it was ended by
+`cancel_lane_batch` (or the human force abort), an explicit controller act
+recorded as the distinct `operator_cancelled` class; re-dispatch the family
+instead of disclosing it.
 
 ## Incident classification and parser-vs-gate proof scope (issue #2859 relocation)
 
