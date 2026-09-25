@@ -296,10 +296,45 @@ describe('cancel_lane_batch (issue #2971)', () => {
 			expect(
 				result.errors.some((entry) => entry.includes('session.abort')),
 			).toBe(true);
+			expect(result.message).toContain('1 not processed');
 			expect(findByBatchId(dir, 'batch-timeout')[0]?.status).toBe('pending');
 		} finally {
 			_internals.abortBudgetMs = realAbortBudgetMs;
 		}
+	});
+
+	test('an abort error still settles best-effort without pre-claiming the outcome in errors[] (round-2 F1)', async () => {
+		const lane = await seedPendingLane('batch-abort-error', '1');
+		const { ops, abort } = scriptHost({
+			[lane.correlationId]: { type: 'idle' },
+		});
+		// The host abort call itself fails; the exactly-once settle still runs.
+		abort.mockImplementation(async () => {
+			throw new Error('host transport exploded');
+		});
+		_internals.getSessionOps = () => ops;
+		const result = await executeCancelLaneBatch(
+			confirmedArgs('batch-abort-error'),
+			dir,
+		);
+		expect(result.cancelled).toBe(1);
+		const abortErrorEntry = result.errors.find((entry) =>
+			entry.includes(lane.correlationId),
+		);
+		expect(abortErrorEntry).toBeDefined();
+		// errors[] reports only the host-abort failure — never the settle
+		// outcome, which is claimed in its own list.
+		expect(abortErrorEntry).toContain('failed');
+		expect(abortErrorEntry).not.toContain('settled cancelled');
+		// An abort-error lane was processed, so the tail must not count it.
+		expect(result.message).not.toContain('not processed');
+		expect(findByBatchId(dir, 'batch-abort-error')[0]?.status).toBe(
+			'cancelled',
+		);
+		expect(
+			findByBatchId(dir, 'batch-abort-error')[0]?.terminalResult?.result
+				?.workflowLaneFailureClass,
+		).toBe('operator_cancelled');
 	});
 
 	test('the authorization boundary rejects malformed or unknown requests before any abort', async () => {

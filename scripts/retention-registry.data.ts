@@ -626,9 +626,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writeLimits: {
 			bound: 'MAX_LIVE_BACKGROUND_FALLBACKS 256 (:102); per-file 1 MiB (:118); reservations ≤256 entries / 2 MiB store (:103, :6358), enforced on write/scan (:5779, :6336)',
 			scope: 'global',
-			citation: 'src/background/pending-delegations.ts:102-118,5739',
+			citation: 'src/background/pending-delegations.ts:102-118,5779',
 		},
-		readBound: { pattern: 'directory-scan', bound: '≤256 files × 1 MiB', sync: false, citation: 'src/background/pending-delegations.ts:5636-5683' },
+		readBound: { pattern: 'directory-scan', bound: '≤256 files × 1 MiB', sync: false, citation: 'src/background/pending-delegations.ts:5676-5723' },
 		lockModel: 'separate lock tasks FALLBACK_LOCK_TASK / RESERVATION_LOCK_TASK (:174-175)',
 		crashBehavior: 'bunWrite single-file artifacts; strict recovery scans fail closed',
 		closePolicy: 'untouched (cross-session recovery state)',
@@ -640,7 +640,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		issue2487Legacy: { path: '.swarm/background-delegation-fallback/*.json + background-coder-reservations.json', sourceFile: 'src/background/pending-delegations.ts', tokens: ['BACKGROUND_DELEGATION_FALLBACK_DIR', 'BACKGROUND_CODER_RESERVATIONS_FILE', 'scanBackgroundCoderReservationsForAdmission', 'readFallbackDirectory'], readers: ['src/background/pending-delegations.ts:readFallbackDirectory', 'src/background/pending-delegations.ts:scanBackgroundCoderReservationsForAdmission'], writers: ['src/background/pending-delegations.ts:BACKGROUND_DELEGATION_FALLBACK_DIR', 'src/background/pending-delegations.ts:BACKGROUND_CODER_RESERVATIONS_FILE'] },
 		healthSignal: 'recovery scans report fallback promotion',
 		owner: '#2034 (merged)',
-		disposition: { kind: 'not-a-defect', proof: 'Hard capacity bounds: 256 fallback artifacts / 1 MiB each, 256 reservations / 2 MiB store, enforced on write and scan (src/background/pending-delegations.ts:102-118,5739).' },
+		disposition: { kind: 'not-a-defect', proof: 'Hard capacity bounds: 256 fallback artifacts / 1 MiB each, 256 reservations / 2 MiB store, enforced on write and scan (src/background/pending-delegations.ts:102-118,5779).' },
 	},
 	{
 		id: 'pr-monitor-subscriptions',

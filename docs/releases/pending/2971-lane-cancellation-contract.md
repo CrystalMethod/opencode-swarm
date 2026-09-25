@@ -33,10 +33,12 @@ terminal coverage failure (issue #2971).
   is available (policy-aware: the staged attempts ledger, or the legacy
   single contract retry), naming the exact remaining dimensions, the budget,
   and the next actions in the BLOCKED message, and recording one bounded
-  reconciliation-receipt event. The gate is strictly additive:
-  liveness-only, operator-confirmed, or classless unresolved sets never
-  trigger it, and budget exhaustion or operator confirmation are the
-  terminal escapes — no livelock.
+  reconciliation-receipt event. The gate deliberately narrows one
+  previously admissible path: a legacy-policy PARTIAL/NO_COVERAGE whose
+  unresolved dimensions still carry unconsumed contract retry budget is
+  now blocked (issue AC8); liveness-only, operator-confirmed, or classless
+  unresolved sets never trigger it, and budget exhaustion or operator
+  confirmation are the terminal escapes — no livelock.
 - Base and micro PR-review dispatch schemas are now parse-time disjoint: a
   base dispatch carrying a micro trigger id (or vice versa) fails argument
   parsing before any child session is created.

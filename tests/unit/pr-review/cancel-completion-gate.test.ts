@@ -1,5 +1,7 @@
 /**
- * Issue #2971 — the strictly-additive retryable-remainder completion gate and
+ * Issue #2971 — the retryable-remainder completion gate (deliberately not
+ * purely additive: it blocks a previously admissible legacy-policy path,
+ * issue AC8) and
  * the operator_cancelled admission path, driven at the completePrWorkflow
  * surface through the same five-plus-one fixtures the liveness-admission
  * suite (tests/unit/tools/write-pr-review-artifact-liveness-admission.test.ts)

@@ -321,6 +321,10 @@ export async function executeCancelLaneBatch(
 		return result;
 	}
 	const totalDeadline = _internals.now() + _internals.totalBudgetMs;
+	// Lanes this call does NOT carry to a terminal disposition (abort timeout,
+	// post-abort store unreadable). An ordinary abort-error lane is still
+	// settled below, so it never counts here (round-2 review F1).
+	let unprocessed = 0;
 	for (const record of activeRecords) {
 		const laneId = record.laneId ?? record.correlationId;
 		const sessionEntry = record.subagentSessionId
@@ -400,14 +404,16 @@ export async function executeCancelLaneBatch(
 			result.errors.push(
 				`session.abort for lane session "${current.subagentSessionId}" exceeded the bounded cancel budget; lane left pending`,
 			);
+			unprocessed += 1;
 			continue;
 		}
 		if (abortOutcome === 'error') {
-			// Review PRR-014: an ordinary abort error still settles cancelled
-			// (best-effort), but the caller gets a structured signal that the
-			// host abort itself did not succeed.
+			// Review PRR-014 / round-2 F1: an ordinary abort error still gets
+			// the best-effort exactly-once settle, but errors[] reports ONLY
+			// the host-abort failure here — the settle outcome is claimed in
+			// its own list below, never pre-announced.
 			result.errors.push(
-				`session.abort for lane session "${current.subagentSessionId}" failed; lane settled cancelled via the exactly-once claim`,
+				`session.abort for lane session "${current.subagentSessionId}" failed; best-effort settle still runs (outcome in cancelled/already_settled/preserved_completions)`,
 			);
 		}
 
@@ -420,6 +426,7 @@ export async function executeCancelLaneBatch(
 			result.errors.push(
 				`lane ${laneId}: store unreadable after abort (${afterRead.reason}); not settled by this call`,
 			);
+			unprocessed += 1;
 			continue;
 		}
 		const after = afterRead.value;
@@ -457,10 +464,11 @@ export async function executeCancelLaneBatch(
 		}
 	}
 
-	// Review PRR-003: surface the budget-skipped population in the message so
-	// a partial cancel is visible without inspecting errors[].
-	const skipped = result.errors.length;
-	const tail = skipped > 0 ? `; ${skipped} not processed (see errors[])` : '';
+	// Review PRR-003 / round-2 F1: surface only the lanes this call did not
+	// carry to a terminal disposition, so a partial cancel is visible without
+	// inspecting errors[] — an abort-error lane was processed (settled below).
+	const tail =
+		unprocessed > 0 ? `; ${unprocessed} not processed (see errors[])` : '';
 	result.message =
 		result.cancelled > 0
 			? `cancel_lane_batch: ${result.cancelled} lane(s) cancelled (operator_cancelled); ${result.refused.length} refused; ${result.preserved_completions.length} preserved completions${tail}`
