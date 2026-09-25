@@ -2247,8 +2247,7 @@ export async function executeCollectLaneResults(
 		// so the batched status probe is skipped for it (wait-budget contract).
 		if (
 			records.some(
-				(record) =>
-					record.status === 'pending' || record.status === 'running',
+				(record) => record.status === 'pending' || record.status === 'running',
 			)
 		) {
 			lastStatusTypes = await probeLaneStatusTypesForPass(

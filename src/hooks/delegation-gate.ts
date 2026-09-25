@@ -34,7 +34,6 @@ import {
 import { ALL_AGENT_NAMES } from '../config/agent-names.js';
 import { DEFAULT_MODELS } from '../config/constants';
 import {
-	type Phase,
 	type Plan,
 	resolveActivePhaseId,
 	type Task,

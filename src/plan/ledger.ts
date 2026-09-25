@@ -2186,10 +2186,9 @@ function reconstructPlanFromEventsUnnormalized(
 			const candidatePayload = candidate.payload as unknown as
 				| SnapshotEventPayload
 				| undefined;
-			const parseResult =
-				candidatePayload && candidatePayload.plan
-					? PlanSchema.safeParse(candidatePayload.plan)
-					: null;
+			const parseResult = candidatePayload?.plan
+				? PlanSchema.safeParse(candidatePayload.plan)
+				: null;
 			if (!parseResult || !parseResult.success) {
 				log(
 					`[ledger] Skipping degraded snapshot event seq=${candidate.seq} (payload failed PlanSchema validation); falling back to older snapshot history.`,

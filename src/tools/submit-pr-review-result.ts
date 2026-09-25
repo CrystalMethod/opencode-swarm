@@ -113,9 +113,7 @@ const consecutiveSubmitRejections = new Map<string, number>();
 function submitRejectionKey(directory: string, sessionID: string): string {
 	// Canonical project-root key: two lexical spellings of one project must
 	// share one rejection counter (path-identity contract, canonical-root.ts).
-	return (
-		`${canonicalRootKeyFresh(directory)}` + String.fromCharCode(0) + sessionID
-	);
+	return `${canonicalRootKeyFresh(directory)}${String.fromCharCode(0)}${sessionID}`;
 }
 
 function noteSubmitRejection(directory: string, sessionID: string): number {

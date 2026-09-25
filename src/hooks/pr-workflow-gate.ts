@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type BigIntStats, type Dirent } from 'node:fs';
+import type { BigIntStats, Dirent } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SessionStatus } from '@opencode-ai/sdk';
