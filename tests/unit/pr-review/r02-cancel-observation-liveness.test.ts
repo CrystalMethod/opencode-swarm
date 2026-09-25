@@ -31,15 +31,12 @@ import { initializeGitRepository } from '../helpers/git-repository.js';
 
 /**
  * #2585 frozen acceptance check C2 (AC1/R02), leg B — split out of
- * r02-non-swarm-caller-typed-terminal.test.ts for the FR-006 500-line cap
- * (issue #2971 round-2 CI). The non-swarm caller on a multi-swarm
- * (prefixed-only) host reaches a typed terminal state, never a hang: an
- * accepted-then-dead lane settles 'liveness' through the production
+ * r02-non-swarm-caller-typed-terminal.test.ts for the FR-006 500-line cap.
+ * An accepted-then-dead lane settles 'liveness' through the production
  * typed-terminal settle after the observation-only collector refuses
  * cancel_pending (#2971), and a PARTIAL run completes INCOMPLETE through
- * the typed-terminal admission (#2615); every tool response stays a bounded
- * JSON payload. Leg A (dispatch-time bare-agent refusal) stays in the
- * original file with this same fixture.
+ * the typed-terminal admission (#2615). Leg A stays in the original file
+ * with this same fixture.
  */
 
 const SESSION_ID = 'r02-non-swarm-caller';
@@ -299,17 +296,14 @@ describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
 			(record) => record.workflowLane === deadDimension,
 		)!;
 		expect(deliveredPrompts.has(dead.subagentSessionId)).toBe(true);
-		// Submit + finish only the five live children.
 		for (const record of baseRecords) {
 			if (record.workflowLane === deadDimension) continue;
 			await submitOne(record);
 			await finishLane(record);
 		}
 		// #2971: collect_lane_results is observation-only — cancel_pending is
-		// answered with typed refusal guidance and nothing is settled. The dead
-		// lane then settles through the production typed-terminal writer with
-		// the same liveness shape the presumed-stale sweep writes, which is the
-		// shape the #2615 admission below consumes.
+		// answered with typed refusal guidance and nothing is settled; the
+		// dead lane then settles liveness via the production writer.
 		const cancelled = JSON.parse(
 			await plugin.tool.collect_lane_results.execute(
 				{
@@ -358,8 +352,6 @@ describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
 				?.workflowLaneFailureClass,
 		).toBe('liveness');
 
-		// Typed-terminal admission: the disclosure write ADMITS the liveness
-		// dimension instead of refusing it as classless (#2615).
 		const admission = await tool('write_pr_review_artifact', {
 			kind: 'findings',
 			run_id: RUN_ID,
@@ -386,7 +378,6 @@ describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
 			failure_class: 'liveness',
 		});
 
-		// Micro wave + trigger ledger.
 		const inlineTriggers: PrReviewInlineTriggerRow[] =
 			PR_REVIEW_REQUIRED_MICRO_LANE_IDS.map((triggerId) => ({
 				trigger_id: triggerId,
@@ -420,7 +411,6 @@ describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
 			}),
 		).toMatchObject({ success: true });
 
-		// Reviewer over the sentinel inventory, then the findings ladder.
 		await tool('dispatch_lanes_async', {
 			batch_id: 'r02-reviewer',
 			mode: 'swarm-pr-review:reviewer',
