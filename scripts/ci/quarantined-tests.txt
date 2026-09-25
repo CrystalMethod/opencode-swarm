@@ -30,7 +30,7 @@
 # also mkdtempSync/rmSync'd. Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
 # OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
-#   original flake evidence: closed #2740, block history above)
+#   original flake evidence: closed #2740, ubuntu-latest merge-group retry-flake run 34726206593 `unit (ubuntu-latest, 2)` (attempts 1+2 failed, retry-2 pass; general ledger because no per-OS ledger exists for ubuntu, the #2368 precedent); block history above)
 # EXPIRY: 2026-11-18 — retire when the 500ms wall-clock budget of the slow
 #   event-handler case is root-fixed without freezing its real setTimeout
 #   (the test-stability runbook forbids freezeClock for deadline waits) and

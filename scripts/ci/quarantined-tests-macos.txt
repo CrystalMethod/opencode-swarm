@@ -38,7 +38,7 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 # with no product defect involved. Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
 # OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
-#   original flake evidence: closed #2740, block history below)
+#   original flake evidence: closed #2740, macos-latest merge-group retry-flake run 34726206593 `unit (macos-latest, 4)`, siblings green; block history above)
 # EXPIRY: 2026-11-18 — retire when the probe-timeout sensitivity is root-fixed
 #   (raise PROBE_TIMEOUT_MS or pre-warm the bun build) and the file passes on
 #   macos-latest merge-group runs (#2973 cohort row 14).
@@ -60,7 +60,7 @@ tests/unit/utils/bun-compat-exit-first-2530.test.ts
 # Pre-existing, unrelated to any specific PR.
 # Quarantined per issue #2740; tracked under #1782 (test-stability sprint).
 # OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
-#   original flake evidence: closed #2740, block history below)
+#   original flake evidence: closed #2740, macos-latest merge-group retry-flake run 34726206593 `unit (macos-latest, 6)`, siblings green; block history above)
 # EXPIRY: 2026-11-18 — retire when the per-test env-mutation / temp-dir
 #   teardown flake is root-fixed and the file passes on macos-latest
 #   merge-group runs (#2973 cohort row 15).
@@ -94,7 +94,7 @@ tests/unit/commands/promote-registration.test.ts
 # only this entry and pins the no-duplicate invariant for the other three.
 # Quarantined per issue #2730; tracked under #1782 (test-stability sprint).
 # OWNER: zaxbysauce — issue #2973 (I3 renewal-cohort retirement tracker;
-#   original flake evidence: closed #2730, block history below)
+#   original flake evidence: closed #2730, block history above)
 # EXPIRY: 2026-11-18 — retire when the macos-only retry-flake has a
 #   reproducible diagnosis or a root fix and the file passes on macos-latest
 #   merge-group runs (#2973 cohort row 16).
