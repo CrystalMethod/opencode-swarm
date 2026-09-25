@@ -239,6 +239,22 @@ async function getLatestCommitShortSha(directory: string): Promise<string> {
 }
 
 /**
+ * Whether a task has a non-empty declared scope in the plan (fail-open).
+ * Mirrors the comparison-attempt predicate of the scope check so callers can
+ * detect the repository-wide fallback path without parsing warning text.
+ */
+export function hasDeclaredDiffScope(
+	taskId: string,
+	directory: string,
+): boolean {
+	try {
+		return getDeclaredScope(taskId, directory) !== null;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Validate that git-changed files match the declared scope for a task.
  * Returns a warning string if undeclared files were modified, null otherwise.
  * Never throws.

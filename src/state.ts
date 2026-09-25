@@ -3085,6 +3085,21 @@ export function recordModifiedFileForTask(
 }
 
 /**
+ * Whether a per-task attribution slot EXISTS for the task (present-but-empty
+ * counts as present). Distinguishes "no record" from "record with zero files"
+ * for callers that must not conflate the two (issue #2926 follow-up).
+ */
+export function hasModifiedFilesForTask(
+	session: AgentSessionState | undefined,
+	taskId: string,
+): boolean {
+	if (!session) return false;
+	if (!isValidTaskId(taskId)) return false;
+	if (!(session.modifiedFilesByTask instanceof Map)) return false;
+	return session.modifiedFilesByTask.has(taskId);
+}
+
+/**
  * Return a defensive copy of the files attributed to one task.
  */
 export function getModifiedFilesForTask(

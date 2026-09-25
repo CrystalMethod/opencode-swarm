@@ -25,7 +25,7 @@ import {
 	readTaskEvidenceRaw,
 	TASK_GATE_REQUIREMENTS_RECONSTRUCTION_SENTINEL,
 } from '../gate-evidence.js';
-import { validateDiffScope } from '../hooks/diff-scope';
+import { hasDeclaredDiffScope, validateDiffScope } from '../hooks/diff-scope';
 import { validateSwarmPath } from '../hooks/utils.js';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { matchesTier3 } from '../parallel/tier3-classifier.js';
@@ -50,6 +50,7 @@ import {
 	hasActiveLeanTurbo,
 	hasActiveTurboMode,
 	hasBothStageBCompletions,
+	hasModifiedFilesForTask,
 	isStageBRouteRequired,
 	recordStageBCompletion,
 	startAgentSession,
@@ -205,6 +206,13 @@ export interface UpdateTaskStatusResult {
 	new_status?: string;
 	current_phase?: number;
 	errors?: string[];
+	/**
+	 * Non-blocking advisory lines (issue #2926) — e.g. the SCOPE ADVISORY
+	 * disclosing that the completion's scope check ran without the session's
+	 * per-task attribution record. Present on successful completions so the
+	 * degraded-fallback disclosure reaches the operator on the common path.
+	 */
+	warnings?: string[];
 	/** Present when the call failed due to lock contention. Instructs the caller to retry. */
 	recovery_guidance?: string;
 }
@@ -1111,6 +1119,35 @@ export function checkReviewerGate(
 }
 
 /**
+ * Whether any other live session holds a non-empty attribution record for the
+ * task (exact taskId match; checking session excluded; sessions are only
+ * compared within the same project-identity class — both keyed-and-equal, or
+ * both key-less — so a key-less checker cannot claim a cross-project record).
+ * Bounded fail-open probe: read-only, one pass with early exit, per-entry Map
+ * guard so one malformed legacy entry skips only itself instead of aborting
+ * the pass.
+ */
+function hasForeignAttributionRecord(
+	taskId: string,
+	checkingSessionId: string,
+): boolean {
+	try {
+		const checker = swarmState.agentSessions.get(checkingSessionId);
+		const checkerProject = checker?.owningProjectKey ?? null;
+		for (const [sessionId, session] of swarmState.agentSessions) {
+			if (sessionId === checkingSessionId) continue;
+			if (!(session.modifiedFilesByTask instanceof Map)) continue;
+			if ((session.owningProjectKey ?? null) !== checkerProject) continue;
+			const entry = session.modifiedFilesByTask.get(taskId);
+			if (Array.isArray(entry) && entry.length > 0) return true;
+		}
+		return false;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * Wrapper around checkReviewerGate that appends a diff-scope advisory warning.
  * Keeps checkReviewerGate synchronous for backward compatibility.
  * Stage B parallel is hardcoded (not config-driven).
@@ -1138,21 +1175,44 @@ export async function checkReviewerGateWithScope(
 	// Issue #2818: the repository's latest commit belongs to whichever task
 	// committed last, not to the task being checked. Source the changed-file
 	// set from this session's per-task attribution record when it has one;
-	// validateDiffScope keeps the repository-wide comparison (now with the
-	// evidence named) when it does not.
+	// the repo-wide comparison (with the evidence named) is kept when not.
 	const session = sessionID ? getAgentSession(sessionID) : undefined;
 	const attributedFiles = session
 		? getModifiedFilesForTask(session, taskId)
 		: [];
+	// Issue #2926: the session-keyed read losing the writer session's record
+	// (multi-session swarms, restart, snapshot miss, cap eviction, release)
+	// must not degrade silently. Disclose — advisory-only, never blocking —
+	// on every in-session scoped completion whose checking session has NO
+	// attribution record at all, including when the comparison produced no
+	// warning (clean set). A present-but-empty record is the task's own
+	// legitimately empty slot, not a degraded fallback, so it does not
+	// disclose. Both the condition and the foreign-record probe are evaluated
+	// BEFORE the diff await so the plan reads and the live-session scan
+	// precede any git spawn (the live-state read remains racy against
+	// concurrent session mutations — advisory-text-only consequence).
+	const scopeAdvisoryLine =
+		!!sessionID &&
+		!hasModifiedFilesForTask(session, taskId) &&
+		!!workingDirectory &&
+		hasDeclaredDiffScope(taskId, workingDirectory)
+			? hasForeignAttributionRecord(taskId, sessionID)
+				? `SCOPE ADVISORY: attribution record for task ${taskId} exists under another session — not used for scope verification`
+				: 'SCOPE ADVISORY: no attribution record in this session — not used for scope verification'
+			: null;
 	const scopeWarning = await validateDiffScope(
 		taskId,
 		workingDirectory!,
 		sessionID && attributedFiles.length > 0 ? { attributedFiles } : undefined,
 	).catch(() => null);
-	if (!scopeWarning) return result;
+	if (!scopeWarning && !scopeAdvisoryLine) return result;
 	return {
 		...result,
-		reason: result.reason ? `${result.reason}\n${scopeWarning}` : scopeWarning,
+		reason: [result.reason, scopeWarning, scopeAdvisoryLine]
+			.filter(
+				(part): part is string => typeof part === 'string' && part.length > 0,
+			)
+			.join('\n'),
 	};
 }
 
@@ -1856,6 +1916,10 @@ export async function executeUpdateTaskStatus(
 
 	// State machine check: task must have reached tests_run or complete state
 	// Uses the validated directory for plan.json fallback resolution
+	// Issue #2926: advisory lines captured here must stay visible to the
+	// success return below, so the variable is declared at this (outer)
+	// scope rather than inside the 'completed' block.
+	let scopeAdvisories: string[] | undefined;
 	if (args.status === 'completed') {
 		// Legacy direct-helper callers retain diagnostic recovery. Real tool
 		// execution is exact-evidence authoritative and must stay side-effect-free
@@ -1912,6 +1976,10 @@ export async function executeUpdateTaskStatus(
 			};
 		}
 
+		// Issue #2926: advisory lines from the scope gate must reach the
+		// operator on SUCCESSFUL completions too, not only when the gate
+		// blocks — otherwise the degraded-fallback disclosure is discarded
+		// on exactly the common path it exists to describe.
 		if (phaseRequiresReviewer && !councilCheck.active) {
 			const reviewerCheck = await checkReviewerGateWithScope(
 				args.task_id,
@@ -1919,6 +1987,12 @@ export async function executeUpdateTaskStatus(
 				ctx?.sessionID,
 				ctx?.sessionID ? fallbackDir : undefined,
 			);
+			if (reviewerCheck.reason) {
+				const advisoryLines = reviewerCheck.reason
+					.split('\n')
+					.filter((line) => line.length > 0);
+				if (advisoryLines.length > 0) scopeAdvisories = advisoryLines;
+			}
 			if (reviewerCheck.blocked) {
 				await recordRunMemoryOutcome(directory, {
 					taskId: args.task_id,
@@ -2252,6 +2326,9 @@ export async function executeUpdateTaskStatus(
 			task_id: args.task_id,
 			new_status: args.status,
 			current_phase: updatedPlan.current_phase,
+			...(scopeAdvisories && scopeAdvisories.length > 0
+				? { warnings: scopeAdvisories }
+				: {}),
 		};
 	} catch (error) {
 		// Lock will be released in finally block
