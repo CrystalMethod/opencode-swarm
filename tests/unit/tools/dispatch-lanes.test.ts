@@ -1944,48 +1944,8 @@ describe('executeDispatchLanesAsync and executeCollectLaneResults', () => {
 		expect(ops.create).toHaveBeenCalledTimes(1);
 	});
 
-	test('answers cancel_pending with typed refusal guidance (observation-only, #2971)', async () => {
-		const directory = makeTempDir();
-		const ops: SessionOps = {
-			create: mock(async () => ({
-				data: { id: 'session-cancel' },
-				error: undefined,
-			})),
-			prompt: mock(async () => ({
-				data: { parts: [{ type: 'text' as const, text: 'unused' }] },
-				error: undefined,
-			})),
-			promptAsync: mock(async () => ({ data: undefined, error: undefined })),
-			messages: mock(async () => ({ data: null, error: undefined })),
-			abort: mock(async () => undefined),
-			delete: mock(async () => undefined),
-		};
-		_internals.getSessionOps = () => ops;
-
-		await executeDispatchLanesAsync(
-			{
-				batch_id: 'batch-cancel',
-				lanes: [{ id: 'runtime', agent: 'explorer', prompt: 'inspect' }],
-			},
-			directory,
-		);
-		const result = await executeCollectLaneResults(
-			{ batch_id: 'batch-cancel', cancel_pending: true },
-			directory,
-		);
-
-		// #2971: the collector is observation-only — cancel_pending is answered
-		// with typed refusal guidance and nothing is aborted or settled. This
-		// harness has no messages client, so the response also carries the
-		// #2381 no_client observer diagnostic.
-		expect(result.success).toBe(false);
-		expect(result.cancelled).toBe(0);
-		expect(result.pending).toBe(1);
-		expect(result.cancellation_refused).toHaveLength(1);
-		expect(result.cancellation_refused?.[0]?.next_action).toContain(
-			'cancel_lane_batch',
-		);
-	});
+	// The observation-only cancel_pending pin (issue #2971) lives in
+	// dispatch-lanes-cancel-bounded.test.ts (FR-006 line-cap split).
 
 	test('sweeps stale async rows during collection and reports failure', async () => {
 		const directory = makeTempDir();

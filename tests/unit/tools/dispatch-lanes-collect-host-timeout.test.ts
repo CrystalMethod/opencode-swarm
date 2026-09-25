@@ -1,9 +1,4 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { findByBatchId } from '../../../src/background/pending-delegations';
-import {
-	_internals as cancelInternals,
-	executeCancelLaneBatch,
-} from '../../../src/tools/cancel-lane-batch';
 import {
 	_internals,
 	_test_exports,
@@ -480,47 +475,6 @@ describe('collect_lane_results host-call deadline', () => {
 		expect(messages).toHaveBeenCalledTimes(1);
 	});
 
-	test('bounds a hung session.abort call on the confirmed cancel surface without claiming cancellation (issue #2971)', async () => {
-		const directory = makeTempDir();
-		const batchId = 'hung-abort';
-		await recordPending({ directory, batchId });
-		const abort = mock(() => new Promise<never>(() => {}));
-		// The collector is observation-only post-#2971, so the bounded-abort
-		// contract lives on cancel_lane_batch: a hung session.abort under a
-		// CONFIRMED cancellation must never claim cancellation — the lane is
-		// left pending and the abort timeout is reported in errors[].
-		const realAbortBudgetMs = cancelInternals.abortBudgetMs;
-		cancelInternals.abortBudgetMs = 25;
-		const realCancelOps = cancelInternals.getSessionOps;
-		cancelInternals.getSessionOps = () =>
-			({
-				...baseOps(),
-				abort,
-				status: mock(async () => ({
-					data: { [`${batchId}-session`]: { type: 'idle' } },
-					error: undefined,
-				})),
-			}) as never;
-
-		try {
-			const result = await withTestDeadline(
-				executeCancelLaneBatch(
-					{
-						batch_id: batchId,
-						reason: 'hung-abort probe',
-						confirm: true,
-					},
-					directory,
-				),
-			);
-			expect(result.cancelled).toBe(0);
-			expect(result.errors.join('; ')).toContain('session.abort');
-			const record = findByBatchId(directory, batchId)[0];
-			expect(record.status).toBe('pending');
-			expect(abort).toHaveBeenCalledTimes(1);
-		} finally {
-			cancelInternals.getSessionOps = realCancelOps;
-			cancelInternals.abortBudgetMs = realAbortBudgetMs;
-		}
-	});
+	// The bounded hung-abort cancel pin (issue #2971) lives in
+	// dispatch-lanes-cancel-bounded.test.ts (FR-006 line-cap split).
 });
