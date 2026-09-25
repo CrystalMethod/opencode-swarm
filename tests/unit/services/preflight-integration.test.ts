@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { randomUUID } from 'crypto';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import {
@@ -119,7 +120,7 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 	function makeReport(detectedOnly: boolean): PreflightReport {
 		return {
 			id: 'report-1',
-			timestamp: Date.now(),
+			timestamp: 0,
 			phase: 1,
 			overall: 'pass',
 			checks: [
@@ -162,8 +163,8 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 
 		try {
 			await getGlobalEventBus().publish('preflight.requested', {
-				id: `req-${Date.now()}`,
-				triggeredAt: Date.now(),
+				id: 'req-1',
+				triggeredAt: 0,
 				currentPhase: 1,
 				source: 'manual',
 				reason: 'test',
@@ -174,7 +175,7 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 	}
 
 	it('should surface detectedOnly as a distinct skipped outcome with a tests-not-executed message', async () => {
-		const swarmDir = path.join(tmpdir(), `preflight-detected-${Date.now()}`);
+		const swarmDir = path.join(tmpdir(), `preflight-detected-${randomUUID()}`);
 
 		await triggerPreflight(swarmDir, makeReport(true));
 
@@ -186,7 +187,7 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 	});
 
 	it('should report a normal success outcome when detectedOnly is not set', async () => {
-		const swarmDir = path.join(tmpdir(), `preflight-pass-${Date.now()}`);
+		const swarmDir = path.join(tmpdir(), `preflight-pass-${randomUUID()}`);
 
 		await triggerPreflight(swarmDir, makeReport(false));
 
@@ -198,12 +199,12 @@ describe('createPreflightIntegration automation-status detectedOnly', () => {
 	});
 
 	it('should preserve failure outcome and real failure message even when tests are detectedOnly', async () => {
-		const swarmDir = path.join(tmpdir(), `preflight-fail-${Date.now()}`);
+		const swarmDir = path.join(tmpdir(), `preflight-fail-${randomUUID()}`);
 		const failureMessage = 'Preflight failed: 1 check(s) failed';
 
 		await triggerPreflight(swarmDir, {
 			id: 'report-2',
-			timestamp: Date.now(),
+			timestamp: 0,
 			phase: 1,
 			overall: 'fail',
 			checks: [
