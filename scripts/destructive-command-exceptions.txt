@@ -20,4 +20,5 @@ tool:repair_gate_evidence | evidence | Rebuilds recoverable gate evidence from d
 tool:consensus_mine | knowledge | Prunes only its own previously generated consensus reports (self-scoped artifacts) and appends to the dedup ledger; no user work is destroyed.
 tool:knowledge_remove | knowledge | Deletes knowledge entries with no confirm token today; surfaced by this enumeration and tracked for two-step adoption in epic #2945.
 tool:knowledge_archive | knowledge | Quarantine/archive purge; J4 (#2950) owns its reporting contract and primitive adoption is tracked in epic #2945.
+tool:cancel_lane_batch | pr-review | Cancels dispatch_lanes_async lanes under its own authorization gate (confirm: true + bounded reason, operator_cancelled terminal class, race-safe busy/refuse; live work never destroyed) — shipped in #2977, absorbed during this PR's rebase; surfaced by Check 9 and dispositioned here.
 tool:external_skill_delete | skills | Deletes external skill directories with no confirm token today; surfaced by this enumeration and tracked in epic #2945.
