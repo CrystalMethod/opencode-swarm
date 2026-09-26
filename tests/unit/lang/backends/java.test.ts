@@ -16,7 +16,6 @@
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	_internals,
@@ -24,6 +23,7 @@ import {
 	detectFramework,
 	isMainClass,
 } from '../../../../src/lang/backends/java';
+import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
 describe('buildJavaBackend', () => {
 	test('returns a LanguageBackend for the java profile', () => {
@@ -106,9 +106,7 @@ describe('selectTestFramework', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-tf-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-tf-');
 	});
 
 	afterEach(() => {
@@ -205,9 +203,7 @@ describe('selectEntryPoints', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-ep-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-ep-');
 	});
 
 	afterEach(() => {
@@ -304,9 +300,7 @@ describe('selectFramework', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-fw-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-fw-');
 	});
 
 	afterEach(() => {

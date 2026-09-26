@@ -1,16 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { _internals } from '../../../../src/lang/backends/java';
+import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
 describe('wrapperExists', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-we-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-we-');
 	});
 
 	afterEach(() => {
@@ -36,9 +34,7 @@ describe('resolveMvnwCommand', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-mvnw-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-mvnw-');
 	});
 
 	afterEach(() => {
@@ -66,9 +62,7 @@ describe('resolveGradlewCommand', () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
-		tmpDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'java-backend-gradlew-')),
-		);
+		tmpDir = canonicalMkdtemp('java-backend-gradlew-');
 	});
 
 	afterEach(() => {
