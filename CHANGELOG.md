@@ -1,5 +1,23 @@
 # Changelog
 
+## [7.186.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.7...v7.186.8) (2026-09-26)
+
+
+### Bug Fixes
+
+* **agents:** raise architect prompt ceiling 161000-&gt;161500; re-pin ratchets ([cf12f3c](https://github.com/ZaxbyHub/opencode-swarm/commit/cf12f3cbd248e367924789b130e543aed34025e2))
+* **ci:** correct history-pointer direction and restore run provenance in renewed ledger entries ([#2900](https://github.com/ZaxbyHub/opencode-swarm/issues/2900)) ([6c50363](https://github.com/ZaxbyHub/opencode-swarm/commit/6c50363e302186289ea5252b52e31bf6e98de750))
+* **ci:** renew 16 quarantine-ledger entries to EXPIRY 2026-11-18 with open anchors ([#2900](https://github.com/ZaxbyHub/opencode-swarm/issues/2900)) ([4d3089b](https://github.com/ZaxbyHub/opencode-swarm/commit/4d3089bbb10cc98594204544a9ccfd3cea8cd557))
+* **ci:** renew 16 quarantine-ledger entries to EXPIRY 2026-11-18 with open anchors ([#2900](https://github.com/ZaxbyHub/opencode-swarm/issues/2900)) ([5725a4b](https://github.com/ZaxbyHub/opencode-swarm/commit/5725a4bb50b51d3459becd4d5401e06b10bffc99))
+* **dispatch-lanes:** skip the batched status probe when no lane is open ([c766e08](https://github.com/ZaxbyHub/opencode-swarm/commit/c766e0882339834a686156eb4668cec66dc52dad))
+* **lint:** resolve biome-debt findings CI's newer biome errors on ([238b0b1](https://github.com/ZaxbyHub/opencode-swarm/commit/238b0b106eae761ebef7e787ff164d39d0bac61e))
+* **pr-workflow:** count budget-exhausted and re-read-uncertain lanes as not processed ([cc929cc](https://github.com/ZaxbyHub/opencode-swarm/commit/cc929cc5530d96175af956bd3f2bbd8dc50f286b))
+* **pr-workflow:** make lane cancellation race-safe; observer timeout can no longer become terminal coverage failure ([94d714f](https://github.com/ZaxbyHub/opencode-swarm/commit/94d714fb684f772015fb20bee4bd84f0a3c6f373))
+* **pr-workflow:** make lane cancellation race-safe; observer timeout can no longer become terminal coverage failure ([#2971](https://github.com/ZaxbyHub/opencode-swarm/issues/2971)) ([935197d](https://github.com/ZaxbyHub/opencode-swarm/commit/935197d7b667e9f47d928174250a4e84331dfd18))
+* **pr-workflow:** resolve swarm-pr-review round-1 findings (degraded-probe fail-closed, citations, stale tests) ([85d2db8](https://github.com/ZaxbyHub/opencode-swarm/commit/85d2db8d22fa1a9249d27b739930fb0d4daa7b11))
+* **pr-workflow:** truthful abort-error accounting, registry re-pin completion, fragment gate claim ([cb178d2](https://github.com/ZaxbyHub/opencode-swarm/commit/cb178d22825851355eb063efc68451d8146c92a6))
+* **pr-workflow:** wire cancel_lane_batch into the PR-workflow controller allowlist; correct refusal and completion-gate guidance ([#2971](https://github.com/ZaxbyHub/opencode-swarm/issues/2971) review round 1) ([93a4655](https://github.com/ZaxbyHub/opencode-swarm/commit/93a465565203e676f2fc82ce1922f406a8ae6d04))
+
 ## [7.186.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.186.6...v7.186.7) (2026-09-25)
 
 
