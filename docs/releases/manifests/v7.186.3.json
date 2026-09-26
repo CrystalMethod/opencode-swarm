@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.3",
+  "tagCommit": "82f8bcbde426ddc7e3e8cc5d0466d1c44f9d6f4b",
+  "targetCommitish": "82f8bcbde426ddc7e3e8cc5d0466d1c44f9d6f4b",
+  "releaseBodySha256": "6374eaff414f0c36d5f9a0eaffa2826c8e7c24173d08bc9eef939428d4b12b43",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2818-scope-warning-attribution.md",
+      "sha256": "28c3a3cc1b46fd9492af2758cc877424a9e0c0ae9f72a4a0b45d9db2de311fff"
+    }
+  ]
+}
