@@ -60,6 +60,13 @@ describe('dispatch_lanes_async PR workflow wave contract', () => {
 		] as const;
 
 		for (const [index, mode] of modes.entries()) {
+			// Issue #2971: micro mode is namespace-gated at PARSE time, so its
+			// lane must carry a valid micro trigger id to reach the wave check;
+			// the other modes keep the free-form label.
+			const workflowLane =
+				mode === 'swarm-pr-review:micro'
+					? 'auth-identity-secrets'
+					: 'intent-architecture';
 			const result = await executeDispatchLanesAsync(
 				{
 					mode,
@@ -75,7 +82,7 @@ describe('dispatch_lanes_async PR workflow wave contract', () => {
 							id: `lane-${index}`,
 							agent: 'explorer',
 							prompt: `Inspect ${mode}`,
-							workflow_lane: 'intent-architecture',
+							workflow_lane: workflowLane,
 						},
 					],
 				},
