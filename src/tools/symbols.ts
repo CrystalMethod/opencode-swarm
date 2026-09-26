@@ -1337,15 +1337,32 @@ export function extractJavaSymbols(
 			const postCloses = (post.match(/\}/g) ?? []).length;
 			// A type is LOCAL when it's declared inside a method/block body
 			// rather than directly as a member of its enclosing type (i.e.
-			// this line doesn't sit at the enclosing type's own member
-			// depth), or when its enclosing type is itself local — locality
-			// propagates to nested types the same way it does to members.
-			const enclosingForLocality =
-				typeStack.length > 0 ? typeStack[typeStack.length - 1] : null;
+			// the DECLARATION's own depth doesn't sit at the enclosing
+			// type's own member depth), or when its enclosing type is
+			// itself local — locality propagates to nested types the same
+			// way it does to members. Uses `declDepth` (depthBeforeLine
+			// folded with `preNet`), not the raw `depthBeforeLine` — a
+			// continuation line closing a multi-line annotation's argument
+			// list before the modifiers (e.g. `}) public static class Foo
+			// {`) has depthBeforeLine one level HIGHER than the type's own
+			// true declaration depth, which without this correction
+			// misclassified every such type (and all of its members) as
+			// local. `enclosingForLocality` is the innermost stack entry at
+			// or below `declDepth` — not simply the top of the stack, since
+			// the top entry's own depth can itself be deeper than
+			// `declDepth` on a continuation line.
+			const declDepth = depthBeforeLine + preNet;
+			let enclosingForLocality: JavaTypeStackEntry | null = null;
+			for (let j = typeStack.length - 1; j >= 0; j--) {
+				if (typeStack[j].depth <= declDepth) {
+					enclosingForLocality = typeStack[j];
+					break;
+				}
+			}
 			const isLocal =
 				enclosingForLocality !== null &&
 				(enclosingForLocality.local ||
-					depthBeforeLine !== enclosingForLocality.depth);
+					declDepth !== enclosingForLocality.depth);
 			if (postOpens > postCloses) {
 				// This type's own `{` is on this line and doesn't close by
 				// EOL — its members sit one level deeper than the depth
