@@ -342,7 +342,7 @@ export const TOOL_METADATA = {
 	},
 	checkpoint: {
 		description:
-			'create named git checkpoints for save, restore, and delete — use before risky operations to enable rollback',
+			'create named git checkpoints for save, restore, and delete — use before risky operations to enable rollback; a destructive restore previews first and requires the confirm_token issued in the preview (#2946)',
 		agents: ['architect'],
 	},
 	pkg_audit: {

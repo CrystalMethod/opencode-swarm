@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.2",
+  "tagCommit": "4def49181a853b75f118a597c83f992089de2925",
+  "targetCommitish": "4def49181a853b75f118a597c83f992089de2925",
+  "releaseBodySha256": "beaae5032a7e9c9546a446bf210bc5312a6303c51cfaadb59c60503afc9127a7",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2789-legacy-cost-null-semantics.md",
+      "sha256": "93317f70b9fe65b6570e4a2442b031c723e4b96ff86cdad300f418a2c7a3ccc5"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2899-release-backfill-frontmatter.md",
+      "sha256": "ecded75a9dbf4905a288f5d2a9169476445b9f14e5db1138bdc6f48080846de7"
+    }
+  ]
+}

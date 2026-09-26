@@ -3351,7 +3351,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		pathGrammar: '.swarm/reset-backups/{kind}-{timestamp}/',
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/commands/reset-backup.ts'],
-		writerCitations: ['src/commands/reset-backup.ts:38 backupSwarmStateBeforeReset — cpSync fail-open; :117 pruneOldResetBackups'],
+		writerCitations: ['src/commands/reset-backup.ts:43 backupSwarmStateBeforeReset — cpSync fail-open; :153 pruneOldResetBackups'],
 		readerCitations: ['restore is operator-driven (path reported to user, reset-session.ts:68)'],
 		schemaVersion: 'verbatim copies',
 		stateClass: 'governed-content',
