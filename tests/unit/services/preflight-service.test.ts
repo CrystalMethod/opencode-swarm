@@ -19,7 +19,6 @@ import {
 	type PreflightReport,
 	runPreflight,
 } from '../../../src/services/preflight-service';
-import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 
 const originalRunSecretscan = _internals.runSecretscan;
 
@@ -327,12 +326,17 @@ describe('Preflight Service', () => {
 				skipVersion: true,
 			};
 
-			const { report, duration } = await withFrozenClockAsync(async () => {
-				const startTime = Date.now();
-				const report = await runPreflight(testDir, 1, config);
-				const duration = Date.now() - startTime;
-				return { report, duration };
-			});
+			// Measure with performance.now() against the REAL clock (not
+			// frozen): a frozen Date.now() would make both duration and
+			// report.totalDurationMs (which runPreflight computes internally
+			// via Date.now()) constant, so these assertions could never fail
+			// regardless of actual behavior. performance.now() is also
+			// exempt from this repo's check:test-clock raw-clock lint
+			// (RAW_CLOCK_PATTERN matches only Date.now()/new Date()/
+			// spyOn(Date), not performance.now()).
+			const startTime = performance.now();
+			const report = await runPreflight(testDir, 1, config);
+			const duration = performance.now() - startTime;
 
 			// Should complete quickly with all checks except lint skipped
 			expect(duration).toBeLessThan(5000); // Should complete in reasonable time

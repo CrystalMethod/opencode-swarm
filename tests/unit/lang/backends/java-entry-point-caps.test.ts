@@ -59,4 +59,71 @@ describe('selectEntryPoints size caps', () => {
 		expect(eps.length).toBeGreaterThan(0);
 		expect(eps.length).toBeLessThan(totalFiles);
 	});
+
+	test('bounds directory-walk breadth even with zero .java files', async () => {
+		// A tree with many subdirectories and non-Java files but no .java
+		// files anywhere costs real synchronous time in readdirSync/statSync
+		// calls even though the byte caps (which only apply to .java files)
+		// never engage. Before the entries-visited bound, this scan was
+		// unbounded in the directory/file COUNT dimension. Bound it to a
+		// count well under the entries cap and confirm the scan returns
+		// (rather than hanging or exceeding the entries budget) quickly.
+		const dirCount = 200;
+		for (let i = 0; i < dirCount; i++) {
+			const d = path.join(tmpDir, `pkg${i}`);
+			fs.mkdirSync(d);
+			for (let j = 0; j < 5; j++) {
+				fs.writeFileSync(path.join(d, `Notes${j}.txt`), 'not java');
+			}
+		}
+		const start = performance.now();
+		const eps = await backend.selectEntryPoints!(tmpDir);
+		const elapsedMs = performance.now() - start;
+		expect(eps).toEqual([]);
+		// Not a tight timing assertion (CI machines vary), just confirms the
+		// scan terminates promptly rather than doing unbounded work.
+		expect(elapsedMs).toBeLessThan(5000);
+	});
+
+	test('ignores common non-Java output directories (out/, bin/, .venv/)', async () => {
+		fs.writeFileSync(
+			path.join(tmpDir, 'App.java'),
+			'public class App { public static void main(String[] args) {} }\n',
+		);
+		for (const ignoredDir of ['out', 'bin', '.venv']) {
+			const d = path.join(tmpDir, ignoredDir);
+			fs.mkdirSync(d);
+			for (let i = 0; i < 50; i++) {
+				fs.writeFileSync(path.join(d, `f${i}.bin`), 'x'.repeat(1024));
+			}
+		}
+		const eps = await backend.selectEntryPoints!(tmpDir);
+		expect(eps).toEqual(['App.java']);
+	});
+
+	test('finds src/main/java entry point even when src/test/java is large', async () => {
+		// Regression: a LIFO directory walk that visits `src/test` before
+		// `src/main` could exhaust the total-byte cap on test sources before
+		// the real entry point in `src/main` was ever reached, silently
+		// returning []. Prefer main-like directories over test directories
+		// so the main class is still found regardless of readdir order.
+		const mainDir = path.join(tmpDir, 'src', 'main', 'java', 'com', 'acme');
+		fs.mkdirSync(mainDir, { recursive: true });
+		fs.writeFileSync(
+			path.join(mainDir, 'App.java'),
+			'public class App { public static void main(String[] args) {} }\n',
+		);
+		const testDir = path.join(tmpDir, 'src', 'test', 'java', 'com', 'acme');
+		fs.mkdirSync(testDir, { recursive: true });
+		// Well over the 512KB total-byte cap if test sources were scanned
+		// first: 200 files x ~6KB each.
+		const testFileContent = 'x'.repeat(6 * 1024);
+		for (let i = 0; i < 200; i++) {
+			fs.writeFileSync(path.join(testDir, `Test${i}.java`), testFileContent);
+		}
+		const eps = await backend.selectEntryPoints!(tmpDir);
+		expect(eps).toEqual([
+			path.join('src', 'main', 'java', 'com', 'acme', 'App.java'),
+		]);
+	});
 });

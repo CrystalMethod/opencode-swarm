@@ -36,7 +36,15 @@ const PROFILE_ID = 'java';
 
 /** Bounds for the entry-point tree scan — no unbounded recursion. */
 const MAX_ENTRY_POINT_DEPTH = 8;
-const MAX_ENTRY_POINT_FILES = 1000;
+/**
+ * Total directory-entry budget for the scan: every directory and file the
+ * walk visits counts against this, not just `.java` files. A tree with many
+ * subdirectories or non-Java files (an IDE output directory, a `.venv`
+ * alongside the Java sources, etc.) costs real synchronous time even when it
+ * contains zero `.java` files, so the cap must bound breadth, not just the
+ * number of Java files found.
+ */
+const MAX_ENTRY_POINT_ENTRIES = 5000;
 /**
  * Per-file size cap for the entry-point scan. A single oversized `.java` file
  * is skipped rather than read in full, keeping the synchronous init-path scan
@@ -45,9 +53,9 @@ const MAX_ENTRY_POINT_FILES = 1000;
 const MAX_ENTRY_POINT_FILE_BYTES = 256 * 1024;
 /**
  * Total-byte cap across all `.java` files read during the entry-point scan.
- * The scan stops once cumulative bytes read would exceed this, bounding the
- * synchronous init-path work well under the ~50ms budget (the measured 80-90ms
- * warm-cache case read ~9.6MB; 512KB is ~5% of that).
+ * The scan stops once cumulative bytes read would exceed this. Note this
+ * bounds *file-read* cost only — see `MAX_ENTRY_POINT_ENTRIES` for the
+ * directory-walk breadth bound, which this cap alone does not provide.
  */
 const MAX_ENTRY_POINT_TOTAL_BYTES = 512 * 1024;
 /** Directories never worth scanning for main classes. */
@@ -58,6 +66,26 @@ const IGNORED_ENTRY_POINT_DIRS = new Set([
 	'build',
 	'node_modules',
 	'.idea',
+	'out',
+	'bin',
+	'.venv',
+	'venv',
+	'dist',
+]);
+/**
+ * Test-source directories, walked last (deprioritized) relative to sibling
+ * directories at the same level. A real `public static void main` almost
+ * always lives under `src/main/...`, never under a test tree; walking test
+ * directories first can otherwise exhaust `MAX_ENTRY_POINT_TOTAL_BYTES` on
+ * test sources before the real entry point is ever reached (readdir order on
+ * some filesystems visits `test` before `main`).
+ */
+const DEFERRED_ENTRY_POINT_DIRS = new Set([
+	'test',
+	'tests',
+	'androidTest',
+	'integrationTest',
+	'testFixtures',
 ]);
 
 /**
@@ -75,7 +103,7 @@ export function isMainClass(source: string): boolean {
 function scanForMainClasses(dir: string): string[] {
 	const results: string[] = [];
 	const stack: Array<{ dir: string; depth: number }> = [{ dir, depth: 0 }];
-	let visited = 0;
+	let entriesVisited = 0;
 	let totalBytes = 0;
 	while (stack.length > 0) {
 		const current = stack.pop();
@@ -86,14 +114,25 @@ function scanForMainClasses(dir: string): string[] {
 		} catch {
 			continue;
 		}
+		// Push deferred (test-source) directories first and preferred
+		// directories last, so the LIFO stack pops preferred directories
+		// before deferred ones — a real main class is far more likely under
+		// `src/main` than `src/test`, and this avoids the total-byte cap
+		// being exhausted on test sources before `src/main` is ever reached.
+		const deferredDirs: string[] = [];
+		const preferredDirs: string[] = [];
 		for (const entry of entries) {
-			if (visited >= MAX_ENTRY_POINT_FILES) return results;
+			entriesVisited++;
+			if (entriesVisited > MAX_ENTRY_POINT_ENTRIES) return results;
 			const full = path.join(current.dir, entry.name);
 			if (entry.isDirectory()) {
 				if (IGNORED_ENTRY_POINT_DIRS.has(entry.name)) continue;
-				stack.push({ dir: full, depth: current.depth + 1 });
+				if (DEFERRED_ENTRY_POINT_DIRS.has(entry.name)) {
+					deferredDirs.push(full);
+				} else {
+					preferredDirs.push(full);
+				}
 			} else if (entry.isFile() && entry.name.endsWith('.java')) {
-				visited++;
 				let size: number;
 				try {
 					size = fs.statSync(full).size;
@@ -117,6 +156,10 @@ function scanForMainClasses(dir: string): string[] {
 				}
 			}
 		}
+		for (const d of deferredDirs)
+			stack.push({ dir: d, depth: current.depth + 1 });
+		for (const d of preferredDirs)
+			stack.push({ dir: d, depth: current.depth + 1 });
 	}
 	return results;
 }
@@ -220,9 +263,13 @@ async function selectTestFramework(
  * Identify entry points: `.java` files declaring `public static void main`.
  */
 async function selectEntryPoints(dir: string): Promise<string[]> {
-	// Yield to the event loop before running the synchronous, potentially
-	// slow scan, so a caller on a hot synchronous path is never blocked
-	// within the same tick (defense in depth alongside the 2.3 size caps).
+	// Yield to the event loop once before running the scan, so any work
+	// already queued for this tick gets a chance to run first. This does
+	// NOT let a timeout/AbortSignal preempt the scan itself — once
+	// `scanForMainClasses` starts, it runs to completion synchronously; a
+	// timer callback cannot fire mid-loop. The real bound on the scan's
+	// cost is `MAX_ENTRY_POINT_ENTRIES` / the byte caps inside
+	// `scanForMainClasses`, not this yield.
 	await new Promise<void>((resolve) => setImmediate(resolve));
 	return scanForMainClasses(dir);
 }

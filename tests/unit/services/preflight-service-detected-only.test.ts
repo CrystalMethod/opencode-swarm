@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as fs from 'fs';
-import { tmpdir } from 'os';
 import * as path from 'path';
 import { resetGlobalEventBus } from '../../../src/background/event-bus';
 import {
@@ -10,6 +9,7 @@ import {
 	runPreflight,
 } from '../../../src/services/preflight-service';
 import { withFrozenClockAsync } from '../../helpers/test-clock.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 describe('Preflight Service (detected-only)', () => {
 	let testDir: string;
@@ -17,7 +17,7 @@ describe('Preflight Service (detected-only)', () => {
 	beforeEach(() => {
 		resetGlobalEventBus();
 		// Create a temporary test directory
-		testDir = fs.mkdtempSync(path.join(tmpdir(), 'preflight-test-'));
+		testDir = canonicalMkdtemp('preflight-test-');
 	});
 
 	afterEach(() => {

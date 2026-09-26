@@ -88,7 +88,7 @@ export function parseJavaImports(rawContent: string): JavaImport[] {
  * to consume the comment's own closing `*\/` and corrupt subsequent
  * comment-stripping across the rest of the file.
  */
-function maskCommentsAndLiterals(content: string): string {
+export function maskCommentsAndLiterals(content: string): string {
 	let out = '';
 	let i = 0;
 	const n = content.length;

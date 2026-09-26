@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
+import { maskCommentsAndLiterals } from '../lang/java-extraction';
 import { collectPythonAllNames } from '../lang/symbol-visibility';
 import { createSwarmTool } from './create-tool';
 
@@ -1156,6 +1157,8 @@ const JAVA_STATEMENT_KEYWORDS = new Set([
 	'new',
 	'yield',
 	'assert',
+	'else',
+	'do',
 ]);
 
 /**
@@ -1176,21 +1179,46 @@ export function extractJavaSymbols(
 
 	const symbols: SymbolInfo[] = [];
 	const lines = content.split('\n');
+	// Match against comment/string/text-block-masked lines so commented-out
+	// or documentation-example declarations (e.g. `/* public void x() {} */`)
+	// are never reported as real symbols. `maskCommentsAndLiterals` preserves
+	// line breaks, so line numbers stay aligned with the unmasked `lines`
+	// array used below for the human-readable `signature` field.
+	const maskedLines = maskCommentsAndLiterals(content).split('\n');
 	for (let i = 0; i < lines.length; i++) {
-		const line = lines[i];
+		const line = maskedLines[i];
+		const rawLine = lines[i];
 
 		const typeDecl = line.match(
-			/^(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
+			/^\s*(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
 		);
 		if (typeDecl) {
+			// Track the innermost/most-recently-declared type name, so a
+			// package-private constructor inside a NESTED class (e.g. a
+			// `static class Builder { Builder() {} }`) is matched against
+			// its own enclosing type, not the outer file-level class. The
+			// leading `\s*` above is what lets indented/nested type
+			// declarations be found at all — without it, a nested class's
+			// own declaration line, and therefore its constructors, were
+			// silently skipped.
 			lastTypeName = typeDecl[2];
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a comment/string containing "public" must not flip
 			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
-			const modifiers = typeDecl[0].slice(
-				0,
-				typeDecl[0].lastIndexOf(typeDecl[1]),
-			);
+			// Uses indexOf (not lastIndexOf): typeDecl[1] here is the
+			// declaration KEYWORD (class/interface/enum/record), which can
+			// also occur as a substring of the type NAME itself (e.g.
+			// `class publicclass {}` contains "class" again inside
+			// "publicclass") — lastIndexOf would find that inner occurrence
+			// and slice past the real keyword, letting stray modifier-like
+			// substrings inside the name leak into the "modifiers" slice.
+			// None of the modifier keywords contain "class"/"interface"/
+			// "enum"/"record" as a substring, so the FIRST occurrence is
+			// always the real declaration keyword. (This is the opposite
+			// case from the method branch below, where lastIndexOf is
+			// required because a modifier keyword CAN contain a short
+			// method name as a substring.)
+			const modifiers = typeDecl[0].slice(0, typeDecl[0].indexOf(typeDecl[1]));
 			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: typeDecl[2],
@@ -1201,7 +1229,7 @@ export function extractJavaSymbols(
 							? 'enum'
 							: 'class',
 				exported: visibility === 'public',
-				signature: line.trim().substring(0, 100),
+				signature: rawLine.trim().substring(0, 100),
 				line: i + 1,
 			});
 			continue;
@@ -1251,7 +1279,7 @@ export function extractJavaSymbols(
 					name: method[1],
 					kind: 'method',
 					exported: visibility === 'public',
-					signature: line.trim().substring(0, 100),
+					signature: rawLine.trim().substring(0, 100),
 					line: i + 1,
 				});
 			}
