@@ -29,7 +29,7 @@ import {
 	defaultBackendFor,
 	defaultSelectTestFramework,
 } from '../default-backend';
-import { parseJavaImports } from '../java-extraction';
+import { maskCommentsAndLiterals, parseJavaImports } from '../java-extraction';
 import { LANGUAGE_REGISTRY } from '../profiles';
 
 const PROFILE_ID = 'java';
@@ -93,7 +93,14 @@ const DEFERRED_ENTRY_POINT_DIRS = new Set([
  * Pure predicate so tests can exercise it without touching the filesystem.
  */
 export function isMainClass(source: string): boolean {
-	return /\bpublic\s+static\s+void\s+main\s*\(/.test(source);
+	// Masked so a commented-out or documentation-example `main` method is
+	// never mistaken for a real entry point; modifier order is
+	// order-agnostic (`static public void main` is valid Java, just unusual
+	// style).
+	const masked = maskCommentsAndLiterals(source);
+	return /\b(?:public\s+static|static\s+public)\s+void\s+main\s*\(/.test(
+		masked,
+	);
 }
 
 /**

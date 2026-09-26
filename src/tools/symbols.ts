@@ -1162,11 +1162,72 @@ const JAVA_STATEMENT_KEYWORDS = new Set([
 ]);
 
 /**
- * Java symbols: class/interface/enum/record declarations plus methods and
- * constructors. Best-effort regex line parsing; `exported` reflects Java
- * `public` visibility. Records map to the `class` kind (no `record` kind in
- * SymbolInfo). Java keywords are excluded from method names to avoid false
- * positives from control-flow lines (e.g. `if (x)`).
+ * Optional leading annotation(s) before a declaration or modifier list, e.g.
+ * `@Override public`, `@Entity public class Foo`. Must be tried and
+ * backtracked (not required) so `@interface` itself — an annotation TYPE
+ * declaration, not a usage — still matches the type-decl keyword
+ * alternation below rather than being swallowed here as an annotation named
+ * "interface".
+ */
+const JAVA_ANNOTATION_PREFIX = '(?:@[A-Za-z_][\\w.]*(?:\\([^)]*\\))?\\s+)*';
+
+/** A possibly-qualified type name (`Foo`, `java.util.List`). */
+const JAVA_QUALIFIED_IDENT =
+	'[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*';
+
+/**
+ * One level of generic nesting (`<T>`, `<String, List<Integer>>`). Only one
+ * level is supported — a deeper case (`Map<K, Map<V, List<W>>>`) falls back
+ * to not matching the generic suffix, which is a completeness gap, not a
+ * correctness one (the declaration is simply not recognized, never
+ * misidentified as something else).
+ */
+const JAVA_GENERIC = '(?:\\s*<(?:[^<>]|<[^<>]*>)*>)?';
+
+/** Array-return suffix (`[]`, `[] []`). */
+const JAVA_ARRAY_SUFFIX = '(?:\\s*\\[\\s*\\])*';
+
+/** A single type token in a modifier/return-type list, followed by whitespace. */
+const JAVA_TYPE_TOKEN = `${JAVA_QUALIFIED_IDENT}${JAVA_GENERIC}${JAVA_ARRAY_SUFFIX}\\s+`;
+
+const JAVA_TYPE_DECL_RE = new RegExp(
+	`^\\s*${JAVA_ANNOTATION_PREFIX}(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\\s+)*(class|interface|enum|record|@interface)\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+);
+
+/**
+ * A method-level generic type-parameter clause (`<T>`, `<K, V extends Foo>`),
+ * distinct from `JAVA_GENERIC` — this one stands alone before the return
+ * type rather than suffixing a preceding identifier (`public static <T> List<T> f(...)`).
+ */
+const JAVA_TYPE_PARAMS = '(?:<(?:[^<>]|<[^<>]*>)*>\\s+)?';
+
+const JAVA_METHOD_DECL_RE = new RegExp(
+	`^\\s*${JAVA_ANNOTATION_PREFIX}(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\\s+){0,6}${JAVA_TYPE_PARAMS}(?:${JAVA_TYPE_TOKEN})*([A-Za-z_][A-Za-z0-9_]*)\\s*\\(`,
+);
+
+/** One entry per currently-open type declaration, innermost last. */
+interface JavaTypeStackEntry {
+	name: string;
+	kind: 'class' | 'interface' | 'enum';
+	/** Brace depth of this type's OWN members (i.e. just inside its `{`). */
+	depth: number;
+}
+
+/**
+ * Java symbols: class/interface/enum/record/annotation-type declarations
+ * plus methods and constructors. Best-effort regex line parsing; `exported`
+ * reflects Java `public` visibility, except that interface (including
+ * `@interface`) members are implicitly public unless explicitly `private`
+ * (Java 9+ private interface methods). Records map to the `class` kind (no
+ * `record` kind in SymbolInfo). Java keywords are excluded from method names
+ * to avoid false positives from control-flow lines (e.g. `if (x)`).
+ *
+ * A method/constructor is only recognized when it sits at the brace depth of
+ * an enclosing type's own body — tracked via a type stack keyed by brace
+ * depth, not by any name seen anywhere in the file. This is what prevents a
+ * same-named call statement inside a method body (e.g. `Foo(1);` inside
+ * `bar()`) from being misidentified as a constructor: that call sits one
+ * level deeper than the enclosing type's member depth.
  */
 export function extractJavaSymbols(
 	filePath: string,
@@ -1174,17 +1235,6 @@ export function extractJavaSymbols(
 ): SymbolInfo[] {
 	const content = readValidatedSourceFile(filePath, cwd);
 	if (content === null) return [];
-
-	// Every type name declared anywhere in the file, so a package-private
-	// constructor is recognized regardless of whether OTHER types were
-	// declared and closed since (e.g. an outer class's constructor
-	// appearing textually after a nested class). This is a simple,
-	// deliberately over-inclusive set rather than a brace-depth-scoped
-	// stack: the only failure mode is two DIFFERENT types sharing a name
-	// with an ambiguous constructor match, which is rare enough in
-	// practice (and harmless — worst case a real constructor is still
-	// recognized as one) to not justify tracking brace depth here.
-	const seenTypeNames = new Set<string>();
 
 	const symbols: SymbolInfo[] = [];
 	const lines = content.split('\n');
@@ -1194,28 +1244,50 @@ export function extractJavaSymbols(
 	// line breaks, so line numbers stay aligned with the unmasked `lines`
 	// array used below for the human-readable `signature` field.
 	const maskedLines = maskCommentsAndLiterals(content).split('\n');
+
+	const typeStack: JavaTypeStackEntry[] = [];
+	// A type decl line with no `{` on it yet (Allman brace style — the `{`
+	// is on a following line); its body depth is fixed once that `{` is seen.
+	let pendingType: { name: string; kind: JavaTypeStackEntry['kind'] } | null =
+		null;
+	let depth = 0;
+
 	for (let i = 0; i < lines.length; i++) {
 		const line = maskedLines[i];
 		const rawLine = lines[i];
+		const depthBeforeLine = depth;
+		const opens = (line.match(/\{/g) ?? []).length;
+		const closes = (line.match(/\}/g) ?? []).length;
 
-		const typeDecl = line.match(
-			/^\s*(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
-		);
+		const typeDecl = line.match(JAVA_TYPE_DECL_RE);
 		if (typeDecl) {
-			// Record the type name, so a package-private constructor
-			// belonging to ANY declared type (nested or outer, regardless
-			// of declaration order) is still recognized. The leading `\s*`
-			// above is what lets indented/nested type declarations be
-			// found at all — without it, a nested class's own declaration
-			// line, and therefore its constructors, were silently skipped.
-			seenTypeNames.add(typeDecl[2]);
+			const kind: JavaTypeStackEntry['kind'] =
+				typeDecl[1] === 'interface' || typeDecl[1] === '@interface'
+					? 'interface'
+					: typeDecl[1] === 'enum'
+						? 'enum'
+						: 'class';
+			if (opens > closes) {
+				// This type's own `{` is on this line and doesn't close by
+				// EOL — its members sit one level deeper than the depth
+				// this line started at.
+				typeStack.push({ name: typeDecl[2], kind, depth: depthBeforeLine + 1 });
+			} else if (opens === 0) {
+				// No brace at all yet — Allman style, `{` follows on a
+				// later line.
+				pendingType = { name: typeDecl[2], kind };
+			}
+			// else: opens > 0 && opens <= closes — the type's body opens
+			// AND closes on this same line (e.g. `class Marker {}`, or a
+			// fully inline body). It has no members to track and must not
+			// be pushed onto the stack or left as a dangling pendingType.
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a comment/string containing "public" must not flip
 			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
 			// Uses indexOf (not lastIndexOf): typeDecl[1] here is the
-			// declaration KEYWORD (class/interface/enum/record), which can
-			// also occur as a substring of the type NAME itself (e.g.
-			// `class publicclass {}` contains "class" again inside
+			// declaration KEYWORD (class/interface/enum/record/@interface),
+			// which can also occur as a substring of the type NAME itself
+			// (e.g. `class publicclass {}` contains "class" again inside
 			// "publicclass") — lastIndexOf would find that inner occurrence
 			// and slice past the real keyword, letting stray modifier-like
 			// substrings inside the name leak into the "modifiers" slice.
@@ -1229,66 +1301,111 @@ export function extractJavaSymbols(
 			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
 				name: typeDecl[2],
-				kind:
-					typeDecl[1] === 'interface'
-						? 'interface'
-						: typeDecl[1] === 'enum'
-							? 'enum'
-							: 'class',
+				kind,
 				exported: visibility === 'public',
 				signature: rawLine.trim().substring(0, 100),
 				line: i + 1,
 			});
+			depth += opens - closes;
+			while (
+				typeStack.length > 0 &&
+				typeStack[typeStack.length - 1].depth > depth
+			) {
+				typeStack.pop();
+			}
 			continue;
 		}
 
-		const method = line.match(
-			/^\s*(?:(?:public|protected|private|abstract|final|static|synchronized|native|default|strictfp)\s+){0,6}(?:[A-Za-z_][A-Za-z0-9_]*\s*<[^>]*>\s*|[A-Za-z_][A-Za-z0-9_]*\s+)*([A-Za-z_][A-Za-z0-9_]*)\s*\(/,
-		);
-		if (method && !JAVA_KEYWORDS.has(method[1])) {
-			// Derive visibility from the matched modifier text, not the raw
-			// whole line (a call-statement string or trailing comment
-			// containing "public" must not flip the flag).
-			const modifiers = method[0].slice(0, method[0].lastIndexOf(method[1]));
-			const trimmedModifiers = modifiers.trim();
-			// A bare call statement (e.g. `foo(x, y);`) matches with zero
-			// modifiers and zero preceding type tokens — the modifiers
-			// slice is then empty/whitespace-only. A package-private
-			// constructor (e.g. `Foo() {}`) also has an empty prefix but
-			// IS a real declaration when its captured name matches ANY
-			// type name declared elsewhere in the file (see `seenTypeNames`
-			// above for why this isn't scoped to "most recently declared").
-			const isConstructorLike =
-				trimmedModifiers.length === 0 && seenTypeNames.has(method[1]);
-			// A statement invoking or referencing another symbol (`throw new
-			// Foo(...)`, `return new Foo(...)`, etc.) matches the same regex
-			// because `throw`/`return`/`new`/... satisfy the type-token
-			// group. These are never declarations, regardless of a
-			// non-empty modifier/type-token prefix — exclude them by their
-			// leading statement keyword.
-			const leadingStatementKeyword = trimmedModifiers
-				.split(/\s+/)[0]
-				?.toLowerCase();
-			const isStatementKeyword =
-				leadingStatementKeyword !== undefined &&
-				JAVA_STATEMENT_KEYWORDS.has(leadingStatementKeyword);
-			if (isStatementKeyword) {
-				// Not a declaration — skip (statement invoking/referencing
-				// another symbol, e.g. `throw new Foo(...)`).
-			} else if (trimmedModifiers.length === 0 && !isConstructorLike) {
-				// Not a declaration — skip (bare call statement).
-			} else {
-				const visibility = modifiers.match(
-					/\b(public|protected|private)\b/,
-				)?.[1];
-				symbols.push({
-					name: method[1],
-					kind: 'method',
-					exported: visibility === 'public',
-					signature: rawLine.trim().substring(0, 100),
-					line: i + 1,
-				});
+		if (pendingType && opens > 0) {
+			typeStack.push({ ...pendingType, depth: depthBeforeLine + 1 });
+			pendingType = null;
+			depth += opens - closes;
+			while (
+				typeStack.length > 0 &&
+				typeStack[typeStack.length - 1].depth > depth
+			) {
+				typeStack.pop();
 			}
+			continue;
+		}
+
+		const enclosing =
+			typeStack.length > 0 ? typeStack[typeStack.length - 1] : null;
+		// Depth scoping only excludes a match once we're actually inside a
+		// type body — that's what rejects a same-named call statement
+		// nested inside a method (one level deeper than its enclosing
+		// type's own member depth). Before any type has been opened at all
+		// (`enclosing === null`), there is nothing to scope against, so a
+		// method-shaped line is still evaluated by the modifier/statement
+		// heuristics below, same as before depth tracking existed.
+		const atMemberDepth =
+			enclosing === null || depthBeforeLine === enclosing.depth;
+
+		if (atMemberDepth) {
+			const method = line.match(JAVA_METHOD_DECL_RE);
+			if (method && !JAVA_KEYWORDS.has(method[1])) {
+				// Derive visibility from the matched modifier text, not the
+				// raw whole line (a call-statement string or trailing
+				// comment containing "public" must not flip the flag).
+				const modifiers = method[0].slice(0, method[0].lastIndexOf(method[1]));
+				const trimmedModifiers = modifiers.trim();
+				// A bare call statement (e.g. `foo(x, y);`) matches with
+				// zero modifiers and zero preceding type tokens — the
+				// modifiers slice is then empty/whitespace-only. A
+				// package-private constructor (e.g. `Foo() {}`) also has an
+				// empty prefix but IS a real declaration when its captured
+				// name matches the DIRECTLY enclosing type's own name.
+				const isConstructorLike =
+					trimmedModifiers.length === 0 &&
+					enclosing !== null &&
+					method[1] === enclosing.name;
+				// A statement invoking or referencing another symbol (`throw
+				// new Foo(...)`, `return new Foo(...)`, etc.) matches the
+				// same regex because `throw`/`return`/`new`/... satisfy the
+				// type-token group. Depth scoping already excludes most of
+				// these (they sit inside a method body, one level deeper
+				// than member depth), but this is kept as a cheap extra
+				// guard for anything at member depth regardless.
+				const leadingStatementKeyword = trimmedModifiers
+					.split(/\s+/)[0]
+					?.toLowerCase();
+				const isStatementKeyword =
+					leadingStatementKeyword !== undefined &&
+					JAVA_STATEMENT_KEYWORDS.has(leadingStatementKeyword);
+				if (isStatementKeyword) {
+					// Not a declaration — skip.
+				} else if (trimmedModifiers.length === 0 && !isConstructorLike) {
+					// Not a declaration — skip (bare call statement).
+				} else {
+					const explicitVisibility = modifiers.match(
+						/\b(public|protected|private)\b/,
+					)?.[1];
+					// Interface (and @interface) members are implicitly
+					// public unless explicitly marked private (Java 9+
+					// private interface methods) — almost never written with
+					// an explicit `public` in source.
+					const exported =
+						explicitVisibility === 'public' ||
+						(explicitVisibility === undefined &&
+							enclosing !== null &&
+							enclosing.kind === 'interface');
+					symbols.push({
+						name: method[1],
+						kind: 'method',
+						exported,
+						signature: rawLine.trim().substring(0, 100),
+						line: i + 1,
+					});
+				}
+			}
+		}
+
+		depth += opens - closes;
+		while (
+			typeStack.length > 0 &&
+			typeStack[typeStack.length - 1].depth > depth
+		) {
+			typeStack.pop();
 		}
 	}
 
