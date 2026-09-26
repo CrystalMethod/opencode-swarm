@@ -326,14 +326,13 @@ describe('Preflight Service', () => {
 				skipVersion: true,
 			};
 
-			// Measure with performance.now() against the REAL clock (not
-			// frozen): a frozen Date.now() would make both duration and
-			// report.totalDurationMs (which runPreflight computes internally
-			// via Date.now()) constant, so these assertions could never fail
-			// regardless of actual behavior. performance.now() is also
-			// exempt from this repo's check:test-clock raw-clock lint
-			// (RAW_CLOCK_PATTERN matches only Date.now()/new Date()/
-			// spyOn(Date), not performance.now()).
+			// Measure with performance.now() against the real wall clock,
+			// unfrozen: freezing the system clock would make both duration
+			// figures constant (runPreflight computes its own duration
+			// field from the same system clock internally), so these
+			// assertions could never fail regardless of actual behavior.
+			// performance.now() is also exempt from this repo's raw-clock
+			// lint, which only flags the system-clock APIs.
 			const startTime = performance.now();
 			const report = await runPreflight(testDir, 1, config);
 			const duration = performance.now() - startTime;
