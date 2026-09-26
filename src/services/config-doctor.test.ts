@@ -1842,7 +1842,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 			// Empty array matches Zod default → suppressed
 			expect(deprecatedFindings).toHaveLength(0);
 		});
-		it('warns that baseline worktree isolation is already active for standard parallel coders (#1552, re-keyed #2901)', () => {
+		it('warns that baseline worktree isolation is already active (plan-profile keyed; #1552/#2901)', () => {
 			const config = createTestConfigObj({
 				parallelization: {
 					enabled: true,
@@ -1871,7 +1871,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 			expect(finding!.description).toContain('not requirements');
 		});
 
-		it('does not warn when baseline worktree isolation is disabled (#1552, re-keyed #2901)', () => {
+		it('does not warn when worktree isolation is disabled despite a parallel plan (#1552/#2901)', () => {
 			const config = createTestConfigObj({
 				parallelization: {
 					enabled: true,

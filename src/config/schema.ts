@@ -4209,7 +4209,7 @@ export const PluginConfigSchema = z.object({
 		.default(false)
 		.optional()
 		.describe(
-			'Bypass reviewer/test gates for rapid iteration (v6.40). When true, new sessions start with turbo mode on (session default); /swarm turbo still toggles per session.',
+			'Bypass reviewer/test gates for rapid iteration (v6.40). When true, new sessions start with turbo mode on (session default); /swarm turbo still toggles per session. Directory-less constructions default off.',
 		),
 
 	// Quiet mode — suppress non-critical startup warnings. Defaults to true so

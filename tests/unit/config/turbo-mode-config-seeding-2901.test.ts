@@ -83,15 +83,16 @@ describe('turbo_mode config seeding (issue #2901)', () => {
 		expect(getSession(sidB)?.turboMode).toBe(false);
 	});
 
-	test('per-session toggle wins: an explicit off stays off across re-entry', () => {
+	test('an explicit off survives re-entry via the live-session early-return (seed never re-fires)', () => {
 		const project = makeProject({ turbo_mode: true });
 		const sid = nextSid();
 
 		stateInternals.ensureAgentSession(sid, 'architect', project);
 		expect(getSession(sid)?.turboMode).toBe(true);
 
-		// Simulate `/swarm turbo off`, then re-enter the chokepoint: the seed
-		// applies only at construction, never to a live session.
+		// Simulate `/swarm turbo off`, then re-enter the chokepoint: the
+		// existing-session branch returns before construction, so the seed
+		// cannot re-fire against a live session.
 		const session = getSession(sid);
 		expect(session).toBeDefined();
 		session.turboMode = false;

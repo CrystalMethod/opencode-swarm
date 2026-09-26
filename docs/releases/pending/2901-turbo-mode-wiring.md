@@ -2,7 +2,7 @@
 issue: 2901
 title: Wire turbo_mode as the session default and make parallelization sub-key docs truthful
 type: fix
-area: config
+category: config
 ---
 
 ## What changed

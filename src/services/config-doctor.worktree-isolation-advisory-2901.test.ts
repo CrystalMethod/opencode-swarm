@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createIsolatedTestEnv } from '../../tests/helpers/isolated-test-env';
 import { canonicalMkdtemp } from '../../tests/helpers/tmpdir';
+import { PlanSchema } from '../config/plan-schema';
 import type { PluginConfig } from '../config/schema';
 import {
+	_internals as doctorInternals,
 	resolvePlanParallelizationFlag,
 	runConfigDoctor,
 	runConfigDoctorWithFixes,
@@ -119,6 +123,81 @@ describe('worktree-isolation advisory re-key (issue #2901)', () => {
 		expect(await resolvePlanParallelizationFlag(tempDir)).toBeNull();
 
 		const { result } = await runConfigDoctorWithFixes(tempDir, config, false);
+		expect(
+			result.findings.some(
+				(f) => f.id === 'worktree-isolation-baseline-active',
+			),
+		).toBe(false);
+	});
+});
+
+describe('resolvePlanParallelizationFlag through real plan fixtures (issue #2901)', () => {
+	function writePlan(
+		dir: string,
+		parallelizationEnabled: boolean | null,
+		corrupt = false,
+	): void {
+		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+		if (corrupt) {
+			fs.writeFileSync(
+				path.join(dir, '.swarm', 'plan.json'),
+				'{"schema_version": "9.9.9", "bogus": true}',
+			);
+			return;
+		}
+		const plan = PlanSchema.parse({
+			schema_version: '1.0.0',
+			title: '2901 advisory helper plan',
+			swarm: 'local',
+			phases: [{ id: 1, name: 'phase-1', tasks: [] }],
+			execution_profile: { parallelization_enabled: parallelizationEnabled },
+		});
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'plan.json'),
+			JSON.stringify(plan, null, 2),
+		);
+	}
+
+	it('returns true for a plan with execution_profile.parallelization_enabled=true', async () => {
+		writePlan(tempDir, true);
+		expect(await resolvePlanParallelizationFlag(tempDir)).toBe(true);
+	});
+
+	it('returns false for a plan with execution_profile.parallelization_enabled=false', async () => {
+		writePlan(tempDir, false);
+		expect(await resolvePlanParallelizationFlag(tempDir)).toBe(false);
+	});
+
+	it('returns null for a plan that fails PlanSchema validation', async () => {
+		writePlan(tempDir, true, true);
+		expect(await resolvePlanParallelizationFlag(tempDir)).toBeNull();
+	});
+
+	it('returns null (advisory suppressed) when the loadPlanJsonOnly seam throws', async () => {
+		const realLoadPlanJsonOnly = doctorInternals.loadPlanJsonOnly;
+		doctorInternals.loadPlanJsonOnly = () => {
+			throw new Error('synthetic plan-read failure');
+		};
+		try {
+			expect(await resolvePlanParallelizationFlag(tempDir)).toBeNull();
+		} finally {
+			doctorInternals.loadPlanJsonOnly = realLoadPlanJsonOnly;
+		}
+	});
+
+	it('worktree policy disabled suppresses the advisory even with no plan (explicit combo)', () => {
+		const config = createTestConfigObj({
+			worktree: {
+				policy: 'disabled',
+				merge_strategy: 'merge',
+				deps_strategy: 'skip',
+			},
+		});
+
+		// No 3rd arg: flag resolves to null. The AND-guard makes the advisory
+		// unreachable here; pinned explicitly so the matrix stays covered.
+		const result = runConfigDoctor(config, tempDir);
+
 		expect(
 			result.findings.some(
 				(f) => f.id === 'worktree-isolation-baseline-active',
