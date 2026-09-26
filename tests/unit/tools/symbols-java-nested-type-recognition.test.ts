@@ -375,4 +375,63 @@ public @interface MyAnno {}
 			),
 		).toHaveLength(1);
 	});
+
+	test('a local class and its public members are never exported, even though the local class is correctly recognized (critic closeout finding)', () => {
+		// Regression: recognizing a local class (declared inside a method
+		// body) as its own type on the depth-scoped stack was necessary but
+		// not sufficient — its `public` members were still marked
+		// `exported: true`, because nothing distinguished "member of a
+		// properly-nested type" from "member of a type that only exists
+		// inside a method body". In real Java, `public` on a local class or
+		// its members has no additional visibility effect: a local class is
+		// never part of the enclosing class's public API. Without this fix,
+		// a multi-line local class with public methods leaked those methods
+		// into the tool's DEFAULT (`exported_only: true`) output as if they
+		// were genuine top-level API.
+		write(
+			'Svc.java',
+			`public class Svc {
+    public void run() {
+        class Helper {
+            public void assist() {}
+            public int count() { return 1; }
+        }
+        Helper h = new Helper();
+        h.assist();
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Svc.java', root);
+		const exportedNames = symbolsList
+			.filter((s) => s.exported)
+			.map((s) => s.name);
+
+		// The default (exported_only) view must show only the real public
+		// API — the outer class and its own method — never the local
+		// class or its members.
+		expect(exportedNames).toEqual(['Svc', 'run']);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'Helper',
+				kind: 'class',
+				exported: false,
+			}),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'assist',
+				kind: 'method',
+				exported: false,
+			}),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'count',
+				kind: 'method',
+				exported: false,
+			}),
+		);
+	});
 });

@@ -1240,6 +1240,22 @@ interface JavaTypeStackEntry {
 	kind: 'class' | 'interface' | 'enum';
 	/** Brace depth of this type's OWN members (i.e. just inside its `{`). */
 	depth: number;
+	/**
+	 * True when this type is declared inside a method/block body (a local
+	 * class) rather than directly as a member of its enclosing type — or
+	 * when its enclosing type is itself local. Local types are never part
+	 * of a class's public API, so their own declaration and all of their
+	 * members are forced `exported: false` regardless of `public`,
+	 * matching real Java semantics (a `public` modifier on a local class or
+	 * its members has no visibility effect — it cannot be more visible
+	 * than the method it's declared in). Without this, a multi-line local
+	 * class with `public` methods leaked those methods into a caller's
+	 * DEFAULT (`exported_only: true`) output as if they were real top-level
+	 * API — the same "unrecognized/mis-scoped type" failure class this
+	 * function's other fixes address, just on the exported-flag side
+	 * rather than the presence side.
+	 */
+	local: boolean;
 }
 
 /**
@@ -1277,8 +1293,11 @@ export function extractJavaSymbols(
 	const typeStack: JavaTypeStackEntry[] = [];
 	// A type decl line with no `{` on it yet (Allman brace style — the `{`
 	// is on a following line); its body depth is fixed once that `{` is seen.
-	let pendingType: { name: string; kind: JavaTypeStackEntry['kind'] } | null =
-		null;
+	let pendingType: {
+		name: string;
+		kind: JavaTypeStackEntry['kind'];
+		local: boolean;
+	} | null = null;
 	let depth = 0;
 
 	for (let i = 0; i < lines.length; i++) {
@@ -1316,6 +1335,17 @@ export function extractJavaSymbols(
 				(pre.match(/\{/g) ?? []).length - (pre.match(/\}/g) ?? []).length;
 			const postOpens = (post.match(/\{/g) ?? []).length;
 			const postCloses = (post.match(/\}/g) ?? []).length;
+			// A type is LOCAL when it's declared inside a method/block body
+			// rather than directly as a member of its enclosing type (i.e.
+			// this line doesn't sit at the enclosing type's own member
+			// depth), or when its enclosing type is itself local — locality
+			// propagates to nested types the same way it does to members.
+			const enclosingForLocality =
+				typeStack.length > 0 ? typeStack[typeStack.length - 1] : null;
+			const isLocal =
+				enclosingForLocality !== null &&
+				(enclosingForLocality.local ||
+					depthBeforeLine !== enclosingForLocality.depth);
 			if (postOpens > postCloses) {
 				// This type's own `{` is on this line and doesn't close by
 				// EOL — its members sit one level deeper than the depth
@@ -1324,11 +1354,12 @@ export function extractJavaSymbols(
 					name: typeDeclName,
 					kind,
 					depth: depthBeforeLine + preNet + 1,
+					local: isLocal,
 				});
 			} else if (postOpens === 0) {
 				// No brace at all from the keyword onward — Allman style,
 				// `{` follows on a later line.
-				pendingType = { name: typeDeclName, kind };
+				pendingType = { name: typeDeclName, kind, local: isLocal };
 			}
 			// else: postOpens > 0 && postOpens <= postCloses — the type's
 			// body opens AND closes on this same line (e.g. `class Marker
@@ -1338,7 +1369,10 @@ export function extractJavaSymbols(
 			symbols.push({
 				name: typeDeclName,
 				kind,
-				exported: visibility === 'public',
+				// A local type is never part of the enclosing class's public
+				// API, regardless of its own `public` modifier — Java gives
+				// that modifier no additional visibility there.
+				exported: !isLocal && visibility === 'public',
 				signature: rawLine.trim().substring(0, 100),
 				line: i + 1,
 			});
@@ -1420,11 +1454,16 @@ export function extractJavaSymbols(
 					// public unless explicitly marked private (Java 9+
 					// private interface methods) — almost never written with
 					// an explicit `public` in source.
+					// A member of a LOCAL type (see JavaTypeStackEntry.local)
+					// is never part of the enclosing class's public API,
+					// regardless of an explicit `public` modifier — this is
+					// checked first and short-circuits the rest.
 					const exported =
-						explicitVisibility === 'public' ||
-						(explicitVisibility === undefined &&
-							enclosing !== null &&
-							enclosing.kind === 'interface');
+						!enclosing?.local &&
+						(explicitVisibility === 'public' ||
+							(explicitVisibility === undefined &&
+								enclosing !== null &&
+								enclosing.kind === 'interface'));
 					symbols.push({
 						name: method[1],
 						kind: 'method',
