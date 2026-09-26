@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { buildJavaBackend } from '../../../../src/lang/backends/java';
+import {
+	_internals,
+	buildJavaBackend,
+} from '../../../../src/lang/backends/java';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
 describe('selectEntryPoints size caps', () => {
@@ -59,31 +62,47 @@ describe('selectEntryPoints size caps', () => {
 	});
 
 	test('bounds directory-walk breadth even with zero .java files', async () => {
-		// A tree with many subdirectories and non-Java files but no .java
-		// files anywhere costs real synchronous time in readdirSync/statSync
-		// calls even though the byte caps (which only apply to .java files)
-		// never engage. Before the entries-visited bound, this scan was
-		// unbounded in the directory/file COUNT dimension. Bound it to a
-		// count well under the entries cap and confirm the scan returns
-		// (rather than hanging or exceeding the entries budget) quickly.
-		const dirCount = 200;
-		for (let i = 0; i < dirCount; i++) {
-			const d = path.join(tmpDir, `pkg${i}`);
-			fs.mkdirSync(d);
-			for (let j = 0; j < 5; j++) {
-				fs.writeFileSync(path.join(d, `Notes${j}.txt`), 'not java');
-			}
+		// A tree with many subdirectories but no .java files anywhere costs
+		// real synchronous time in readdirSync/statSync calls even though
+		// the byte caps (which only apply to .java files) never engage.
+		// Discriminating regression test: place a REAL main-class .java
+		// file in a directory that sorts alphabetically LAST, behind more
+		// junk directories than MAX_ENTRY_POINT_ENTRIES. The LIFO walk
+		// pushes entries in readdir order and pops in reverse, so the
+		// alphabetically-last "target" directory is pushed first and would
+		// only be popped (and its main class found) after every junk
+		// directory ahead of it in the stack has been processed — which
+		// the entries cap must prevent from ever completing. Pre-fix
+		// (unbounded) code finds the main class regardless of junk-dir
+		// count; post-fix code must not, once the cap is exceeded.
+		const entriesCap = _internals.MAX_ENTRY_POINT_ENTRIES;
+		const junkCount = entriesCap + 50;
+		for (let i = 0; i < junkCount; i++) {
+			fs.mkdirSync(path.join(tmpDir, `aaa_junk_${String(i).padStart(6, '0')}`));
 		}
+		const targetDir = path.join(tmpDir, 'zzz_target');
+		fs.mkdirSync(targetDir);
+		fs.writeFileSync(
+			path.join(targetDir, 'Main.java'),
+			'public class Main { public static void main(String[] args) {} }\n',
+		);
+
 		const start = performance.now();
 		const eps = await backend.selectEntryPoints!(tmpDir);
 		const elapsedMs = performance.now() - start;
+
 		expect(eps).toEqual([]);
 		// Not a tight timing assertion (CI machines vary), just confirms the
 		// scan terminates promptly rather than doing unbounded work.
-		expect(elapsedMs).toBeLessThan(5000);
+		expect(elapsedMs).toBeLessThan(10000);
 	});
 
 	test('ignores common non-Java output directories (out/, bin/, .venv/)', async () => {
+		// Discriminating regression test: place a REAL main-class .java
+		// file inside each ignored directory, asserted absent from the
+		// result. Pre-fix (before out/bin/.venv were added to the ignore
+		// set) code would find and return these; post-fix code must skip
+		// them entirely.
 		fs.writeFileSync(
 			path.join(tmpDir, 'App.java'),
 			'public class App { public static void main(String[] args) {} }\n',
@@ -94,6 +113,10 @@ describe('selectEntryPoints size caps', () => {
 			for (let i = 0; i < 50; i++) {
 				fs.writeFileSync(path.join(d, `f${i}.bin`), 'x'.repeat(1024));
 			}
+			fs.writeFileSync(
+				path.join(d, 'Hidden.java'),
+				'public class Hidden { public static void main(String[] args) {} }\n',
+			);
 		}
 		const eps = await backend.selectEntryPoints!(tmpDir);
 		expect(eps).toEqual(['App.java']);

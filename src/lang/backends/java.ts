@@ -318,6 +318,7 @@ export const _internals: {
 	wrapperExists: typeof wrapperExists;
 	resolveMvnwCommand: typeof resolveMvnwCommand;
 	resolveGradlewCommand: typeof resolveGradlewCommand;
+	MAX_ENTRY_POINT_ENTRIES: typeof MAX_ENTRY_POINT_ENTRIES;
 } = {
 	extractImports,
 	isMainClass,
@@ -325,4 +326,5 @@ export const _internals: {
 	wrapperExists,
 	resolveMvnwCommand,
 	resolveGradlewCommand,
+	MAX_ENTRY_POINT_ENTRIES,
 };

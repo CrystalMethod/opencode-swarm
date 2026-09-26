@@ -1175,7 +1175,16 @@ export function extractJavaSymbols(
 	const content = readValidatedSourceFile(filePath, cwd);
 	if (content === null) return [];
 
-	let lastTypeName: string | null = null;
+	// Every type name declared anywhere in the file, so a package-private
+	// constructor is recognized regardless of whether OTHER types were
+	// declared and closed since (e.g. an outer class's constructor
+	// appearing textually after a nested class). This is a simple,
+	// deliberately over-inclusive set rather than a brace-depth-scoped
+	// stack: the only failure mode is two DIFFERENT types sharing a name
+	// with an ambiguous constructor match, which is rare enough in
+	// practice (and harmless — worst case a real constructor is still
+	// recognized as one) to not justify tracking brace depth here.
+	const seenTypeNames = new Set<string>();
 
 	const symbols: SymbolInfo[] = [];
 	const lines = content.split('\n');
@@ -1193,15 +1202,13 @@ export function extractJavaSymbols(
 			/^\s*(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)/,
 		);
 		if (typeDecl) {
-			// Track the innermost/most-recently-declared type name, so a
-			// package-private constructor inside a NESTED class (e.g. a
-			// `static class Builder { Builder() {} }`) is matched against
-			// its own enclosing type, not the outer file-level class. The
-			// leading `\s*` above is what lets indented/nested type
-			// declarations be found at all — without it, a nested class's
-			// own declaration line, and therefore its constructors, were
-			// silently skipped.
-			lastTypeName = typeDecl[2];
+			// Record the type name, so a package-private constructor
+			// belonging to ANY declared type (nested or outer, regardless
+			// of declaration order) is still recognized. The leading `\s*`
+			// above is what lets indented/nested type declarations be
+			// found at all — without it, a nested class's own declaration
+			// line, and therefore its constructors, were silently skipped.
+			seenTypeNames.add(typeDecl[2]);
 			// Derive visibility from the matched modifier text, not the raw
 			// whole line (a comment/string containing "public" must not flip
 			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
@@ -1248,12 +1255,11 @@ export function extractJavaSymbols(
 			// modifiers and zero preceding type tokens — the modifiers
 			// slice is then empty/whitespace-only. A package-private
 			// constructor (e.g. `Foo() {}`) also has an empty prefix but
-			// IS a real declaration when its captured name matches the
-			// most recently seen enclosing type name.
+			// IS a real declaration when its captured name matches ANY
+			// type name declared elsewhere in the file (see `seenTypeNames`
+			// above for why this isn't scoped to "most recently declared").
 			const isConstructorLike =
-				trimmedModifiers.length === 0 &&
-				lastTypeName !== null &&
-				method[1] === lastTypeName;
+				trimmedModifiers.length === 0 && seenTypeNames.has(method[1]);
 			// A statement invoking or referencing another symbol (`throw new
 			// Foo(...)`, `return new Foo(...)`, etc.) matches the same regex
 			// because `throw`/`return`/`new`/... satisfy the type-token
