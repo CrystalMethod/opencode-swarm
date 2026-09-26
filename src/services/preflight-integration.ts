@@ -96,7 +96,7 @@ export function createPreflightIntegration(
 		});
 
 		// Run preflight checks
-		const report = await runPreflight(
+		const report = await _internals.runPreflight(
 			directory,
 			request.currentPhase,
 			preflightConfig,
@@ -108,20 +108,35 @@ export function createPreflightIntegration(
 		// this carries its own bounded non-fatal catch (issue #2669, Change 1b)
 		// in addition to the writer's containment.
 		if (statusArtifact) {
-			const state = report.overall === 'pass' ? 'success' : 'failure';
+			// A tests check that only detected a framework (no suite executed)
+			// must not report tests as passed — surface it as a distinct
+			// informational/skip outcome with an explicit "tests not executed"
+			// message, mirroring formatPreflightMarkdown.
+			const testsCheck = report.checks.find((c) => c.type === 'tests');
+			const detectedOnly = testsCheck?.details?.detectedOnly === true;
+			const state =
+				report.overall === 'fail'
+					? 'failure'
+					: detectedOnly
+						? 'skipped'
+						: report.overall === 'pass'
+							? 'success'
+							: 'failure';
+			const message =
+				report.overall === 'fail'
+					? report.message
+					: detectedOnly
+						? 'detected only — tests not executed'
+						: report.message;
 			try {
-				statusArtifact.recordOutcome(
-					state,
-					request.currentPhase,
-					report.message,
-				);
+				statusArtifact.recordOutcome(state, request.currentPhase, message);
 				// Success line lives inside the try so a contained failure is
 				// never followed by a misleading "updated" record (PR review
 				// PRR-001 on #2669).
 				logger.log('[PreflightIntegration] Status artifact updated', {
 					state,
 					phase: request.currentPhase,
-					message: report.message,
+					message,
 				});
 			} catch (err) {
 				const code =
@@ -167,3 +182,13 @@ export async function runManualPreflight(
 ): Promise<PreflightReport> {
 	return runPreflight(directory, phase, config);
 }
+
+/**
+ * DI seam for testability. Contains all test-mocked exports.
+ * Internal calls should use _internals.fn() instead of fn() directly.
+ */
+export const _internals: {
+	runPreflight: typeof runPreflight;
+} = {
+	runPreflight,
+};

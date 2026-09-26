@@ -160,7 +160,7 @@ export const TOOL_METADATA = {
 	},
 	symbols: {
 		description:
-			'extract exported symbols (functions, classes, interfaces, types) from source files; supports TypeScript, JavaScript, and Python',
+			'extract exported symbols (functions, classes, interfaces, types) from source files; supports TypeScript, JavaScript, Python, Rust, Go, Dart, Ruby, PHP, and Java',
 		agents: [
 			'architect',
 			'sme',
