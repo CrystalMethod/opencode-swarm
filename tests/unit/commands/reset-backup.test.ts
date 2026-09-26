@@ -102,12 +102,15 @@ describe('backupSwarmStateBeforeReset', () => {
 		expect(fs.existsSync(backupsRoot(root))).toBe(false);
 	});
 
-	test('returns null when .swarm/ does not exist (fail-open)', () => {
+	test('returns null when .swarm/ does not exist (fail-open, with skip warning)', () => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reset-backup-nodir-'));
 		tempRoots.push(root);
 		const result = backupSwarmStateBeforeReset(root, 'reset', ['plan.json']);
 		expect(result.backupDir).toBeNull();
-		expect(result.warnings).toEqual([]);
+		// #2946 F-3: the skipped safety net is disclosed, not silent.
+		expect(result.warnings).toEqual([
+			'backup skipped: .swarm directory is missing — nothing was backed up',
+		]);
 	});
 
 	test('refuses a symlinked .swarm/ directory (returns null, copies nothing)', () => {
