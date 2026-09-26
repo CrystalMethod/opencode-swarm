@@ -1292,10 +1292,7 @@ export function extractJavaSymbols(
 		}
 	}
 
-	return symbols.sort((a, b) => {
-		if (a.line !== b.line) return a.line - b.line;
-		return a.name.localeCompare(b.name);
-	});
+	return sortSymbols(symbols);
 }
 
 // ============ Workspace File Discovery ============
