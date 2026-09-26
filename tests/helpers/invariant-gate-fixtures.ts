@@ -99,13 +99,16 @@ export function buildInvariantsOracleExpected(): {
 		'=== Check 8: family-migration destination lock admission fails closed (issue #2577) ===',
 		'NOTE: src/memory/memory-family-migration.ts not found - Check 8 skipped for this path.',
 		'NOTE: src/knowledge/family-migration.ts not found - Check 8 skipped for this path.',
+		'=== Check 9: destructive commands adopt the two-step confirm contract (issue #2946) ===',
+		'Check 9 skipped: no command registry in this tree (fixture tree without the swarm command surface).',
 		'',
 		'=== Summary ===',
 		'Checks run: 1 (subprocess timeout, advisory) | 2 (process.cwd ban) |',
 		'            3 (mock.module allowlist) | 4 (allowlist growth ratchet) |',
 		'            5 (knowledge array dedup guardrail) | 6 (advisory-injection ratchet) |',
 		'            7 (quarantine OWNER/EXPIRY metadata) |',
-		'            8 (family-migration destination lock admission)',
+		'            8 (family-migration destination lock admission) |',
+		'            9 (destructive-command registry enumeration, #2946)',
 		'1 invariant violation(s) found.',
 	].join('\n');
 	const legacyExpected = [
