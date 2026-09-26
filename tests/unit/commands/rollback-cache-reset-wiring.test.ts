@@ -140,7 +140,7 @@ describe('/swarm rollback resets the swarm-artifact cache (#1619 round 7)', () =
 		freezeStamps();
 		expect(readContextThroughCache()).toBe(LIVE_CONTEXT);
 
-		const result = await handleRollbackCommand(projectDir, ['1']);
+		const result = await handleRollbackCommand(projectDir, ['1', '--yes']);
 		expect(result).toContain('Rolled back to phase 1');
 
 		expect(
@@ -171,7 +171,7 @@ describe('/swarm rollback resets the swarm-artifact cache (#1619 round 7)', () =
 		freezeStamps();
 		expect(readContextThroughCache()).toBe(LIVE_CONTEXT);
 
-		const result = await handleRollbackCommand(projectDir, ['1']);
+		const result = await handleRollbackCommand(projectDir, ['1', '--yes']);
 		expect(
 			result,
 			'this fixture is meant to exercise the partial-failure return; if cpSync ' +
