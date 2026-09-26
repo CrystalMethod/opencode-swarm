@@ -406,13 +406,20 @@ export interface BackgroundDelegationWorkflowLaneRecovery {
 // tests/unit/pr-review/lane-failure-class-parity.test.ts — every member must
 // have a live producer. The 'deadline' member was removed in #2615; its last
 // producer had already been deleted in #2381. 'liveness' covers
-// host-accepted-then-abandoned, stale-swept and operator-cancelled lanes
-// (producers: the collect-path stale sweep, the Task-side stale flip, and
-// cancel_pending in src/tools/dispatch-lanes.ts).
+// host-accepted-then-abandoned and stale-swept lanes (producers: the
+// collect-path stale sweep and the Task-side stale flip).
+// Issue #2971: 'operator_cancelled' is the distinct class for an explicitly
+// authorized operator cancellation (producer: cancel_lane_batch in
+// src/tools/cancel-lane-batch.ts, plus the /swarm abort-pr-workflow force
+// override's sweep stamping). Historical records whose cancellation was
+// written as 'liveness' by pre-#2971 builds remain readable via the persisted
+// union below — no migration; an operator-cancelled dimension is NOT
+// auto-retryable and never consumes the automatic retry budget.
 export type BackgroundDelegationWorkflowLaneFailureClass =
 	| 'contract'
 	| 'resource'
-	| 'liveness';
+	| 'liveness'
+	| 'operator_cancelled';
 
 /**
  * Legacy failure class retired from lane results by #2615 (its last producer
@@ -643,7 +650,13 @@ const ResultSchema = z
 		// rejecting it here made the whole namespace read fail as uncertain.
 		// Mirrors PrReviewDisclosureFailureClass on the disclosure side.
 		workflowLaneFailureClass: z
-			.enum(['contract', 'resource', 'liveness', 'deadline'])
+			.enum([
+				'contract',
+				'resource',
+				'liveness',
+				'operator_cancelled',
+				'deadline',
+			])
 			.optional(),
 		// Issue #2382: must be declared here (schema is .strict()) — see the
 		// interface comment and the parity guard below this schema.
@@ -5473,7 +5486,16 @@ function sweepStaleLocked(
 		excludeCorrelationIds?: ReadonlySet<string>;
 		includeCorrelationIds?: ReadonlySet<string>;
 	} = {},
-	limits: { maxSweep?: number } = {},
+	limits: {
+		maxSweep?: number;
+		/**
+		 * Issue #2971: opt-in terminal override for authorized operator
+		 * finalizations (the /swarm abort-pr-workflow force path). Defaults
+		 * preserve the historical 'liveness' stale terminal byte-for-byte.
+		 */
+		failureClass?: BackgroundDelegationWorkflowLaneFailureClass;
+		reasonPrefix?: string;
+	} = {},
 ): number {
 	let swept = 0;
 	const { excludeCorrelationIds, includeCorrelationIds } = filters;
@@ -5494,20 +5516,24 @@ function sweepStaleLocked(
 		// class so PR-review partial-coverage admission can settle a
 		// stale-swept dimension without abort_pr_workflow. 'liveness' marks a
 		// lane abandoned without an observed host failure.
-		const staleReason = `lane presumed stale after ${timeoutMs}ms without a terminal event`;
+		const staleReason = limits.reasonPrefix
+			? `${limits.reasonPrefix} (lane finalized after ${timeoutMs}ms without a terminal event)`
+			: `lane presumed stale after ${timeoutMs}ms without a terminal event`;
+		const failureClass: BackgroundDelegationWorkflowLaneFailureClass =
+			limits.failureClass ?? 'liveness';
 		// Issue #2615 (review finding): a pre-existing result (e.g. a classless
 		// partial-transcript preview stamped before the flip) must not silently
 		// survive the stale transition untyped — merge the 'liveness' class over
 		// it while preserving its original error/digest evidence. Only a record
 		// with NO result gets the synthesized stale-reason result (fresh digest).
 		const livenessResult: BackgroundDelegationResult = record.result
-			? { ...record.result, workflowLaneFailureClass: 'liveness' }
+			? { ...record.result, workflowLaneFailureClass: failureClass }
 			: {
 					error: staleReason,
 					chars: staleReason.length,
 					truncated: false,
 					digest: createHash('sha256').update(staleReason).digest('hex'),
-					workflowLaneFailureClass: 'liveness',
+					workflowLaneFailureClass: failureClass,
 				};
 		// Issue #2700: the flip writes the typed terminal evidence atomically
 		// with the disposition — same event shape the claim path produces
@@ -5583,6 +5609,9 @@ export async function sweepStaleDelegations(
 		statuses?: ReadonlySet<SweepableDelegationStatus>;
 		excludeCorrelationIds?: ReadonlySet<string>;
 		includeCorrelationIds?: ReadonlySet<string>;
+		/** Issue #2971: opt-in operator-action terminal stamping (see sweepStaleLocked). */
+		failureClass?: BackgroundDelegationWorkflowLaneFailureClass;
+		reasonPrefix?: string;
 	} = {},
 ): Promise<number> {
 	if (!timeoutMs || timeoutMs <= 0) return 0;
@@ -5591,6 +5620,10 @@ export async function sweepStaleDelegations(
 		excludeCorrelationIds: options.excludeCorrelationIds,
 		includeCorrelationIds: options.includeCorrelationIds,
 	};
+	const limits = {
+		...(options.failureClass ? { failureClass: options.failureClass } : {}),
+		...(options.reasonPrefix ? { reasonPrefix: options.reasonPrefix } : {}),
+	};
 	try {
 		return await withEvidenceLock(
 			directory,
@@ -5598,7 +5631,14 @@ export async function sweepStaleDelegations(
 			STORE_LOCK_AGENT,
 			STORE_LOCK_TASK,
 			async () =>
-				sweepStaleLocked(directory, timeoutMs, Date.now(), statuses, filters),
+				sweepStaleLocked(
+					directory,
+					timeoutMs,
+					Date.now(),
+					statuses,
+					filters,
+					limits,
+				),
 		);
 	} catch (err) {
 		logger.warn(

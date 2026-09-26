@@ -185,15 +185,19 @@ the async pending timeout. Treat stale lanes as missing advisory evidence, then
 rerun only the affected read-only lanes under a new batch. Do not treat stale
 advisory lanes as completed gate evidence.
 
-**Cancelled batch:** if `cancel_pending: true` was used, the cancelled rows are
-terminal. Relaunch a new batch if the advisory evidence is still needed. A
-cancelled advisory batch is not a failure of any workflow gate.
+**Cancelled batch:** lanes cancelled through the authorized surface
+(`cancel_lane_batch` with `confirm: true` and a reason) are terminal with the
+distinct `operator_cancelled` class. `cancel_pending` on the collector no
+longer cancels anything (observation-only; it returns typed refusal guidance).
+Relaunch a new batch if the advisory evidence is still needed. A cancelled
+advisory batch is not a failure of any workflow gate.
 
 **Orphaned pending delegation:** if a parent session was closed or the child
 session disappeared, run `collect_lane_results` with `wait: false` to collect any
-finished lanes, then run it again with `cancel_pending: true` to mark the
-remaining orphaned rows as cancelled. Relaunch any required advisory lanes with a
-fresh `batch_id`.
+finished lanes, then cancel the remaining orphaned rows explicitly with
+`cancel_lane_batch` (`confirm: true` plus a reason; a session the host
+affirmatively does not know may be cancelled, live busy/retry lanes are
+refused). Relaunch any required advisory lanes with a fresh `batch_id`.
 
 **Cross-session mismatch:** `collect_lane_results` filters by the current parent
 session when the tool context supplies one. If a batch was launched in a

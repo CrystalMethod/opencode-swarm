@@ -54,6 +54,7 @@ import {
 	prReviewLegacyTranscriptCompatibilityEnabled,
 } from '../background/pr-review-contract.js';
 import {
+	PR_REVIEW_TRIGGER_DEFINITIONS,
 	PrReviewInlineTriggerRowSchema,
 	validatePrReviewInlineTriggerLedger,
 } from '../background/pr-review-trigger-contract.js';
@@ -538,49 +539,103 @@ const LaneSchema = z.object({
 		),
 });
 
-const DispatchLanesArgsSchema = z.object({
-	lanes: z
-		.array(LaneSchema)
-		.min(1)
-		.max(MAX_LANES)
-		.describe('Read-only lane specs to dispatch concurrently'),
-	common_prompt: z
-		.string()
-		.min(1)
-		// Must carry real content: a whitespace-only value would prepend a blank
-		// prefix + separator to every lane prompt without adding any context.
-		.regex(/\S/, 'common_prompt must contain non-whitespace content')
-		// Reserve room for the separator + at least 1 char of lane prompt so any
-		// schema-valid common_prompt can coexist with the shortest valid lane
-		// prompt without the combined length exceeding MAX_PROMPT_CHARS.
-		.max(MAX_PROMPT_CHARS - COMMON_PROMPT_SEPARATOR.length - 1)
-		.optional()
-		.describe(
-			'Optional shared context prepended to every lane prompt. Send large shared context (PR diff, obligation ledger, scope) ONCE here instead of inlining the same blob into each lane prompt; this keeps the tool-call payload small and avoids malformed/truncated tool-call JSON. Combined common_prompt + per-lane prompt must not exceed the per-lane character limit.',
-		),
-	max_concurrent: z
-		.number()
-		.int()
-		.min(1)
-		.max(MAX_LANES)
-		.optional()
-		.describe('Maximum lanes in flight at once; defaults to lane count'),
-	timeout_ms: z
-		.number()
-		.int()
-		.min(10)
-		.max(MAX_TIMEOUT_MS)
-		.optional()
-		.describe(
-			'Per-lane timeout in milliseconds. For blocking dispatch this covers session create and prompt execution; for async dispatch this covers launch only, never lane runtime.',
-		),
-	orientation: z
-		.boolean()
-		.optional()
-		.describe(
-			'Prepend a bounded, deterministic repo-graph orientation block (mission-relevant files, repo hubs, freshness line) to common_prompt when the repo graph is fresh and relevant. No schema default: availability depends on graph state, resolved at execute time (omitted ⇒ attempted, skipped when no fresh graph exists). Explicitly false disables the block entirely.',
-		),
-});
+const DispatchLanesArgsSchema = z
+	.object({
+		lanes: z
+			.array(LaneSchema)
+			.min(1)
+			.max(MAX_LANES)
+			.describe('Read-only lane specs to dispatch concurrently'),
+		common_prompt: z
+			.string()
+			.min(1)
+			// Must carry real content: a whitespace-only value would prepend a blank
+			// prefix + separator to every lane prompt without adding any context.
+			.regex(/\S/, 'common_prompt must contain non-whitespace content')
+			// Reserve room for the separator + at least 1 char of lane prompt so any
+			// schema-valid common_prompt can coexist with the shortest valid lane
+			// prompt without the combined length exceeding MAX_PROMPT_CHARS.
+			.max(MAX_PROMPT_CHARS - COMMON_PROMPT_SEPARATOR.length - 1)
+			.optional()
+			.describe(
+				'Optional shared context prepended to every lane prompt. Send large shared context (PR diff, obligation ledger, scope) ONCE here instead of inlining the same blob into each lane prompt; this keeps the tool-call payload small and avoids malformed/truncated tool-call JSON. Combined common_prompt + per-lane prompt must not exceed the per-lane character limit.',
+			),
+		max_concurrent: z
+			.number()
+			.int()
+			.min(1)
+			.max(MAX_LANES)
+			.optional()
+			.describe('Maximum lanes in flight at once; defaults to lane count'),
+		timeout_ms: z
+			.number()
+			.int()
+			.min(10)
+			.max(MAX_TIMEOUT_MS)
+			.optional()
+			.describe(
+				'Per-lane timeout in milliseconds. For blocking dispatch this covers session create and prompt execution; for async dispatch this covers launch only, never lane runtime.',
+			),
+		orientation: z
+			.boolean()
+			.optional()
+			.describe(
+				'Prepend a bounded, deterministic repo-graph orientation block (mission-relevant files, repo hubs, freshness line) to common_prompt when the repo graph is fresh and relevant. No schema default: availability depends on graph state, resolved at execute time (omitted ⇒ attempted, skipped when no fresh graph exists). Explicitly false disables the block entirely.',
+			),
+	})
+	.superRefine(refineWorkflowLaneNamespace);
+
+/**
+ * Issue #2971: parse-time base/micro workflow-lane namespace disjointness.
+ * A base dispatch cannot carry a micro trigger id and vice versa — the invalid
+ * namespace must fail ARGUMENT PARSING, before a child session is created.
+ * Generic (non-PR-review) modes keep the free-form lane label. Mode matching
+ * uses the same raw `startsWith('swarm-pr-review:')` convention as the
+ * downstream namespace checks. This gate is a namespace check only — it is
+ * deliberately the looser side; stricter downstream mode-equality checks
+ * still fail closed on their own terms for a mode that parses but does not
+ * match at runtime.
+ */
+const PR_REVIEW_MICRO_TRIGGER_LANE_IDS: ReadonlySet<string> = new Set(
+	PR_REVIEW_TRIGGER_DEFINITIONS.map((definition) => definition.id),
+);
+
+function refineWorkflowLaneNamespace(
+	value: {
+		mode?: string;
+		lanes: Array<{ workflow_lane?: string; owned_workflow_lanes?: string[] }>;
+	},
+	ctx: z.RefinementCtx,
+): void {
+	const mode = value.mode;
+	if (!mode) return;
+	const isBase = mode.startsWith('swarm-pr-review:base');
+	const isMicro = mode.startsWith('swarm-pr-review:micro');
+	if (!isBase && !isMicro) return;
+	const valid = isBase
+		? new Set<string>(PR_REVIEW_BASE_DIMENSION_IDS)
+		: PR_REVIEW_MICRO_TRIGGER_LANE_IDS;
+	const vocabulary = isBase
+		? PR_REVIEW_BASE_DIMENSION_IDS.join(', ')
+		: [...PR_REVIEW_MICRO_TRIGGER_LANE_IDS].join(', ');
+	const kind = isBase ? 'base dimension' : 'micro trigger';
+	for (const lane of value.lanes) {
+		const labels = [
+			...(lane.workflow_lane ? [lane.workflow_lane] : []),
+			...(lane.owned_workflow_lanes ?? []),
+		];
+		for (const label of labels) {
+			if (!valid.has(label)) {
+				ctx.addIssue({
+					code: 'custom',
+					path: ['lanes'],
+					message: `lane workflow label "${label}" is not a ${kind} id for mode "${mode}"; valid ids: ${vocabulary}`,
+				});
+				return;
+			}
+		}
+	}
+}
 
 const DispatchLanesAsyncArgsSchema = DispatchLanesArgsSchema.extend({
 	launch_timeout_ms: z
@@ -691,7 +746,9 @@ const CollectLaneResultsArgsSchema = z.object({
 	cancel_pending: z
 		.boolean()
 		.optional()
-		.describe('Abort and mark pending/running lanes cancelled'),
+		.describe(
+			'Deprecated destructive flag: a no-op request, kept for schema compatibility. This collector is observation-only and never aborts or settles a lane. When true, the response carries typed cancellation_refused guidance pointing at cancel_lane_batch (confirm + reason), the only authorized cancellation surface.',
+		),
 });
 
 export type DispatchLaneSpec = z.infer<typeof LaneSchema>;
@@ -906,6 +963,14 @@ export interface CollectLaneResultsResult {
 	 * unchanged, so existing consumers are unaffected.
 	 */
 	pending_lanes?: CollectPendingLaneIdentity[];
+	/**
+	 * Issue #2971: typed refusal entries present when the caller passed
+	 * cancel_pending: true. The collector is observation-only — it never
+	 * aborts or settles anything — so an ordinary cancellation request is
+	 * answered with lane id, liveness evidence, and the next action (the
+	 * authorized surface is cancel_lane_batch with confirm + reason).
+	 */
+	cancellation_refused?: CollectCancellationRefusal[];
 	errors?: string[];
 }
 
@@ -920,6 +985,18 @@ export interface CollectPendingLaneIdentity {
 	lane_id: string;
 	status: string;
 	output_ref?: string;
+}
+
+/**
+ * Issue #2971: typed refusal for an ordinary (unconfirmed) cancellation
+ * request against an active lane. Carries the lane id, the liveness evidence
+ * the refusal is based on, and the next action — never an abort or a settle.
+ */
+export interface CollectCancellationRefusal {
+	lane_id: string;
+	host_status?: string;
+	degraded_reason?: string;
+	next_action: string;
 }
 
 export interface SessionOps {
@@ -2142,7 +2219,17 @@ export async function executeCollectLaneResults(
 				: 'collection_host_unavailable';
 		result.failure_class = 'no_client';
 		result.message =
-			'OpenCode session messages client is not available; lane state is reported as stored and no lane was cancelled or terminalized. Poll again once the host client is available, cancel explicitly, or rely on the presumed-stale backstop.';
+			'OpenCode session messages client is not available; lane state is reported as stored and no lane was cancelled or terminalized. Poll again once the host client is available, or use cancel_lane_batch (confirm + reason) for an explicit cancellation; the presumed-stale backstop remains.';
+		if (parsed.data.cancel_pending === true) {
+			const refusals = collectCancellationRefusals(
+				records,
+				null,
+				'observer-unavailable',
+			);
+			if (refusals.length > 0) {
+				result.cancellation_refused = refusals;
+			}
+		}
 		result.errors = [
 			`OpenCode session messages client is not available (${diagnosticCode})`,
 		];
@@ -2152,12 +2239,29 @@ export async function executeCollectLaneResults(
 
 	let keepPolling = true;
 	let pollIntervalMs = COLLECT_POLL_INTERVAL_MS;
+	let lastStatusTypes: ReadonlyMap<string, string> | null = null;
 	while (keepPolling) {
+		// Liveness evidence is only consumed for lanes that could still be
+		// live: a pass where every record is already terminal (repeat collects
+		// served from the durable delivery cache) must spend ZERO host calls,
+		// so the batched status probe is skipped for it (wait-budget contract).
+		if (
+			records.some(
+				(record) => record.status === 'pending' || record.status === 'running',
+			)
+		) {
+			lastStatusTypes = await probeLaneStatusTypesForPass(
+				session,
+				directory,
+				deadline,
+				hostTimeouts,
+			);
+		}
 		await collectOnce(
 			session,
 			directory,
 			records,
-			parsed.data.cancel_pending === true,
+			lastStatusTypes,
 			deadline,
 			hostTimeouts,
 			receiptAppendFailureLogs,
@@ -2225,6 +2329,20 @@ export async function executeCollectLaneResults(
 		},
 	);
 	await attachPendingLaneLiveness(result, directory, records, deadline);
+	if (parsed.data.cancel_pending === true) {
+		// Issue #2971: cancel_pending is a guidance-only request. The collector
+		// NEVER aborts or settles anything; every still-open lane gets a typed
+		// refusal carrying liveness evidence and the authorized next action.
+		const refusals = collectCancellationRefusals(
+			records,
+			lastStatusTypes,
+			'observer-degraded',
+		);
+		if (refusals.length > 0) {
+			result.cancellation_refused = refusals;
+			result.message = `${result.message ? `${result.message} ` : ''}cancel_pending is observation-only: ${refusals.length} lane(s) refused; use cancel_lane_batch (confirm: true + reason) for an authorized cancellation.`;
+		}
+	}
 	if (hostTimeouts.size > 0) {
 		result.message =
 			result.pending > 0
@@ -2732,7 +2850,13 @@ async function collectOnce(
 	session: SessionOps,
 	directory: string,
 	records: BackgroundDelegationRecord[],
-	cancelPending: boolean,
+	/**
+	 * Issue #2971: ONE batched host-wide status probe per collection pass
+	 * (replacing the per-lane status round-trip). `null` when the host has no
+	 * status client or the probe degraded — every lane then reads readiness
+	 * 'unknown' (the #2381 fail-open salvage path), never a terminal.
+	 */
+	statusTypes: ReadonlyMap<string, string> | null,
 	deadline: number,
 	hostTimeouts: Set<string>,
 	receiptAppendFailureLogs: Set<string>,
@@ -2787,68 +2911,14 @@ async function collectOnce(
 			typeof session.status === 'function',
 			needsRevisionDigest,
 		);
-		if (cancelPending) {
-			if (typeof session.abort === 'function') {
-				try {
-					await withCollectionDeadline(
-						() => session.abort!({ path: { id: record.subagentSessionId } }),
-						deadline,
-						`session.abort for lane session "${record.subagentSessionId}"`,
-						hostTimeouts,
-						laneBudgets.laneBudgetMs,
-					);
-				} catch {
-					// Preserve the old best-effort behavior for ordinary host errors, but
-					// never claim cancellation when the abort request itself timed out.
-					// PR #2863 review (PRR-001): attribute by membership of THIS lane's
-					// own timeout diagnostic. The pre-fix sequential loop could use a
-					// hostTimeouts.size delta, but under the concurrent fan-out another
-					// lane's timeout inflates the shared set between capture and check,
-					// misclassifying an ordinary abort error as a timeout and skipping
-					// the cancellation settle.
-					const abortTimeoutPrefix = `session.abort for lane session "${record.subagentSessionId}" exceeded`;
-					if (
-						[...hostTimeouts].some((entry) =>
-							entry.startsWith(abortTimeoutPrefix),
-						)
-					) {
-						return { kind: 'skipped' };
-					}
-				}
-			}
-			// Issue #2045: cancellation settles through the shared exactly-once
-			// terminal claim (Task parity) instead of a bare status write. The
-			// synthetic result carries a stable identity - empty body digest - and
-			// a bounded reason so the record states why it was cancelled.
-			// Issue #2615: the cancelled record carries the 'liveness' failure
-			// class so a cancelled PR-review dimension is a typed terminal
-			// failure (complete_pr_workflow INCOMPLETE can admit it) instead of
-			// an unadmittable classless terminal.
-			await settleDelegationTerminal(
-				directory,
-				record,
-				{
-					status: 'cancelled',
-					result: {
-						error: 'lane cancelled via collect_lane_results cancel_pending',
-						chars: 0,
-						truncated: false,
-						digest: digestText(''),
-						workflowLaneFailureClass: 'liveness',
-					},
-				},
-				{},
-				_internals.now(),
-			);
-			return { kind: 'skipped' };
-		}
-		const readiness = await getLaneCollectionReadiness(
-			session,
-			directory,
+		// Issue #2971: the destructive cancel_pending branch is DELETED — the
+		// collector is observation-only and can never abort or settle a lane.
+		// An ordinary cancel_pending request is answered after collection with
+		// typed cancellation_refused guidance (see executeCollectLaneResults);
+		// the only authorized cancellation surface is cancel_lane_batch.
+		const readiness = laneReadinessFromProbeTypes(
+			statusTypes,
 			record.subagentSessionId,
-			deadline,
-			hostTimeouts,
-			laneBudgets.statusBudgetMs,
 		);
 		if (readiness === 'busy') return { kind: 'skipped' };
 		try {
@@ -3941,6 +4011,102 @@ async function appendAsyncLaneLaunchError(
 }
 
 type LaneCollectionReadiness = 'idle' | 'busy' | 'unknown';
+
+/**
+ * Issue #2971: ONE batched host-wide status probe per collection pass. The
+ * host's `session.status` returns a map for EVERY session in the directory, so
+ * the pre-fix per-lane round-trip was pure duplication (N lanes = N identical
+ * host calls). The probe is budgeted from the remaining observer budget BEFORE
+ * any transcript work, so liveness evidence can never be starved by messages
+ * fetches. Returns `null` when there is no status client or the probe degraded
+ * or timed out (the bounded diagnostic lands in `hostTimeouts`); callers then
+ * read every lane as readiness 'unknown' — never a terminal (issue #2381).
+ */
+async function probeLaneStatusTypesForPass(
+	session: SessionOps,
+	directory: string,
+	deadline: number,
+	hostTimeouts: Set<string>,
+): Promise<ReadonlyMap<string, string> | null> {
+	if (typeof session.status !== 'function') return null;
+	const remainingMs = Math.max(0, deadline - _internals.now());
+	if (remainingMs === 0) return null;
+	const allowedMs = Math.min(MAX_STATUS_CALL_BUDGET_MS, remainingMs);
+	try {
+		const status = await withCollectionDeadline(
+			() => session.status!({ query: { directory } }),
+			deadline,
+			'session.status batched lane probe for collect pass',
+			hostTimeouts,
+			allowedMs,
+		);
+		if (status.error || !status.data) return null;
+		const types = new Map<string, string>();
+		for (const [sessionId, entry] of Object.entries(status.data)) {
+			if (entry && typeof entry.type === 'string') {
+				types.set(sessionId, entry.type);
+			}
+		}
+		return types;
+	} catch {
+		return null;
+	}
+}
+
+const CANCELLATION_REFUSAL_NEXT_ACTION =
+	'collect_lane_results cannot cancel: issue cancel_lane_batch (confirm: true + reason) for an authorized cancellation';
+
+/**
+ * Issue #2971: typed refusal entries for a guidance-only cancel_pending
+ * request — lane id, liveness evidence (or the degraded reason), and the next
+ * action. Never an abort, never a settle.
+ */
+function collectCancellationRefusals(
+	records: readonly BackgroundDelegationRecord[],
+	statusTypes: ReadonlyMap<string, string> | null,
+	degradedReason: string,
+): CollectCancellationRefusal[] {
+	const refusals: CollectCancellationRefusal[] = [];
+	for (const record of records) {
+		if (isTerminalDelegationStatus(record.status)) continue;
+		const laneId = record.laneId ?? record.correlationId;
+		if (!statusTypes) {
+			refusals.push({
+				lane_id: laneId,
+				degraded_reason: degradedReason,
+				next_action: CANCELLATION_REFUSAL_NEXT_ACTION,
+			});
+			continue;
+		}
+		const type = statusTypes.get(record.subagentSessionId);
+		refusals.push({
+			lane_id: laneId,
+			host_status: type ?? 'unknown',
+			next_action:
+				type === 'busy' || type === 'retry'
+					? `${CANCELLATION_REFUSAL_NEXT_ACTION}; the host reports this lane ${type} (live)`
+					: CANCELLATION_REFUSAL_NEXT_ACTION,
+		});
+	}
+	return refusals;
+}
+
+/**
+ * Issue #2971: pure readiness read from a batched status map — the same
+ * three-value contract as `getLaneCollectionReadiness` ('busy' covers busy and
+ * retry; anything degraded/absent/unrecognized reads 'unknown').
+ */
+function laneReadinessFromProbeTypes(
+	statusTypes: ReadonlyMap<string, string> | null,
+	sessionId: string,
+): LaneCollectionReadiness {
+	if (!statusTypes) return 'unknown';
+	const type = statusTypes.get(sessionId);
+	if (type === undefined) return 'unknown';
+	if (type === 'idle') return 'idle';
+	if (type === 'busy' || type === 'retry') return 'busy';
+	return 'unknown';
+}
 
 async function getLaneCollectionReadiness(
 	session: SessionOps,
@@ -6135,7 +6301,7 @@ export const dispatch_lanes_async: ReturnType<typeof createSwarmTool> =
 export const collect_lane_results: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Collect or poll results for a dispatch_lanes_async batch. A presumed-stale sweep runs on EVERY call: lanes past the stale horizon settle — idle host sessions to stale, unobservable host sessions to a typed liveness error — and cancel_pending cancels remaining pending lanes. Otherwise it only observes. Supports two modes: (1) non-blocking poll (wait omitted or false) — performs one collection pass and returns current lane status plus any settled results while you continue independent work; (2) blocking join (wait: true) — polls until all lanes settle or the collection wait budget expires. The wait budget (timeout_ms) bounds THIS OBSERVER CALL ONLY: its expiry does not cancel, kill, or fail the lanes, and it is not evidence that a lane died. timeout_ms: 0 is a valid immediate, non-destructive snapshot. Any unsettled lane is reported in pending_lanes (batch_id, lane_id, stored status, output_ref when one exists) regardless of include_pending, so outstanding work is never silently omitted. If a collection returns pending lanes, poll again, cancel explicitly with cancel_pending, or let the presumed-stale sweep settle dead lanes — do NOT abort the workflow because an observer call expired or the host messages client was unavailable. Busy/retry lanes do not become stale solely because they run for a long time; any lane pending for minutes carries an alert-only pending_liveness diagnostic (lane id, elapsed ms, host session status, stalledSuspect, degradedReason) that never cancels anything or proves provider failure. A lane whose backing session records a terminal provider error (quota/billing/auth) AND produced no output AND has an over turn (a completed timestamp, or an idle host) settles immediately with the classified reason instead of staying pending — as failed, or as cancelled when the host reports the turn was aborted. A lane that produced output, or whose turn may still be retrying, keeps polling. Does not advance workflow gates.',
+			'Collect or poll results for a dispatch_lanes_async batch — OBSERVATION ONLY; it can never cancel or abort a lane (issue #2971). A presumed-stale sweep runs on EVERY call: lanes past the stale horizon settle — idle host sessions to stale, unobservable host sessions to a typed liveness error. Supports two modes: (1) non-blocking poll (wait omitted or false) — performs one collection pass (one batched session.status probe, then transcript work under the remaining budget) and returns current lane status plus any settled results while you continue independent work; (2) blocking join (wait: true) — polls until all lanes settle or the collection wait budget expires. The wait budget (timeout_ms) bounds THIS OBSERVER CALL ONLY: its expiry, a missing messages client, or a degraded liveness probe does not cancel, kill, or fail the lanes, is not evidence that a lane died, and never settles anything. timeout_ms: 0 is a valid immediate, non-destructive snapshot. Any unsettled lane is reported in pending_lanes (batch_id, lane_id, stored status, output_ref when one exists) regardless of include_pending, so outstanding work is never silently omitted. If a collection returns pending lanes, poll again first — busy/retry host status is live evidence, not failure. Cancellation is a distinct, explicit, authorized, potentially destructive action: use cancel_lane_batch (confirm: true + reason), never this collector; cancel_pending is a deprecated no-op request answered with typed cancellation_refused guidance. An explicit operator cancellation settles as the distinct operator_cancelled class — never liveness. Busy/retry lanes do not become stale solely because they run for a long time; any lane pending for minutes carries an alert-only pending_liveness diagnostic (lane id, elapsed ms, host session status, stalledSuspect, degradedReason) that never cancels anything or proves provider failure. A lane whose backing session records a terminal provider error (quota/billing/auth) AND produced no output AND has an over turn (a completed timestamp, or an idle host) settles immediately with the classified reason instead of staying pending — as failed, or as cancelled when the host reports the turn was aborted. A lane that produced output, or whose turn may still be retrying, keeps polling. Does not advance workflow gates.',
 		args: {
 			batch_id: CollectLaneResultsArgsSchema.shape.batch_id,
 			wait: CollectLaneResultsArgsSchema.shape.wait,

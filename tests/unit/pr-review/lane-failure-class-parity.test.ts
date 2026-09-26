@@ -17,6 +17,10 @@ import {
 } from '../../../src/background/pending-delegations.js';
 import { classifyPrReviewCircuitSignal } from '../../../src/pr-review/circuit.js';
 import {
+	_internals as cancelInternals,
+	executeCancelLaneBatch,
+} from '../../../src/tools/cancel-lane-batch.js';
+import {
 	_internals,
 	executeCollectLaneResults,
 	type SessionOps,
@@ -24,17 +28,19 @@ import {
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 /**
- * Vocabulary mirror: the `satisfies Record<...>` forces this key set to be
- * EXACT — adding a `BackgroundDelegationWorkflowLaneFailureClass` member
- * without extending this map breaks compilation, and the source-anchor test
- * below then fails until a `workflowLaneFailureClass: '<member>'` producer
- * exists. A declared-but-unproduced member can no longer slip in silently
- * (the 'deadline' gap of #2381).
+ * Vocabulary mirror: this key set must be EXACT against the union. Note the
+ * `satisfies` check does NOT compile-guard it (tsconfig excludes tests/), so
+ * the source-anchor test below is the real enforcement: every member needs a
+ * `workflowLaneFailureClass: '<member>'` producer. A declared-but-unproduced
+ * member can no longer slip in silently (the 'deadline' gap of #2381).
  */
 const FAILURE_CLASS_MEMBERS = {
 	contract: 'contract',
 	resource: 'resource',
 	liveness: 'liveness',
+	// Issue #2971: explicit operator cancellation (cancel_lane_batch / the
+	// /swarm abort-pr-workflow force override) — never host liveness.
+	operator_cancelled: 'operator_cancelled',
 } as const satisfies Record<
 	BackgroundDelegationWorkflowLaneFailureClass,
 	string
@@ -108,6 +114,9 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		const producerSources = [
 			readSource('src/tools/dispatch-lanes.ts'),
 			readSource('src/background/pending-delegations.ts'),
+			// Issue #2971: the confirmed-cancellation tool owns the
+			// operator_cancelled producer literal.
+			readSource('src/tools/cancel-lane-batch.ts'),
 		].join('\n');
 		for (const failureClass of FAILURE_CLASSES) {
 			// Matches both object-literal producers (`workflowLaneFailureClass:
@@ -177,19 +186,45 @@ describe('workflow lane failure class parity (issue #2615)', () => {
 		expect(producers).toEqual([]);
 	});
 
-	it('cancel_pending settles a typed liveness terminal', async () => {
+	it('cancel_pending is guidance-only; a confirmed cancel settles operator_cancelled (issue #2971)', async () => {
 		_internals.getSessionOps = () => idleEmptyHost('sess-pc-1');
 		await seedPendingLane(dir, '1');
+		// The collector is observation-only: an ordinary cancel_pending request
+		// must NOT abort or settle anything — it answers with a typed refusal.
 		const result = await executeCollectLaneResults(
 			{ batch_id: 'batch-pc-1', wait: false, cancel_pending: true },
 			dir,
 		);
-		expect(result.cancelled).toBe(1);
-		const record = findByBatchId(dir, 'batch-pc-1')[0];
-		expect(record.status).toBe('cancelled');
-		expect(record.terminalResult?.result?.workflowLaneFailureClass).toBe(
-			'liveness',
+		expect(result.cancelled).toBe(0);
+		expect(result.cancellation_refused?.length).toBe(1);
+		expect(result.cancellation_refused?.[0]?.lane_id).toContain('pc-1');
+		expect(result.cancellation_refused?.[0]?.next_action).toContain(
+			'cancel_lane_batch',
 		);
+		let record = findByBatchId(dir, 'batch-pc-1')[0];
+		expect(record.status).toBe('pending');
+		// The authorized surface settles the distinct operator_cancelled class
+		// (never liveness) through the exactly-once claim.
+		const realCancelOps = cancelInternals.getSessionOps;
+		cancelInternals.getSessionOps = () => idleEmptyHost('sess-pc-1');
+		try {
+			const cancel = await executeCancelLaneBatch(
+				{
+					batch_id: 'batch-pc-1',
+					reason: 'parity: operator cancellation probe',
+					confirm: true,
+				},
+				dir,
+			);
+			expect(cancel.cancelled).toBe(1);
+			record = findByBatchId(dir, 'batch-pc-1')[0];
+			expect(record.status).toBe('cancelled');
+			expect(record.terminalResult?.result?.workflowLaneFailureClass).toBe(
+				'operator_cancelled',
+			);
+		} finally {
+			cancelInternals.getSessionOps = realCancelOps;
+		}
 	});
 
 	it('the Task-side stale sweep stamps a typed liveness result', async () => {

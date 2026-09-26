@@ -136,6 +136,27 @@ describe('abort_pr_workflow controller-tool gating (defense in depth)', () => {
 		).resolves.toBeUndefined();
 	});
 
+	test('cancel_lane_batch resolves under active PR_REVIEW and PR_FEEDBACK gates (issue #2971)', async () => {
+		// The authorized cancellation surface must stay reachable during an
+		// active workflow: its name token 'cancel' is a mutation verb for the
+		// read-only classifier, so only the shared controller allowlist admits
+		// it. Review round 1 caught the unwired state where every call threw
+		// BLOCKED in the exact state the tool was built for.
+		for (const mode of ['PR_REVIEW', 'PR_FEEDBACK'] as const) {
+			const sessionID = `cancel-batch-${mode.toLowerCase()}`;
+			await activatePrWorkflow(directory, sessionID, mode, {
+				prHeadSha: 'abc123',
+			});
+			await expect(
+				enforcePrWorkflowToolBefore(directory, sessionID, 'cancel_lane_batch', {
+					batch_id: 'b',
+					reason: 'gate wiring probe',
+					confirm: true,
+				}),
+			).resolves.toBeUndefined();
+		}
+	});
+
 	test('passes the PR_FEEDBACK pre-armed (bound-but-not-armed) gate', async () => {
 		// The realistic PR_FEEDBACK deadlock: the workflow is activated AND
 		// bound to a PR head, but the architect cannot complete the ordered

@@ -30,13 +30,13 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { initializeGitRepository } from '../helpers/git-repository.js';
 
 /**
- * #2585 frozen acceptance check C2 (AC1/R02), PRESERVING. The non-swarm
- * caller on a multi-swarm (prefixed-only) host reaches a typed terminal
- * state, never a hang: (A) a bare canonical agent is refused at dispatch
- * with the agent-not-registered refusal (#2614); (B) an accepted-then-
- * cancelled lane is stamped 'liveness' by cancel_pending and a PARTIAL run
- * completes INCOMPLETE through the typed-terminal admission (#2615); (C)
- * every tool response stays a bounded JSON payload.
+ * #2585 frozen acceptance check C2 (AC1/R02), leg B — split out of
+ * r02-non-swarm-caller-typed-terminal.test.ts for the FR-006 500-line cap.
+ * An accepted-then-dead lane settles 'liveness' through the production
+ * typed-terminal settle after the observation-only collector refuses
+ * cancel_pending (#2971), and a PARTIAL run completes INCOMPLETE through
+ * the typed-terminal admission (#2615). Leg A stays in the original file
+ * with this same fixture.
  */
 
 const SESSION_ID = 'r02-non-swarm-caller';
@@ -44,7 +44,6 @@ const HEAD_SHA = 'a'.repeat(40);
 const BASE_SHA = 'b'.repeat(40);
 const REVISION_DIGEST = 'e'.repeat(64);
 const RUN_ID = 'r02-typed-terminal-run';
-const PREFIXED_NAMES = ['codereview_explorer', 'codereview_reviewer'];
 // Shallow seam snapshots; afterEach restores every key so overrides cannot leak.
 const originalGate = { ...gateInternals };
 const originalDispatch = { ...dispatchInternals };
@@ -280,37 +279,221 @@ afterEach(async () => {
 });
 
 describe('r02 non-swarm caller typed terminal (issue 2585, C2/AC1/R02)', () => {
-	test('leg A: prefixed-only host refuses a bare agent at dispatch with the registered-names refusal', async () => {
-		dispatchInternals.getGeneratedAgentNames = () => [...PREFIXED_NAMES];
+	test('leg B: accepted-then-cancelled lane settles liveness and PARTIAL completes INCOMPLETE with disclosure', async () => {
 		await activatePrWorkflow(directory, SESSION_ID, 'PR_REVIEW', {
 			prHeadSha: HEAD_SHA,
 		});
-		// A structurally valid all-six partition (the tier-M gate must pass so
-		// the refusal comes from lane-agent validation, not arg validation).
-		const result = await dispatch(
-			'r02-prefixed-refusal',
+		const deadDimension = PR_REVIEW_BASE_DIMENSION_IDS[5]!;
+		// Six single-dimension lanes: five complete; the sixth dies.
+		await dispatch(
+			'r02-base-ok',
 			'swarm-pr-review:base',
-			[
-				PR_REVIEW_BASE_DIMENSION_IDS.slice(0, 2),
-				PR_REVIEW_BASE_DIMENSION_IDS.slice(2, 4),
-				PR_REVIEW_BASE_DIMENSION_IDS.slice(4),
-			],
-			{ agent: 'explorer', expectRejected: 3 },
+			PR_REVIEW_BASE_DIMENSION_IDS,
 		);
-		const lanes = result.lane_results as Array<Record<string, unknown>>;
-		expect(lanes).toHaveLength(3);
-		for (const lane of lanes) {
-			expect(lane.status).toBe('rejected');
-			expect(String(lane.error)).toContain(
-				'Agent "explorer" is not registered on this host',
-			);
-			expect(String(lane.error)).toContain(PREFIXED_NAMES.join(', '));
+		const baseRecords = findByBatchId(directory, 'r02-base-ok', SESSION_ID);
+		expect(baseRecords).toHaveLength(6);
+		const dead = baseRecords.find(
+			(record) => record.workflowLane === deadDimension,
+		)!;
+		expect(deliveredPrompts.has(dead.subagentSessionId)).toBe(true);
+		for (const record of baseRecords) {
+			if (record.workflowLane === deadDimension) continue;
+			await submitOne(record);
+			await finishLane(record);
 		}
-		// No host session was created: the refusal is typed and immediate.
-		expect(deliveredPrompts.size).toBe(0);
-	});
+		// #2971: collect_lane_results is observation-only — cancel_pending is
+		// answered with typed refusal guidance and nothing is settled; the
+		// dead lane then settles liveness via the production writer.
+		const cancelled = JSON.parse(
+			await plugin.tool.collect_lane_results.execute(
+				{
+					batch_id: 'r02-base-ok',
+					cancel_pending: true,
+					timeout_ms: 5_000,
+				},
+				{ directory, sessionID: SESSION_ID },
+			),
+		) as {
+			success: boolean;
+			cancelled: number;
+			cancellation_refused?: unknown[];
+		};
+		expect(cancelled.success).toBe(false);
+		expect(cancelled.cancelled).toBe(0);
+		expect(cancelled.cancellation_refused).toHaveLength(1);
+		const deadRecord = findByBatchId(directory, 'r02-base-ok', SESSION_ID).find(
+			(record) => record.workflowLane === deadDimension,
+		)!;
+		const settledOutcome = await settleDelegationTerminal(
+			directory,
+			deadRecord,
+			{
+				status: 'cancelled',
+				result: {
+					error: 'lane presumed stale without an observed host terminal event',
+					chars: 0,
+					truncated: false,
+					digest: createHash('sha256').update('').digest('hex'),
+					workflowLaneFailureClass: 'liveness',
+				},
+			},
+			{},
+		);
+		expect(settledOutcome.kind).toBe('claimed');
+		const settled = findByBatchId(directory, 'r02-base-ok', SESSION_ID).find(
+			(record) => record.workflowLane === deadDimension,
+		)!;
+		expect(settled.status).toBe('cancelled');
+		expect(settled.terminalResult?.result?.workflowLaneFailureClass).toBe(
+			'liveness',
+		);
+		expect(
+			findByCorrelationId(directory, settled.subagentSessionId)?.result
+				?.workflowLaneFailureClass,
+		).toBe('liveness');
 
-	// leg B (observation-only cancel_pending + liveness settle + PARTIAL
-	// INCOMPLETE disclosure, issue #2971) lives in
-	// r02-cancel-observation-liveness.test.ts (FR-006 line-cap split).
+		const admission = await tool('write_pr_review_artifact', {
+			kind: 'findings',
+			run_id: RUN_ID,
+			pr_head_sha: HEAD_SHA,
+			boundary: 'post_explorer',
+			records: [
+				artifactRecord('CLEAN-REVIEW', 'PENDING', 'route_to_reviewer', 'NONE'),
+			],
+			partial_base_coverage: { unresolved_dimensions: [deadDimension] },
+		});
+		expect(admission.success).toBe(true);
+		expect(JSON.stringify(admission)).not.toContain(
+			'lacks a typed terminal failure',
+		);
+		const disclosed = (
+			admission.partial_base_coverage as {
+				unresolved_dimensions: Array<Record<string, string>>;
+			}
+		).unresolved_dimensions[0]!;
+		expect(disclosed).toEqual({
+			dimension: deadDimension,
+			terminal_state: 'FAILED',
+			reason_kind: 'lane_failure',
+			failure_class: 'liveness',
+		});
+
+		const inlineTriggers: PrReviewInlineTriggerRow[] =
+			PR_REVIEW_REQUIRED_MICRO_LANE_IDS.map((triggerId) => ({
+				trigger_id: triggerId,
+				result: 'MATCHED',
+				evidence: `The bound diff requires focused review for ${triggerId}.`,
+			}));
+		const triggerRows: Array<Record<string, string>> = [];
+		for (const [offset, lane] of PR_REVIEW_REQUIRED_MICRO_LANE_IDS.entries()) {
+			const batchId = `r02-micro-${offset}`;
+			await dispatch(batchId, 'swarm-pr-review:micro', [lane], {
+				triggerEvaluation: offset === 0 ? inlineTriggers : undefined,
+			});
+			await submitAndFinish(batchId);
+			for (const record of findByBatchId(directory, batchId, SESSION_ID)) {
+				triggerRows.push({
+					trigger_id: record.workflowLane!,
+					result: 'MATCHED',
+					evidence: `Registered micro receipt covers ${record.workflowLane}.`,
+					source_batch_id: batchId,
+					source_lane_id: record.laneId!,
+				});
+			}
+		}
+		expect(
+			await tool('write_pr_review_trigger_eval', {
+				run_id: RUN_ID,
+				pr_head_sha: HEAD_SHA,
+				base_ref: 'origin/main',
+				base_sha: BASE_SHA,
+				rows: triggerRows,
+			}),
+		).toMatchObject({ success: true });
+
+		await tool('dispatch_lanes_async', {
+			batch_id: 'r02-reviewer',
+			mode: 'swarm-pr-review:reviewer',
+			pr_head_sha: HEAD_SHA,
+			base_sha: BASE_SHA,
+			base_ref: 'origin/main',
+			max_concurrent: 1,
+			lanes: [
+				{
+					id: 'r02-reviewer-lane',
+					agent: 'reviewer',
+					prompt: 'Classify the clean-review sentinel.',
+					workflow_lane: 'r02-reviewer-lane',
+					review_item_ids: ['CLEAN-REVIEW'],
+				},
+			],
+		});
+		await finishLane(findByBatchId(directory, 'r02-reviewer', SESSION_ID)[0]!);
+		for (const boundary of ['post_reviewer', 'post_critic'] as const) {
+			const write = await tool('write_pr_review_artifact', {
+				kind: 'findings',
+				run_id: RUN_ID,
+				pr_head_sha: HEAD_SHA,
+				boundary,
+				records: [
+					artifactRecord(
+						'CLEAN-REVIEW',
+						'DISPROVED',
+						'suppress_with_reason',
+						'NONE',
+					),
+				],
+			});
+			expect(write.success).toBe(true);
+		}
+
+		// Terminal: PARTIAL coverage completes truthfully as INCOMPLETE.
+		const completion = (await tool('complete_pr_workflow', {
+			mode: 'PR_REVIEW',
+			pr_head_sha: HEAD_SHA,
+			report_verdict: 'INCOMPLETE',
+		})) as ReturnType<typeof tool> & {
+			status: string;
+			gate_cleared: boolean;
+			terminal_report: {
+				kind: string;
+				covered_dimensions: string[];
+				unresolved_dimensions: Array<{
+					dimension: string;
+					terminal_state: string;
+					failure_class?: string;
+				}>;
+				live_dimensions: string[];
+				allowed_verdicts: string[];
+				report_verdict: string;
+			};
+		};
+		expect(JSON.stringify(completion)).not.toContain(
+			'lacks a typed terminal failure',
+		);
+		expect(completion).toMatchObject({
+			success: true,
+			status: 'completed',
+			gate_cleared: true,
+			terminal_report: {
+				kind: 'PARTIAL',
+				live_dimensions: [],
+				report_verdict: 'INCOMPLETE',
+			},
+		});
+		expect(completion.terminal_report.covered_dimensions).toHaveLength(5);
+		expect(completion.terminal_report.unresolved_dimensions).toEqual([
+			{
+				dimension: deadDimension,
+				terminal_state: 'FAILED',
+				reason_kind: 'lane_failure',
+				failure_class: 'liveness',
+			},
+		]);
+		expect(completion.terminal_report.allowed_verdicts).toContain('INCOMPLETE');
+		expect(completion.terminal_report.allowed_verdicts).not.toContain(
+			'APPROVE',
+		);
+		// leg C: every response above flowed through the bounded() gate.
+	}, 60_000);
 });

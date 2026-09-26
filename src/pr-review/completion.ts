@@ -524,7 +524,9 @@ const PR_REVIEW_FAILURE_CLASS_SAFE_DETAILS: Record<
 	resource: 'lane exhausted its resource budget before producing valid output',
 	deadline: 'lane passed its collection deadline without valid terminal output',
 	liveness:
-		'lane was abandoned by its host (presumed-stale sweep, unobservable host session, or operator cancellation) without an observed agent failure',
+		'lane was abandoned by its host (presumed-stale sweep or unobservable host session) without an observed agent failure',
+	operator_cancelled:
+		'lane was cancelled by an explicit operator action (confirmed cancel or human force abort), not by a host or provider failure',
 };
 
 const PrReviewUnresolvedDimensionRecordSchema = z
@@ -533,7 +535,13 @@ const PrReviewUnresolvedDimensionRecordSchema = z
 		terminalState: z.enum(['FAILED', 'CANCELLED', 'NOT_LAUNCHED']),
 		reasonKind: z.enum(['lane_failure', 'cancelled', 'not_launched']),
 		failureClass: z
-			.enum(['contract', 'resource', 'deadline', 'liveness'])
+			.enum([
+				'contract',
+				'resource',
+				'deadline',
+				'liveness',
+				'operator_cancelled',
+			])
 			.optional(),
 		terminalEventId: z.string().min(1).max(256).optional(),
 		batchId: z.string().min(1).max(128).optional(),

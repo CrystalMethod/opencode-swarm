@@ -138,15 +138,17 @@ describe('reserveConcurrentLaneCallBudgets floor math (issue #2859 F5)', () => {
 describe('collect_lane_results concurrent record refresh — regression: sequential starvation (F5)', () => {
 	test('all lanes get their probe attempt and the refresh wall-clock is the max, not the sum', async () => {
 		// PR #2863 review (PRR-004): the discriminator must be STRUCTURAL, not
-		// timing-only. 6 lanes x 300ms status latency under a 1600ms budget:
-		// a SEQUENTIAL refresh needs 6*300=1800ms > 1600ms, so the last
-		// lane(s) hit a zero/under-budget probe and are skipped — the
-		// SEQUENTIAL wall-clock alone (>= 1600ms) violates the elapsedMs
-		// bound below, while the CONCURRENT refresh costs 2 waves x 300ms =
-		// 600ms (2.7x budget margin under CI load) and completes all lanes.
+		// timing-only. 6 lanes x 300ms host latency under a 1600ms budget: a
+		// SEQUENTIAL refresh needs 6*300=1800ms > 1600ms, so the last lane(s)
+		// hit a zero/under-budget probe and are skipped — the SEQUENTIAL
+		// wall-clock alone (>= 1600ms) violates the elapsedMs bound below,
+		// while the CONCURRENT refresh costs ~600ms and completes all lanes.
+		// Issue #2971: the per-lane status round-trip is gone — ONE batched
+		// host-wide probe covers all 6 lanes, and the per-lane concurrency now
+		// rides the messages fetches (still discriminated by elapsedMs).
 		// statusCalls counts INVOCATIONS (the mock increments synchronously),
-		// so it is 6 under both implementations and is asserted only as a
-		// "every lane was attempted" sanity pin, not as the discriminator.
+		// so it is 1 per pass and is asserted only as a "the pass probed the
+		// batch" sanity pin, not as the discriminator.
 		statusDelayMs = 300;
 		await recordLanes(6);
 		const startedAt = performance.now();
@@ -156,7 +158,7 @@ describe('collect_lane_results concurrent record refresh — regression: sequent
 		)) as { pending?: number };
 		const elapsedMs = performance.now() - startedAt;
 		expect(result.pending).toBeGreaterThan(0);
-		expect(statusCalls).toBe(6);
+		expect(statusCalls).toBe(1);
 		// Load-bearing discriminator: a sequential refresh (>= 1600ms of
 		// status work alone) exceeds this bound; the concurrent fan-out
 		// finishes in ~600ms with 2.5x margin.

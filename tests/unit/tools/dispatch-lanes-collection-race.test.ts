@@ -158,7 +158,11 @@ describe('dispatch lane collection readiness and races', () => {
 			expect.objectContaining({ id: 'running', status: 'pending' }),
 		);
 		expect(running?.output).toBeUndefined();
-		expect(ops.status).toHaveBeenCalledTimes(2);
+		// Issue #2971: ONE batched host-wide status probe per collection pass
+		// replaces the per-lane status round-trip (2 lanes no longer mean 2
+		// calls); the still-running lane is below the pending-liveness
+		// staleness threshold, so no attach-time liveness probe fires either.
+		expect(ops.status).toHaveBeenCalledTimes(1);
 		expect(ops.messages).toHaveBeenCalledTimes(1);
 		expect(ops.messages).toHaveBeenCalledWith({
 			path: { id: 'session-1' },

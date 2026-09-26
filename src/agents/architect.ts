@@ -112,7 +112,10 @@ export const ARCHITECT_MEMORY_OUTCOME_GUIDANCE = `After using recalled memory or
 // meaningfully-described new architect tool could not have fit. The growth is
 // conscious and documented (terse 180-char metadata description + this 1000-char
 // allowance), keeping the F#1649 ratchet intact for unreviewed growth.
-export const ARCHITECT_PROMPT_BUDGET_CHARS = 161_000;
+// 161000 -> 161500 (#2971): cancel_lane_batch joins the controller tool set;
+// its prefixed-render cell measured 161277, so the allowance grows by the
+// same deliberate 500-char step (docs/configuration.md states the ceiling).
+export const ARCHITECT_PROMPT_BUDGET_CHARS = 161_500;
 
 /**
  * Per-tool description cap for the architect prompt's AVAILABLE TOOLS line

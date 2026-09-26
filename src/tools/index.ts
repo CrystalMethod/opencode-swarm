@@ -201,6 +201,11 @@ export {
 } from './approve-retry-sounding-board';
 export { authorize_pr_review_reentry } from './authorize-pr-review-reentry';
 export {
+	CancelLaneBatchArgsSchema,
+	cancel_lane_batch,
+	executeCancelLaneBatch,
+} from './cancel-lane-batch';
+export {
 	complete_pr_workflow,
 	executeCompletePrWorkflow,
 } from './complete-pr-workflow';

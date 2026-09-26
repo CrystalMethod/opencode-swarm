@@ -22,9 +22,11 @@ qualification fixture family:
 - `tests/unit/execute-journey/j01…j07` — the journey matrix: happy path
   with a durable receipt at every gate and exact approved-plan binding
   (j01); provider-failure vs reviewer/QA-rejection distinctness (j02);
-  bounded cancellation via `collect_lane_results` `cancel_pending` and the
-  session-end settle path, with the absent EXECUTE-scope cancel tool
-  documented as a labeled gap (j03); restart-after-interruption with
+  bounded cancellation through observation-only `collect_lane_results`
+  `cancel_pending` guidance followed by the confirmed `cancel_lane_batch`
+  surface (issue #2971), plus the session-end settle path, with the absent
+  EXECUTE-scope cancel tool documented as a labeled gap (j03);
+  restart-after-interruption with
   generation continuity, old-generation late-result refusal, accepted-then-
   dead classification, and post-approval plan-identity refusal (j04);
   deterministic-transport and no-stdout-only guards (j05); model-canary

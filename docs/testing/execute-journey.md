@@ -152,9 +152,11 @@ A run is complete only when its `JourneyReport` passes
 
 Labeled gap: the repo has **no dedicated EXECUTE-scope coder-cancel tool**;
 the registered bounded-cancellation surfaces are the lane-level
-`collect_lane_results` `cancel_pending` (typed `liveness` terminal) and the
-registered `event`-hook session-end path, which clears session state bounded
-and intentionally leaves the abandoned dispatch's settlement WAL `DISPATCHED`
+`cancel_lane_batch` (`confirm: true` + reason; typed `operator_cancelled`
+terminal — the collector's `cancel_pending` is observation-only guidance
+since issue #2971) and the registered `event`-hook session-end path, which
+clears session state bounded and intentionally leaves the abandoned dispatch's
+settlement WAL `DISPATCHED`
 — the durable recovery input for `/swarm recover`
 (`recoverStaleCoderSettlements`) — rather than settling it silently (j03 pins
 both boundaries). A dedicated coder-task cancel surface is future work
