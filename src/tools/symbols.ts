@@ -1215,10 +1215,13 @@ const JAVA_TYPE_TOKEN = `${JAVA_QUALIFIED_IDENT}${JAVA_GENERIC}${JAVA_ARRAY_SUFF
 // preceding the keyword text as a substring. `record` is a contextual
 // keyword in Java (a local variable or method can be named `record`), so
 // its branch additionally requires a component/type-parameter list opener
-// immediately after the name — a bare `record foo = ...;` or
-// `record.get();` never has one.
+// immediately after the name (allowing end-of-line too, so a record whose
+// component list is wrapped onto the next line, e.g. `record Pt\n    (int
+// x, int y) {`, is still recognized rather than silently dropped along
+// with its members) — a bare `record foo = ...;` or `record.get();` never
+// has one.
 const JAVA_TYPE_DECL_RE =
-	/(?<![\w.$@])(?:(@interface|class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)|(record)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=[(<]))/;
+	/(?<![\w.$@])(?:(@interface|class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)|(record)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=[(<]|$))/;
 
 /**
  * A method-level generic type-parameter clause (`<T>`, `<K, V extends Foo>`),

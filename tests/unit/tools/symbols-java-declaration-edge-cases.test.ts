@@ -447,4 +447,29 @@ public @interface MyAnno {}
 		expect(names).toContain('localM');
 		expect(names).toContain('outerM');
 	});
+
+	test('recognizes a record whose component list is wrapped onto the next line (Stage B round 4 finding)', () => {
+		// Regression: the record branch's lookahead only accepted an
+		// immediately-following `(` or `<` on the SAME line, so a record
+		// header wrapped by a formatter (component list on the next line)
+		// was not recognized as a type declaration at all — and, same as
+		// every other unrecognized-type case, all of its members were then
+		// silently dropped too.
+		write(
+			'WrappedRecord.java',
+			`public class Outer3 {
+    public record Pt
+        (int x, int y) {
+        public int sum() { return x + y; }
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('WrappedRecord.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).toContain('Pt');
+		expect(names).toContain('sum');
+	});
 });
