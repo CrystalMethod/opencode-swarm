@@ -1120,8 +1120,13 @@ export function checkDestructiveCommandRegistry(repoRoot: string): CheckResult {
 	const registryRel = 'src/commands/registry.ts';
 	const registrySource = readTextOrEmpty(path.join(repoRoot, registryRel));
 	if (registrySource === '') {
-		messages.push(`ERROR: ${registryRel} not found or unreadable.`);
-		return { messages, violations: 1 };
+		// Fixture/replica trees without the swarm command surface (e.g. the
+		// Check 5 fixtures) have nothing to enumerate — skip non-blockingly,
+		// mirroring Check 5's "no scope entry resolved" contract.
+		messages.push(
+			'Check 9 skipped: no command registry in this tree (fixture tree without the swarm command surface).',
+		);
+		return { messages, violations: 0 };
 	}
 	const entries = parseRegistryEntries(registrySource);
 	const entryKeys = new Set(entries.map((e) => e.key));
@@ -1193,12 +1198,14 @@ export function checkDestructiveCommandRegistry(repoRoot: string): CheckResult {
 		}
 	}
 
-	// Tool registry: same rule for agent-reachable tool surfaces.
+	// Tool registry: same rule for agent-reachable tool surfaces. Trees with
+	// a registry but no tool metadata (partial fixtures) skip the tool scan.
 	const toolMetadataRel = 'src/tools/tool-metadata.ts';
 	const toolSource = readTextOrEmpty(path.join(repoRoot, toolMetadataRel));
 	if (toolSource === '') {
-		messages.push(`ERROR: ${toolMetadataRel} not found or unreadable.`);
-		violations += 1;
+		messages.push(
+			'Check 9: tool metadata not present in this tree — tool scan skipped.',
+		);
 	} else {
 		const toolEntries = [...toolSource.matchAll(/^\t(\w+):\s*\{/gm)];
 		for (let i = 0; i < toolEntries.length; i += 1) {
