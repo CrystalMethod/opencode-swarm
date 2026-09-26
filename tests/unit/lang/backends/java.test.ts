@@ -354,6 +354,25 @@ describe('isMainClass', () => {
 		);
 		expect(isMainClass('')).toBe(false);
 	});
+
+	test('true regardless of public/static modifier order (swarm-pr-review closeout finding)', () => {
+		expect(isMainClass('static public void main(String[] args) {}')).toBe(true);
+	});
+
+	test('false for a commented-out or documentation-example main (masked-source regression)', () => {
+		// Regression: isMainClass used to run on unmasked source, so a
+		// commented-out or doc-example `main` was mistaken for a real
+		// entry point.
+		expect(isMainClass('// public static void main(String[] args) {}')).toBe(
+			false,
+		);
+		expect(isMainClass('/* public static void main(String[] args) {} */')).toBe(
+			false,
+		);
+		expect(
+			isMainClass('String s = "public static void main(String[] args)";'),
+		).toBe(false);
+	});
 });
 
 describe('detectFramework', () => {

@@ -1169,7 +1169,13 @@ const JAVA_STATEMENT_KEYWORDS = new Set([
  * alternation below rather than being swallowed here as an annotation named
  * "interface".
  */
-const JAVA_ANNOTATION_PREFIX = '(?:@[A-Za-z_][\\w.]*(?:\\([^)]*\\))?\\s+)*';
+// Allows one level of nested parens inside the annotation's argument list
+// (e.g. `@JsonTypeInfo(use = @Id(NAME))`), a common Jackson/JPA shape —
+// without this, such an annotation fails to match at all and the type/method
+// declaration it precedes is silently dropped rather than merely
+// unannotated-looking.
+const JAVA_ANNOTATION_PREFIX =
+	'(?:@[A-Za-z_][\\w.]*(?:\\([^()]*(?:\\([^()]*\\)[^()]*)*\\))?\\s+)*';
 
 /** A possibly-qualified type name (`Foo`, `java.util.List`). */
 const JAVA_QUALIFIED_IDENT =
@@ -1191,7 +1197,7 @@ const JAVA_ARRAY_SUFFIX = '(?:\\s*\\[\\s*\\])*';
 const JAVA_TYPE_TOKEN = `${JAVA_QUALIFIED_IDENT}${JAVA_GENERIC}${JAVA_ARRAY_SUFFIX}\\s+`;
 
 const JAVA_TYPE_DECL_RE = new RegExp(
-	`^\\s*${JAVA_ANNOTATION_PREFIX}(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed)\\s+)*(class|interface|enum|record|@interface)\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+	`^\\s*${JAVA_ANNOTATION_PREFIX}(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed|strictfp)\\s+)*(class|interface|enum|record|@interface)\\s+([A-Za-z_][A-Za-z0-9_]*)`,
 );
 
 /**

@@ -299,4 +299,39 @@ public @interface MyAnno {}
 		expect(symbolsList.find((s) => s.name === 'unit')?.exported).toBe(true);
 		expect(symbolsList.find((s) => s.name === 'helper')?.exported).toBe(false);
 	});
+
+	test('recognizes strictfp and nested-parenthesis annotations on a nested type, so its members are not dropped by depth scoping (Stage B re-check finding)', () => {
+		// Regression: the type-decl regex didn't include `strictfp` in its
+		// modifier alternation, and the annotation prefix only allowed a
+		// single (non-nested) parenthesized argument list — so a nested
+		// type declared as `public static strictfp class Calc` or
+		// `@JsonTypeInfo(use = @Id(NAME)) public static class Dto` was
+		// never recognized as a type at all. Once brace-depth scoping was
+		// added for constructor/member detection, an unrecognized nested
+		// type meant its members sat one level "too deep" relative to the
+		// nearest RECOGNIZED enclosing type and were silently dropped
+		// entirely, not merely left unlabeled as before.
+		write(
+			'Outer.java',
+			`public class Outer {
+    public static strictfp class Calc {
+        public double add(double a, double b) { return a + b; }
+    }
+    @JsonTypeInfo(use = @Id(NAME)) public static class Dto {
+        public String getName() { return null; }
+    }
+    public void outerM() {}
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Outer.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).toContain('Calc');
+		expect(names).toContain('add');
+		expect(names).toContain('Dto');
+		expect(names).toContain('getName');
+		expect(names).toContain('outerM');
+	});
 });

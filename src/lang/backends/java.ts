@@ -94,9 +94,10 @@ const DEFERRED_ENTRY_POINT_DIRS = new Set([
  */
 export function isMainClass(source: string): boolean {
 	// Masked so a commented-out or documentation-example `main` method is
-	// never mistaken for a real entry point; modifier order is
-	// order-agnostic (`static public void main` is valid Java, just unusual
-	// style).
+	// never mistaken for a real entry point. Recognizes the two most common
+	// modifier orderings (`public static` and `static public`) but not an
+	// interleaved third modifier (e.g. `public final static void main`) —
+	// a completeness gap, not a correctness one.
 	const masked = maskCommentsAndLiterals(source);
 	return /\b(?:public\s+static|static\s+public)\s+void\s+main\s*\(/.test(
 		masked,
