@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.6",
+  "tagCommit": "7ff775bf68c9b26f7ce24d8bdeb37d66ce2b6990",
+  "targetCommitish": "7ff775bf68c9b26f7ce24d8bdeb37d66ce2b6990",
+  "releaseBodySha256": "de3c4c35c8bd717e82f541e6ccd063d6fc323fd12f598c200a31bba40a5f5552",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2918-docs-only-pre-check-gate.md",
+      "sha256": "ddfdf2bdd8dbcf133d4f1dcce72bc87a59e22041fb348ad5fbdb666bf6044f39"
+    }
+  ]
+}
