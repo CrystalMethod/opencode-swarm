@@ -328,10 +328,123 @@ public @interface MyAnno {}
 		const symbolsList = extractJavaSymbols('Outer.java', root);
 		const names = symbolsList.map((s) => s.name);
 
+		expect(names).toContain('Outer');
 		expect(names).toContain('Calc');
 		expect(names).toContain('add');
 		expect(names).toContain('Dto');
 		expect(names).toContain('getName');
+		expect(names).toContain('outerM');
+	});
+
+	test('recognizes nested types regardless of prefix shape: annotation after a modifier, doubly-nested annotation args, and a continuation line closing a multi-line annotation (Stage B round 3 finding)', () => {
+		// Regression: the type-decl regex was ANCHORED on a fixed
+		// annotation-then-modifier prefix shape. Any real prefix shape that
+		// didn't fit — an annotation appearing AFTER a modifier (legal
+		// Java), two levels of nested annotation-argument parens, or a
+		// continuation line where the modifiers follow a multi-line
+		// annotation's closing `)` — meant the whole type declaration went
+		// unrecognized, and (once member matching became depth-scoped
+		// against the type stack) every member of that type was then
+		// silently dropped too. Fixed by matching on the KEYWORD alone and
+		// accounting for whatever precedes it (`pre`) via its own net
+		// brace count, independent of prefix shape.
+		write(
+			'Outer2.java',
+			`public class Outer2 {
+    public @Deprecated static class AfterModifier {
+        void afterModifierM() {}
+    }
+    @A(x = @B(y = @C(1))) public static class DoublyNested {
+        void doublyNestedM() {}
+    }
+    @JsonSubTypes({
+        @JsonSubTypes.Type(Foo.class)
+    }) public static class Continuation {
+        void continuationM() {}
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Outer2.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).toContain('AfterModifier');
+		expect(names).toContain('afterModifierM');
+		expect(names).toContain('DoublyNested');
+		expect(names).toContain('doublyNestedM');
+		expect(names).toContain('Continuation');
+		expect(names).toContain('continuationM');
+	});
+
+	test('does not misidentify the contextual keyword "record" as a type declaration outside a real record header', () => {
+		// `record` is a contextual keyword in Java — it can still be used as
+		// an identifier (a variable/parameter/method name). Only a real
+		// record header (`record Name(...)` or `record Name<T>(...)`) is a
+		// type declaration.
+		write(
+			'RecordGuard.java',
+			`public class RecordGuard {
+    void m(Object record) {
+        if (record instanceof String) {
+            record.toString();
+        }
+        String s = record.toString();
+    }
+    record Point(int x, int y) {}
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('RecordGuard.java', root);
+
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'Point', kind: 'class' }),
+		);
+		expect(symbolsList).not.toContainEqual(
+			expect.objectContaining({ name: 'instanceof' }),
+		);
+		expect(symbolsList).not.toContainEqual(
+			expect.objectContaining({ name: 'toString' }),
+		);
+	});
+
+	test('does not misidentify a qualified-name access like Foo.class as a type declaration', () => {
+		write(
+			'DotClass.java',
+			`public class DotClass {
+    void m() {
+        Class<?> c = Foo.class;
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('DotClass.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).not.toContain('class');
+		expect(names).toContain('DotClass');
+	});
+
+	test('recognizes a local class declared inside a method body as its own type, scoping its members correctly', () => {
+		write(
+			'LocalClass.java',
+			`public class LocalClass {
+    void outerM() {
+        class Local {
+            void localM() {}
+        }
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('LocalClass.java', root);
+		const names = symbolsList.map((s) => s.name);
+
+		expect(names).toContain('Local');
+		expect(names).toContain('localM');
 		expect(names).toContain('outerM');
 	});
 });

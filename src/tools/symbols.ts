@@ -1159,6 +1159,7 @@ const JAVA_STATEMENT_KEYWORDS = new Set([
 	'assert',
 	'else',
 	'do',
+	'case',
 ]);
 
 /**
@@ -1196,9 +1197,28 @@ const JAVA_ARRAY_SUFFIX = '(?:\\s*\\[\\s*\\])*';
 /** A single type token in a modifier/return-type list, followed by whitespace. */
 const JAVA_TYPE_TOKEN = `${JAVA_QUALIFIED_IDENT}${JAVA_GENERIC}${JAVA_ARRAY_SUFFIX}\\s+`;
 
-const JAVA_TYPE_DECL_RE = new RegExp(
-	`^\\s*${JAVA_ANNOTATION_PREFIX}(?:(?:public|protected|private|abstract|final|static|sealed|non-sealed|strictfp)\\s+)*(class|interface|enum|record|@interface)\\s+([A-Za-z_][A-Za-z0-9_]*)`,
-);
+// Unanchored on the KEYWORD, not on a line-start modifier/annotation prefix.
+// Earlier versions anchored with `^\s*(?:annotations)(?:modifiers)*(keyword)`,
+// which meant any prefix shape the annotation/modifier sub-patterns didn't
+// cover (an annotation appearing after a modifier, doubly-nested annotation
+// arguments, a continuation line like `}) public static class Foo {` whose
+// modifiers follow a multi-line annotation's closing `)`) caused the WHOLE
+// type declaration to go unrecognized — and, once member matching became
+// brace-depth-scoped against the type stack, an unrecognized type meant ALL
+// of its members were silently dropped too, not just left unlabeled as
+// before. Matching on the keyword alone removes that dependency on prefix
+// shape entirely: whatever precedes the keyword on the line becomes `pre`
+// (used only for the visibility check and for its own net brace count, so a
+// closing paren/brace from a preceding multi-line annotation is still
+// accounted for). The negative lookbehind excludes a qualified-name access
+// like `Foo.class` (preceded by `.`) and an annotation usage immediately
+// preceding the keyword text as a substring. `record` is a contextual
+// keyword in Java (a local variable or method can be named `record`), so
+// its branch additionally requires a component/type-parameter list opener
+// immediately after the name — a bare `record foo = ...;` or
+// `record.get();` never has one.
+const JAVA_TYPE_DECL_RE =
+	/(?<![\w.$@])(?:(@interface|class|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)|(record)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=[(<]))/;
 
 /**
  * A method-level generic type-parameter clause (`<T>`, `<K, V extends Foo>`),
@@ -1266,47 +1286,54 @@ export function extractJavaSymbols(
 		const closes = (line.match(/\}/g) ?? []).length;
 
 		const typeDecl = line.match(JAVA_TYPE_DECL_RE);
-		if (typeDecl) {
+		const typeDeclName = typeDecl?.[2] ?? typeDecl?.[4];
+		if (
+			typeDecl &&
+			typeDecl.index !== undefined &&
+			typeDeclName &&
+			!JAVA_KEYWORDS.has(typeDeclName)
+		) {
 			const kind: JavaTypeStackEntry['kind'] =
 				typeDecl[1] === 'interface' || typeDecl[1] === '@interface'
 					? 'interface'
 					: typeDecl[1] === 'enum'
 						? 'enum'
-						: 'class';
-			if (opens > closes) {
+						: 'class'; // covers 'class' and the (group-1-less) record branch
+			// Split at the keyword match, not at line-start: everything
+			// before it (`pre`) is the modifier/annotation prefix, in
+			// whatever shape it took — this is what makes the match
+			// independent of prefix shape (see the regex comment above).
+			// `pre`'s own net brace count is folded into the pushed depth,
+			// so a continuation line like `}) public static class Foo {`
+			// (closing a multi-line annotation's argument list before the
+			// modifiers) still nets out correctly.
+			const pre = line.slice(0, typeDecl.index);
+			const post = line.slice(typeDecl.index);
+			const preNet =
+				(pre.match(/\{/g) ?? []).length - (pre.match(/\}/g) ?? []).length;
+			const postOpens = (post.match(/\{/g) ?? []).length;
+			const postCloses = (post.match(/\}/g) ?? []).length;
+			if (postOpens > postCloses) {
 				// This type's own `{` is on this line and doesn't close by
 				// EOL — its members sit one level deeper than the depth
-				// this line started at.
-				typeStack.push({ name: typeDecl[2], kind, depth: depthBeforeLine + 1 });
-			} else if (opens === 0) {
-				// No brace at all yet — Allman style, `{` follows on a
-				// later line.
-				pendingType = { name: typeDecl[2], kind };
+				// this line started at (plus whatever `pre` itself nets).
+				typeStack.push({
+					name: typeDeclName,
+					kind,
+					depth: depthBeforeLine + preNet + 1,
+				});
+			} else if (postOpens === 0) {
+				// No brace at all from the keyword onward — Allman style,
+				// `{` follows on a later line.
+				pendingType = { name: typeDeclName, kind };
 			}
-			// else: opens > 0 && opens <= closes — the type's body opens
-			// AND closes on this same line (e.g. `class Marker {}`, or a
-			// fully inline body). It has no members to track and must not
-			// be pushed onto the stack or left as a dangling pendingType.
-			// Derive visibility from the matched modifier text, not the raw
-			// whole line (a comment/string containing "public" must not flip
-			// the flag). Mirrors the PHP extractor's modifier-slice pattern.
-			// Uses indexOf (not lastIndexOf): typeDecl[1] here is the
-			// declaration KEYWORD (class/interface/enum/record/@interface),
-			// which can also occur as a substring of the type NAME itself
-			// (e.g. `class publicclass {}` contains "class" again inside
-			// "publicclass") — lastIndexOf would find that inner occurrence
-			// and slice past the real keyword, letting stray modifier-like
-			// substrings inside the name leak into the "modifiers" slice.
-			// None of the modifier keywords contain "class"/"interface"/
-			// "enum"/"record" as a substring, so the FIRST occurrence is
-			// always the real declaration keyword. (This is the opposite
-			// case from the method branch below, where lastIndexOf is
-			// required because a modifier keyword CAN contain a short
-			// method name as a substring.)
-			const modifiers = typeDecl[0].slice(0, typeDecl[0].indexOf(typeDecl[1]));
-			const visibility = modifiers.match(/\b(public|protected|private)\b/)?.[1];
+			// else: postOpens > 0 && postOpens <= postCloses — the type's
+			// body opens AND closes on this same line (e.g. `class Marker
+			// {}`). It has no members to track and must not be pushed onto
+			// the stack or left as a dangling pendingType.
+			const visibility = pre.match(/\b(public|protected|private)\b/)?.[1];
 			symbols.push({
-				name: typeDecl[2],
+				name: typeDeclName,
 				kind,
 				exported: visibility === 'public',
 				signature: rawLine.trim().substring(0, 100),

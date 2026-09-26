@@ -66,15 +66,15 @@ describe('selectEntryPoints size caps', () => {
 		// real synchronous time in readdirSync/statSync calls even though
 		// the byte caps (which only apply to .java files) never engage.
 		// Discriminating regression test: place a REAL main-class .java
-		// file in a directory that sorts alphabetically LAST, behind more
-		// junk directories than MAX_ENTRY_POINT_ENTRIES. The LIFO walk
-		// pushes entries in readdir order and pops in reverse, so the
-		// alphabetically-last "target" directory is pushed first and would
-		// only be popped (and its main class found) after every junk
-		// directory ahead of it in the stack has been processed — which
-		// the entries cap must prevent from ever completing. Pre-fix
-		// (unbounded) code finds the main class regardless of junk-dir
-		// count; post-fix code must not, once the cap is exceeded.
+		// file in a directory nested behind more junk directories than
+		// MAX_ENTRY_POINT_ENTRIES. The cap is checked per-entry as the ROOT
+		// directory's own readdirSync results are iterated (entriesVisited
+		// increments once per root-level junk dir, before any of them is
+		// ever pushed onto the walk stack), so it trips while still
+		// iterating the root — independent of the walk's LIFO push/pop
+		// order. Pre-fix (unbounded) code finds the main class regardless
+		// of junk-dir count; post-fix code must not, once the cap is
+		// exceeded.
 		const entriesCap = _internals.MAX_ENTRY_POINT_ENTRIES;
 		const junkCount = entriesCap + 50;
 		for (let i = 0; i < junkCount; i++) {
