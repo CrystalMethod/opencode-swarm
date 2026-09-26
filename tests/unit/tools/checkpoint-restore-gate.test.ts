@@ -85,7 +85,7 @@ describe('checkpoint tool restore gate (#2946)', () => {
 		);
 	});
 
-	test('the preview token executes at the sink (cross-surface digest)', async () => {
+	test('the sink-issued preview token executes at the sink (cross-surface mint confirm is covered by rollback-two-step)', async () => {
 		const { dir, file, label } = await scratchRepo();
 		fs.writeFileSync(file, 'PRECIOUS-UNCOMMITTED-EDIT');
 

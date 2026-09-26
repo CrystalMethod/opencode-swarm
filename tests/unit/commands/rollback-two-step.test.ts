@@ -199,6 +199,7 @@ describe('rollback two-step gate — git checkpoint path (#2946)', () => {
 
 	test('non-ASCII filename survives the full preview → confirm → backup flow (#2946 review finding 1)', async () => {
 		const { dir, label } = await scratchRepo('café.txt');
+		track(dir);
 		const file = path.join(dir, 'café.txt');
 		fs.writeFileSync(file, 'PRÉCIEUX-CONTENU-UNICODE');
 
@@ -212,10 +213,123 @@ describe('rollback two-step gate — git checkpoint path (#2946)', () => {
 		const out = await handleRollbackCommand(dir, [label, `--confirm=${token}`]);
 
 		expect(out).toContain('Rolled back to checkpoint');
+		// The backup safety net is surfaced to the CLI caller (#2976 F-3).
+		expect(out).toContain('backed up to');
 		expect(fs.readFileSync(file, 'utf-8')).toBe('committed-content-v1');
 		// The pre-reset bytes of the non-ASCII-named file are recoverable.
 		expect(backupDirs(dir).length).toBe(1);
 		expect(sentinelFound(dir, 'PRÉCIEUX-CONTENU-UNICODE')).toBe(true);
+	});
+
+	test('untracked file at a path the checkpoint tree tracks is gated and backed up (#2976 F-1)', async () => {
+		const dir = canonicalMkdtemp('rollback-untracked-');
+		track(dir);
+		git(['init', '-q'], dir);
+		git(['config', 'user.email', 'test@example.com'], dir);
+		git(['config', 'user.name', 'Test'], dir);
+		git(['config', 'commit.gpgsign', 'false'], dir);
+		const envFile = path.join(dir, 'env.txt');
+		fs.writeFileSync(envFile, 'checkpointed-v1\n');
+		git(['add', '.'], dir);
+		git(['commit', '-q', '-m', 'with-env'], dir);
+		const label = 'before-cleanup';
+		const save = await checkpoint.execute({ action: 'save', label }, {
+			directory: dir,
+		} as ToolContext);
+		expect(String(save)).toContain('"success": true');
+		// Remove env.txt from the repo in a LATER commit; recreate it on disk
+		// as an UNTRACKED file holding precious bytes. The checkpoint tree
+		// still tracks env.txt, so reset --hard would silently overwrite it.
+		git(['rm', '-q', 'env.txt'], dir);
+		git(['commit', '-q', '-m', 'drop-env'], dir);
+		fs.writeFileSync(envFile, 'UNTRACKED-PRECIOUS\n');
+		// Sanity: the gate must NOT read this tree as clean.
+		const status = git(['status', '--porcelain', '-z'], dir);
+		expect(git(['ls-files'], dir)).not.toContain('env.txt');
+
+		const preview = await handleRollbackCommand(dir, [label]);
+		expect(preview).toContain('--confirm=');
+		expect(preview).toContain('env.txt');
+		const token = /--confirm=([A-Za-z0-9]+)/.exec(preview)?.[1];
+
+		const out = await handleRollbackCommand(dir, [label, `--confirm=${token}`]);
+
+		expect(out).toContain('Rolled back to checkpoint');
+		// The reset materialized the checkpoint's env.txt over the untracked
+		// bytes — which must have been backed up first.
+		expect(fs.readFileSync(envFile, 'utf-8').replace(/\r\n/g, '\n')).toBe(
+			'checkpointed-v1\n',
+		);
+		expect(backupDirs(dir).length).toBe(1);
+		expect(sentinelFound(dir, 'UNTRACKED-PRECIOUS')).toBe(true);
+		// The pre-fix tracked-only parser would have seen this tree as clean.
+		expect(status).toContain('env.txt');
+	});
+
+	test('intent-to-add worktree rename of an R/C-initial file does not swallow other dirty paths (#2976 F-2)', async () => {
+		const dir = canonicalMkdtemp('rollback-rename-');
+		track(dir);
+		git(['init', '-q'], dir);
+		git(['config', 'user.email', 'test@example.com'], dir);
+		git(['config', 'user.name', 'Test'], dir);
+		git(['config', 'commit.gpgsign', 'false'], dir);
+		fs.writeFileSync(path.join(dir, 'README.md'), 'readme-v1\n');
+		fs.writeFileSync(path.join(dir, 'a.txt'), 'a-v1\n');
+		git(['add', '.'], dir);
+		git(['commit', '-q', '-m', 'init'], dir);
+		const label = 'gate';
+		const save = await checkpoint.execute({ action: 'save', label }, {
+			directory: dir,
+		} as ToolContext);
+		expect(String(save)).toContain('"success": true');
+
+		// Worktree-only rename via intent-to-add; the ORIG_PATH (README.md)
+		// starts with uppercase R — the shape that broke the first-column
+		// rename test in the -z parser.
+		fs.renameSync(path.join(dir, 'README.md'), path.join(dir, 'docs.md'));
+		git(['add', '-N', 'docs.md'], dir);
+		fs.writeFileSync(path.join(dir, 'a.txt'), 'a-EDITED-MUST-SURVIVE\n');
+
+		const preview = await handleRollbackCommand(dir, [label]);
+		expect(preview).toContain('--confirm=');
+		// The second dirty file must be named — the pre-fix parser swallowed
+		// it behind a bogus path parsed out of the rename ORIG token.
+		expect(preview).toContain('a.txt');
+		expect(preview).not.toMatch(/\bDME\.md\b/);
+		const token = /--confirm=([A-Za-z0-9]+)/.exec(preview)?.[1];
+
+		const out = await handleRollbackCommand(dir, [label, `--confirm=${token}`]);
+
+		expect(out).toContain('Rolled back to checkpoint');
+		expect(backupDirs(dir).length).toBe(1);
+		expect(sentinelFound(dir, 'a-EDITED-MUST-SURVIVE')).toBe(true);
+	});
+
+	test('backup safety net is surfaced: an incomplete backup refuses the restore (#2976 F-3)', async () => {
+		const { dir, file, label } = await scratchRepo();
+		track(dir);
+		fs.writeFileSync(file, 'UNCOMMITTED-EDIT-MUST-SURVIVE');
+		const preview = await handleRollbackCommand(dir, [label]);
+		const token = /--confirm=([A-Za-z0-9]+)/.exec(preview)?.[1];
+		expect(token).toBeTruthy();
+		// Sabotage the backup root: a plain file where the backup directory
+		// tree must be created makes every copy fail.
+		fs.rmSync(path.join(dir, '.swarm', 'rollback-backups'), {
+			recursive: true,
+			force: true,
+		});
+		fs.writeFileSync(path.join(dir, '.swarm', 'rollback-backups'), 'not a dir');
+
+		const out = await handleRollbackCommand(dir, [label, `--confirm=${token}`]);
+
+		expect(out).toContain('backup incomplete');
+		expect(out).toContain('refused');
+		expect(out).toContain('Warnings:');
+		// Nothing was destroyed.
+		expect(fs.readFileSync(file, 'utf-8')).toBe(
+			'UNCOMMITTED-EDIT-MUST-SURVIVE',
+		);
+		expect(out).not.toContain('Rolled back to checkpoint');
 	});
 
 	test('--yes together with --confirm is rejected as contradictory input', async () => {
@@ -329,5 +443,20 @@ describe('rollback two-step gate — legacy phase path (#2946)', () => {
 
 		expect(out).toContain('Rolled back to phase 1');
 		expect(out).not.toContain('--confirm=');
+	});
+
+	test('legacy phase path rejects --yes together with --confirm (#2976 F-7)', async () => {
+		const dir = scratchLegacy();
+		const live = path.join(dir, '.swarm', 'context.md');
+
+		const out = await handleRollbackCommand(dir, [
+			'1',
+			'--yes',
+			'--confirm=whatever',
+		]);
+
+		expect(out).toContain('not both');
+		expect(out).not.toContain('Rolled back to phase');
+		expect(fs.readFileSync(live, 'utf-8')).toBe('LIVE-CONTEXT');
 	});
 });

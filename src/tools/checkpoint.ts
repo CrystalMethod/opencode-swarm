@@ -800,13 +800,13 @@ function handleRestore(
 			});
 		}
 
-		// #2946: a destructive scope (uncommitted tracked work that a
-		// hard reset would discard) requires the two-step
-		// preview + confirm-token contract. The candidate set is derived
-		// by the shared rollback-gate module so a token minted by
-		// /swarm rollback or /swarm checkpoint (command layer) is
-		// consumable here at the sink — and vice versa.
-		const measurement = measureGitDestruction(directory);
+		// #2946: a destructive scope (uncommitted tracked work, or untracked
+		// files at paths the target tree materializes, that a hard reset
+		// would discard) requires the two-step preview + confirm-token
+		// contract. The candidate set is derived by the shared rollback-gate
+		// module so a token minted by /swarm rollback or /swarm checkpoint
+		// (command layer) is consumable here at the sink — and vice versa.
+		const measurement = measureGitDestruction(directory, checkpoint.sha);
 		if (measurement.kind === 'unreadable') {
 			return serializeResult('restore', {
 				success: false,
@@ -857,6 +857,24 @@ function handleRestore(
 				directory,
 				measurement.dirtyRelPaths,
 			);
+			// Fail closed when the safety net is incomplete: a destructive
+			// restore never proceeds over files whose current bytes were not
+			// actually copied (#2976 review F-3). Only paths that exist on
+			// disk owe a copy — a rename record's ORIG side has no live bytes
+			// (the file moved), so requiring it would refuse every rename.
+			const atRiskExisting = measurement.dirtyRelPaths.filter((rel) =>
+				fs.existsSync(path.join(directory, rel)),
+			).length;
+			if (!backup.backupDir || backup.copied.length < atRiskExisting) {
+				return serializeResult('restore', {
+					success: false,
+					error: `backup incomplete (${backup.copied.length}/${atRiskExisting} at-risk file(s) copied) — restore refused so nothing is destroyed.${
+						backup.warnings.length > 0
+							? ` Warnings: ${backup.warnings.join('; ')}`
+							: ''
+					}`,
+				});
+			}
 			const logBeforeReset = log;
 			gitExec(['reset', '--hard', checkpoint.sha], directory);
 			writeCheckpointLog(logBeforeReset, directory);
@@ -865,9 +883,16 @@ function handleRestore(
 				label,
 				sha: checkpoint.sha,
 				backup_dir: backup.backupDir,
+				...(backup.warnings.length > 0
+					? { backup_warnings: backup.warnings }
+					: {}),
 				message: `Restored to checkpoint: "${label}" (hard reset)${
 					backup.backupDir
 						? `; destroyed bytes backed up to ${path.relative(directory, backup.backupDir)}`
+						: ''
+				}${
+					backup.warnings.length > 0
+						? `; warnings: ${backup.warnings.join('; ')}`
 						: ''
 				}`,
 			});

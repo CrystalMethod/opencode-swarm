@@ -114,6 +114,8 @@ async function restoreGitCheckpoint(
 		requires_confirm?: boolean;
 		preview?: string[];
 		confirm_token?: string;
+		backup_dir?: string;
+		backup_warnings?: string[];
 		message?: string;
 	};
 	if (!parsed) {
@@ -149,7 +151,20 @@ async function restoreGitCheckpoint(
 		);
 	}
 
-	return `Rolled back to checkpoint "${selected.label}" (${selected.sha.slice(0, 12)})`;
+	// Surface the backup safety net and any backup warnings to the CLI caller
+	// instead of discarding them inside the tool payload (#2976 review F-3).
+	const lines = [
+		`Rolled back to checkpoint "${selected.label}" (${selected.sha.slice(0, 12)})`,
+	];
+	if (parsed.backup_dir) {
+		lines.push(
+			`📦 Destroyed bytes backed up to ${path.relative(directory, parsed.backup_dir)} — copy files back to recover.`,
+		);
+	}
+	for (const warning of parsed.backup_warnings ?? []) {
+		lines.push(`⚠️ ${warning}`);
+	}
+	return lines.join('\n');
 }
 
 /**
@@ -190,7 +205,7 @@ async function restoreGitCheckpointGated(
 	selected: GitCheckpoint,
 	flags: { confirmToken?: string; yes?: boolean },
 ): Promise<string> {
-	const measurement = measureGitDestruction(directory);
+	const measurement = measureGitDestruction(directory, selected.sha);
 	if (measurement.kind === 'unreadable') {
 		return 'Error: cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.';
 	}
@@ -417,6 +432,9 @@ export async function handleRollbackCommand(
 	}
 	let backupNote = '';
 	if (overwriteSet.length > 0) {
+		if (yes && confirmToken) {
+			return 'Error: pass either --yes or --confirm=<token>, not both.';
+		}
 		const candidates = swarmOverwriteCandidates(directory, overwriteSet);
 		const scopeAnchor = candidates[0].path;
 		if (!confirmToken && !yes) {
@@ -466,8 +484,19 @@ export async function handleRollbackCommand(
 			backupEntries,
 			{ backupsRoot: 'rollback-backups' },
 		);
-		if (backup.backupDir) {
-			backupNote = `; replaced bytes backed up to ${path.relative(directory, backup.backupDir)}`;
+		// Fail closed when the safety net is incomplete: the wholesale copy
+		// never proceeds over entries whose prior bytes were not actually
+		// saved (#2976 review F-3).
+		if (!backup.backupDir || backup.copied.length < backupEntries.length) {
+			return `Error: backup incomplete (${backup.copied.length}/${backupEntries.length} at-risk entr(ies) copied) — rollback refused so nothing was replaced.${
+				backup.warnings.length > 0
+					? ` Warnings: ${backup.warnings.join('; ')}`
+					: ''
+			} 🔐 Nothing was restored.`;
+		}
+		backupNote = `; replaced bytes backed up to ${path.relative(directory, backup.backupDir)}`;
+		if (backup.warnings.length > 0) {
+			backupNote += `; warnings: ${backup.warnings.join('; ')}`;
 		}
 	}
 

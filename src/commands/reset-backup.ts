@@ -55,10 +55,17 @@ export function backupSwarmStateBeforeReset(
 		// Refuse to operate on a redirected .swarm/ (symlink/junction), matching
 		// the safety posture of handleCloseCommand.
 		if (stat.isSymbolicLink() || !stat.isDirectory()) {
+			warnings.push(
+				'backup skipped: .swarm is a symlink or not a directory — nothing was backed up',
+			);
 			return { backupDir: null, copied, warnings };
 		}
 	} catch {
-		// .swarm/ absent (ENOENT) or unstattable — nothing to back up.
+		// .swarm/ absent (ENOENT) or unstattable — nothing to back up, but the
+		// caller must know the safety net is absent (#2976 review F-3).
+		warnings.push(
+			'backup skipped: .swarm directory is missing — nothing was backed up',
+		);
 		return { backupDir: null, copied, warnings };
 	}
 
@@ -111,33 +118,66 @@ export function backupSwarmStateBeforeReset(
 		return { backupDir: null, copied, warnings };
 	}
 
-	pruneOldResetBackups(backupsRoot, warnings);
+	pruneOldResetBackups(backupsRoot, warnings, path.basename(backupDir));
 	return { backupDir, copied, warnings };
 }
 
 /**
- * Keep only the newest RESET_BACKUP_RETENTION backup directories under
- * `.swarm/reset-backups/` (or the rollback root), deleting older ones. Names
- * are `<kind>-<ISO>` which sort chronologically, so lexical sort descending
- * yields newest-first.
+ * Backup-directory names are `<kind>-<ISO>` where kind itself contains
+ * dashes (`reset`, `reset-session`, `rollback`, `rollback-git`), so a raw
+ * lexical sort compares the PREFIX before the timestamp and ranks
+ * `rollback-git-*` ("g") above any digit-led older timestamp — a freshly
+ * created `rollback-<ISO>` backup could be pruned in the same call that
+ * made it (#2976 review F-4; the same shape pre-existed between
+ * `reset-session-` and `reset-`). Sort on the TIMESTAMP suffix instead:
+ * `toISOString().replace(/[:.]/g, '-')` always yields 17 digits, so the
+ * digit-run compares correctly as a fixed-length string. The directory
+ * created by the current call is never a prune candidate.
  */
-function pruneOldResetBackups(backupsRoot: string, warnings: string[]): void {
+const BACKUP_KIND_PREFIXES = [
+	'reset-session-',
+	'rollback-git-',
+	'rollback-',
+	'reset-',
+] as const;
+
+function backupTimestampSortKey(name: string): string {
+	for (const prefix of BACKUP_KIND_PREFIXES) {
+		if (name.startsWith(prefix)) {
+			return name.slice(prefix.length).replace(/\D/g, '');
+		}
+	}
+	return '';
+}
+
+function pruneOldResetBackups(
+	backupsRoot: string,
+	warnings: string[],
+	keepDirName?: string,
+): void {
 	try {
 		const entries = fs
 			.readdirSync(backupsRoot, { withFileTypes: true })
 			.filter((e) => e.isDirectory())
-			.map((e) => e.name)
-			.sort()
-			.reverse();
+			.map((e) => ({ name: e.name, key: backupTimestampSortKey(e.name) }))
+			.sort((a, b) =>
+				a.key === b.key
+					? b.name.localeCompare(a.name)
+					: b.key.localeCompare(a.key),
+			);
 		for (const stale of entries.slice(RESET_BACKUP_RETENTION)) {
+			// Belt and braces: the directory this call just created ranks
+			// newest under the timestamp sort, so it is never in this tail —
+			// but never delete it even if a future ranking change would.
+			if (stale.name === keepDirName) continue;
 			try {
-				fs.rmSync(path.join(backupsRoot, stale), {
+				fs.rmSync(path.join(backupsRoot, stale.name), {
 					recursive: true,
 					force: true,
 				});
 			} catch (err) {
 				warnings.push(
-					`failed to prune old backup ${stale}: ${err instanceof Error ? err.message : String(err)}`,
+					`failed to prune old backup ${stale.name}: ${err instanceof Error ? err.message : String(err)}`,
 				);
 			}
 		}
@@ -167,9 +207,15 @@ export function backupTrackedChangesBeforeRollback(
 	try {
 		const stat = fs.lstatSync(swarmDir);
 		if (stat.isSymbolicLink() || !stat.isDirectory()) {
+			warnings.push(
+				'backup skipped: .swarm is a symlink or not a directory — nothing was backed up',
+			);
 			return { backupDir: null, copied, warnings };
 		}
 	} catch {
+		warnings.push(
+			'backup skipped: .swarm directory is missing — nothing was backed up',
+		);
 		return { backupDir: null, copied, warnings };
 	}
 
@@ -213,6 +259,6 @@ export function backupTrackedChangesBeforeRollback(
 		return { backupDir: null, copied, warnings };
 	}
 
-	pruneOldResetBackups(backupsRoot, warnings);
+	pruneOldResetBackups(backupsRoot, warnings, path.basename(backupDir));
 	return { backupDir, copied, warnings };
 }

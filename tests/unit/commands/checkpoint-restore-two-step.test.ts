@@ -81,9 +81,24 @@ describe('/swarm checkpoint restore — two-step pass-through (#2946)', () => {
 
 		expect(out).toContain('✓ Restored to checkpoint: "gate"');
 		expect(fs.readFileSync(file, 'utf-8')).toBe('committed-content-v1');
-		expect(fs.existsSync(path.join(dir, '.swarm', 'rollback-backups'))).toBe(
-			true,
-		);
+		const backupRoot = path.join(dir, '.swarm', 'rollback-backups');
+		expect(fs.existsSync(backupRoot)).toBe(true);
+		// The backup must hold the destroyed bytes, not merely exist.
+		let sentinelFound = false;
+		const stack = [backupRoot];
+		while (stack.length > 0 && !sentinelFound) {
+			const current = stack.pop() as string;
+			for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+				const p = path.join(current, entry.name);
+				if (entry.isDirectory()) stack.push(p);
+				else if (
+					fs.readFileSync(p, 'utf-8').includes('BACKUP-SENTINEL-CMD-YES')
+				) {
+					sentinelFound = true;
+				}
+			}
+		}
+		expect(sentinelFound).toBe(true);
 	});
 
 	test('--confirm=<token> executes the previewed restore', async () => {
