@@ -238,8 +238,8 @@ describe('architect prompt budget matrix — issue #2671 acceptance', () => {
 			'x'.repeat(ARCHITECT_PROMPT_BUDGET_CHARS),
 		);
 		expect(over.withinBudget).toBe(false);
-		// 161500-char ceiling at the 4-chars/token estimate.
-		expect(over.tokenEstimate).toBe(40375);
+		// 163000-char ceiling at the 4-chars/token estimate (#2946 raised it).
+		expect(over.tokenEstimate).toBe(40750);
 
 		// Mandatory directives: present in every cell, relative order stable,
 		// and the prompt stays a plain host-renderable string with no

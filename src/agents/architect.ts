@@ -115,7 +115,10 @@ export const ARCHITECT_MEMORY_OUTCOME_GUIDANCE = `After using recalled memory or
 // 161000 -> 161500 (#2971): cancel_lane_batch joins the controller tool set;
 // its prefixed-render cell measured 161277, so the allowance grows by the
 // same deliberate 500-char step (docs/configuration.md states the ceiling).
-export const ARCHITECT_PROMPT_BUDGET_CHARS = 161_500;
+// 161500 -> 163000 (#2946): rollback/checkpoint command details now carry
+// the destructive-restore preview/token/backup contract; the prefixed
+// feature-heavy cell measured 162200.
+export const ARCHITECT_PROMPT_BUDGET_CHARS = 163_000;
 
 /**
  * Per-tool description cap for the architect prompt's AVAILABLE TOOLS line
