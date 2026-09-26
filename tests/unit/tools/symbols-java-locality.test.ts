@@ -225,4 +225,82 @@ describe('symbols tool — java extractor nesting depth and export locality (DS-
 			}),
 		);
 	});
+
+	test('a member class is still exported when its Allman-style opening brace is on the line after a multi-line-annotation continuation (Stage B reviewer round 2 follow-up)', () => {
+		// Same defect class as the Continuation test above, plus Allman
+		// brace style layered on top: the type's OWN opening `{` sits on a
+		// further line down from the continuation line that closes the
+		// multi-line annotation and carries the modifiers/keyword. declDepth
+		// must still be computed from the continuation line alone (preNet
+		// folded into depthBeforeLine there), independent of where the
+		// type's own `{` physically lands.
+		write(
+			'Outer4.java',
+			`public class Outer4 {
+    @JsonSubTypes({
+        @JsonSubTypes.Type(Foo.class)
+    }) public static class Q
+    {
+        public void qm() {}
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Outer4.java', root);
+
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'Q', kind: 'class', exported: true }),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'qm', kind: 'method', exported: true }),
+		);
+	});
+
+	test('a member class declared on a line that closes several stacked local scopes first is still exported, and the closed local scopes stay local (Stage B reviewer round 2 follow-up)', () => {
+		// Stresses the stack-scan side of the same fix: the line declaring
+		// `M` closes THREE open braces first (a local class's method body,
+		// the local class itself, and the enclosing method's body) before
+		// its own modifiers/keyword, so declDepth's preNet is -3. The scan
+		// must land on Outer5's own entry (the innermost with depth <=
+		// declDepth), not get confused by the local class's now-stale stack
+		// entry, which sits at a deeper depth and must already be popped.
+		write(
+			'Outer5.java',
+			`public class Outer5 {
+    void run() {
+        class Local {
+            void localM() {
+            }
+        }
+    } public static class M {
+        public void mm() {}
+    }
+}
+`,
+		);
+
+		const symbolsList = extractJavaSymbols('Outer5.java', root);
+
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'M', kind: 'class', exported: true }),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({ name: 'mm', kind: 'method', exported: true }),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'Local',
+				kind: 'class',
+				exported: false,
+			}),
+		);
+		expect(symbolsList).toContainEqual(
+			expect.objectContaining({
+				name: 'localM',
+				kind: 'method',
+				exported: false,
+			}),
+		);
+	});
 });
