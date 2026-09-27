@@ -270,6 +270,10 @@ describe('closing-window inclusion — regression: explicit-id veto failed open 
 		expect(result.blocked).toBe(true);
 		expect(result.phaseLabelSkew).toBeDefined();
 		expect(result.phaseLabelSkew?.phase_id).toBe(2);
+		// #2984 review round 3: the disagreeing id must be visible to the
+		// operator, not just the (identical) labels.
+		expect(result.phaseLabelSkew?.stored_phase_id).toBe(3);
+		expect(result.phaseLabelSkew?.stored_label).toBe(INJECTION_LABEL);
 	});
 
 	test('satisfied closing-window critical still passes (per-entry resolution intact)', async () => {

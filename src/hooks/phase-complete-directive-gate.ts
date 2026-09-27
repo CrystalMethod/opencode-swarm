@@ -48,14 +48,18 @@ export interface DirectiveGateResult {
 	failedClosed: boolean;
 	/**
 	 * #2947: present when a numeric phase id was supplied, the gate blocked,
-	 * and the blocking representative's stored label differs from the queried
-	 * label — the label-skew the stable id exists to survive. Bounded: phase
-	 * id plus the two labels, sanitized; never prompt or entry bodies.
+	 * and the blocking representative's identity disagrees with the query —
+	 * either its stored label differs from the queried label, or its explicit
+	 * phase id differs from the queried id (labels can agree in the
+	 * closing-window shape). Bounded: phase ids plus the two labels,
+	 * sanitized; never prompt or entry bodies.
 	 */
 	phaseLabelSkew?: {
 		phase_id: number;
 		queried_label: string;
 		stored_label: string;
+		/** The representative's explicit phase id, when it carries one. */
+		stored_phase_id?: number;
 	};
 	failure?: {
 		code: DirectiveGateFailureCode;
@@ -330,6 +334,7 @@ export async function evaluatePhaseCriticalDirectives(params: {
 					phase_id: params.phaseId,
 					queried_label: params.phaseLabel,
 					stored_label: representative.phase ?? params.phaseLabel,
+					stored_phase_id: representative.phase_id,
 				};
 			}
 		}

@@ -347,4 +347,95 @@ describe('phase_complete critical-directive gate (e2e)', () => {
 			phaseCompleteReceiptInternals.commitPhaseClosed = originalClosed;
 		}
 	});
+
+	it('#2984 review: the id-disagreement closing-window shape names the recorded phase id in the block message', async () => {
+		fs.writeFileSync(path.join(dir, '.git'), 'gitdir: fixture');
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.opencode', 'opencode-swarm.json'),
+			createConfig(),
+		);
+		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'plan.json'),
+			JSON.stringify({
+				title: 'Id note plan',
+				swarm: 'default',
+				schema_version: '1.0.0',
+				current_phase: 2,
+				phases: [
+					{
+						id: 2,
+						name: 'Id note phase',
+						status: 'in_progress',
+						tasks: [
+							{
+								id: '2.1',
+								phase: 2,
+								status: 'completed',
+								size: 'small',
+								description: 'done',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+					{
+						id: 3,
+						name: 'Next id note',
+						status: 'pending',
+						tasks: [
+							{
+								id: '3.1',
+								phase: 3,
+								status: 'pending',
+								size: 'small',
+								description: 'pending',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+				],
+			}),
+		);
+		writeRetroBundle(dir, 2);
+		writeGateEvidence(dir, 2);
+		const displayed = await commitDisplayedMembership(dir, {
+			trace_id: 'trace-idnote',
+			session_id: 'sess-idnote',
+			phase: 'Phase 3: Next id note [PENDING]',
+			phase_id: 3,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'c1-idnote', critical: true }],
+		});
+		if (!displayed.ok) throw new Error(displayed.detail);
+		const originalIntent = phaseCompleteReceiptInternals.recordPhaseCloseIntent;
+		const originalClosed = phaseCompleteReceiptInternals.commitPhaseClosed;
+		phaseCompleteReceiptInternals.recordPhaseCloseIntent = (async () => ({
+			ok: true,
+			event_id: 'intent-event',
+		})) as typeof originalIntent;
+		phaseCompleteReceiptInternals.commitPhaseClosed = (async () => ({
+			ok: true,
+			event_id: 'closed-event',
+		})) as typeof originalClosed;
+		try {
+			const out = await executePhaseComplete(
+				{ phase: 2, sessionID: 'sess-idnote', callerAgent: 'architect' },
+				dir,
+				dir,
+			);
+			const parsed = JSON.parse(out);
+			expect(parsed.success).toBe(false);
+			expect(parsed.status).toBe('blocked');
+			// The row's labels agree with the queried label (closing window);
+			// only the ids disagree. The note must name the recorded phase id.
+			expect(parsed.message).toContain('c1-idnote');
+			expect(parsed.message).toContain('recorded under phase id 3');
+		} finally {
+			phaseCompleteReceiptInternals.recordPhaseCloseIntent = originalIntent;
+			phaseCompleteReceiptInternals.commitPhaseClosed = originalClosed;
+		}
+	});
 });
