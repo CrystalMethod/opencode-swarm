@@ -58,9 +58,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		resetSwarmState();
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 1: Null/undefined/0/{}/[]/Symbol in path fields
-	// ============================================================
 	describe('Attack Vector 1 — Null/undefined/0/{}/[]/Symbol in path fields', () => {
 		const maliciousValues = [
 			{ name: 'null', value: null },
@@ -140,9 +138,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		});
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 2: Oversized payload (>10000 characters)
-	// ============================================================
 	describe('Attack Vector 2 — Oversized payload', () => {
 		it('should fail-closed on 10000+ character path (lstat ENAMETOOLONG)', async () => {
 			// Windows throws ENOENT (not ENAMETOOLONG) for overlong paths,
@@ -221,9 +217,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		});
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 3: Null byte injection
-	// ============================================================
 	describe('Attack Vector 3 — Null byte injection', () => {
 		it('should reject path with null byte (lstat fail-closed)', async () => {
 			const config = defaultConfig();
@@ -270,9 +264,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		});
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 4: Memory stress (1000+ unique paths)
-	// ============================================================
 	describe('Attack Vector 4 — Memory stress (1000+ unique paths)', () => {
 		it('should handle 1000+ unique paths without crashing', async () => {
 			// Use custom profile to override coder limits
@@ -323,9 +315,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		});
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 5: subagent_type bypass attempts
-	// ============================================================
 	describe('Attack Vector 5 — subagent_type bypass attempts', () => {
 		const bypassAttempts = [
 			{ name: 'coder_evil', value: 'coder_evil', shouldReset: false },
@@ -370,9 +360,7 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 		}
 	});
 
-	// ============================================================
 	// ATTACK VECTOR 6: Multi-session isolation
-	// ============================================================
 	describe('Attack Vector 6 — Multi-session isolation', () => {
 		it('should keep sessions isolated', async () => {
 			const config = defaultConfig();

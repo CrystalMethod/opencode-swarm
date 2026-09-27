@@ -622,9 +622,11 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   resolving outside the workspace (`..`-prefixed or different-drive
   relative), and relative `..`-bearing input without a base. The singular
   setter returns `true` for a dropped entry (advisory no-op) while its
-  pre-existing invalid-input/invalid-taskId guards still return `false`.
-  Appends canonicalize only the incoming entry; stored legacy raw entries
-  persist verbatim until the task's list is atomically replaced.
+  pre-existing invalid-taskId guard still returns `false`; its input guard
+  widened from length-only to trim-based, so whitespace-only input (previously
+  stored verbatim) now returns `false`. Appends canonicalize only the
+  incoming entry; stored legacy raw entries persist verbatim until the task's
+  list is atomically replaced.
 - **Boundary exceptions (deliberate):** the snapshot deserializer
   (`deserializeModifiedFilesByTask`, `src/session/snapshot-reader.ts`) builds
   the map directly — legacy raw-absolute entries round-trip verbatim from
