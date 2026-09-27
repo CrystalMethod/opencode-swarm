@@ -597,9 +597,63 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Maps to AGENTS.md:** none (no operational rule changes; this entry is the
   long-form home AGENTS.md's charter assigns to this doc). Related open
   siblings from the same review: #2925 (normalize attribution paths at the
-  write site), #2926 (session-mismatch attribution fallback — its repo-wide
-  fallback partially re-exposes shell side-effects by design of the legacy
-  leg; any resolution there must stay consistent with this decision).
+  write site — delivered; see its entry below), #2926 (session-mismatch
+  attribution fallback — its repo-wide fallback partially re-exposes shell
+  side-effects by design of the legacy leg; any resolution there must stay
+  consistent with this decision).
+
+### Issue #2925 — Attribution file paths canonicalized at the write site
+
+- **Contract:** the per-task file-attribution record
+  (`AgentSessionState.modifiedFilesByTask`) stores ONE portable form:
+  repo-relative against the writer's workspace directory, forward-slashed,
+  win32-case-folded (`normalizePath`, `src/utils/path.ts`). Canonicalization
+  lives at the write boundary — both setter spellings
+  (`recordModifiedFilesForTask` / `recordModifiedFileForTask`,
+  `src/state.ts`) accept an optional `workspaceDirectory` and the two
+  pinned producers pass it: the foreground singular writer
+  (`src/hooks/guardrails/tool-before.ts`, the #2002 one-base
+  `sessionWorkspaceDirectory`) and the background plural writer
+  (`src/background/stage-b-gates.ts`, `args.directory`). The producer
+  spellings/sites remain exactly the #2927 boundary.
+- **Drop rule:** entries that cannot be proven canonical drop silently
+  (entries are advisory): absolute input without a base (no
+  `workspaceDirectory` — storing it raw is the pre-#2925 defect), any input
+  resolving outside the workspace (`..`-prefixed or different-drive
+  relative), and relative `..`-bearing input without a base. The singular
+  setter returns `true` for a dropped entry (advisory no-op) while its
+  pre-existing invalid-input/invalid-taskId guards still return `false`.
+  Appends canonicalize only the incoming entry; stored legacy raw entries
+  persist verbatim until the task's list is atomically replaced.
+- **Boundary exceptions (deliberate):** the snapshot deserializer
+  (`deserializeModifiedFilesByTask`, `src/session/snapshot-reader.ts`) builds
+  the map directly — legacy raw-absolute entries round-trip verbatim from
+  old snapshots and stay covered by read-side canonicalization; and the
+  pre-Map legacy backfill in `ensureAgentSession` (`src/state.ts`) copies
+  `modifiedFilesThisCoderTask` verbatim (legacy-data preservation).
+- **Per-consumer double-normalization dispositions (audit, all idempotent on
+  canonical input or repaired):** `validateDiffScope`
+  (`canonicaliseAttributionEntry` + `normalizePath` membership) — idempotent,
+  kept as defense-in-depth; `src/full-auto/severe-result.ts` (resolve →
+  relative → `normalizePath`, `..`-escape drop) — idempotent;
+  `epic-record-divergence` via `normalizePath` on both sides — idempotent;
+  `review-receipt-scope` (`path.resolve` + containment + `canonicalPath`) and
+  `guardrails/index` (`isInDeclaredScope` resolve + path-identity) —
+  idempotent; `delegation-gate` → `routeReviewForChanges`
+  (`path.join(directory, file)` + `git show HEAD:<file>`) — the one consumer
+  actively REPAIRED (raw absolute entries previously produced doubled-root
+  joins); `full-auto-permission`'s `changedFiles` classifier field is dead
+  (`src/full-auto/policy.ts` declares it, nothing reads it) — disclosed,
+  unchanged. Future cased-path test fixtures must expect the win32-folded
+  form.
+- **Guardrail:** `tests/unit/hooks/attribution-canonicalization-2925.test.ts`
+  (helper table, setter drop/guard-order/dedupe/legacy-append semantics,
+  producer wiring through the real guardrails hook, consumer idempotence,
+  deserializer verbatim tolerance); the issue-tracer frozen checks C1-C8
+  (see `.agents/issue-traces/2925-write-site-attribution-path-canonicalization/`)
+  gate the RED→GREEN transitions.
+- **Maps to AGENTS.md:** invariant 8 (session state — the record stays
+  session-keyed and bounded; the helper is pure).
 
 
 ## Invariants — anti-pattern, required pattern, verification

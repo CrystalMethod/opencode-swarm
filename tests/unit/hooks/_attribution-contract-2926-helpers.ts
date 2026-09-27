@@ -116,12 +116,15 @@ export function seedWriterSession(
 	sessionId: string,
 	taskId: string,
 	files: string[],
+	workspaceDirectory?: string,
 ): void {
 	const session = ensureAgentSession(sessionId);
 	advanceTaskState(session, taskId, 'coder_delegated');
 	recordStageBCompletion(session, taskId, 'reviewer');
 	recordStageBCompletion(session, taskId, 'test_engineer');
-	recordModifiedFilesForTask(session, taskId, files);
+	// #2925: pass the fixture root so absolute entries canonicalize at the
+	// write boundary instead of dropping (absolute-without-base drops).
+	recordModifiedFilesForTask(session, taskId, files, workspaceDirectory);
 }
 
 export function seedCheckerSession(sessionId: string, taskId: string): void {

@@ -70,9 +70,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-mismatch-1';
 		await foreignCommitFixture(tmpDir, taskId);
-		seedWriterSession('w-mismatch-1', taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		seedWriterSession(
+			'w-mismatch-1',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		seedCheckerSession('c-mismatch-1', taskId);
 
 		const result = await checkReviewerGateWithScope(
@@ -108,9 +111,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-cleanset-1';
 		await cleanScopeFixture(tmpDir, taskId);
-		seedWriterSession('w-cleanset-1', taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		seedWriterSession(
+			'w-cleanset-1',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		seedCheckerSession('c-cleanset-1', taskId);
 
 		const result = await checkReviewerGateWithScope(
@@ -127,7 +133,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-writer-1';
 		await foreignCommitFixture(tmpDir, taskId);
-		seedWriterSession('w-writer-1', taskId, [path.join(tmpDir, 'src', 'a.ts')]);
+		seedWriterSession(
+			'w-writer-1',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 
 		const result = await checkReviewerGateWithScope(
 			taskId,
@@ -159,9 +170,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		await foreignCommitFixture(tmpDir, taskId);
 		const writer = ensureAgentSession('w-xproj-1');
 		writer.owningProjectKey = 'proj-other';
-		recordModifiedFilesForTask(writer, taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		recordModifiedFilesForTask(
+			writer,
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		const checker = ensureAgentSession('c-xproj-1');
 		checker.owningProjectKey = 'proj-here';
 
@@ -179,9 +193,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		await foreignCommitFixture(tmpDir, taskId);
 		const writer = ensureAgentSession('w-keyless-1');
 		writer.owningProjectKey = 'proj-other';
-		recordModifiedFilesForTask(writer, taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		recordModifiedFilesForTask(
+			writer,
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		seedCheckerSession('c-keyless-1', taskId); // no owningProjectKey
 
 		const result = await checkReviewerGateWithScope(
@@ -281,9 +298,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		).modifiedFilesByTask = {
 			legacy: ['stale'],
 		};
-		seedWriterSession('w-malformed-hit', taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		seedWriterSession(
+			'w-malformed-hit',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 
 		const result = await checkReviewerGateWithScope(
 			taskId,
@@ -297,7 +317,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-parity-1';
 		await foreignCommitFixture(tmpDir, taskId);
-		seedWriterSession('w-parity-1', taskId, [path.join(tmpDir, 'src', 'a.ts')]);
+		seedWriterSession(
+			'w-parity-1',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		seedCheckerSession('c-parity-1', taskId);
 
 		// Compare against the PLAIN sync gate on the same fixture and session —
@@ -318,9 +343,12 @@ describe('attribution session-identity contract (#2926)', () => {
 		tmpDir = mkTempDir();
 		const taskId = '2926-placement-1';
 		await foreignCommitFixture(tmpDir, taskId);
-		seedWriterSession('w-placement-1', taskId, [
-			path.join(tmpDir, 'src', 'a.ts'),
-		]);
+		seedWriterSession(
+			'w-placement-1',
+			taskId,
+			[path.join(tmpDir, 'src', 'a.ts')],
+			tmpDir,
+		);
 		seedCheckerSession('c-placement-1', taskId);
 
 		const result = await checkReviewerGateWithScope(
