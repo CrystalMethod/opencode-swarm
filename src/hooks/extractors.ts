@@ -287,15 +287,19 @@ export function extractCurrentPhaseFromPlan(plan: Plan): string | null {
  * `Phase 2: Name [STATUS]` form and the short architect form `Phase 2` —
  * using the same loose canonical regex as `phaseNumberOf` in
  * knowledge-injector.ts (which delegates here). Returns undefined for labels
- * that carry no `Phase N` prefix; callers must treat that as "no id" and
- * fall back to verbatim-label matching.
+ * that carry no `Phase N` prefix AND for `Phase 0`: real plan phases are
+ * >= 1 (PhaseSchema), and the architect no-plan fallback label `Phase 0` is a
+ * synthetic marker that must never become a membership phase_id. Callers must
+ * treat undefined as "no id" and fall back to verbatim-label matching.
  */
 export function extractPhaseIdFromLabel(
 	label: string | undefined,
 ): number | undefined {
 	if (!label) return undefined;
 	const m = /^Phase\s+(\d+)/i.exec(label);
-	return m ? Number(m[1]) : undefined;
+	if (!m) return undefined;
+	const id = Number(m[1]);
+	return Number.isSafeInteger(id) && id >= 1 ? id : undefined;
 }
 
 /**
