@@ -112,9 +112,13 @@ describe('canonicalAttributionPath unit table (#2925)', () => {
 			folded('src/a.ts'),
 		);
 		expect(canonicalAttributionPath('src/a.ts/', dir)).toBe(folded('src/a.ts'));
-		expect(
-			canonicalAttributionPath(abs('src\\a.ts').replaceAll('/', '\\'), dir),
-		).toBe(folded('src/a.ts'));
+		// Backslash-separated input is only a PATH on win32; on POSIX a
+		// backslash is an ordinary filename character, so guard the platform.
+		if (process.platform === 'win32') {
+			expect(
+				canonicalAttributionPath(abs('src\\a.ts').replaceAll('/', '\\'), dir),
+			).toBe('src/a.ts');
+		}
 	});
 
 	test('empty / whitespace / workspace-root entries drop', () => {

@@ -198,7 +198,13 @@ export async function seedHandlerSuccessFixture(
 	writerSessionId: string,
 ): Promise<void> {
 	await cleanScopeFixture(cwd, taskId);
-	seedWriterSession(writerSessionId, taskId, [path.join(cwd, 'src', 'a.ts')]);
+	// #2925: pass the fixture root so the absolute entry canonicalizes.
+	seedWriterSession(
+		writerSessionId,
+		taskId,
+		[path.join(cwd, 'src', 'a.ts')],
+		cwd,
+	);
 	// Durable Stage B evidence so the QA gate passes on status 'complete'
 	// (same seeding shape as tests/unit/gate-evidence/workflow-transition).
 	await transitionTaskWorkflowEvidence(cwd, taskId, {

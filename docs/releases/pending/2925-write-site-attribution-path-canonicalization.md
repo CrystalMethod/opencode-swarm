@@ -16,10 +16,12 @@ canonicalize entries through a new shared pure helper
 (`canonicalAttributionPath`, `src/utils/path.ts`). Entries that cannot be
 proven canonical drop silently — attribution entries are advisory: absolute
 paths recorded without a workspace base, and any path escaping the
-workspace. The bounded 128-task map, dedupe, and setter return semantics are
-unchanged, and old snapshots carrying raw absolute entries still load
-verbatim (the deserializer intentionally sits outside this boundary;
-read-side canonicalization keeps covering them).
+workspace. The bounded 128-task map and dedupe semantics are unchanged; the
+only return-semantics change is that whitespace-only input to the singular
+setter now returns false (previously only zero-length input did). Old
+snapshots carrying raw absolute entries still load verbatim (the
+deserializer intentionally sits outside this boundary; read-side
+canonicalization keeps covering them).
 
 The scope-warning read-side canonicalization shipped with the #2818 fix
 remains as defense-in-depth, and the #2927 foreground-only attribution

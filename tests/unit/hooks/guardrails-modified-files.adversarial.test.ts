@@ -27,6 +27,7 @@ import {
 	startAgentSession,
 	swarmState,
 } from '../../../src/state';
+import { normalizePath } from '../../../src/utils/path';
 
 function defaultConfig(
 	overrides?: Partial<GuardrailsConfig>,
@@ -698,9 +699,9 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 			const output = { args: { filePath: '  valid/path.ts  ' } };
 
 			await expect(hooks.toolBefore(input, output)).resolves.toBeUndefined();
-			expect(session!.modifiedFilesThisCoderTask).toContain(
-				'  valid/path.ts  ',
-			);
+			// #2925: attribution stores the canonical form — surrounding
+			// whitespace is trimmed, the path itself is still tracked.
+			expect(session!.modifiedFilesThisCoderTask).toContain('valid/path.ts');
 		});
 	});
 
@@ -735,7 +736,9 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 			const session = getAgentSession('session-1');
 			session!.delegationActive = true;
 
-			// Add same file with different casing (JavaScript is case-sensitive)
+			// Add same file with different casing. #2925: attribution entries
+			// are win32-case-folded (normalizePath), so casing duplicates
+			// collapse on Windows and stay distinct on POSIX.
 			await hooks.toolBefore(makeInput('session-1', 'write', 'call-1'), {
 				args: { filePath: 'src/File.ts' },
 			});
@@ -743,8 +746,11 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 				args: { filePath: 'src/file.ts' },
 			});
 
-			// Both should be added (case-sensitive)
-			expect(session!.modifiedFilesThisCoderTask).toHaveLength(2);
+			if (process.platform === 'win32') {
+				expect(session!.modifiedFilesThisCoderTask).toEqual(['src/file.ts']);
+			} else {
+				expect(session!.modifiedFilesThisCoderTask).toHaveLength(2);
+			}
 		});
 	});
 
@@ -764,8 +770,12 @@ describe('Task 5.2 Modified Files Tracking — ADVERSARIAL SECURITY TESTS', () =
 				args: { filePath: 'src/from-filePath.ts', path: 'src/from-path.ts' },
 			});
 
+			// #2925: both targets tracked in canonical (win32-folded) form.
 			expect(session!.modifiedFilesThisCoderTask).toEqual(
-				expect.arrayContaining(['src/from-filePath.ts', 'src/from-path.ts']),
+				expect.arrayContaining([
+					normalizePath('src/from-filePath.ts'),
+					'src/from-path.ts',
+				]),
 			);
 			expect(session!.modifiedFilesThisCoderTask).toHaveLength(2);
 		});
