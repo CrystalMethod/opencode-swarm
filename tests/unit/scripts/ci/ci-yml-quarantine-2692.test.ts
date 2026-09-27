@@ -53,13 +53,13 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 describe('ci.yml integration — quarantine ledger entry for issue #2692 merge-group flake detection', () => {
-	test('completion-observer-coder.test.ts is an active entry in the windows ledger', () => {
-		// Without this entry, the flake-detection script keeps re-filing the
-		// candidate (Rule A only drops already-quarantined files). The flake
-		// originated on windows-latest unit-shard 1 (CI run 34410703321,
-		// 2026-09-09T22:14:39Z, Attempt 1 failed → Passed on retry 1).
+	test('completion-observer-coder.test.ts is retired from the windows ledger (#2973)', () => {
+		// #2973 retirement (2026-09-27): the #2692 git-spawn/observer-timing
+		// flake's named remedy landed (20s git-spawn margin in the retiring
+		// PR; teardown was already safe). Absence guard: no silent re-add
+		// without fresh merge-group windows-latest failure evidence.
 		expect(existsSync(WINDOWS_LEDGER_PATH)).toBe(true);
-		expect(activeEntries(WINDOWS_LEDGER_PATH)).toContain(
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(
 			COMPLETION_OBSERVER_CODER,
 		);
 	});
@@ -91,39 +91,18 @@ describe('ci.yml integration — quarantine ledger entry for issue #2692 merge-g
 		expect(existsSync(join(REPO_ROOT, COMPLETION_OBSERVER_CODER))).toBe(true);
 	});
 
-	test('the entry block carries OWNER + EXPIRY metadata (issue #2477 Check 7)', () => {
-		// Check 7 hard-fails any active entry missing OWNER/EXPIRY or with
-		// EXPIRY past the 14-day grace window. Reading the raw file here is
-		// more direct than invoking check:invariants and gives a focused,
-		// fast RED signal if the next entry edit drops one of the two
-		// required lines.
+	test('the retired path leaves no stale entry line or OWNER/EXPIRY block (#2973)', () => {
+		// The entry was removed by the #2973 retirement, so no ledger line
+		// for the path may remain anywhere in the file (a surviving entry
+		// line — with its OWNER/EXPIRY comment block — would be an orphan
+		// the removal missed).
 		const raw = readFileSync(WINDOWS_LEDGER_PATH, 'utf8').replace(
 			/\r\n/g,
 			'\n',
 		);
 		const lines = raw.split('\n');
-		const entryIdx = lines.findIndex(
-			(l: string) => l.trim() === COMPLETION_OBSERVER_CODER,
-		);
-		expect(entryIdx).toBeGreaterThan(-1);
-		const blockAbove: string[] = [];
-		for (let i = entryIdx - 1; i >= 0; i -= 1) {
-			const above = lines[i] ?? '';
-			if (above.trim() === '' || /^\s*#/.test(above)) {
-				blockAbove.push(above);
-			} else {
-				break;
-			}
-		}
-		const block = blockAbove.join('\n');
-		expect(block).toMatch(/^#\s*OWNER:\s*\S.*$/m);
-		const expiry = block.match(/^#\s*EXPIRY:\s*(\d{4}-\d{2}-\d{2})\b/m);
-		expect(expiry).not.toBeNull();
-		const [y, m, d] = (expiry?.[1] ?? '').split('-').map(Number);
-		expect(y).toBeGreaterThan(2020);
-		expect(m).toBeGreaterThanOrEqual(1);
-		expect(m).toBeLessThanOrEqual(12);
-		expect(d).toBeGreaterThanOrEqual(1);
-		expect(d).toBeLessThanOrEqual(31);
+		expect(
+			lines.some((l: string) => l.trim() === COMPLETION_OBSERVER_CODER),
+		).toBe(false);
 	});
 });

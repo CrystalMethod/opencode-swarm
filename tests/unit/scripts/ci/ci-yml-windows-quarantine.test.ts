@@ -27,13 +27,24 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 describe('ci.yml integration — windows quarantine ledger entry for win32-wrapper-runtime (issue #2185)', () => {
-	test('win32-wrapper-runtime.test.ts is an active entry in the windows ledger', () => {
-		// Regression guard for issue #2185: without the quarantine entry, the
-		// windows-latest merge-group shards keep running this file and the
-		// flake-detection workflow re-files duplicate issues (rule A only drops
-		// candidates already present in a ledger).
+	test('win32-wrapper-runtime.test.ts is retired from the windows ledger (#2973)', () => {
+		// #2973 retirement (2026-09-27): the #2185 cold-spawn flake's named
+		// remedies landed (explicit per-test floor + spawnSync margins +
+		// safeRmRecursive teardown), so the entry is removed. This absence
+		// guard keeps a silent re-add without fresh merge-group
+		// windows-latest failure evidence from passing unnoticed.
 		expect(existsSync(WINDOWS_LEDGER_PATH)).toBe(true);
-		expect(activeEntries(WINDOWS_LEDGER_PATH)).toContain(QUARANTINED_PATH);
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(QUARANTINED_PATH);
+	});
+
+	test('pr-monitor-status.test.ts is retired from the windows ledger (#2973)', () => {
+		// #2973 retirement: the #1982/#2190 entry (freezeClock + EBUSY-retry
+		// landed, residual default-cap timeout floor added by the retiring PR).
+		// This file was pinned by no other test — it is the likeliest re-add
+		// candidate (reproduced live flake), so it gets its own guard.
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(
+			'tests/unit/commands/pr-monitor-status.test.ts',
+		);
 	});
 
 	test('the entry is scoped to the windows ledger only (single-OS evidence)', () => {

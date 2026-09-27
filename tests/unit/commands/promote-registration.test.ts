@@ -6,17 +6,17 @@ import type { AgentDefinition } from '../../../src/agents';
 import { createSwarmCommandHandler } from '../../../src/commands/index';
 // Import the handlers
 import { handlePromoteCommand } from '../../../src/commands/promote';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 // Test utilities
+// #2973: canonical creation + retry-safe teardown (EBUSY/EPERM/ENOTEMPTY).
 function createTempDir(): string {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-test-'));
-	return dir;
+	return canonicalMkdtemp('promote-test-');
 }
 
 function cleanupDir(dir: string): void {
-	if (fs.existsSync(dir)) {
-		fs.rmSync(dir, { recursive: true, force: true });
-	}
+	safeRmRecursive(dir);
 }
 
 /**

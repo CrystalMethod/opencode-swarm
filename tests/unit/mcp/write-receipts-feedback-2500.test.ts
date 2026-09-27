@@ -15,6 +15,7 @@ import {
 	prepareReceipt,
 	readWriteReceiptStatus,
 } from '../../../src/mcp/write-receipts';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function args(idempotency_key: string, scope?: string) {
@@ -38,8 +39,9 @@ function makeTestRoot(prefix: string): string {
 
 describe('MCP receipt feedback regressions (#2500)', () => {
 	afterEach(() => {
-		for (const root of testRoots)
-			rmSync(root, { recursive: true, force: true });
+		// Retry-safe teardown (#2973 retirement of the #2812 windows flake): the
+		// FB-018 roll-over cells leave AV-held handles that raw rmSync cannot clear.
+		for (const root of testRoots) safeRmRecursive(root);
 		testRoots.clear();
 	});
 
