@@ -1,5 +1,20 @@
-
-# tests/unit/telemetry/init-rehome.test.ts (issue #2660)
+# Quarantined tests - CI's unit/coverage jobs skip these files.
+#
+# Format: one repo-relative test file path per line. Blank lines and lines
+# starting with # are ignored.
+#
+# METADATA REQUIREMENT (issue #2477): every active path entry must carry,
+# in the comment block directly above it:
+#   # OWNER: <owner> — <issue ref / context>
+#   # EXPIRY: YYYY-MM-DD — <retirement criterion>
+# Enforced by `bun run check:invariants` Check 7: missing metadata fails
+# the gate; an EXPIRY more than 14 days in the past also fails (inside
+# the grace window it only warns).
+#
+# Active global quarantine entries are below; each carries the Check
+# 7-enforced OWNER/EXPIRY metadata. (Issue #1908 retired the tracked backlog.)
+#
+# # tests/unit/telemetry/init-rehome.test.ts (issue #2660)
 # ---------------------------------------------------------------------------
 # Tests the telemetry re-home on directory change path (issue #2472 W9):
 # init A then init B produces two telemetry.jsonl files and B receives

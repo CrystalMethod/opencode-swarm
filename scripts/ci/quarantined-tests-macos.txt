@@ -57,4 +57,3 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 #   merge-group runs (#2973 cohort row 16).
 # Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/hooks/pr-feedback-scope-controller.test.ts
-
