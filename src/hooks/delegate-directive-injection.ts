@@ -28,7 +28,10 @@ import {
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import { loadPlan } from '../plan/manager.js';
 import { log, warn } from '../utils/logger.js';
-import { extractCurrentPhaseFromPlan } from './extractors.js';
+import {
+	extractCurrentPhaseFromPlan,
+	extractPhaseIdFromLabel,
+} from './extractors.js';
 import { recordKnowledgeEvent } from './knowledge-events.js';
 import {
 	buildDelegateDirectiveBlock,
@@ -215,6 +218,10 @@ export async function injectDelegateDirectivesBefore(
 				? taskIdResolution.taskId
 				: undefined;
 
+		const injectionPhaseId =
+			phaseLabel !== undefined
+				? extractPhaseIdFromLabel(phaseLabel)
+				: undefined;
 		const { entries, trace_id } = await injectForDelegate({
 			directory,
 			agent: targetAgent,
@@ -223,6 +230,8 @@ export async function injectDelegateDirectivesBefore(
 			taskId,
 			sessionId,
 			phase: phaseLabel,
+			// #2947: persist the stable numeric phase id alongside the label.
+			...(injectionPhaseId !== undefined ? { phase_id: injectionPhaseId } : {}),
 			config,
 		});
 
@@ -248,7 +257,12 @@ export async function injectDelegateDirectivesBefore(
 		// Issue #2628: the block obeys the same budget-clamp pattern as the
 		// delegate block (configured budget clamped to the hard cap).
 		if (stripKnownSwarmPrefix(targetAgent).toLowerCase() === 'reviewer') {
-			const toVerify = await readPhaseDirectivesToVerify(directory, phaseLabel);
+			const toVerify = await readPhaseDirectivesToVerify(
+				directory,
+				phaseLabel,
+				// #2947: id-first window matching, same as the gate (#2984 review).
+				injectionPhaseId,
+			);
 			const complianceBlock = buildDirectiveComplianceBlock(
 				toVerify,
 				Math.min(

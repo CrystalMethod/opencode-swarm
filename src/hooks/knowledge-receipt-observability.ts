@@ -35,6 +35,7 @@ export type KnowledgeReceiptObservedTransition =
 	| 'gate_release_committed'
 	| 'phase_close_intent'
 	| 'phase_closed'
+	| 'phase_id_backfilled'
 	| 'repair_uncertainty_installed'
 	| 'repair_uncertainty_cleared'
 	| 'legacy_imported'
@@ -92,6 +93,7 @@ const TRANSITIONS = new Set<KnowledgeReceiptObservedTransition>([
 	'gate_release_committed',
 	'phase_close_intent',
 	'phase_closed',
+	'phase_id_backfilled',
 	'repair_uncertainty_installed',
 	'repair_uncertainty_cleared',
 	'legacy_imported',

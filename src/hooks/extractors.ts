@@ -279,6 +279,30 @@ export function extractCurrentPhaseFromPlan(plan: Plan): string | null {
 }
 
 /**
+ * Parse the stable numeric phase id embedded in a stored phase label.
+ *
+ * Membership labels are immutable once committed, so the embedded id is a
+ * stable identity even for legacy records that predate the explicit
+ * `phase_id` field (#2947). Accepts BOTH live label shapes — the composed
+ * `Phase 2: Name [STATUS]` form and the short architect form `Phase 2` —
+ * using the same loose canonical regex as `phaseNumberOf` in
+ * knowledge-injector.ts (which delegates here). Returns undefined for labels
+ * that carry no `Phase N` prefix AND for `Phase 0`: real plan phases are
+ * >= 1 (PhaseSchema), and the architect no-plan fallback label `Phase 0` is a
+ * synthetic marker that must never become a membership phase_id. Callers must
+ * treat undefined as "no id" and fall back to verbatim-label matching.
+ */
+export function extractPhaseIdFromLabel(
+	label: string | undefined,
+): number | undefined {
+	if (!label) return undefined;
+	const m = /^Phase\s+(\d+)/i.exec(label);
+	if (!m) return undefined;
+	const id = Number(m[1]);
+	return Number.isSafeInteger(id) && id >= 1 ? id : undefined;
+}
+
+/**
  * Extracts the first incomplete task from the current phase of a Plan object.
  *
  * #2841: task fields feed the `[SWARM CONTEXT] Current task:` injection —

@@ -726,8 +726,24 @@ export async function executePhaseComplete(
 				directory: dir,
 				sessionId: sessionID,
 				phaseLabel: receiptPhaseLabel,
+				// #2947: key the evidence window on the stable numeric phase id so
+				// a legitimately advanced cursor (label skew) cannot empty the gate.
+				phaseId: phase,
 			});
 			if (!directiveGate.blocked) return passGate();
+			const skew = directiveGate.phaseLabelSkew;
+			let skewNote = '';
+			if (skew) {
+				const queried = skew.queried_label
+					.slice(0, 120)
+					.replace(/[\r\n]+/g, ' ');
+				const stored = skew.stored_label.slice(0, 120).replace(/[\r\n]+/g, ' ');
+				skewNote =
+					skew.stored_phase_id !== undefined &&
+					skew.stored_phase_id !== skew.phase_id
+						? `\nPhase identity note for phase ${skew.phase_id}: an unresolved obligation was recorded under phase id ${skew.stored_phase_id} (label "${stored}") and matched this phase via its label — base-parity matching keeps it visible here. Resolve it or record its outcome to proceed.`
+						: `\nPhase label skew detected for phase ${skew.phase_id}: gate queried "${queried}" but obligations were recorded under "${stored}". Matching used the stable phase id.`;
+			}
 			return {
 				...passGate(),
 				blocked: true,
@@ -736,7 +752,7 @@ export async function executePhaseComplete(
 					: 'UNRESOLVED_CRITICAL_DIRECTIVES',
 				message: directiveGate.failedClosed
 					? 'Critical-directive gate could not read authoritative receipt state; failing closed.'
-					: formatDirectiveBlockMessage(directiveGate.unresolved),
+					: `${formatDirectiveBlockMessage(directiveGate.unresolved)}${skewNote}`,
 				unresolved_directives: directiveGate.unresolved,
 				...('recovery' in directiveGate &&
 				directiveGate.recovery &&
@@ -1267,6 +1283,8 @@ export async function executePhaseComplete(
 					dir,
 					receiptPhaseLabel,
 					sessionID,
+					undefined,
+					phase,
 				);
 			if (!closeIntent.ok) {
 				return JSON.stringify({
@@ -1438,6 +1456,8 @@ export async function executePhaseComplete(
 			dir,
 			receiptPhaseLabel,
 			sessionID,
+			undefined,
+			phase,
 		);
 		if (!receiptClose.ok) {
 			return JSON.stringify({

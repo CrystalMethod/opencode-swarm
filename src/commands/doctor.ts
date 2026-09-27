@@ -334,6 +334,22 @@ export async function handleDoctorCommand(
 		/* fail-open: the doctor must still produce its structural report */
 	}
 
+	// #2947: knowledge-receipt phase-id check. Interactive surface ONLY —
+	// never wired into runConfigDoctor/runConfigDoctorWithFixes, so nothing
+	// here can run on the plugin startup path (AGENTS.md invariant 1). The
+	// journaled backfill runs only under --fix; detection is fail-open.
+	try {
+		const { renderKnowledgeReceiptPhaseIdSection } = await import(
+			'./doctor-knowledge-receipt-phase-id.js'
+		);
+		output += await renderKnowledgeReceiptPhaseIdSection(
+			directory,
+			enableAutoFix,
+		);
+	} catch {
+		/* fail-open: the doctor must still produce its structural report */
+	}
+
 	// Check for stray .swarm directories
 	const strayDirs = detectStraySwarmDirs(directory);
 	if (strayDirs.length > 0) {

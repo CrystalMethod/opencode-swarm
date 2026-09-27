@@ -599,6 +599,10 @@ export async function runFinalizeStage(ctx: CloseStageContext): Promise<void> {
 					ctx.directory,
 					label,
 					ctx.options.sessionID,
+					undefined,
+					// #2947: pass the pinned numeric phase id so the lifecycle
+					// keys on the stable identity, not the recomputed label.
+					phase.id,
 				);
 			if (!intent.ok) {
 				// A direct `/swarm close` may not carry a host session ID. When the
@@ -687,6 +691,8 @@ export async function runFinalizeStage(ctx: CloseStageContext): Promise<void> {
 					receiptPhaseLabels.get(phase.id) ?? `Phase ${phase.id}`,
 					true,
 					ctx.options.sessionID,
+					undefined,
+					phase.id,
 				);
 			if (!reconciled.ok) {
 				hardStopTerminalization(
