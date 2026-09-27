@@ -58,6 +58,35 @@ async function seed(dir: string, opts: { phase_id?: number } = {}) {
 	return committed;
 }
 
+describe('extractPhaseIdFromLabel Phase 0 guard — regression: no-plan label corrupted the journal (#2947 CI)', () => {
+	test('Phase 0 (architect no-plan fallback) parses to undefined, never to id 0', async () => {
+		const { extractPhaseIdFromLabel } = await import(
+			'../../../src/hooks/extractors.js'
+		);
+		expect(extractPhaseIdFromLabel('Phase 0')).toBeUndefined();
+		expect(extractPhaseIdFromLabel('Phase 2')).toBe(2);
+		expect(extractPhaseIdFromLabel(LABEL)).toBe(2);
+		expect(extractPhaseIdFromLabel('weird')).toBeUndefined();
+	});
+
+	test('a membership committed under the no-plan label Phase 0 stores no phase_id and replays clean', async () => {
+		const dir = scratch();
+		const committed = await commitDisplayedMembership(dir, {
+			trace_id: 't0',
+			session_id: 's1',
+			phase: 'Phase 0',
+			exposure_kind: 'architect_directive',
+			entries: [{ entry_id: 'e0', critical: false }],
+		});
+		expect(committed.ok).toBe(true);
+		// Pre-fix this journal read back as store_corrupt (phase_id 0 failed
+		// parseMembership's >= 1 check inside the membership_committed record).
+		const result = await queryLiveMemberships(dir, { session_id: 's1' });
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.memberships[0]?.phase_id).toBeUndefined();
+	});
+});
+
 describe('phase_id persistence and replay — regression: label-keyed records (#2947)', () => {
 	test('explicit phase_id persists through the commit and replays on the next locked read', async () => {
 		const dir = scratch();
