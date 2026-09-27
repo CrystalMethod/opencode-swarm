@@ -24,7 +24,9 @@
   (`phase_id_backfilled` records), idempotent, and never rewrites a stored
   label.
 - When the gate blocks across a label change, the block message names the
-  phase id and both labels (bounded), so the skew is visible.
+  phase id and both labels (bounded), so the skew is visible. When the labels
+  agree but the recorded obligation carries a different phase id (the
+  closing-window shape), the message names the recorded phase id instead.
 - Upgrade note: this is a one-way migration once any `phase_id`-bearing record
   exists — downgrading to a pre-`phase_id` build after that makes the receipt
   journal unreadable (the old parser rejects the new field). Receipt journals
