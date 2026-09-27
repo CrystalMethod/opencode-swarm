@@ -524,7 +524,7 @@ export const TOOL_METADATA = {
 	},
 	repair_knowledge_receipt_ledger: {
 		description:
-			'validate or repair authoritative knowledge receipts, preserve corrupt authority in bounded quarantine, require scoped re-evaluation, and backfill stable phase ids on live memberships (operation backfill_phase_id)',
+			'validate or repair authoritative knowledge receipts, preserve corrupt authority in bounded quarantine, require scoped re-evaluation, and backfill stable phase ids across the whole ledger (operation backfill_phase_id; phase/session_id do not scope the backfill)',
 		agents: ['architect'],
 	},
 	record_directive_override: {

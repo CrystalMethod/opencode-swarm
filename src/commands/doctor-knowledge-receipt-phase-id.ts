@@ -8,15 +8,17 @@ import {
 /**
  * #2947 `/swarm doctor` section: `knowledge-receipt-phase-id`.
  *
- * Detection is always-on and read-only (a locked ledger read is async, so this
- * cannot live in the synchronous `runConfigDoctor` collector); the journaled
- * backfill runs ONLY under the interactive `--fix` flag. Fail-open on lock or
- * store errors — the doctor is advisory and must still produce its structural
- * report. INVARIANT 1 (AGENTS.md): this section is wired exclusively into the
- * interactive `handleDoctorCommand` and is deliberately absent from
- * `runConfigDoctor`/`runConfigDoctorWithFixes`, so no receipt-journal scan or
- * backfill write can execute on the plugin startup path
- * (src/index.ts registers the startup doctor via those services only).
+ * Detection is always-on and takes the ledger lock like every ledger read;
+ * on a legacy store that has not completed cutover yet, a detection call can
+ * append the standard `legacy_unverifiable`/`cutover_completed` bootstrap
+ * records (base-identical behavior of every `runLocked` read — no phase-data
+ * mutation). The journaled backfill runs ONLY under the interactive `--fix`
+ * flag. Fail-open on lock or store errors — the doctor is advisory and must
+ * still produce its structural report. INVARIANT 1 (AGENTS.md): this section
+ * is wired exclusively into the interactive `handleDoctorCommand` and is
+ * deliberately absent from `runConfigDoctor`/`runConfigDoctorWithFixes`, so
+ * no receipt-journal scan or backfill write can execute on the plugin startup
+ * path (src/index.ts registers the startup doctor via those services only).
  */
 export async function renderKnowledgeReceiptPhaseIdSection(
 	directory: string,
@@ -37,7 +39,7 @@ export async function renderKnowledgeReceiptPhaseIdSection(
 			);
 		}
 		return section(
-			`skipped: ledger unavailable (${inspection.code}) — run repair_knowledge_receipt_ledger with operation backfill_phase_id on demand.`,
+			`skipped: ledger unavailable (${inspection.code}) — run repair_knowledge_receipt_ledger (default operation) to diagnose and repair.`,
 		);
 	}
 	const { missing, backfillable, unparsable } = inspection;
@@ -68,8 +70,11 @@ export async function renderKnowledgeReceiptPhaseIdSection(
 		`${missing} live receipt membership(s) lack a stable phase_id; ${backfillable} backfillable from their stored label.`,
 	];
 	for (const row of unparsable.slice(0, 10)) {
+		const label = row.label
+			? `"${row.label.slice(0, 80).replace(/[\r\n]+/g, ' ')}"`
+			: ' (no label)';
 		lines.push(
-			`  - unparsable label on ${row.trace_id}/${row.entry_id}${row.label ? `: "${row.label.slice(0, 80)}"` : ' (no label)'}`,
+			`  - unparsable label on ${row.trace_id}/${row.entry_id}: ${label}`,
 		);
 	}
 	if (unparsable.length > 10)

@@ -731,12 +731,10 @@ export async function executePhaseComplete(
 				phaseId: phase,
 			});
 			if (!directiveGate.blocked) return passGate();
-			const skewNote =
-				directiveGate.phaseLabelSkew &&
-				directiveGate.phaseLabelSkew.stored_label !==
-					directiveGate.phaseLabelSkew.queried_label
-					? `\nPhase label skew detected for phase ${directiveGate.phaseLabelSkew.phase_id}: gate queried "${directiveGate.phaseLabelSkew.queried_label.slice(0, 120)}" but obligations were recorded under "${directiveGate.phaseLabelSkew.stored_label.slice(0, 120)}". Matching used the stable phase id.`
-					: '';
+			const skew = directiveGate.phaseLabelSkew;
+			const skewNote = skew
+				? `\nPhase label skew detected for phase ${skew.phase_id}: gate queried "${skew.queried_label.slice(0, 120).replace(/[\r\n]+/g, ' ')}" but obligations were recorded under "${skew.stored_label.slice(0, 120).replace(/[\r\n]+/g, ' ')}". Matching used the stable phase id.`
+				: '';
 			return {
 				...passGate(),
 				blocked: true,

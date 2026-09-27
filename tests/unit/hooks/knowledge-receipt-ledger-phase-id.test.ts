@@ -171,16 +171,21 @@ describe('queryLiveMemberships phase_id filter arms (#2947)', () => {
 		expect(result.memberships.map((m) => m.entry_id)).toEqual(['e2']);
 	});
 
-	test('a different explicit id never matches by label', async () => {
+	test('an explicit id from another phase still matches when the verbatim label agrees (closing-window base parity)', async () => {
 		const dir = scratch();
 		await seed(dir, { phase_id: 3 });
+		// PR #2984 review (F-01): the stable id EXTENDS matching, it never
+		// narrows base label matching. A row stamped with the cursor-advanced
+		// id 3 whose label equals the queried label is the closing-window
+		// shape, and phase_complete(2)'s window must still include it (base
+		// did — the pre-#2947 filter was pure label equality).
 		const result = await queryLiveMemberships(dir, {
 			phase: LABEL,
 			phase_id: 2,
 			session_id: 's1',
 		});
 		expect(result.ok).toBe(true);
-		expect(result.memberships).toHaveLength(0);
+		expect(result.memberships).toHaveLength(1);
 	});
 
 	test('no phase_id filter keeps verbatim-only semantics', async () => {
@@ -386,5 +391,76 @@ describe('backfill replay skip-on-missing (#2947, plan-critic F11)', () => {
 		const again = await queryLiveMemberships(dir, { session_id: 's1' });
 		expect(again.ok).toBe(true);
 		if (again.ok) expect(again.memberships[0]?.phase_id).toBe(2);
+	});
+});
+
+describe('commit-path phase_id validation — regression: phase_id 0 bricked the store (PR #2984 review F-02)', () => {
+	test('commitDisplayedMembership rejects phase_id < 1 without writing a journal row', async () => {
+		const dir = scratch();
+		// Prime the store first: the first runLocked touch bootstraps the
+		// cutover records (base-identical behavior), so capture the baseline
+		// after that, not on the virgin store.
+		await queryLiveMemberships(dir, { session_id: 's1' });
+		const linesBefore = journalLines(dir);
+		const committed = await commitDisplayedMembership(dir, {
+			trace_id: 't0',
+			session_id: 's1',
+			phase: 'Phase 0',
+			phase_id: 0,
+			exposure_kind: 'architect_directive',
+			entries: [{ entry_id: 'e0', critical: false }],
+		});
+		expect(committed.ok).toBe(false);
+		if (!committed.ok) expect(committed.code).toBe('store_unavailable');
+		expect(journalLines(dir)).toBe(linesBefore);
+		// The store stays readable (the pre-fix bug bricked the next load).
+		const after = await queryLiveMemberships(dir, { session_id: 's1' });
+		expect(after.ok).toBe(true);
+	});
+});
+
+describe('lifecycle contradiction fall-through — regression: skewed close blocked foreign-phase commits (PR #2984 review F-03)', () => {
+	test('a closed lifecycle only rejects commits whose phase id agrees with it', async () => {
+		const dir = scratch();
+		// A phase-2 close under a cursor-skewed label writes a lifecycle whose
+		// label says "Phase 3..." but whose explicit id is 2.
+		const skewed = 'Phase 3: Next [IN PROGRESS]';
+		const committed = await commitDisplayedMembership(dir, {
+			trace_id: 't-cx',
+			session_id: 's1',
+			phase: skewed,
+			phase_id: 2,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'e-cx', critical: true }],
+		});
+		expect(committed.ok).toBe(true);
+		const closed = await commitPhaseClosed(dir, skewed, 's1', undefined, 2);
+		expect(closed.ok).toBe(true);
+		// A phase-3 commit under the same label must NOT be refused by the
+		// phase-2 lifecycle (contradiction falls through; base parity for the
+		// contradicted case, tightening kept only when ids agree).
+		const phase3Commit = await commitDisplayedMembership(dir, {
+			trace_id: 't-p3',
+			session_id: 's1',
+			phase: skewed,
+			phase_id: 3,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'e-p3', critical: true }],
+		});
+		expect(phase3Commit.ok).toBe(true);
+		// A phase-2 commit under the same label is still correctly refused
+		// (ids agree: the lifecycle IS phase 2's and it is closed).
+		const phase2Commit = await commitDisplayedMembership(dir, {
+			trace_id: 't-p2',
+			session_id: 's1',
+			phase: skewed,
+			phase_id: 2,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'e-p2', critical: true }],
+		});
+		expect(phase2Commit.ok).toBe(false);
+		if (!phase2Commit.ok) {
+			expect(phase2Commit.detail).toContain('closed lifecycle');
+		}
 	});
 });

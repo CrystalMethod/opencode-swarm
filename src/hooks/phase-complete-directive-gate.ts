@@ -317,13 +317,19 @@ export async function evaluatePhaseCriticalDirectives(params: {
 			if (
 				params.phaseId !== undefined &&
 				!skew &&
-				representative.phase !== undefined &&
-				representative.phase !== params.phaseLabel
+				((representative.phase !== undefined &&
+					representative.phase !== params.phaseLabel) ||
+					// #2947 review: also surface an id disagreement when the labels
+					// agree — a row explicitly stamped with another phase's id that
+					// only matched via the base-parity label arm is exactly the
+					// closing-window shape, and the operator should see it.
+					(representative.phase_id !== undefined &&
+						representative.phase_id !== params.phaseId))
 			) {
 				skew = {
 					phase_id: params.phaseId,
 					queried_label: params.phaseLabel,
-					stored_label: representative.phase,
+					stored_label: representative.phase ?? params.phaseLabel,
 				};
 			}
 		}

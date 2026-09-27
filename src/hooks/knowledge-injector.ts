@@ -948,7 +948,12 @@ async function injectForDelegateIntoMessages(
 		);
 	if (block) injectKnowledgeMessage(output, block, sessionId);
 	if (isReviewer && !alreadyVerified) {
-		const toVerify = await readPhaseDirectivesToVerify(directory, phaseLabel);
+		const toVerify = await readPhaseDirectivesToVerify(
+			directory,
+			phaseLabel,
+			// #2947: id-first window matching, same as the gate (#2984 review).
+			phaseId,
+		);
 		// Issue #2628: same budget-clamp pattern as the Task prompt-prepend path
 		// (configured budget clamped to the compliance hard cap) so both reviewer
 		// dispatch paths render the block under the same bound.
@@ -1795,6 +1800,9 @@ export function createKnowledgeInjectorHook(
 					sessionId,
 				);
 				const sourceLinkId = _internals.readLinkPointer(directory)?.linkId;
+				const architectPhaseId = extractPhaseIdFromLabel(
+					retrievalCtx.currentPhase,
+				);
 				const membership = await _internals.commitDisplayedMembership(
 					directory,
 					{
@@ -1802,11 +1810,8 @@ export function createKnowledgeInjectorHook(
 						session_id: sessionId,
 						exposure_kind: 'architect_directive',
 						phase: retrievalCtx.currentPhase,
-						// #2947: stable numeric id parsed from the short `Phase N` label.
-						...(extractPhaseIdFromLabel(retrievalCtx.currentPhase) !== undefined
-							? {
-									phase_id: extractPhaseIdFromLabel(retrievalCtx.currentPhase),
-								}
+						...(architectPhaseId !== undefined
+							? { phase_id: architectPhaseId }
 							: {}),
 						task_id: retrievalCtx.taskId,
 						agent: 'architect',

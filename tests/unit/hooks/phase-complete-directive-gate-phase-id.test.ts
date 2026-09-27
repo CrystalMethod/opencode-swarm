@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { rmSync, writeFileSync } from 'node:fs';
-import { commitDisplayedMembership } from '../../../src/hooks/knowledge-receipt-ledger.js';
+import {
+	commitDisplayedMembership,
+	validateAndCommitTerminalBatch,
+} from '../../../src/hooks/knowledge-receipt-ledger.js';
 import {
 	evaluatePhaseCriticalDirectives,
 	recordDirectiveOverrides,
@@ -211,5 +214,95 @@ describe('recordDirectiveOverrides threads the phase id (#2947 recovery path)', 
 		});
 		expect(after.blocked).toBe(false);
 		expect(after.overridden).toContain('entry-crit');
+	});
+});
+
+describe('closing-window inclusion — regression: explicit-id veto failed open (PR #2984 review F-01)', () => {
+	// After phase N's last task completes, extractCurrentPhaseFromPlan returns
+	// the N+1 label (resolveActivePhaseId skips the effectively-terminal
+	// cursor phase), so an injection in that window is stamped id N+1 under
+	// the N+1 label. phase_complete(N) queries {phaseLabel: N+1 label,
+	// phaseId: N} — base's pure label filter included the row, and the
+	// first-cut identity rule's explicit-id veto excluded it (fail-open).
+	test('closing-window injection (id N+1, label N+1) still blocks phase_complete(N)', async () => {
+		const dir = scratch();
+		const committed = await commitDisplayedMembership(dir, {
+			trace_id: 'trace-cw',
+			session_id: 's1',
+			phase: SKEWED_LABEL,
+			phase_id: 3,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'crit-cw', critical: true }],
+		});
+		expect(committed.ok).toBe(true);
+		const result = await evaluatePhaseCriticalDirectives({
+			directory: dir,
+			sessionId: 's1',
+			phaseLabel: SKEWED_LABEL,
+			phaseId: 2,
+		});
+		expect(result.blocked).toBe(true);
+		expect(result.unresolved.length).toBe(1);
+		expect(result.failedClosed).toBe(false);
+	});
+
+	test('same shape with an id-less legacy row still blocks (base parity)', async () => {
+		const dir = scratch();
+		await commitCritical(dir, { phase: SKEWED_LABEL });
+		const result = await evaluatePhaseCriticalDirectives({
+			directory: dir,
+			sessionId: 's1',
+			phaseLabel: SKEWED_LABEL,
+			phaseId: 2,
+		});
+		expect(result.blocked).toBe(true);
+	});
+
+	test('skew diagnostic also fires on id disagreement when labels agree (F-13)', async () => {
+		const dir = scratch();
+		await commitCritical(dir, { phase: INJECTION_LABEL, phase_id: 3 });
+		const result = await evaluatePhaseCriticalDirectives({
+			directory: dir,
+			sessionId: 's1',
+			phaseLabel: INJECTION_LABEL,
+			phaseId: 2,
+		});
+		expect(result.blocked).toBe(true);
+		expect(result.phaseLabelSkew).toBeDefined();
+		expect(result.phaseLabelSkew?.phase_id).toBe(2);
+	});
+
+	test('satisfied closing-window critical still passes (per-entry resolution intact)', async () => {
+		const dir = scratch();
+		const committed = await commitDisplayedMembership(dir, {
+			trace_id: 'trace-cw2',
+			session_id: 's1',
+			phase: SKEWED_LABEL,
+			phase_id: 3,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'crit-cw2', critical: true }],
+		});
+		expect(committed.ok).toBe(true);
+		const terminal = await validateAndCommitTerminalBatch(dir, {
+			trace_id: 'trace-cw2',
+			session_id: 's1',
+			phase: SKEWED_LABEL,
+			phase_id: 3,
+			items: [
+				{
+					entry_id: 'crit-cw2',
+					outcome: 'applied',
+					source: 'reviewer-verdict',
+				},
+			],
+		});
+		expect(terminal.ok).toBe(true);
+		const result = await evaluatePhaseCriticalDirectives({
+			directory: dir,
+			sessionId: 's1',
+			phaseLabel: SKEWED_LABEL,
+			phaseId: 2,
+		});
+		expect(result.blocked).toBe(false);
 	});
 });

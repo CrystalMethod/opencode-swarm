@@ -314,12 +314,17 @@ const repairUncertaintyKey = (phase: string, sessionId: string): string =>
 	`${sessionId.length}:${sessionId}${phase.length}:${phase}`;
 
 /**
- * #2947 phase identity: one rule for every membership/mifecycle match.
+ * #2947 phase identity: one rule for every membership/lifecycle match.
  * With a stable phase id available, a record matches by (1) explicit
- * `phase_id`, else — for id-less legacy rows only — (2) the id parsed from
- * its immutable stored label, else (3) the verbatim label. Without an id the
- * match is exactly today's verbatim-label equality. A row that carries an
- * explicit id NEVER matches on a different id, whatever its label says.
+ * `phase_id`, or — for id-less rows — (2) the id parsed from its immutable
+ * stored label. The verbatim-label arm (3) is BASE-PARITY and unconditional:
+ * the stable id EXTENDS matching (it recovers rows whose label drifted after
+ * commit — the status and cursor skews #2947 fixes); it never NARROWS base
+ * label matching. Narrowing would re-open the closing window: an injection
+ * after phase N's last task completes is stamped with the cursor-advanced id
+ * N+1, and phase_complete(N)'s gate must still see it (base did — reviewed
+ * four ways on PR #2984). Without a queried id the match is exactly base's
+ * verbatim-label equality.
  */
 function membershipMatchesPhaseIdentity(
 	membership: { phase?: string; phase_id?: number },
@@ -328,17 +333,23 @@ function membershipMatchesPhaseIdentity(
 ): boolean {
 	if (phaseId === undefined) return membership.phase === phase;
 	if (membership.phase_id === phaseId) return true;
-	if (membership.phase_id !== undefined) return false;
-	if (extractPhaseIdFromLabel(membership.phase) === phaseId) return true;
+	if (
+		membership.phase_id === undefined &&
+		extractPhaseIdFromLabel(membership.phase) === phaseId
+	)
+		return true;
 	return membership.phase === phase;
 }
 
 /**
- * #2947: resolve a lifecycle entry for a phase scope using the same
- * three-arm identity as memberships — label key first (cheap, exact), then,
- * when an id is available, any same-session/task lifecycle whose explicit or
- * label-parsed id matches — so a closed phase is found regardless of the
- * label form it was closed under.
+ * #2947: resolve a lifecycle entry for a phase scope. The exact label key is
+ * tried first (cheap), but only trusted when it does not CONTRADICT the
+ * caller's phase id — a lifecycle created under a cursor-skewed label can
+ * carry a different explicit phase_id than the caller's, and trusting the
+ * label hit then would misattribute closure across phases. On contradiction
+ * (or label miss), any same-session/task lifecycle whose explicit or
+ * label-parsed id matches the scope wins, so a closed phase is found
+ * regardless of the label form it was closed under.
  */
 function findClosedLifecycleForPhase(
 	state: LedgerState,
@@ -355,7 +366,13 @@ function findClosedLifecycleForPhase(
 		scope.task_id,
 	);
 	const byLabel = state.phaseLifecycle.get(labelKey);
-	if (byLabel !== undefined) return byLabel;
+	if (
+		byLabel !== undefined &&
+		(scope.phase_id === undefined ||
+			byLabel.phase_id === undefined ||
+			byLabel.phase_id === scope.phase_id)
+	)
+		return byLabel;
 	if (scope.phase_id === undefined) return undefined;
 	for (const lifecycle of state.phaseLifecycle.values()) {
 		if (
@@ -1326,7 +1343,8 @@ function applyRecord(state: LedgerState, record: JournalRecord): void {
 			if (
 				typeof candidate.trace_id !== 'string' ||
 				typeof candidate.entry_id !== 'string' ||
-				!Number.isSafeInteger(candidate.phase_id)
+				!Number.isSafeInteger(candidate.phase_id) ||
+				(candidate.phase_id as number) < 1
 			)
 				continue;
 			const membership = state.memberships.get(
@@ -2772,11 +2790,39 @@ export async function commitDisplayedMembership(
 					'store_unavailable',
 					'invalid displayed membership',
 				);
+			// #2947: reject an out-of-range phase_id at the write boundary — a
+			// row written with phase_id < 1 would fail parseMembership on the
+			// next load and brick the whole store as store_corrupt.
+			if (
+				input.phase_id !== undefined &&
+				(!Number.isSafeInteger(input.phase_id) || input.phase_id < 1)
+			)
+				throw new ReceiptStoreError(
+					'store_unavailable',
+					'invalid displayed membership: phase_id must be a safe integer >= 1',
+				);
 			const eventId = randomUUID();
 			const committedAt = nowIso();
 			const exposureKind = normalizeExposureKind(input.exposure_kind);
 			const memberships: ReceiptMembership[] = [];
 			const newMemberships: ReceiptMembership[] = [];
+			// Hoisted: the closed-lifecycle guard depends only on the input, not
+			// on the per-entry loop variable (#2947 review).
+			const closedLifecycle =
+				findClosedLifecycleForPhase(state, {
+					phase: input.phase,
+					phase_id: input.phase_id,
+					session_id: input.session_id,
+					task_id: input.task_id,
+				}) ??
+				(input.task_id !== undefined
+					? findClosedLifecycleForPhase(state, {
+							phase: input.phase,
+							phase_id: input.phase_id,
+							session_id: input.session_id,
+							task_id: undefined,
+						})
+					: undefined);
 			for (const entry of input.entries) {
 				const existing = state.memberships.get(
 					keyOf(input.trace_id, entry.entry_id),
@@ -2805,21 +2851,6 @@ export async function commitDisplayedMembership(
 					});
 					continue;
 				}
-				const closedLifecycle =
-					findClosedLifecycleForPhase(state, {
-						phase: input.phase,
-						phase_id: input.phase_id,
-						session_id: input.session_id,
-						task_id: input.task_id,
-					}) ??
-					(input.task_id !== undefined
-						? findClosedLifecycleForPhase(state, {
-								phase: input.phase,
-								phase_id: input.phase_id,
-								session_id: input.session_id,
-								task_id: undefined,
-							})
-						: undefined);
 				if (input.phase && closedLifecycle?.closed_event_id) {
 					throw new ReceiptStoreError(
 						'store_unavailable',
@@ -4140,8 +4171,10 @@ export interface ReceiptPhaseIdInspection {
 
 /**
  * #2947 doctor read: report how many live memberships lack a stable phase id
- * and how many of those a backfill could repair. Read-only, lock-taking; the
- * doctor treats any store error as "skipped" (fail-open, advisory).
+ * and how many of those a backfill could repair. Lock-taking (like every
+ * ledger read; on a legacy store the standard cutover bootstrap may append
+ * records — base-identical behavior, no phase-data mutation); the doctor
+ * treats any store error as "skipped" (fail-open, advisory).
  */
 export async function inspectMembershipPhaseIds(
 	directory: string,

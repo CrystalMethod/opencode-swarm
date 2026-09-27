@@ -60,7 +60,12 @@ export async function executeRepairKnowledgeReceiptLedger(
 			return {
 				success: true,
 				message: `phase_id backfill complete: ${backfill.backfilled} membership(s) backfilled, ${backfill.skipped.length} skipped (unparsable label), ${backfill.journal_records} journal record(s) appended. Stored labels are never rewritten.`,
-				...backfill,
+				// Bounded response: the full skipped list can be large on a big
+				// legacy store; the count plus the first 20 rows suffice.
+				backfilled: backfill.backfilled,
+				skipped: backfill.skipped.slice(0, 20),
+				skipped_total: backfill.skipped.length,
+				journal_records: backfill.journal_records,
 			};
 		}
 		const result = await repairKnowledgeReceiptLedger(resolved.directory, args);
@@ -100,7 +105,7 @@ export async function executeRepairKnowledgeReceiptLedger(
 
 export const repair_knowledge_receipt_ledger: ToolDefinition = createSwarmTool({
 	description:
-		'Architect-only repair and validation for the authoritative knowledge receipt ledger. Default operation repairs: rebuilds the derived projection when authority is readable, or quarantines a bounded corrupt authority, salvages only the validated prefix, and blocks the exact phase/session until a fresh re-evaluation is committed. operation backfill_phase_id durably stamps the stable numeric phase_id on live memberships that lack one (labels never rewritten).',
+		'Architect-only repair and validation for the authoritative knowledge receipt ledger. Default operation repairs: rebuilds the derived projection when authority is readable, or quarantines a bounded corrupt authority, salvages only the validated prefix, and blocks the exact phase/session until a fresh re-evaluation is committed. operation backfill_phase_id durably stamps the stable numeric phase_id on live memberships that lack one across the WHOLE ledger (phase/session_id are not used to scope the backfill; labels never rewritten).',
 	args: {
 		phase: z.string().min(1),
 		session_id: z.string().min(1),
