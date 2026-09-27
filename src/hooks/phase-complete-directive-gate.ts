@@ -46,6 +46,17 @@ export interface DirectiveGateResult {
 	overridden: string[];
 	/** True when the gate could not read its inputs (fail-closed → blocked). */
 	failedClosed: boolean;
+	/**
+	 * #2947: present when a numeric phase id was supplied, the gate blocked,
+	 * and the blocking representative's stored label differs from the queried
+	 * label — the label-skew the stable id exists to survive. Bounded: phase
+	 * id plus the two labels, sanitized; never prompt or entry bodies.
+	 */
+	phaseLabelSkew?: {
+		phase_id: number;
+		queried_label: string;
+		stored_label: string;
+	};
 	failure?: {
 		code: DirectiveGateFailureCode;
 		action_id:
@@ -194,6 +205,8 @@ export async function evaluatePhaseCriticalDirectives(params: {
 	directory: string;
 	sessionId?: string;
 	phaseLabel?: string;
+	/** #2947: stable numeric phase id; keys the evidence window id-first with label fallback. */
+	phaseId?: number;
 	acceptViolations?: string[];
 }): Promise<DirectiveGateResult> {
 	try {
@@ -201,6 +214,7 @@ export async function evaluatePhaseCriticalDirectives(params: {
 			throw new Error('directive gate requires exact phase identity');
 		const state = await queryLiveMemberships(params.directory, {
 			phase: params.phaseLabel,
+			phase_id: params.phaseId,
 			session_id: params.sessionId?.trim() || undefined,
 			include_terminal: true,
 			include_phase_closed: false,
@@ -253,6 +267,7 @@ export async function evaluatePhaseCriticalDirectives(params: {
 
 		const unresolved: DirectiveGateResult['unresolved'] = [];
 		const overridden: string[] = [];
+		let skew: DirectiveGateResult['phaseLabelSkew'] | undefined;
 		for (const [entryId, members] of byEntry) {
 			for (const membership of members) {
 				if (membership.terminal?.authorized_transition) {
@@ -299,6 +314,18 @@ export async function evaluatePhaseCriticalDirectives(params: {
 				trace_id: representative.trace_id,
 				reason: violated.length > 0 ? 'unremediated_violation' : 'no_verdict',
 			});
+			if (
+				params.phaseId !== undefined &&
+				!skew &&
+				representative.phase !== undefined &&
+				representative.phase !== params.phaseLabel
+			) {
+				skew = {
+					phase_id: params.phaseId,
+					queried_label: params.phaseLabel,
+					stored_label: representative.phase,
+				};
+			}
 		}
 		unresolved.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 		return {
@@ -306,6 +333,7 @@ export async function evaluatePhaseCriticalDirectives(params: {
 			unresolved,
 			overridden: [...new Set(overridden)],
 			failedClosed: false,
+			...(unresolved.length > 0 && skew ? { phaseLabelSkew: skew } : {}),
 		};
 	} catch (error) {
 		return {
@@ -328,6 +356,7 @@ export async function recordDirectiveOverrides(
 	justification: string,
 	sessionId: string | undefined,
 	phaseLabel?: string,
+	phaseId?: number,
 ): Promise<void> {
 	if (!justification.trim()) {
 		throw new Error('directive override requires a written justification');
@@ -339,6 +368,7 @@ export async function recordDirectiveOverrides(
 	}
 	const state = await queryLiveMemberships(directory, {
 		phase: phaseLabel,
+		phase_id: phaseId,
 		session_id: sessionId,
 		include_terminal: true,
 		include_phase_closed: false,
@@ -371,6 +401,7 @@ export async function recordDirectiveOverrides(
 			trace_id: membership.trace_id,
 			session_id: sessionId,
 			phase: phaseLabel,
+			phase_id: phaseId,
 			task_id: membership.task_id,
 			items: [
 				{

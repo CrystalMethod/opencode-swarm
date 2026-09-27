@@ -2,6 +2,7 @@ import type { ToolContext, ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import {
+	backfillMembershipPhaseIds,
 	type RepairKnowledgeReceiptLedgerInput,
 	repairKnowledgeReceiptLedger,
 } from '../hooks/knowledge-receipt-ledger.js';
@@ -9,7 +10,10 @@ import { createSwarmTool } from './create-tool.js';
 import { resolveWorkingDirectory } from './resolve-working-directory.js';
 
 export async function executeRepairKnowledgeReceiptLedger(
-	args: RepairKnowledgeReceiptLedgerInput & { working_directory?: string },
+	args: RepairKnowledgeReceiptLedgerInput & {
+		working_directory?: string;
+		operation?: 'repair' | 'backfill_phase_id';
+	},
 	directory: string,
 	_ctx?: ToolContext,
 ) {
@@ -38,6 +42,25 @@ export async function executeRepairKnowledgeReceiptLedger(
 				success: false,
 				message: resolved.message,
 				errors: [resolved.message],
+			};
+		}
+		// #2947: explicit, on-demand phase_id backfill (the same journaled
+		// operation /swarm doctor --fix applies) for stores whose lock was busy
+		// at doctor time or that are repaired headlessly.
+		if (args.operation === 'backfill_phase_id') {
+			const backfill = await backfillMembershipPhaseIds(resolved.directory);
+			if (!backfill.ok) {
+				return {
+					success: false,
+					message: 'repair_knowledge_receipt_ledger backfill_phase_id failed',
+					errors: [backfill.detail],
+					code: backfill.code,
+				};
+			}
+			return {
+				success: true,
+				message: `phase_id backfill complete: ${backfill.backfilled} membership(s) backfilled, ${backfill.skipped.length} skipped (unparsable label), ${backfill.journal_records} journal record(s) appended. Stored labels are never rewritten.`,
+				...backfill,
 			};
 		}
 		const result = await repairKnowledgeReceiptLedger(resolved.directory, args);
@@ -77,12 +100,13 @@ export async function executeRepairKnowledgeReceiptLedger(
 
 export const repair_knowledge_receipt_ledger: ToolDefinition = createSwarmTool({
 	description:
-		'Architect-only repair and validation for the authoritative knowledge receipt ledger. Rebuilds the derived projection when authority is readable, or quarantines a bounded corrupt authority, salvages only the validated prefix, and blocks the exact phase/session until a fresh re-evaluation is committed.',
+		'Architect-only repair and validation for the authoritative knowledge receipt ledger. Default operation repairs: rebuilds the derived projection when authority is readable, or quarantines a bounded corrupt authority, salvages only the validated prefix, and blocks the exact phase/session until a fresh re-evaluation is committed. operation backfill_phase_id durably stamps the stable numeric phase_id on live memberships that lack one (labels never rewritten).',
 	args: {
 		phase: z.string().min(1),
 		session_id: z.string().min(1),
 		task_id: z.string().min(1).optional(),
 		reason: z.string().min(1).max(2000),
+		operation: z.enum(['repair', 'backfill_phase_id']).optional(),
 		grace_days: z.number().int().min(0).optional(),
 		working_directory: z.string().optional(),
 	},
@@ -91,6 +115,7 @@ export const repair_knowledge_receipt_ledger: ToolDefinition = createSwarmTool({
 			await executeRepairKnowledgeReceiptLedger(
 				args as RepairKnowledgeReceiptLedgerInput & {
 					working_directory?: string;
+					operation?: 'repair' | 'backfill_phase_id';
 				},
 				directory,
 				ctx,

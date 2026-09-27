@@ -28,7 +28,10 @@ import {
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import { loadPlan } from '../plan/manager.js';
 import { log, warn } from '../utils/logger.js';
-import { extractCurrentPhaseFromPlan } from './extractors.js';
+import {
+	extractCurrentPhaseFromPlan,
+	extractPhaseIdFromLabel,
+} from './extractors.js';
 import { recordKnowledgeEvent } from './knowledge-events.js';
 import {
 	buildDelegateDirectiveBlock,
@@ -223,6 +226,11 @@ export async function injectDelegateDirectivesBefore(
 			taskId,
 			sessionId,
 			phase: phaseLabel,
+			// #2947: persist the stable numeric phase id alongside the label.
+			...(phaseLabel !== undefined &&
+			extractPhaseIdFromLabel(phaseLabel) !== undefined
+				? { phase_id: extractPhaseIdFromLabel(phaseLabel) }
+				: {}),
 			config,
 		});
 

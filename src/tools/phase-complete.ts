@@ -726,8 +726,17 @@ export async function executePhaseComplete(
 				directory: dir,
 				sessionId: sessionID,
 				phaseLabel: receiptPhaseLabel,
+				// #2947: key the evidence window on the stable numeric phase id so
+				// a legitimately advanced cursor (label skew) cannot empty the gate.
+				phaseId: phase,
 			});
 			if (!directiveGate.blocked) return passGate();
+			const skewNote =
+				directiveGate.phaseLabelSkew &&
+				directiveGate.phaseLabelSkew.stored_label !==
+					directiveGate.phaseLabelSkew.queried_label
+					? `\nPhase label skew detected for phase ${directiveGate.phaseLabelSkew.phase_id}: gate queried "${directiveGate.phaseLabelSkew.queried_label}" but obligations were recorded under "${directiveGate.phaseLabelSkew.stored_label}". Matching used the stable phase id.`
+					: '';
 			return {
 				...passGate(),
 				blocked: true,
@@ -736,7 +745,7 @@ export async function executePhaseComplete(
 					: 'UNRESOLVED_CRITICAL_DIRECTIVES',
 				message: directiveGate.failedClosed
 					? 'Critical-directive gate could not read authoritative receipt state; failing closed.'
-					: formatDirectiveBlockMessage(directiveGate.unresolved),
+					: `${formatDirectiveBlockMessage(directiveGate.unresolved)}${skewNote}`,
 				unresolved_directives: directiveGate.unresolved,
 				...('recovery' in directiveGate &&
 				directiveGate.recovery &&
@@ -1267,6 +1276,8 @@ export async function executePhaseComplete(
 					dir,
 					receiptPhaseLabel,
 					sessionID,
+					undefined,
+					phase,
 				);
 			if (!closeIntent.ok) {
 				return JSON.stringify({
@@ -1438,6 +1449,8 @@ export async function executePhaseComplete(
 			dir,
 			receiptPhaseLabel,
 			sessionID,
+			undefined,
+			phase,
 		);
 		if (!receiptClose.ok) {
 			return JSON.stringify({
