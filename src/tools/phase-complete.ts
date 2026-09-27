@@ -735,7 +735,7 @@ export async function executePhaseComplete(
 				directiveGate.phaseLabelSkew &&
 				directiveGate.phaseLabelSkew.stored_label !==
 					directiveGate.phaseLabelSkew.queried_label
-					? `\nPhase label skew detected for phase ${directiveGate.phaseLabelSkew.phase_id}: gate queried "${directiveGate.phaseLabelSkew.queried_label}" but obligations were recorded under "${directiveGate.phaseLabelSkew.stored_label}". Matching used the stable phase id.`
+					? `\nPhase label skew detected for phase ${directiveGate.phaseLabelSkew.phase_id}: gate queried "${directiveGate.phaseLabelSkew.queried_label.slice(0, 120)}" but obligations were recorded under "${directiveGate.phaseLabelSkew.stored_label.slice(0, 120)}". Matching used the stable phase id.`
 					: '';
 			return {
 				...passGate(),

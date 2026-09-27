@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
 	backfillMembershipPhaseIds,
@@ -291,13 +292,11 @@ describe('compaction round-trips phase_id through the archive (#2947)', () => {
 	}, 20_000);
 });
 
-describe('backfill replay skip-on-missing (#2947)', () => {
-	test('a phase_id_backfilled item naming an absent membership is tolerated', async () => {
+describe('backfill replay skip-on-missing (#2947, plan-critic F11)', () => {
+	test('backfill over a fully-backfilled store appends nothing', async () => {
 		const dir = scratch();
 		await seed(dir, { phase_id: 2 });
 		const linesBefore = journalLines(dir);
-		// Commit-then-consider-archived: simulate by backfilling a store whose
-		// only row already carries an id — zero items, no journal growth.
 		const backfill = await backfillMembershipPhaseIds(dir);
 		expect(backfill.ok).toBe(true);
 		if (backfill.ok) {
@@ -305,5 +304,58 @@ describe('backfill replay skip-on-missing (#2947)', () => {
 			expect(backfill.journal_records).toBe(0);
 		}
 		expect(journalLines(dir)).toBe(linesBefore);
+	});
+
+	test('a phase_id_backfilled item naming an absent membership is tolerated on replay', async () => {
+		const dir = scratch();
+		// One live row without an id (the item below will name a PRESENT
+		// target and an ABSENT target in the same record).
+		await commitDisplayedMembership(dir, {
+			trace_id: 't1',
+			session_id: 's1',
+			phase: LABEL,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'e1', critical: true }],
+		});
+		// Hand-append a validly hash-chained phase_id_backfilled record whose
+		// items cover both cases: {t1,e1} exists; {t-gone,e-gone} does not.
+		const journalPath = join(dir, '.swarm', 'knowledge-receipts-v2.jsonl');
+		const lines = readFileSync(journalPath, 'utf8').split('\n').filter(Boolean);
+		const last = JSON.parse(lines[lines.length - 1]);
+		const record = {
+			schema_version: 2,
+			cutover_version: 1,
+			seq: last.seq + 1,
+			prev_hash: last.hash,
+			event_id: randomUUID(),
+			// Reuse the prior record's timestamp (deterministic; no real clock).
+			timestamp: last.timestamp,
+			kind: 'phase_id_backfilled',
+			payload: {
+				items: [
+					{ trace_id: 't1', entry_id: 'e1', phase_id: 2 },
+					{ trace_id: 't-gone', entry_id: 'e-gone', phase_id: 2 },
+				],
+			},
+		};
+		const { receiptRecordHash } = await import(
+			'../../../src/hooks/knowledge-receipt-ledger-storage.js'
+		);
+		const hash = receiptRecordHash(record);
+		appendFileSync(journalPath, `${JSON.stringify({ ...record, hash })}\n`);
+
+		// Replay must tolerate the absent target: no throw, no store_corrupt.
+		const result = await queryLiveMemberships(dir, { session_id: 's1' });
+		expect(result.ok).toBe(true);
+		if (result.ok) {
+			// Present target applied; absent target creates no phantom row.
+			expect(result.memberships).toHaveLength(1);
+			expect(result.memberships[0]?.entry_id).toBe('e1');
+			expect(result.memberships[0]?.phase_id).toBe(2);
+		}
+		// Second replay is a no-op (idempotent application).
+		const again = await queryLiveMemberships(dir, { session_id: 's1' });
+		expect(again.ok).toBe(true);
+		if (again.ok) expect(again.memberships[0]?.phase_id).toBe(2);
 	});
 });
