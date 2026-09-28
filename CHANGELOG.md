@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.187.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.1...v7.187.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **ci:** restore general-ledger format header; normalize macos EOF ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973) review r1) ([29ebf2d](https://github.com/ZaxbyHub/opencode-swarm/commit/29ebf2d34b9b074ee0c943e2163cc4fe22868ce3))
+* **ci:** retire 13 of 16 renewed quarantine-ledger entries ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973)) ([58c431b](https://github.com/ZaxbyHub/opencode-swarm/commit/58c431b5067fdaae399f5b9d0da1b32925ce32e4))
+* **ci:** retire 13 of 16 renewed quarantine-ledger entries ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973)) ([269078d](https://github.com/ZaxbyHub/opencode-swarm/commit/269078dadd8873f95ae77810b64c12454c735ef7))
+* **state:** canonicalize attribution file paths at the write site ([6259052](https://github.com/ZaxbyHub/opencode-swarm/commit/62590524ade6eb739c484710b054cbd37b2388c2))
+* **state:** deterministic drive-relative drop in attribution canonicalization ([8a9548e](https://github.com/ZaxbyHub/opencode-swarm/commit/8a9548ea4f8cbab5fa0512ba6cc720434db7384d))
+* **state:** harden attribution canonicalization bounds per PR review ([980a9f7](https://github.com/ZaxbyHub/opencode-swarm/commit/980a9f74bf4b02dd1726cbf274aa5dd57e71f899))
+
 ## [7.187.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.0...v7.187.1) (2026-09-27)
 
 
