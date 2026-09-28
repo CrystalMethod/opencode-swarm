@@ -3116,6 +3116,10 @@ export function recordModifiedFilesForTask(
 /**
  * Add one file to a task's attribution without disturbing its existing files.
  *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (they cannot be proven in-workspace), with no other
+ * signal (issue #2925 review, PRR-014).
+ *
  * Issue #2925: the INCOMING entry is canonicalized against
  * `workspaceDirectory` (same rules as the plural setter); a
  * non-canonicalizable incoming entry drops silently with a `true` return

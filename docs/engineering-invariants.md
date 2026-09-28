@@ -620,7 +620,9 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   (entries are advisory): absolute input without a base (no
   `workspaceDirectory` — storing it raw is the pre-#2925 defect), any input
   resolving outside the workspace (`..`-prefixed or different-drive
-  relative), and relative `..`-bearing input without a base. The singular
+  relative), relative `..`-bearing input without a base, entries over 4,096
+  characters, and entries containing control characters (mirroring the
+  sibling boundaries `normalizeAttributionPath` / `isBoundedGenerationValue`). The singular
   setter returns `true` for a dropped entry (advisory no-op) while its
   pre-existing invalid-taskId guard still returns `false`; its input guard
   widened from length-only to trim-based, so whitespace-only input (previously
@@ -642,9 +644,11 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   `review-receipt-scope` (`path.resolve` + containment + `canonicalPath`) and
   `guardrails/index` (`isInDeclaredScope` resolve + path-identity) —
   idempotent; `delegation-gate` → `routeReviewForChanges`
-  (`path.join(directory, file)` + `git show HEAD:<file>`) — the one consumer
-  actively REPAIRED (raw absolute entries previously produced doubled-root
-  joins); `full-auto-permission`'s `changedFiles` classifier field is dead
+  (`path.join(directory, file)` + `git show HEAD:<file>`) — repaired
+  upstream by canonical storage (raw absolute entries previously produced
+  doubled-root joins); `update-task-status` (`getModifiedFilesForTask` at
+  src/tools/update-task-status.ts:1181 feeds `validateDiffScope` and the
+  #2926 advisory) — pass-through, covered by the diff-scope disposition; `full-auto-permission`'s `changedFiles` classifier field is dead
   (`src/full-auto/policy.ts` declares it, nothing reads it) — disclosed,
   unchanged. Future cased-path test fixtures must expect the win32-folded
   form.

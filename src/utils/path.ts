@@ -48,6 +48,14 @@ export function canonicalAttributionPath(
 	if (typeof raw !== 'string') return null;
 	const cleaned = raw.trim();
 	if (!cleaned) return null;
+	// Mirror the sibling boundaries (stage-b-gates normalizeAttributionPath
+	// and isBoundedGenerationValue): entries are advisory, so reject
+	// control-character and oversized inputs instead of storing them.
+	if (cleaned.length > 4096) return null;
+	for (let i = 0; i < cleaned.length; i++) {
+		const code = cleaned.charCodeAt(i);
+		if (code <= 31 || code === 127) return null;
+	}
 
 	const base =
 		typeof workspaceDirectory === 'string' && workspaceDirectory.trim()

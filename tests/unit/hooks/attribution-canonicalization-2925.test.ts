@@ -58,7 +58,11 @@ function folded(p: string): string {
 }
 
 afterAll(() => {
-	fs.rmSync(PRODUCER_TEST_DIR, { recursive: true, force: true });
+	try {
+		fs.rmSync(PRODUCER_TEST_DIR, { recursive: true, force: true });
+	} catch {
+		// Windows EBUSY teardown must not fail the shard (PR review PRR-011).
+	}
 });
 
 describe('canonicalAttributionPath unit table (#2925)', () => {
@@ -126,6 +130,29 @@ describe('canonicalAttributionPath unit table (#2925)', () => {
 		expect(canonicalAttributionPath('   ', dir)).toBeNull();
 		expect(canonicalAttributionPath('.', dir)).toBeNull();
 		expect(canonicalAttributionPath(dir, dir)).toBeNull();
+	});
+
+	test('control-character entries drop (mirror normalizeAttributionPath)', () => {
+		expect(
+			canonicalAttributionPath(`src/a${String.fromCharCode(0)}b.ts`, dir),
+		).toBeNull();
+		expect(
+			canonicalAttributionPath(`src/${String.fromCharCode(7)}bell.ts`, dir),
+		).toBeNull();
+	});
+
+	test('oversized entries drop at the 4096 bound (mirror isBoundedGenerationValue)', () => {
+		const oversized = `${'segment/'.repeat(700)}x.ts`;
+		expect(oversized.length).toBeGreaterThan(4096);
+		expect(canonicalAttributionPath(oversized, dir)).toBeNull();
+	});
+
+	test('drive-relative and UNC inputs drop on win32 (provably outside base)', () => {
+		if (process.platform !== 'win32') return;
+		expect(canonicalAttributionPath('D:foo', dir)).toBeNull();
+		expect(
+			canonicalAttributionPath(String.raw`\\srv\share\foo`, dir),
+		).toBeNull();
 	});
 
 	test('double application is identity (consumer re-derivation safety)', () => {

@@ -15,8 +15,9 @@ Both attribution setters (`recordModifiedFilesForTask` /
 canonicalize entries through a new shared pure helper
 (`canonicalAttributionPath`, `src/utils/path.ts`). Entries that cannot be
 proven canonical drop silently — attribution entries are advisory: absolute
-paths recorded without a workspace base, and any path escaping the
-workspace. The bounded 128-task map and dedupe semantics are unchanged; the
+paths recorded without a workspace base, any path escaping the workspace,
+relative `..`-bearing paths without a base, and entries over 4,096
+characters or containing control characters. The bounded 128-task map and dedupe semantics are unchanged; the
 only return-semantics change is that whitespace-only input to the singular
 setter now returns false (previously only zero-length input did). Old
 snapshots carrying raw absolute entries still load verbatim (the
