@@ -2863,7 +2863,12 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 						trackingSession.lastCoderDelegationTaskId ??
 						`${input.sessionID}:unknown`;
 					trackingSession.currentTaskId = taskId;
-					recordModifiedFileForTask(trackingSession, taskId, targetPath);
+					recordModifiedFileForTask(
+						trackingSession,
+						taskId,
+						targetPath,
+						writeDirectory,
+					);
 				}
 				if (
 					writeBinding?.activation === 'active' &&

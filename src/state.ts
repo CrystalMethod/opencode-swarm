@@ -90,6 +90,7 @@ import { maybeSuggestWorktreeLink } from './session/worktree-link-suggestion.js'
 import { AgentRunContext } from './state/agent-run-context.js';
 import { telemetry } from './telemetry.js';
 import * as logger from './utils/logger';
+import { canonicalAttributionPath } from './utils/path';
 
 // Kept as a read-only diagnostic seam for restart/cache reconciliation tests.
 export { getRehydrationCache };
@@ -3080,6 +3081,17 @@ function ensureModifiedFileTaskSlot(
 /**
  * Atomically replace one task's attributed file list.
  *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (issue #2925 review, PRR-014).
+ *
+ * Issue #2925: entries are canonicalized at this write boundary to the
+ * portable form (repo-relative against `workspaceDirectory` when provided,
+ * forward-slashed, win32-case-folded via `normalizePath`); entries that
+ * cannot be proven canonical — absolutes without a base, `..`-escapes —
+ * drop silently (entries are advisory). Legacy snapshot entries bypass this
+ * boundary by design (deserializeModifiedFilesByTask builds the map
+ * directly) and stay readable via read-side canonicalization.
+ *
  * Returns false without mutation when the task id is invalid or the bounded
  * map has no reclaimable workflow-complete slot.
  */
@@ -3087,11 +3099,14 @@ export function recordModifiedFilesForTask(
 	session: AgentSessionState,
 	taskId: string,
 	files: readonly string[],
+	workspaceDirectory?: string,
 ): boolean {
 	if (!ensureModifiedFileTaskSlot(session, taskId)) return false;
 	const normalized = [
 		...new Set(
-			files.filter((file) => typeof file === 'string' && file.length > 0),
+			files
+				.map((file) => canonicalAttributionPath(file, workspaceDirectory))
+				.filter((file): file is string => file !== null),
 		),
 	];
 	session.modifiedFilesByTask.set(taskId, normalized);
@@ -3103,16 +3118,37 @@ export function recordModifiedFilesForTask(
 
 /**
  * Add one file to a task's attribution without disturbing its existing files.
+ *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (they cannot be proven in-workspace), with no other
+ * signal (issue #2925 review, PRR-014).
+ *
+ * Issue #2925: the INCOMING entry is canonicalized against
+ * `workspaceDirectory` (same rules as the plural setter); a
+ * non-canonicalizable incoming entry drops silently with a `true` return
+ * (advisory no-op — pre-existing invalid-input/invalid-taskId paths still
+ * return false). Stored legacy raw entries are deliberately NOT
+ * re-canonicalized by an append; they persist verbatim until the task's list
+ * is atomically replaced by a producer.
  */
 export function recordModifiedFileForTask(
 	session: AgentSessionState,
 	taskId: string,
 	file: string,
+	workspaceDirectory?: string,
 ): boolean {
-	if (typeof file !== 'string' || file.length === 0) return false;
-	const existing = getModifiedFilesForTask(session, taskId);
-	if (existing.includes(file)) return true;
-	return recordModifiedFilesForTask(session, taskId, [...existing, file]);
+	if (typeof file !== 'string' || file.trim().length === 0) return false;
+	if (!ensureModifiedFileTaskSlot(session, taskId)) return false;
+	const canonical = canonicalAttributionPath(file, workspaceDirectory);
+	if (canonical === null) return true;
+	const entries = ensureModifiedFilesByTask(session);
+	const current = entries.get(taskId) ?? [];
+	if (current.includes(canonical)) return true;
+	entries.set(taskId, [...current, canonical]);
+	if (session.currentTaskId === taskId) {
+		projectModifiedFilesForActiveTask(session);
+	}
+	return true;
 }
 
 /**
