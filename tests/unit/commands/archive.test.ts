@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdirSync } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	_internals as archiveCommandInternals,

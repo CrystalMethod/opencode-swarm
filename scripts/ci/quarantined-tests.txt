@@ -14,7 +14,7 @@
 # Active global quarantine entries are below; each carries the Check
 # 7-enforced OWNER/EXPIRY metadata. (Issue #1908 retired the tracked backlog.)
 #
-# # tests/unit/telemetry/init-rehome.test.ts (issue #2660)
+# tests/unit/telemetry/init-rehome.test.ts (issue #2660)
 # ---------------------------------------------------------------------------
 # Tests the telemetry re-home on directory change path (issue #2472 W9):
 # init A then init B produces two telemetry.jsonl files and B receives
