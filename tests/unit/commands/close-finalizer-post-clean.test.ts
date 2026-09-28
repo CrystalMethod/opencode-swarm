@@ -171,6 +171,9 @@ describe('handleCloseCommand — context, summary, and guards', () => {
 			expect(mockGetGitRepositoryStatus).toHaveBeenCalledWith(harness.testDir);
 			expect(mockResetToMainAfterMerge).toHaveBeenCalledWith(harness.testDir, {
 				pruneBranches: false,
+				// #2953: the align dispatch now carries the gate's confirmed
+				// tracked-dirty scope (empty on this clean-tree fixture).
+				expectedDirtyPaths: [],
 			});
 			expect(mockResetToRemoteBranch).not.toHaveBeenCalled();
 			expect(result).toContain('**Git:** Reset to origin/main');
