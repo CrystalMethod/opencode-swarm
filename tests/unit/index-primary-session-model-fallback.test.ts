@@ -52,6 +52,42 @@ let configDirectory = '';
 let previousXdgConfigHome: string | undefined;
 
 function writeConfig(dir: string): void {
+	writeConfigObject(dir, {
+		agents: {
+			architect: {
+				model: 'github-copilot/claude-sonnet-5',
+				fallback_models: ['prov/fb1'],
+			},
+		},
+	});
+}
+
+function writeSwarmConfig(dir: string): void {
+	writeConfigObject(dir, {
+		swarms: {
+			cloud: {
+				agents: {
+					architect: {
+						model: 'github-copilot/claude-sonnet-5',
+						fallback_models: ['prov/fb1'],
+					},
+				},
+			},
+		},
+	});
+}
+
+function writeNoFallbackConfig(dir: string): void {
+	writeConfigObject(dir, {
+		agents: {
+			architect: {
+				model: 'github-copilot/claude-sonnet-5',
+			},
+		},
+	});
+}
+
+function writeConfigObject(dir: string, agentsAndSwarms: object): void {
 	fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
@@ -59,12 +95,7 @@ function writeConfig(dir: string): void {
 			quiet: true,
 			version_check: false,
 			hooks: { delegation_gate: false },
-			agents: {
-				architect: {
-					model: 'github-copilot/claude-sonnet-5',
-					fallback_models: ['prov/fb1'],
-				},
-			},
+			...agentsAndSwarms,
 		}),
 	);
 }
@@ -88,16 +119,24 @@ type ChatOutput = {
 	message: { model?: { providerID: string; modelID: string } };
 };
 
+async function chatWithAgent(
+	plugin: Awaited<ReturnType<typeof bootPlugin>>,
+	sessionID: string,
+	agent: string,
+): Promise<ChatOutput> {
+	const output: ChatOutput = { message: {} };
+	await plugin['chat.message']?.(
+		{ sessionID, agent } as never,
+		output as never,
+	);
+	return output;
+}
+
 async function chat(
 	plugin: Awaited<ReturnType<typeof bootPlugin>>,
 	sessionID: string,
 ): Promise<ChatOutput> {
-	const output: ChatOutput = { message: {} };
-	await plugin['chat.message']?.(
-		{ sessionID, agent: 'architect' } as never,
-		output as never,
-	);
-	return output;
+	return chatWithAgent(plugin, sessionID, 'architect');
 }
 
 async function emitError(
@@ -308,5 +347,87 @@ describe('primary-session model fallback (#2989)', () => {
 		await chat(plugin, SESSION);
 
 		expect(getTaskModelRoutingStateSnapshot().scopedSelections).toHaveLength(0);
+	}, 60000);
+
+	test('multi-swarm prefixed primary survives the Task-completion agent-pointer reset (review F-001)', async () => {
+		writeSwarmConfig(directory);
+		const plugin = await bootPlugin();
+		await chatWithAgent(plugin, SESSION, 'cloud_architect');
+		// Every Task-tool completion resets the shared pointer to the bare
+		// orchestrator name (src/index.ts activeAgent.set(sessionId,
+		// ORCHESTRATOR_NAME)); simulate that post-Task state.
+		swarmState.activeAgent.set(SESSION, 'architect');
+
+		await emitError(plugin, SESSION, COPILOT_QUOTA_ERROR);
+
+		const output = await chatWithAgent(plugin, SESSION, 'cloud_architect');
+		expect(output.message.model).toEqual({
+			providerID: 'prov',
+			modelID: 'fb1',
+		});
+	}, 60000);
+
+	test('exhaustion telemetry carries the exhausted sentinel on the second advance', async () => {
+		const events: Array<Record<string, unknown>> = [];
+		const listener: TelemetryListener = (event, payload) => {
+			if (event === 'model_fallback') events.push(payload);
+		};
+		addTelemetryListener(listener);
+		try {
+			const plugin = await bootPlugin();
+			await chat(plugin, SESSION);
+			await emitError(plugin, SESSION, COPILOT_QUOTA_ERROR);
+			await emitError(plugin, SESSION, COPILOT_QUOTA_ERROR);
+		} finally {
+			removeTelemetryListener(listener);
+		}
+
+		expect(events).toHaveLength(2);
+		expect(events[0]?.toModel).toBe('prov/fb1');
+		expect(events[1]?.toModel).toBe('exhausted');
+		expect(String(events[1]?.reason)).toMatch(/quota/i);
+	}, 60000);
+
+	test('empty fallback chain: session.error is a silent no-op', async () => {
+		writeNoFallbackConfig(directory);
+		const plugin = await bootPlugin();
+		const events: Array<Record<string, unknown>> = [];
+		const listener: TelemetryListener = (event, payload) => {
+			if (event === 'model_fallback') events.push(payload);
+		};
+		addTelemetryListener(listener);
+		try {
+			await chat(plugin, SESSION);
+			await emitError(plugin, SESSION, COPILOT_QUOTA_ERROR);
+		} finally {
+			removeTelemetryListener(listener);
+		}
+
+		expect(events).toHaveLength(0);
+		expect(getTaskModelRoutingStateSnapshot().scopedSelections).toHaveLength(0);
+		const output = await chat(plugin, SESSION);
+		expect(output.message.model).toBeUndefined();
+	}, 60000);
+
+	test('unknown session identity: session.error before any chat.message is a silent no-op', async () => {
+		const plugin = await bootPlugin();
+		await emitError(plugin, 'never-seen-session', COPILOT_QUOTA_ERROR);
+
+		expect(getTaskModelRoutingStateSnapshot().scopedSelections).toHaveLength(0);
+		const output = await chat(plugin, 'never-seen-session');
+		expect(output.message.model).toBeUndefined();
+	}, 60000);
+
+	test('unrecognized provider failure: no advance, no telemetry', async () => {
+		const plugin = await bootPlugin();
+		await chat(plugin, SESSION);
+		await emitError(plugin, SESSION, {
+			name: 'APIError',
+			data: { message: 'totally unknown failure text', statusCode: 418 },
+		});
+
+		expect(getTaskModelRoutingStateSnapshot().scopedSelections).toHaveLength(0);
+		const output = await chat(plugin, SESSION);
+		expect(output.message.model).toBeUndefined();
 	}, 60000);
 });

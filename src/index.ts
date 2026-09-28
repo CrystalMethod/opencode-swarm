@@ -252,7 +252,9 @@ import {
 	bindPendingTaskModelRouteChild,
 	clearPendingTaskModelRoutesForSession,
 	getPendingTaskModelRouteSnapshot,
+	recordSessionChatAgent,
 	registerPendingTaskModelRoute,
+	resolveSessionChatAgent,
 	resolveSessionChatModelOverride,
 	resolveTaskChatModelOverride,
 } from './models/task-model-routing.js';
@@ -3876,12 +3878,20 @@ async function initializeOpenCodeSwarm(
 					const route = childSessionID
 						? resolveTaskRouteForChildSession(childSessionID)
 						: undefined;
+					// Issue #2989 review (F-001): the no-route (primary-session)
+					// arm resolves from the chat-boundary-recorded agent FIRST —
+					// the shared activeAgent pointer is reset to the bare
+					// orchestrator name by every Task-tool completion, which
+					// would misresolve a same-turn provider error for a
+					// swarm-prefixed primary agent onto the wrong (or an empty)
+					// chain.
 					const routeModel = resolveTaskRouteModelChain(
 						route
 							? (swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName ??
 									route.role)
-							: (swarmState.activeAgent.get(childSessionID) ??
+							: (resolveSessionChatAgent(childSessionID) ??
+									swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName),
 					);
 					const errorSignal = extractSessionErrorSignal(properties);
@@ -3952,9 +3962,11 @@ async function initializeOpenCodeSwarm(
 								);
 							}
 						}
-						// No session record yet (error before any chat.message):
-						// telemetry above still fires; the advisory is skipped
-						// fail-open.
+						// Unknown identity (error before any chat.message recorded
+						// it and no activeAgent/agentSessions entry exists):
+						// routeModel above is null and the whole branch is a
+						// silent no-op — fail-open, identical to the pre-fix
+						// behavior for that session.
 					}
 				}
 				const lifecycleStatus = lifecycleEvent?.properties?.status;
@@ -6097,6 +6109,13 @@ async function initializeOpenCodeSwarm(
 			// the primary/default model after every configured model is exhausted.
 			try {
 				if (input?.sessionID && typeof input?.agent === 'string') {
+					// Issue #2989 review (F-001): record the exact chat-boundary
+					// agent BEFORE anything else. The session.error no-route
+					// branch resolves its chain from this identity — the shared
+					// activeAgent pointer is reset by every Task-tool
+					// completion and would misresolve a same-turn provider
+					// error for a swarm-prefixed primary agent.
+					recordSessionChatAgent(String(input.sessionID), input.agent);
 					const routeModel = resolveTaskRouteModelChain(String(input.agent));
 					if (routeModel) {
 						const resolution = await resolveTaskChatModelOverride({

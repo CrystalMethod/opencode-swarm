@@ -34,15 +34,20 @@
   `MODEL FALLBACK: [primary-model-fallback:<role>]` chat advisory naming the
   role, the configured primary, and the fallback.
 - **Recovery boundaries (deliberate, documented).** A session returns to its
-  primary model via session end (or a new session), 30 minutes of session
-  inactivity, a change to the configured model chain, or switching the
-  session's agent away from the fallback-scoped role. There is no in-session
-  code escape: the pinned host's `chat.message` model input is type-only and
-  cannot distinguish a user re-pick from the host session selection or the
-  plugin's own prior override, so an escape trigger could misfire every turn.
+  primary model via session end (or a new session), 30 minutes without a
+  message on the session, or a change to the configured model chain (after
+  which the stale selection reads as absent and the primary is retried).
+  Switching the session's agent away from the fallback-scoped role suppresses
+  the override while the other agent is active; the prior role's selection
+  persists until the idle window expires, so switching back re-applies it.
+  There is no in-session code escape: the pinned host's `chat.message` model
+  input is type-only and cannot distinguish a user re-pick from the host
+  session selection or the plugin's own prior override, so an escape trigger
+  could misfire every turn.
 - **Boundary that cannot be crossed:** a one-shot `opencode run` turn that
   already failed is not re-driven mid-turn — the OpenCode host owns the
-  request loop — so the fallback lands on that session's next turn.
+  request loop. Interactive (TUI/GUI) sessions pick up the fallback on their
+  next message; a failed one-shot invocation simply ends.
 
 ## Why
 

@@ -477,9 +477,14 @@ session surfaces a fallback-eligible provider error, the plugin advances that
 session's role-scoped `fallback_models` chain and applies the fallback to the
 session's next message (sticky for the session; bounded `MODEL FALLBACK:`
 advisory + `model_fallback` telemetry; recovery via session end, 30 minutes
-of inactivity, a chain-config change, or switching the session's agent away
-from the fallback-scoped role). A one-shot `opencode run` turn that already
-failed is not re-driven mid-turn — the host owns the request loop.
+without a message on the session, or a chain-config change — after which the
+stale selection reads as absent and the primary is retried. Switching the
+session's agent away from the fallback-scoped role suppresses the override
+while the other agent is active, but the prior role's selection persists
+until the idle window expires). A one-shot `opencode run` turn that already
+failed is not re-driven mid-turn — the host owns the request loop; interactive
+sessions pick up the fallback on their next message, while a failed one-shot
+invocation simply ends.
 
 ## How to verify the resolved config
 

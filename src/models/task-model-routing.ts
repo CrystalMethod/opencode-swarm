@@ -13,6 +13,21 @@ import {
 const MAX_PENDING_TASK_MODEL_ROUTES = 256;
 const PENDING_TASK_MODEL_ROUTE_TTL_MS = 30 * 60_000;
 
+/**
+ * Issue #2989 review (F-001): last-seen chat-boundary agent name per session.
+ * The session.error no-route branch must resolve the fallback chain from the
+ * SAME agent identity the chat boundary uses. The shared
+ * `swarmState.activeAgent` pointer is reset to the bare orchestrator name by
+ * every Task-tool completion (src/index.ts), so for a swarm-prefixed primary
+ * agent (e.g. `cloud_architect`) a same-turn provider error after a Task
+ * returned would otherwise resolve the wrong (or an empty) chain and the
+ * fallback silently no-ops. Written on every `chat.message`; FIFO-bounded
+ * like the route maps; cleared on session end (never on invocation
+ * boundaries — the agent name does not change between turns).
+ */
+const MAX_SESSION_CHAT_AGENTS = 256;
+const sessionChatAgentBySession = new Map<string, string>();
+
 export interface PendingTaskModelRouteInput {
 	parentSessionID: string;
 	invocationID: string;
@@ -452,6 +467,43 @@ export function resolveSessionChatModelOverride(
 	};
 }
 
+/**
+ * Issue #2989 review (F-001): record the exact `input.agent` string at the
+ * chat boundary so the session.error no-route branch can resolve the same
+ * identity (the activeAgent pointer is reset by Task-tool completions).
+ */
+export function recordSessionChatAgent(
+	sessionID: string,
+	agentName: string,
+): void {
+	const session = normalizeText(sessionID);
+	const agent = normalizeText(agentName);
+	if (!session || !agent) return;
+	while (sessionChatAgentBySession.size >= MAX_SESSION_CHAT_AGENTS) {
+		const oldest = sessionChatAgentBySession.keys().next().value;
+		if (typeof oldest !== 'string') break;
+		sessionChatAgentBySession.delete(oldest);
+	}
+	sessionChatAgentBySession.delete(session);
+	sessionChatAgentBySession.set(session, agent);
+}
+
+/**
+ * Issue #2989 review (F-001): the chat-boundary-recorded agent name for a
+ * session, or undefined when no chat.message has been seen for it in this
+ * process.
+ */
+export function resolveSessionChatAgent(sessionID: string): string | undefined {
+	const session = normalizeText(sessionID);
+	if (!session) return undefined;
+	const agent = sessionChatAgentBySession.get(session);
+	if (agent === undefined) return undefined;
+	// LRU touch: re-insert so active sessions are evicted last.
+	sessionChatAgentBySession.delete(session);
+	sessionChatAgentBySession.set(session, agent);
+	return agent;
+}
+
 export function clearPendingTaskModelRoutesForSession(
 	sessionID: string,
 	mode: 'session' | 'invocation' = 'session',
@@ -474,6 +526,9 @@ export function clearPendingTaskModelRoutesForSession(
 	clearScopedModelSelectionsForSession(normalizedSessionID, {
 		primaryScopes: mode === 'session',
 	});
+	if (mode === 'session') {
+		sessionChatAgentBySession.delete(normalizedSessionID);
+	}
 }
 
 export function getPendingTaskModelRouteSnapshot(): readonly PendingTaskModelRouteSnapshotEntry[] {
@@ -493,6 +548,7 @@ export function getTaskModelRoutingStateSnapshot(): {
 export function clearAllTaskModelRoutingState(): void {
 	routesByParentCall.clear();
 	routeKeyByChildSession.clear();
+	sessionChatAgentBySession.clear();
 	resetScopedModelSelectionStateForTests();
 }
 
