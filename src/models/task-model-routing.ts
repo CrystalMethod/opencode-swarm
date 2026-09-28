@@ -4,6 +4,7 @@ import {
 	getScopedModelSelectionSnapshot,
 	type ModelOverrideParts,
 	normalizeModelChain,
+	peekScopedModelSelection,
 	resetScopedModelSelectionStateForTests,
 	resolveScopedModelSelection,
 	type ScopedModelOverrideKey,
@@ -11,6 +12,21 @@ import {
 
 const MAX_PENDING_TASK_MODEL_ROUTES = 256;
 const PENDING_TASK_MODEL_ROUTE_TTL_MS = 30 * 60_000;
+
+/**
+ * Issue #2989 review (F-001): last-seen chat-boundary agent name per session.
+ * The session.error no-route branch must resolve the fallback chain from the
+ * SAME agent identity the chat boundary uses. The shared
+ * `swarmState.activeAgent` pointer is reset to the bare orchestrator name by
+ * every Task-tool completion (src/index.ts), so for a swarm-prefixed primary
+ * agent (e.g. `cloud_architect`) a same-turn provider error after a Task
+ * returned would otherwise resolve the wrong (or an empty) chain and the
+ * fallback silently no-ops. Written on every `chat.message`; FIFO-bounded
+ * like the route maps; cleared on session end (never on invocation
+ * boundaries — the agent name does not change between turns).
+ */
+const MAX_SESSION_CHAT_AGENTS = 256;
+const sessionChatAgentBySession = new Map<string, string>();
 
 export interface PendingTaskModelRouteInput {
 	parentSessionID: string;
@@ -326,7 +342,172 @@ export async function resolveTaskChatModelOverride(
 	};
 }
 
-export function clearPendingTaskModelRoutesForSession(sessionID: string): void {
+export interface AdvanceSessionFallbackSelectionInput {
+	sessionID: string;
+	role: string;
+	swarmID?: string;
+	primaryModel?: string;
+	fallbackModels?: Iterable<string | null | undefined>;
+	now?: number;
+}
+
+export interface SessionFallbackAdvanceResult {
+	accepted: boolean;
+	exhausted: boolean;
+	fallbackIndex: number;
+	modelString?: string;
+	scope: ScopedModelOverrideKey;
+}
+
+export interface ResolveSessionChatModelOverrideInput {
+	sessionID: string;
+	role: string;
+	swarmID?: string;
+	primaryModel?: string;
+	fallbackModels?: Iterable<string | null | undefined>;
+	now?: number;
+}
+
+export interface SessionChatModelOverrideResolution {
+	status: 'override' | 'primary' | 'exhausted' | 'missing';
+	model?: ModelOverrideParts;
+	modelString?: string;
+	fallbackIndex?: number;
+}
+
+/**
+ * Issue #2989: sentinel invocationID for the primary-session (host-driven)
+ * fallback scope. Task routes always carry digit-string invocation IDs
+ * (`String(activeInvocationId ?? 0)`), so the empty string can never collide
+ * with a route's scope key.
+ */
+const PRIMARY_SESSION_INVOCATION_ID = '';
+
+function sessionFallbackScope(
+	input:
+		| AdvanceSessionFallbackSelectionInput
+		| ResolveSessionChatModelOverrideInput,
+): ScopedModelOverrideKey {
+	return {
+		sessionID: normalizeText(input.sessionID),
+		invocationID: PRIMARY_SESSION_INVOCATION_ID,
+		swarmID: normalizeText(input.swarmID) || undefined,
+		role: normalizeText(input.role),
+	};
+}
+
+/**
+ * Issue #2989: advance the primary-session (host-driven) fallback chain for
+ * a session with no Task route. Seed-then-advance mirrors
+ * {@link advancePendingTaskModelRoute}'s flow: `resolveScopedModelSelection`
+ * seeds a fresh entry at fallbackIndex 0, `advanceScopedModelSelection` moves
+ * it forward (clamped at chain end, where `exhausted` becomes true).
+ */
+export function advanceSessionFallbackSelection(
+	input: AdvanceSessionFallbackSelectionInput,
+): SessionFallbackAdvanceResult {
+	const now = input.now ?? Date.now();
+	const scope = sessionFallbackScope(input);
+	const chain = normalizeModelChain(
+		input.primaryModel,
+		input.fallbackModels ?? [],
+	);
+	const selection = resolveScopedModelSelection(scope, chain, now);
+	const advanced = advanceScopedModelSelection(
+		scope,
+		chain,
+		selection.generation,
+		now,
+	);
+	return {
+		accepted: advanced.accepted,
+		exhausted: advanced.selection.exhausted,
+		fallbackIndex: advanced.selection.fallbackIndex,
+		modelString: advanced.selection.modelString,
+		scope,
+	};
+}
+
+/**
+ * Issue #2989: non-seeding read of the primary-session fallback selection
+ * for the chat-boundary override. `missing` covers no-selection/no-fallbacks
+ * (and stale-signature entries, which read as absent and are left alone);
+ * `exhausted` never throws here — a primary session's user message must
+ * never be blocked by the plugin.
+ */
+export function resolveSessionChatModelOverride(
+	input: ResolveSessionChatModelOverrideInput,
+): SessionChatModelOverrideResolution {
+	const now = input.now ?? Date.now();
+	const scope = sessionFallbackScope(input);
+	const chain = normalizeModelChain(
+		input.primaryModel,
+		input.fallbackModels ?? [],
+	);
+	if (chain.fallbacks.length === 0) return { status: 'missing' };
+	const selection = peekScopedModelSelection(scope, chain, now);
+	if (selection === undefined) return { status: 'missing' };
+	if (selection.exhausted) {
+		return {
+			status: 'exhausted',
+			fallbackIndex: selection.fallbackIndex,
+		};
+	}
+	if (selection.fallbackIndex === 0 || !selection.model) {
+		return {
+			status: 'primary',
+			fallbackIndex: selection.fallbackIndex,
+		};
+	}
+	return {
+		status: 'override',
+		model: selection.model,
+		modelString: selection.modelString,
+		fallbackIndex: selection.fallbackIndex,
+	};
+}
+
+/**
+ * Issue #2989 review (F-001): record the exact `input.agent` string at the
+ * chat boundary so the session.error no-route branch can resolve the same
+ * identity (the activeAgent pointer is reset by Task-tool completions).
+ */
+export function recordSessionChatAgent(
+	sessionID: string,
+	agentName: string,
+): void {
+	const session = normalizeText(sessionID);
+	const agent = normalizeText(agentName);
+	if (!session || !agent) return;
+	while (sessionChatAgentBySession.size >= MAX_SESSION_CHAT_AGENTS) {
+		const oldest = sessionChatAgentBySession.keys().next().value;
+		if (typeof oldest !== 'string') break;
+		sessionChatAgentBySession.delete(oldest);
+	}
+	sessionChatAgentBySession.delete(session);
+	sessionChatAgentBySession.set(session, agent);
+}
+
+/**
+ * Issue #2989 review (F-001): the chat-boundary-recorded agent name for a
+ * session, or undefined when no chat.message has been seen for it in this
+ * process.
+ */
+export function resolveSessionChatAgent(sessionID: string): string | undefined {
+	const session = normalizeText(sessionID);
+	if (!session) return undefined;
+	const agent = sessionChatAgentBySession.get(session);
+	if (agent === undefined) return undefined;
+	// LRU touch: re-insert so active sessions are evicted last.
+	sessionChatAgentBySession.delete(session);
+	sessionChatAgentBySession.set(session, agent);
+	return agent;
+}
+
+export function clearPendingTaskModelRoutesForSession(
+	sessionID: string,
+	mode: 'session' | 'invocation' = 'session',
+): void {
 	const normalizedSessionID = normalizeText(sessionID);
 	for (const [key, route] of routesByParentCall) {
 		if (
@@ -339,7 +520,15 @@ export function clearPendingTaskModelRoutesForSession(sessionID: string): void {
 			}
 		}
 	}
-	clearScopedModelSelectionsForSession(normalizedSessionID);
+	// Issue #2989: the per-invocation boundary clear must not reset a
+	// primary session's sticky fallback selection (a provider quota does not
+	// heal between turns); only the session-end clear removes it.
+	clearScopedModelSelectionsForSession(normalizedSessionID, {
+		primaryScopes: mode === 'session',
+	});
+	if (mode === 'session') {
+		sessionChatAgentBySession.delete(normalizedSessionID);
+	}
 }
 
 export function getPendingTaskModelRouteSnapshot(): readonly PendingTaskModelRouteSnapshotEntry[] {
@@ -359,6 +548,7 @@ export function getTaskModelRoutingStateSnapshot(): {
 export function clearAllTaskModelRoutingState(): void {
 	routesByParentCall.clear();
 	routeKeyByChildSession.clear();
+	sessionChatAgentBySession.clear();
 	resetScopedModelSelectionStateForTests();
 }
 

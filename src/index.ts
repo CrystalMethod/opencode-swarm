@@ -248,10 +248,14 @@ import type { MemoryConfig as RuntimeMemoryConfig } from './memory/config.js';
 import { evictAndClose } from './memory/provider-pool.js';
 import {
 	advancePendingTaskModelRoute,
+	advanceSessionFallbackSelection,
 	bindPendingTaskModelRouteChild,
 	clearPendingTaskModelRoutesForSession,
 	getPendingTaskModelRouteSnapshot,
+	recordSessionChatAgent,
 	registerPendingTaskModelRoute,
+	resolveSessionChatAgent,
+	resolveSessionChatModelOverride,
 	resolveTaskChatModelOverride,
 } from './models/task-model-routing.js';
 import { initObservability } from './observability/index.js';
@@ -335,6 +339,7 @@ import {
 	ensureSwarmGitExcluded,
 } from './utils/gitignore-warning';
 import { resolveProjectRootDecision } from './utils/project-boundary';
+import { isQuotaError } from './utils/provider-error-classification.js';
 import { withTimeout, withTimeoutSignal } from './utils/timeout';
 import { truncateToolOutput } from './utils/tool-output';
 
@@ -1948,6 +1953,7 @@ async function initializeOpenCodeSwarm(
 	): {
 		exactAgentName: string;
 		role: string;
+		swarmID?: string;
 		primaryModel?: string;
 		fallbackModels: readonly string[];
 	} | null => {
@@ -1955,12 +1961,12 @@ async function initializeOpenCodeSwarm(
 		const trimmedAgentName = exactAgentName.trim();
 		if (!trimmedAgentName) return null;
 		const role = stripKnownSwarmPrefix(trimmedAgentName);
-		const swarmAgents = getSwarmAgents(
-			extractSwarmIdFromAgentName(trimmedAgentName),
-		);
+		const swarmID = extractSwarmIdFromAgentName(trimmedAgentName) || undefined;
+		const swarmAgents = getSwarmAgents(swarmID);
 		return {
 			exactAgentName: trimmedAgentName,
 			role,
+			swarmID,
 			primaryModel:
 				resolveRuntimeAgentModel(config, agents, trimmedAgentName) ??
 				resolveRegisteredAgentModel(config, trimmedAgentName),
@@ -3872,12 +3878,20 @@ async function initializeOpenCodeSwarm(
 					const route = childSessionID
 						? resolveTaskRouteForChildSession(childSessionID)
 						: undefined;
+					// Issue #2989 review (F-001): the no-route (primary-session)
+					// arm resolves from the chat-boundary-recorded agent FIRST —
+					// the shared activeAgent pointer is reset to the bare
+					// orchestrator name by every Task-tool completion, which
+					// would misresolve a same-turn provider error for a
+					// swarm-prefixed primary agent onto the wrong (or an empty)
+					// chain.
 					const routeModel = resolveTaskRouteModelChain(
 						route
 							? (swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName ??
 									route.role)
-							: (swarmState.activeAgent.get(childSessionID) ??
+							: (resolveSessionChatAgent(childSessionID) ??
+									swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName),
 					);
 					const errorSignal = extractSessionErrorSignal(properties);
@@ -3894,6 +3908,65 @@ async function initializeOpenCodeSwarm(
 							primaryModel: routeModel.primaryModel,
 							fallbackModels: routeModel.fallbackModels,
 						});
+					} else if (
+						!route &&
+						routeModel &&
+						routeModel.fallbackModels.length > 0 &&
+						errorSignal &&
+						isRetryableProviderFailure(classifyProviderFailure(errorSignal))
+					) {
+						// Issue #2989: a session with NO Task route is a
+						// primary/host-driven session (the user's own chat).
+						// The classifier already recognizes the provider text
+						// (e.g. GitHub Copilot's 429 quota-exceeded envelope,
+						// extracted from error.data per #2529), but before this
+						// branch the error was silently dropped: every fallback
+						// advance surface required a plugin-owned dispatch
+						// identity. Advance the session's own role-scoped chain
+						// (sticky for the session; see
+						// clearPendingTaskModelRoutesForSession's
+						// 'invocation' mode) and apply it at the next
+						// chat.message boundary below.
+						const advanced = advanceSessionFallbackSelection({
+							sessionID: childSessionID,
+							role: routeModel.role,
+							swarmID: routeModel.swarmID,
+							primaryModel: routeModel.primaryModel,
+							fallbackModels: routeModel.fallbackModels,
+						});
+						const reason = isQuotaError(errorSignal) ? 'quota' : 'transient';
+						telemetry.modelFallback(
+							childSessionID,
+							routeModel.role,
+							routeModel.primaryModel ?? 'unknown',
+							advanced.modelString ?? 'exhausted',
+							reason,
+						);
+						const session = swarmState.agentSessions.get(childSessionID);
+						if (session) {
+							if (advanced.exhausted) {
+								pushAdvisory(
+									session,
+									`MODEL FALLBACK: [primary-model-fallback-exhausted:${routeModel.role}] all configured fallback models for ${routeModel.role} failed after a provider ${reason} error; staying on the session's selected model.`,
+									{
+										dedupeKey: `[primary-model-fallback-exhausted:${routeModel.role}]`,
+									},
+								);
+							} else if (advanced.accepted && advanced.modelString) {
+								pushAdvisory(
+									session,
+									`MODEL FALLBACK: [primary-model-fallback:${routeModel.role}] switching ${routeModel.role} from configured primary ${routeModel.primaryModel ?? 'unknown'} to ${advanced.modelString} after a provider ${reason} error; the next message uses the fallback.`,
+									{
+										dedupeKey: `[primary-model-fallback:${routeModel.role}]`,
+									},
+								);
+							}
+						}
+						// Unknown identity (error before any chat.message recorded
+						// it and no activeAgent/agentSessions entry exists):
+						// routeModel above is null and the whole branch is a
+						// silent no-op — fail-open, identical to the pre-fix
+						// behavior for that session.
 					}
 				}
 				const lifecycleStatus = lifecycleEvent?.properties?.status;
@@ -6036,6 +6109,13 @@ async function initializeOpenCodeSwarm(
 			// the primary/default model after every configured model is exhausted.
 			try {
 				if (input?.sessionID && typeof input?.agent === 'string') {
+					// Issue #2989 review (F-001): record the exact chat-boundary
+					// agent BEFORE anything else. The session.error no-route
+					// branch resolves its chain from this identity — the shared
+					// activeAgent pointer is reset by every Task-tool
+					// completion and would misresolve a same-turn provider
+					// error for a swarm-prefixed primary agent.
+					recordSessionChatAgent(String(input.sessionID), input.agent);
 					const routeModel = resolveTaskRouteModelChain(String(input.agent));
 					if (routeModel) {
 						const resolution = await resolveTaskChatModelOverride({
@@ -6120,6 +6200,39 @@ async function initializeOpenCodeSwarm(
 										};
 									}
 								).message.model = resolution.model;
+							} else if (resolution.status === 'missing') {
+								// Issue #2989: no Task route for this session —
+								// a primary/host-driven session. Apply its own
+								// role-scoped fallback selection (advanced on
+								// session.error) at this request boundary. The
+								// read is non-seeding, so a session with no
+								// prior provider failure is untouched. An
+								// exhausted chain never throws here: a primary
+								// session's user message must never be blocked
+								// by the plugin (the exhaustion advisory was
+								// already emitted on the error).
+								const sessionResolution = resolveSessionChatModelOverride({
+									sessionID: String(input.sessionID),
+									role: routeModel.role,
+									swarmID: routeModel.swarmID,
+									primaryModel: routeModel.primaryModel,
+									fallbackModels: routeModel.fallbackModels,
+								});
+								if (
+									sessionResolution.status === 'override' &&
+									sessionResolution.model
+								) {
+									(
+										output as {
+											message: {
+												model?: {
+													providerID: string;
+													modelID: string;
+												};
+											};
+										}
+									).message.model = sessionResolution.model;
+								}
 							}
 						}
 					}

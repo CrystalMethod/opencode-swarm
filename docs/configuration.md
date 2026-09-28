@@ -461,13 +461,30 @@ Where the preflight acts:
   30 seconds (`CATALOG_CACHE_TTL_MS`); a dispatch denial invalidates the
   cache so a fixed config takes effect on the next attempt.
 
-`fallback_models` serve **transient** runtime failures (429/503/timeout) via
-the guardrails failover path. A permanent unresolved primary model is not
-covered by a fallback — configure a resolvable primary model for the affected
-role. The four curator roles (`curator_init`, `curator_phase`,
-`curator_postmortem`, `curator_consolidation`) inherit `explorer`'s fallback
-chain at runtime; the preflight validates only explicitly configured entries
-(`explorer`'s own), it does not synthesize the inherited chain.
+`fallback_models` serve **transient** runtime failures (429/503/timeout,
+including provider quota exhaustion such as GitHub Copilot's
+`429 quota exceeded` monthly limit) via the guardrails failover path. A
+permanent unresolved primary model is not covered by a fallback — configure a
+resolvable primary model for the affected role. The four curator roles
+(`curator_init`, `curator_phase`, `curator_postmortem`,
+`curator_consolidation`) inherit `explorer`'s fallback chain at runtime; the
+preflight validates only explicitly configured entries (`explorer`'s own), it
+does not synthesize the inherited chain.
+
+Primary (`host-controlled`) agents also fail over at runtime even though
+preflight never applies their registered model (issue #2989): when a primary
+session surfaces a fallback-eligible provider error, the plugin advances that
+session's role-scoped `fallback_models` chain and applies the fallback to the
+session's next message (sticky for the session; bounded `MODEL FALLBACK:`
+advisory + `model_fallback` telemetry; recovery via session end, 30 minutes
+without a message on the session, or a chain-config change — after which the
+stale selection reads as absent and the primary is retried. Switching the
+session's agent away from the fallback-scoped role suppresses the override
+while the other agent is active, but the prior role's selection persists
+until the idle window expires). A one-shot `opencode run` turn that already
+failed is not re-driven mid-turn — the host owns the request loop; interactive
+sessions pick up the fallback on their next message, while a failed one-shot
+invocation simply ends.
 
 ## How to verify the resolved config
 

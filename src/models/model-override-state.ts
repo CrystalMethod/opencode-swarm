@@ -248,12 +248,59 @@ export function resetScopedModelSelection(
 	return scopedModelOverrides.delete(key);
 }
 
-export function clearScopedModelSelectionsForSession(sessionID: string): void {
+/**
+ * Issue #2989: non-seeding read of a scoped selection for read-side
+ * consumers (the primary-session chat-boundary override).
+ *
+ * Unlike {@link resolveScopedModelSelection}, this NEVER creates or resets an
+ * entry: an absent key, an expired entry, or a stored signature that does not
+ * match the current chain all read as `undefined` (stale entries stay stale —
+ * the advance path owns reseeding). A PRESENT, signature-matching entry is
+ * touched (its `updatedAt` is refreshed), so an actively-used session's
+ * selection stays alive and an idle session's selection expires via the TTL.
+ */
+export function peekScopedModelSelection(
+	scope: ScopedModelOverrideKey,
+	chain: NormalizedModelChain,
+	now = Date.now(),
+): ScopedModelSelection | undefined {
+	pruneScopedModelOverrides(now);
+	const key = entryKey(scope);
+	const current = scopedModelOverrides.get(key);
+	if (!current || current.signature !== chain.signature) return undefined;
+	current.updatedAt = now;
+	scopedModelOverrides.delete(key);
+	scopedModelOverrides.set(key, current);
+	return selectionFromEntry(current, chain);
+}
+
+export interface ClearScopedModelSelectionsOptions {
+	/**
+	 * Issue #2989: when false, primary-session scopes (the sentinel
+	 * empty-string `invocationID` used by the session-scoped fallback) are
+	 * preserved. The per-invocation boundary clear
+	 * (`clearPendingTaskModelRoutesForSession(..., 'invocation')`) uses this
+	 * so a primary session's fallback selection stays sticky across turns;
+	 * the session-end clear keeps the default (clear everything).
+	 */
+	primaryScopes?: boolean;
+}
+
+export function clearScopedModelSelectionsForSession(
+	sessionID: string,
+	opts?: ClearScopedModelSelectionsOptions,
+): void {
 	const normalizedSessionID = normalizeText(sessionID);
+	const primaryScopes = opts?.primaryScopes ?? true;
 	for (const [key, entry] of scopedModelOverrides) {
-		if (key.startsWith(`${normalizedSessionID}\u241f`)) {
-			scopedModelOverrides.delete(entry.key);
+		if (!key.startsWith(`${normalizedSessionID}\u241f`)) continue;
+		if (!primaryScopes) {
+			// Key layout: sessionID ␟ invocationID ␟ swarmID ␟ role. The
+			// primary-session sentinel is the empty invocationID segment.
+			const invocationID = key.split('\u241f')[1] ?? '';
+			if (invocationID === '') continue;
 		}
+		scopedModelOverrides.delete(entry.key);
 	}
 }
 
