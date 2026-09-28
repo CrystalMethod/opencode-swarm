@@ -30,7 +30,8 @@ function git(directory: string, args: string[]): void {
 		stdout: 'pipe',
 		stderr: 'pipe',
 		encoding: 'utf8',
-		timeout: 5_000,
+		// 20s margin (#2973): windows merge-group runners push 5s git spawns past the line.
+		timeout: 20_000,
 		maxBuffer: 128 * 1024,
 	});
 	if (result.status !== 0) {

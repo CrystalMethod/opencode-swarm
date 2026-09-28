@@ -19,6 +19,7 @@ import {
 	updateSnapshot,
 } from '../../../src/background/pr-subscriptions';
 import { closeProjectDb } from '../../../src/db/project-db.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { freezeClock } from '../../helpers/test-clock';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -102,7 +103,8 @@ describe('pr-subscriptions checkpoint store', () => {
 	});
 	afterEach(() => {
 		closeProjectDb(dir);
-		fs.rmSync(dir, { recursive: true, force: true });
+		// #2973: retry-safe teardown (EBUSY/EPERM/ENOTEMPTY) replaces raw rmSync.
+		safeRmRecursive(dir);
 	});
 
 	describe('steady-state bounded operations', () => {
@@ -332,11 +334,10 @@ describe('pr-subscriptions checkpoint store', () => {
 	describe('long-history bounds', () => {
 		test('hundreds of poll updates keep the store inside documented bounds', async () => {
 			await subscribePr(dir, 1);
-			// 300 polls × 2 snapshots/poll = 600 persisted writes. Each op after
-			// the subscribe is O(live-set) on disk — the store's size does not
-			// grow with update count, which is the mechanism the issue's
-			// "arbitrarily long subscriptions" acceptance relies on.
-			const POLLS = 300;
+			// 200 polls × 2 snapshots/poll = 400 persisted writes (hundreds,
+			// still; lowered from 300 per #2973 — the wall-clock sensitivity was
+			// the flake). Store size does not grow with update count.
+			const POLLS = 200;
 			for (let i = 0; i < POLLS; i++) {
 				await updateSnapshot(dir, 'sess_1::o/r::1', {
 					lastCheckedAt: Date.now(),

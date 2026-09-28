@@ -6,7 +6,8 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import * as bunCompat from '../../../src/utils/bun-compat';
 
-const PROBE_TIMEOUT_MS = 5_000;
+// #2973: 30s — cold bun-build/node probes on stalled macos runners exceeded 5s.
+const PROBE_TIMEOUT_MS = 30_000;
 const LARGE_OUTPUT_BYTES = 128 * 1024;
 const OUTPUT_LIMIT_BYTES = 64 * 1024;
 const CAPTURE_BUFFER_BYTES = 512 * 1024;
