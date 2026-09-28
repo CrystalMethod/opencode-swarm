@@ -139,7 +139,7 @@ async function defaultFetchHostSource(tag: string): Promise<string | null> {
 function defaultRunGh(args: string[]): GhResult {
 	const proc = spawnSync('gh', args, {
 		cwd: REPO_ROOT,
-		stdin: 'ignore',
+		stdio: ['ignore', 'pipe', 'pipe'],
 		timeout: GH_TIMEOUT_MS,
 		maxBuffer: GH_MAX_BUFFER,
 		encoding: 'utf8',
@@ -247,18 +247,16 @@ export function extractHostLoop(source: string): HostLoopExtraction | null {
 	if (!ts.isBlock(body)) return null;
 
 	const statements: string[] = ['loop-head: for-of msg input'];
-	// NOTE: this TypeScript runtime (5.9.x) exposes the else branch as
-	// `elseStatement`; the `elseClause`/`ElseClause` spelling is not present.
-	// Read both so the detector does not silently miss a role-split else.
-	const hasElse = (stmt: ts.IfStatement): boolean =>
-		stmt.elseStatement !== undefined || stmt.elseClause !== undefined;
+	// NOTE: IfStatement exposes the else branch as `elseStatement` in the
+	// installed TypeScript (5.9.x); there is no `elseClause` property.
+	const hasElse = (stmt: ts.IfStatement): boolean => stmt.elseStatement !== undefined;
 	for (const stmt of body.statements) {
 		if (isPartsGuard(stmt)) {
 			statements.push('parts-guard: parts-length-0 continue');
 			continue;
 		}
 		const role = roleBranchRole(stmt);
-		if (role !== null) {
+		if (role !== null && ts.isIfStatement(stmt)) {
 			statements.push(`branch: ${role}`);
 			if (hasElse(stmt)) statements.push('else-default: present');
 			continue;
