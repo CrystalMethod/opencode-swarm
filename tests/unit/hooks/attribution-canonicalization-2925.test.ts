@@ -150,6 +150,8 @@ describe('canonicalAttributionPath unit table (#2925)', () => {
 	test('drive-relative and UNC inputs drop on win32 (provably outside base)', () => {
 		if (process.platform !== 'win32') return;
 		expect(canonicalAttributionPath('D:foo', dir)).toBeNull();
+		// Deterministic regardless of base drive/cwd geometry (PRR-012).
+		expect(canonicalAttributionPath('D:foo', 'D:\\elsewhere')).toBeNull();
 		expect(
 			canonicalAttributionPath(String.raw`\\srv\share\foo`, dir),
 		).toBeNull();

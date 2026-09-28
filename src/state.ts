@@ -3081,6 +3081,9 @@ function ensureModifiedFileTaskSlot(
 /**
  * Atomically replace one task's attributed file list.
  *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (issue #2925 review, PRR-014).
+ *
  * Issue #2925: entries are canonicalized at this write boundary to the
  * portable form (repo-relative against `workspaceDirectory` when provided,
  * forward-slashed, win32-case-folded via `normalizePath`); entries that

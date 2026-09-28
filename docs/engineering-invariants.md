@@ -622,7 +622,9 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   resolving outside the workspace (`..`-prefixed or different-drive
   relative), relative `..`-bearing input without a base, entries over 4,096
   characters, and entries containing control characters (mirroring the
-  sibling boundaries `normalizeAttributionPath` / `isBoundedGenerationValue`). The singular
+  sibling boundaries `normalizeAttributionPath` / `isBoundedGenerationValue`;
+  both bounds apply to the trimmed entry, and drive-relative win32 inputs
+  like `D:foo` drop deterministically regardless of base geometry). The singular
   setter returns `true` for a dropped entry (advisory no-op) while its
   pre-existing invalid-taskId guard still returns `false`; its input guard
   widened from length-only to trim-based, so whitespace-only input (previously

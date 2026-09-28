@@ -56,6 +56,19 @@ export function canonicalAttributionPath(
 		const code = cleaned.charCodeAt(i);
 		if (code <= 31 || code === 127) return null;
 	}
+	if (
+		process.platform === 'win32' &&
+		cleaned.length >= 3 &&
+		/[A-Za-z]/.test(cleaned.charAt(0)) &&
+		cleaned.charAt(1) === ':' &&
+		cleaned.charAt(2) !== '/' &&
+		cleaned.charAt(2) !== '\\'
+	) {
+		// Drive-relative ('D:foo') resolves against that drive's current
+		// directory, which is runtime/cwd-dependent — not deterministically
+		// canonicalizable, so drop (PR review PRR-012).
+		return null;
+	}
 
 	const base =
 		typeof workspaceDirectory === 'string' && workspaceDirectory.trim()
