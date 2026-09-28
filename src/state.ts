@@ -2909,7 +2909,13 @@ export function beginInvocation(
 	const lastId = session.lastInvocationIdByAgent[stripped] || 0;
 	if (lastId > 0) {
 		clearInvocationActionCircuits(sessionId, lastId);
-		clearPendingTaskModelRoutesForSession(sessionId);
+		// Issue #2989: 'invocation' mode preserves the primary session's
+		// sticky fallback selection (empty-invocationID scope) — a provider
+		// quota does not heal between turns, so resetting it here would send
+		// every other turn back to the dead primary. The session-end clear
+		// (index.ts terminal-session path) still uses the default 'session'
+		// mode and removes it.
+		clearPendingTaskModelRoutesForSession(sessionId, 'invocation');
 	}
 	const newId = lastId + 1;
 	session.lastInvocationIdByAgent[stripped] = newId;

@@ -24,9 +24,11 @@ Repeated actual dispatch failures of the SAME semantic action on the native `tas
 
 Fallback is scoped to the exact parent session, invocation, selected swarm, and canonical role. Primary/fallback chains come from immutable validated configuration; malformed entries, duplicates, and repeated primaries are removed. Only provider-dispatch failures advance the chain.
 
-Direct SDK dispatchers pass the selection in the request body. Built-in Task retries apply it to the correlated child turn at OpenCode's mutable `chat.message` user-message boundary. If exact parent call/generation correlation fails, fallback is not guessed by role and primary remains in effect.
+Direct SDK dispatchers pass the selection in the request body. Built-in Task retries apply it to the correlated child turn at OpenCode's mutable `chat.message` user-message boundary. If exact parent call/generation correlation fails, fallback is not guessed by role and primary remains in effect. Rate-limit (`retry_same`) failures also advance on this path — a surfaced `session.error` means the host's own in-turn retries are already exhausted.
 
-Success returns the next invocation to primary. Exhaustion is explicit and never wraps. Diagnostics expose bounded status without prompts or provider output.
+Primary/host-driven sessions (issue #2989) advance the session's own role-scoped chain on a fallback-eligible `session.error` and apply the selection at the next `chat.message` boundary. This selection is deliberately STICKY for the session (a provider quota does not heal between turns): it survives invocation-boundary clears, returns nothing when exhausted (never throws — a primary session's user message is never blocked), and is removed only by session end, 30 minutes of inactivity, a configured-chain change, or switching the session's agent away from the fallback-scoped role. There is no in-session code escape: the pinned host's model-selection surface cannot distinguish a user re-pick from the session selection or the plugin's own prior override.
+
+Success returns the next invocation to primary on the dispatch and Task-route paths. Exhaustion is explicit and never wraps. Diagnostics expose bounded status without prompts or provider output.
 
 ## Full-Auto risk and oversight
 

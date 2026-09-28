@@ -454,7 +454,7 @@ For production, mix providers by role:
 
 ### Model Fallback
 
-Automatic fallback to a secondary model on transient errors:
+Automatic fallback to a secondary model on transient errors (including provider quota exhaustion — e.g. GitHub Copilot's `429 quota exceeded` monthly limit):
 
 ```json
 {
@@ -466,6 +466,19 @@ Automatic fallback to a secondary model on transient errors:
   }
 }
 ```
+
+Fallback applies to dispatched subagents and to primary (interactive) sessions
+alike. For a primary session, a fallback-eligible provider failure on one turn
+switches the session's next message to the configured fallback (sticky for the
+session; announced by a `MODEL FALLBACK:` advisory and a `model_fallback`
+telemetry event). Recovery boundaries: session end (or a new session), 30
+minutes of session inactivity, a change to the configured model chain, or
+switching the session's agent away from the fallback-scoped role — there is
+deliberately no in-session code escape (the host's model-selection surface
+cannot distinguish a user re-pick from the session selection). A one-shot
+`opencode run` turn that already failed cannot be re-driven mid-turn — the
+OpenCode host owns the request loop — so the fallback lands on that session's
+next turn.
 
 See [docs/configuration.md](docs/configuration.md) for full configuration reference.
 

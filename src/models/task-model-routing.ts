@@ -4,6 +4,7 @@ import {
 	getScopedModelSelectionSnapshot,
 	type ModelOverrideParts,
 	normalizeModelChain,
+	peekScopedModelSelection,
 	resetScopedModelSelectionStateForTests,
 	resolveScopedModelSelection,
 	type ScopedModelOverrideKey,
@@ -326,7 +327,135 @@ export async function resolveTaskChatModelOverride(
 	};
 }
 
-export function clearPendingTaskModelRoutesForSession(sessionID: string): void {
+export interface AdvanceSessionFallbackSelectionInput {
+	sessionID: string;
+	role: string;
+	swarmID?: string;
+	primaryModel?: string;
+	fallbackModels?: Iterable<string | null | undefined>;
+	now?: number;
+}
+
+export interface SessionFallbackAdvanceResult {
+	accepted: boolean;
+	exhausted: boolean;
+	fallbackIndex: number;
+	modelString?: string;
+	scope: ScopedModelOverrideKey;
+}
+
+export interface ResolveSessionChatModelOverrideInput {
+	sessionID: string;
+	role: string;
+	swarmID?: string;
+	primaryModel?: string;
+	fallbackModels?: Iterable<string | null | undefined>;
+	now?: number;
+}
+
+export interface SessionChatModelOverrideResolution {
+	status: 'override' | 'primary' | 'exhausted' | 'missing';
+	model?: ModelOverrideParts;
+	modelString?: string;
+	fallbackIndex?: number;
+}
+
+/**
+ * Issue #2989: sentinel invocationID for the primary-session (host-driven)
+ * fallback scope. Task routes always carry digit-string invocation IDs
+ * (`String(activeInvocationId ?? 0)`), so the empty string can never collide
+ * with a route's scope key.
+ */
+const PRIMARY_SESSION_INVOCATION_ID = '';
+
+function sessionFallbackScope(
+	input:
+		| AdvanceSessionFallbackSelectionInput
+		| ResolveSessionChatModelOverrideInput,
+): ScopedModelOverrideKey {
+	return {
+		sessionID: normalizeText(input.sessionID),
+		invocationID: PRIMARY_SESSION_INVOCATION_ID,
+		swarmID: normalizeText(input.swarmID) || undefined,
+		role: normalizeText(input.role),
+	};
+}
+
+/**
+ * Issue #2989: advance the primary-session (host-driven) fallback chain for
+ * a session with no Task route. Seed-then-advance mirrors
+ * {@link advancePendingTaskModelRoute}'s flow: `resolveScopedModelSelection`
+ * seeds a fresh entry at fallbackIndex 0, `advanceScopedModelSelection` moves
+ * it forward (clamped at chain end, where `exhausted` becomes true).
+ */
+export function advanceSessionFallbackSelection(
+	input: AdvanceSessionFallbackSelectionInput,
+): SessionFallbackAdvanceResult {
+	const now = input.now ?? Date.now();
+	const scope = sessionFallbackScope(input);
+	const chain = normalizeModelChain(
+		input.primaryModel,
+		input.fallbackModels ?? [],
+	);
+	const selection = resolveScopedModelSelection(scope, chain, now);
+	const advanced = advanceScopedModelSelection(
+		scope,
+		chain,
+		selection.generation,
+		now,
+	);
+	return {
+		accepted: advanced.accepted,
+		exhausted: advanced.selection.exhausted,
+		fallbackIndex: advanced.selection.fallbackIndex,
+		modelString: advanced.selection.modelString,
+		scope,
+	};
+}
+
+/**
+ * Issue #2989: non-seeding read of the primary-session fallback selection
+ * for the chat-boundary override. `missing` covers no-selection/no-fallbacks
+ * (and stale-signature entries, which read as absent and are left alone);
+ * `exhausted` never throws here — a primary session's user message must
+ * never be blocked by the plugin.
+ */
+export function resolveSessionChatModelOverride(
+	input: ResolveSessionChatModelOverrideInput,
+): SessionChatModelOverrideResolution {
+	const now = input.now ?? Date.now();
+	const scope = sessionFallbackScope(input);
+	const chain = normalizeModelChain(
+		input.primaryModel,
+		input.fallbackModels ?? [],
+	);
+	if (chain.fallbacks.length === 0) return { status: 'missing' };
+	const selection = peekScopedModelSelection(scope, chain, now);
+	if (selection === undefined) return { status: 'missing' };
+	if (selection.exhausted) {
+		return {
+			status: 'exhausted',
+			fallbackIndex: selection.fallbackIndex,
+		};
+	}
+	if (selection.fallbackIndex === 0 || !selection.model) {
+		return {
+			status: 'primary',
+			fallbackIndex: selection.fallbackIndex,
+		};
+	}
+	return {
+		status: 'override',
+		model: selection.model,
+		modelString: selection.modelString,
+		fallbackIndex: selection.fallbackIndex,
+	};
+}
+
+export function clearPendingTaskModelRoutesForSession(
+	sessionID: string,
+	mode: 'session' | 'invocation' = 'session',
+): void {
 	const normalizedSessionID = normalizeText(sessionID);
 	for (const [key, route] of routesByParentCall) {
 		if (
@@ -339,7 +468,12 @@ export function clearPendingTaskModelRoutesForSession(sessionID: string): void {
 			}
 		}
 	}
-	clearScopedModelSelectionsForSession(normalizedSessionID);
+	// Issue #2989: the per-invocation boundary clear must not reset a
+	// primary session's sticky fallback selection (a provider quota does not
+	// heal between turns); only the session-end clear removes it.
+	clearScopedModelSelectionsForSession(normalizedSessionID, {
+		primaryScopes: mode === 'session',
+	});
 }
 
 export function getPendingTaskModelRouteSnapshot(): readonly PendingTaskModelRouteSnapshotEntry[] {
