@@ -39,9 +39,11 @@ describe('ci.yml integration — windows quarantine ledger entry for win32-wrapp
 
 	test('pr-monitor-status.test.ts is retired from the windows ledger (#2973)', () => {
 		// #2973 retirement: the #1982/#2190 entry (freezeClock + EBUSY-retry
-		// landed, residual default-cap timeout floor added by the retiring PR).
-		// This file was pinned by no other test — it is the likeliest re-add
-		// candidate (reproduced live flake), so it gets its own guard.
+		// landed; the planned residual timeout floor was DROPPED — see the PR's
+		// deviation disclosure — so the residual default-cap sensitivity stands
+		// disclosed, with flake-detection as the safety net). This file was
+		// pinned by no other test — it is the likeliest re-add candidate
+		// (reproduced live flake), so it gets its own guard.
 		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(
 			'tests/unit/commands/pr-monitor-status.test.ts',
 		);

@@ -48,4 +48,3 @@
 #   (#2973 cohort row 12).
 # Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-15.
 tests/unit/telemetry/init-rehome.test.ts
-

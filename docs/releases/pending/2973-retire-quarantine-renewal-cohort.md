@@ -39,8 +39,9 @@ freeze runs), so the applied remedies are evidence-backed, not speculative.
 
 Retiring an entry is the only mechanism that restarts CI execution of a quarantined
 file; the entries whose criteria were already satisfiable were stranded skips. The
-ledger pinning tests are flipped to absence guards (with two new guards for the
-previously-unpinned rows), so silently re-adding any retired entry without fresh
+ledger pinning tests are flipped to absence guards (with three new guards for the
+previously-unpinned rows: pr-monitor-status, pr-subscriptions-checkpoint,
+recall-evaluation-profile-isolation), so silently re-adding any retired entry without fresh
 merge-group failure evidence now fails a test. Because this PR touches `scripts/`,
 the detect-paths job opts the pull_request tier into the full 3-OS × 6-shard unit
 matrix — the retired files run on windows-latest and macos-latest before the merge
