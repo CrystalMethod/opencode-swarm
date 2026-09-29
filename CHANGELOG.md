@@ -1,5 +1,14 @@
 # Changelog
 
+## [7.187.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.2...v7.187.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* **models:** primary-session fallback on provider quota errors ([#2989](https://github.com/ZaxbyHub/opencode-swarm/issues/2989)) ([cf9203e](https://github.com/ZaxbyHub/opencode-swarm/commit/cf9203e6a16f5721f70c7644c30ca348e558ec19))
+* **models:** primary-session fallback on provider quota errors ([#2989](https://github.com/ZaxbyHub/opencode-swarm/issues/2989)) ([54d53e4](https://github.com/ZaxbyHub/opencode-swarm/commit/54d53e4983fb12e2e7014c09c443d31043cad7ba))
+* **review:** resolve PR [#2991](https://github.com/ZaxbyHub/opencode-swarm/issues/2991) review findings (bot F-001/F-002 + PRR-001/002/013) ([150f87d](https://github.com/ZaxbyHub/opencode-swarm/commit/150f87d56537e0b98b7c3ade08b711981b588464))
+
 ## [7.187.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.1...v7.187.2) (2026-09-28)
 
 
