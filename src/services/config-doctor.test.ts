@@ -2866,7 +2866,7 @@ describe('Range-bounded test inventory (AC-3 SC-003) — self-updating', () => {
 						)
 						.join('\n'),
 			);
-			expect(schemaOnlyKeys.length).toBeGreaterThanOrEqual(0);
+			expect(schemaOnlyKeys.length).toBeGreaterThanOrEqual(0); // vacuous-ok: documents the schema-only-bounds gap count; non-failing by design
 		});
 	});
 });

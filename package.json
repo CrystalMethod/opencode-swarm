@@ -128,6 +128,7 @@
 		"check:cross-contamination": "bun run scripts/check-cross-contamination.ts",
 		"check:test-clock": "bun run scripts/check-test-clock.ts",
 		"check:test-file-cap": "bun run scripts/check-test-file-cap.ts",
+		"check:vacuous-assertions": "bun run scripts/check-vacuous-assertions.ts",
 		"check:test-tmpdir": "bun run scripts/check-test-tmpdir.ts",
 		"check:bash-portability": "bun run scripts/check-bash-portability.ts",
 		"check:pending-fragment": "bun run scripts/check-pending-fragment.ts",
