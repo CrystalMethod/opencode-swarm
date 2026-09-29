@@ -168,10 +168,11 @@ export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 				}
 				try {
 					// PRR-003: verify the entry exists before calling quarantineEntry.
-					// quarantineEntry silently returns void on not-found (it only
-					// warns), so without this check the tool would report
-					// `success:true` for a missing id — diverging from the archive
-					// mode which returns `{success:false, message:'entry not found'}`.
+					// Since #2950 the callee reports {status:'not_found'} and the
+					// outcome arm below maps it to the same
+					// `{success:false, message:'entry not found'}` shape this
+					// pre-check returns — the pre-check stays as defense in depth
+					// (a friendlier miss before any lock is taken).
 					const swarmEntries = await readKnowledge<KnowledgeEntryBase>(
 						resolveSwarmKnowledgePath(directory),
 					);
