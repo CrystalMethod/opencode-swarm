@@ -8,6 +8,10 @@
  *
  * Committed as fixture data for scripts/check-host-contract.ts; edit only
  * by re-extracting from the host source at a new ref.
+ * Upstream license: MIT — Copyright (c) 2025 opencode. The full license
+ * text is reproduced in LICENSE.upstream alongside this file (MIT requires
+ * preservation of the copyright and permission notice in copies and
+ * substantial portions; this verbatim excerpt qualifies).
  */
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],

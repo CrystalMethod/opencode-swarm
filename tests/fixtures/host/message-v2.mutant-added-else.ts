@@ -8,6 +8,10 @@
  * file:   packages/opencode/src/session/message-v2.ts
  * base region: the complete `toModelMessagesEffect` export, lines 131-415
  * mutation: role-split else (see the `#2902 mutant` comment below)
+ * Upstream license: MIT — Copyright (c) 2025 opencode. The full license
+ * text is reproduced in LICENSE.upstream alongside this file (MIT requires
+ * preservation of the copyright and permission notice in copies and
+ * substantial portions; this verbatim excerpt qualifies).
  */
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],

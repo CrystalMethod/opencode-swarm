@@ -68,3 +68,17 @@ advisory axis now surfaces).
 - `bun test tests/unit/scripts/check-host-contract-2902.test.ts
   tests/unit/scripts/ci/host-contract-check-workflow-2902.test.ts` — 24 tests
   green.
+
+## Review hardening (swarm-pr-feedback round)
+
+Post-review fixes on the same feature: drift routing honors `GH_REPO` and only
+adopts tracking issues authored by `github-actions[bot]` (a lookalike issue can
+no longer absorb drift comments) and lists up to 500 candidates; the
+`workflow_dispatch` tag reaches the check as an environment value (no shell
+interpolation); the parts-length guard accepts either operand order; a
+malformed corpus fails loudly as `result=CORPUS_INVALID` instead of an opaque
+error; fetched responses are byte-capped; stdout drift summaries are capped;
+the textual-drift notice now prints the exact corpus-refresh command;
+`--emit-expected` accepts `--as-tag`/`--as-commit` so regenerated corpus
+provenance stays honest; and the verbatim upstream excerpts carry the
+upstream MIT notice (`tests/fixtures/host/LICENSE.upstream`).

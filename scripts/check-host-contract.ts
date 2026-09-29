@@ -32,9 +32,11 @@
  *   `result=SOURCE_NOT_FOUND`     exit 1 — host source unfetchable, or the
  *                                 converter loop anchor is absent (a moved or
  *                                 renamed host file is a FAILURE, never a pass)
+ *   `result=CORPUS_INVALID`       exit 1 — the pinned corpus failed to parse or
+ *                                 shape-check (fail loudly with a reason)
  *
  * Exit codes: 0 structure intact (with or without textual drift), 1 structural
- * drift or source not found, 2 usage error.
+ * drift, source not found, or corpus invalid, 2 usage error.
  *
  * Subprocess discipline (AGENTS.md invariant 3): every child is array-form
  * `spawnSync` with explicit cwd, `stdin: 'ignore'`, a timeout, a bounded
@@ -47,7 +49,12 @@
  *   bun scripts/check-host-contract.ts --tag v1.18.33       # explicit host tag
  *   bun scripts/check-host-contract.ts --source <path>      # offline mode
  *   ... --route-on-drift [--dry-run]                        # tracking-issue routing
- *   bun scripts/check-host-contract.ts --emit-expected <path>  # regenerate corpus
+ *   bun scripts/check-host-contract.ts --emit-expected <host-source> [--as-tag vX.Y.Z] [--as-commit <sha>]
+ *                                                           # regenerate the corpus from a source file
+ *                                                           # (<host-source> is the INPUT; the corpus
+ *                                                           #  path is fixed; provenance flags MUST
+ *                                                           #  describe the source when it is not the
+ *                                                           #  pinned v1.18.3 excerpt)
  */
 
 import { spawnSync } from 'node:child_process';
@@ -107,14 +114,38 @@ export interface ExpectedStructure {
 
 type GhResult = { ok: boolean; stdout: string; error?: string };
 
+/** Max bytes accepted for a fetched host source / registry document. */
+const MAX_SOURCE_BYTES = 10_000_000;
+
+/**
+ * Read a fetch Response with a hard byte cap: AbortController bounds TIME,
+ * not memory, so a hostile or runaway upstream must not be buffered whole.
+ * Returns null when the body is missing, over the cap (Content-Length or
+ * actual read), or the read throws.
+ */
+export async function readBounded(res: Response, capBytes: number): Promise<string | null> {
+	try {
+		const declared = Number(res.headers.get('content-length') ?? '0');
+		if (Number.isFinite(declared) && declared > capBytes) return null;
+		const buf = await res.arrayBuffer();
+		if (buf.byteLength > capBytes) return null;
+		return new TextDecoder().decode(buf);
+	} catch {
+		return null;
+	}
+}
+
 async function defaultResolveLatestTag(): Promise<string> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 	try {
 		const res = await fetch(NPM_REGISTRY_URL, { signal: controller.signal });
 		if (!res.ok) return '';
-		const meta = (await res.json()) as { 'dist-tags'?: { latest?: string } };
-		return meta['dist-tags']?.latest ?? '';
+		const body = await readBounded(res, 1_000_000);
+		if (body === null) return '';
+		const meta = JSON.parse(body) as { 'dist-tags'?: { latest?: string } };
+		const latest = meta['dist-tags']?.latest;
+		return typeof latest === 'string' ? latest : '';
 	} catch {
 		return '';
 	} finally {
@@ -128,7 +159,7 @@ async function defaultFetchHostSource(tag: string): Promise<string | null> {
 	try {
 		const res = await fetch(RAW_SOURCE(tag), { signal: controller.signal });
 		if (!res.ok) return null;
-		return await res.text();
+		return await readBounded(res, MAX_SOURCE_BYTES);
 	} catch {
 		return null;
 	} finally {
@@ -154,6 +185,8 @@ export const _internals = {
 	resolveLatestTag: defaultResolveLatestTag,
 	fetchHostSource: defaultFetchHostSource,
 	runGh: defaultRunGh,
+	/** Corpus location, injectable so tests never touch the committed file. */
+	expectedPath: EXPECTED_PATH,
 };
 
 /** Property-access chain text (e.g. `msg.parts.length`), or null. */
@@ -170,14 +203,6 @@ function chainText(expr: ts.Expression): string | null {
 	return parts.join('.');
 }
 
-/** `expr` is the `===` comparison `left === right` where left is a dotted chain. */
-function equalsComparison(expr: ts.Expression): { left: string | null; right: ts.Expression } | null {
-	if (!ts.isBinaryExpression(expr) || expr.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) {
-		return null;
-	}
-	return { left: chainText(expr.left), right: expr.right };
-}
-
 function isNumericZero(expr: ts.Expression): boolean {
 	return expr.kind === ts.SyntaxKind.NumericLiteral && (expr as ts.NumericLiteral).text === '0';
 }
@@ -192,8 +217,14 @@ function soleStatement(stmt: ts.Statement): ts.Statement | null {
 
 function isPartsGuard(stmt: ts.Statement): boolean {
 	if (!ts.isIfStatement(stmt)) return false;
-	const cond = equalsComparison(stmt.expression);
-	if (!cond || cond.left !== 'msg.parts.length' || !isNumericZero(cond.right)) return false;
+	if (!ts.isBinaryExpression(stmt.expression)) return false;
+	if (stmt.expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) return false;
+	// Either operand order: `msg.parts.length === 0` and `0 === msg.parts.length`
+	// are the same guard (the role branches already accept both orders).
+	const { left, right } = stmt.expression;
+	const chainIsPartsLength = (expr: ts.Expression): boolean => chainText(expr) === 'msg.parts.length';
+	const matches = (chainIsPartsLength(left) && isNumericZero(right)) || (isNumericZero(left) && chainIsPartsLength(right));
+	if (!matches) return false;
 	return soleStatement(stmt.thenStatement)?.kind === ts.SyntaxKind.ContinueStatement;
 }
 
@@ -300,7 +331,40 @@ function unifiedDiff(expected: string[], actual: string[]): string[] {
 }
 
 function loadExpected(): ExpectedStructure {
-	return JSON.parse(fs.readFileSync(EXPECTED_PATH, 'utf8')) as ExpectedStructure;
+	return JSON.parse(fs.readFileSync(_internals.expectedPath, 'utf8')) as ExpectedStructure;
+}
+
+/**
+ * Load + shape-check the pinned corpus. Throws a tagged error the caller
+ * converts to `result=CORPUS_INVALID` so a malformed or truncated corpus
+ * fails loudly with a reason instead of an opaque TypeError (and never
+ * silently passes).
+ */
+function loadExpectedChecked(): ExpectedStructure {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(fs.readFileSync(_internals.expectedPath, 'utf8'));
+	} catch (error) {
+		throw new Error(`corpus is not valid JSON: ${String(error)}`);
+	}
+	const corpus = parsed as Partial<ExpectedStructure>;
+	if (!Array.isArray(corpus.statements) || corpus.statements.some((s) => typeof s !== 'string')) {
+		throw new Error('corpus field statements is missing or not a string array');
+	}
+	if (typeof corpus.normalizedExcerpt !== 'string') {
+		throw new Error('corpus field normalizedExcerpt is missing or not a string');
+	}
+	if (typeof corpus.pinnedTag !== 'string' || typeof corpus.pinnedCommit !== 'string') {
+		throw new Error('corpus fields pinnedTag/pinnedCommit are missing or not strings');
+	}
+	return corpus as ExpectedStructure;
+}
+
+/** Cap the stdout drift summary so a pathological statement list cannot flood logs. */
+function summarizeList(items: string[]): string {
+	const capped = items.slice(0, REPORT_DIFF_LIMIT);
+	const suffix = items.length > REPORT_DIFF_LIMIT ? `, …(+${items.length - REPORT_DIFF_LIMIT} more)` : '';
+	return `${capped.join(', ')}${suffix}`;
 }
 
 function driftReport(tag: string, digest: string, added: string[], removed: string[], diff: string[]): string {
@@ -334,33 +398,43 @@ interface RouteOptions {
 
 function routeDrift(options: RouteOptions): string[] {
 	const actions: string[] = [];
+	// Honor GH_REPO when the environment provides it (workflow exports
+	// github.repository); default to the upstream repo so local runs and
+	// forks still route deterministically (forks fail closed against the
+	// upstream with 403 rather than silently writing nowhere).
+	const repo = process.env.GH_REPO && process.env.GH_REPO.trim() !== '' ? process.env.GH_REPO.trim() : HOST_REPO;
 	const report = driftReport(options.tag, options.digest, options.added, options.removed, options.diff);
 	const list = _internals.runGh([
 		'issue',
 		'list',
 		'--repo',
-		HOST_REPO,
+		repo,
 		'--state',
 		'open',
 		'--json',
-		'number,title',
+		'number,title,author',
 		'--limit',
-		'200',
+		'500',
 	]);
 	if (!list.ok) {
 		actions.push(`host-contract: ROUTE-FAILED gh issue list: ${list.error ?? 'unknown error'} (no issue created)`);
 		return actions;
 	}
-	let existing: { number: number; title: string }[] = [];
+	let existing: { number: number; title: string; author?: { login?: string } }[] = [];
 	try {
-		existing = JSON.parse(list.stdout) as { number: number; title: string }[];
+		existing = JSON.parse(list.stdout) as { number: number; title: string; author?: { login?: string } }[];
 	} catch (error) {
 		actions.push(`host-contract: ROUTE-FAILED gh issue list output: ${String(error)} (no issue created)`);
 		return actions;
 	}
-	const match = existing.find((issue) => issue.title.startsWith(TRACKING_TITLE_PREFIX));
+	// Only adopt tracking issues this workflow itself created (github-actions[bot]
+	// identity via GITHUB_TOKEN) — a human- or third-party-bot-titled issue must
+	// never absorb drift comments.
+	const match = existing.find(
+		(issue) => issue.title.startsWith(TRACKING_TITLE_PREFIX) && issue.author?.login === 'github-actions[bot]',
+	);
 	if (match) {
-		const args = ['issue', 'comment', String(match.number), '--repo', HOST_REPO, '--body', report];
+		const args = ['issue', 'comment', String(match.number), '--repo', repo, '--body', report];
 		if (options.dryRun) {
 			actions.push(`host-contract: dry-run gh ${args.join(' ').slice(0, 120)}...`);
 			return actions;
@@ -374,7 +448,7 @@ function routeDrift(options: RouteOptions): string[] {
 		return actions;
 	}
 	const title = `${TRACKING_TITLE_PREFIX} @ ${options.tag}`;
-	const args = ['issue', 'create', '--repo', HOST_REPO, '--title', title, '--body', report, '--label', 'area:ci'];
+	const args = ['issue', 'create', '--repo', repo, '--title', title, '--body', report, '--label', 'area:ci'];
 	if (options.dryRun) {
 		actions.push(`host-contract: dry-run gh ${args.join(' ').slice(0, 120)}...`);
 		return actions;
@@ -442,7 +516,14 @@ export async function runCheck(options: CheckOptions): Promise<CheckOutcome> {
 	}
 	lines.push(`host-contract: structural-digest=${extraction.structuralDigest}`);
 
-	const expected = loadExpected();
+	let expected: ExpectedStructure;
+	try {
+		expected = loadExpectedChecked();
+	} catch (error) {
+		lines.push(`host-contract: pinned corpus invalid (${String(error instanceof Error ? error.message : error)})`);
+		lines.push('result=CORPUS_INVALID');
+		return { exitCode: 1, lines, tag, sourcePath, structuralDigest: extraction.structuralDigest, routed };
+	}
 	if (extraction.statements.join('\n') !== expected.statements.join('\n')) {
 		const actualSet = new Set(extraction.statements);
 		const expectedSet = new Set(expected.statements);
@@ -451,10 +532,12 @@ export async function runCheck(options: CheckOptions): Promise<CheckOutcome> {
 		if (added.length === 0 && removed.length === 0) {
 			lines.push('structural drift: added=[] removed=[] (statement order changed)');
 		} else {
-			lines.push(`structural drift: added=[${added.join(', ')}] removed=[${removed.join(', ')}]`);
+			lines.push(`structural drift: added=[${summarizeList(added)}] removed=[${summarizeList(removed)}]`);
 		}
 		const diff = unifiedDiff(expected.statements, extraction.statements);
-		lines.push(...diff);
+		const diffCapped = diff.slice(0, REPORT_DIFF_LIMIT);
+		if (diff.length > REPORT_DIFF_LIMIT) diffCapped.push(`… (+${diff.length - REPORT_DIFF_LIMIT} more changed statements)`);
+		lines.push(...diffCapped);
 		lines.push(`host-contract: pinned corpus ${expected.pinnedTag} (${expected.pinnedCommit.slice(0, 12)})`);
 		lines.push('result=STRUCTURAL_DRIFT');
 		if (options.routeOnDrift) {
@@ -476,12 +559,19 @@ export async function runCheck(options: CheckOptions): Promise<CheckOutcome> {
 	lines.push('result=STRUCTURE_MATCH');
 	if (extraction.normalizedText !== expected.normalizedExcerpt) {
 		lines.push('host-contract: textual-only drift vs pinned excerpt (structure unchanged)');
+		lines.push('host-contract: refresh the pinned corpus with: bun scripts/check-host-contract.ts --emit-expected <host-source excerpt>');
 		lines.push('result=TEXTUAL_DRIFT_ONLY');
 	}
 	return { exitCode: 0, lines, tag, sourcePath, structuralDigest: extraction.structuralDigest, routed };
 }
 
-function emitExpected(sourcePath: string): number {
+export interface EmitOptions {
+	/** Provenance recorded in the corpus — MUST describe the source being emitted. */
+	asTag?: string;
+	asCommit?: string;
+}
+
+function emitExpected(sourcePath: string, options: EmitOptions = {}): number {
 	const source = fs.readFileSync(path.resolve(REPO_ROOT, sourcePath), 'utf8');
 	const extraction = extractHostLoop(source);
 	if (!extraction) {
@@ -489,20 +579,24 @@ function emitExpected(sourcePath: string): number {
 		return 1;
 	}
 	const corpus: ExpectedStructure = {
-		pinnedTag: 'v1.18.3',
-		pinnedCommit: '127bdb30784d508cc556c71a0f32b508a3061517',
+		// Provenance MUST be supplied when regenerating from anything other
+		// than the pinned v1.18.3 source — a corpus that lies about its origin
+		// poisons every later drift report (PRR-015).
+		pinnedTag: options.asTag ?? 'v1.18.3',
+		pinnedCommit: options.asCommit ?? '127bdb30784d508cc556c71a0f32b508a3061517',
 		hostFile: HOST_SOURCE_FILE,
 		statements: extraction.statements,
 		structuralDigest: extraction.structuralDigest,
 		normalizedExcerpt: extraction.normalizedText,
 	};
-	fs.writeFileSync(EXPECTED_PATH, `${JSON.stringify(corpus, null, '\t')}\n`);
-	console.log(`host-contract: wrote ${path.relative(REPO_ROOT, EXPECTED_PATH)} (digest ${extraction.structuralDigest})`);
+	fs.writeFileSync(_internals.expectedPath, `${JSON.stringify(corpus, null, '\t')}\n`);
+	console.log(`host-contract: wrote ${path.relative(REPO_ROOT, _internals.expectedPath)} (digest ${extraction.structuralDigest})`);
 	return 0;
 }
 
 function usage(): number {
-	console.error('usage: bun scripts/check-host-contract.ts [--tag vX.Y.Z | --source <path>] [--route-on-drift] [--dry-run] | --emit-expected <path>');
+	console.error('usage: bun scripts/check-host-contract.ts [--tag vX.Y.Z | --source <path>] [--route-on-drift] [--dry-run]');
+	console.error('       bun scripts/check-host-contract.ts --emit-expected <host-source> [--as-tag vX.Y.Z] [--as-commit <sha>]   # <host-source> is the INPUT to extract from; the corpus path is fixed');
 	return 2;
 }
 
@@ -512,6 +606,8 @@ export async function main(argv: string[]): Promise<number> {
 	let routeOnDrift = false;
 	let dryRun = false;
 	let emitPath = '';
+	let asTag = '';
+	let asCommit = '';
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		switch (arg) {
@@ -539,14 +635,27 @@ export async function main(argv: string[]): Promise<number> {
 				emitPath = next;
 				break;
 			}
+			case '--as-tag': {
+				const next = argv[++i];
+				if (next === undefined) return usage();
+				asTag = next;
+				break;
+			}
+			case '--as-commit': {
+				const next = argv[++i];
+				if (next === undefined) return usage();
+				asCommit = next;
+				break;
+			}
 			default:
 				return usage();
 		}
 	}
 	if (emitPath) {
 		if (tag || source || routeOnDrift || dryRun) return usage();
-		return emitExpected(emitPath);
+		return emitExpected(emitPath, { asTag: asTag || undefined, asCommit: asCommit || undefined });
 	}
+	if (asTag || asCommit) return usage();
 	const outcome = await runCheck({ tag, source, routeOnDrift, dryRun });
 	for (const line of outcome.lines) console.log(line);
 	return outcome.exitCode;

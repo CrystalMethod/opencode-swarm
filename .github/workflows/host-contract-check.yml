@@ -70,21 +70,27 @@ jobs:
         # weekly schedule and manual dispatch. Routing to the tracking issue
         # runs in the same process (single-pass) and only on non-PR events.
         continue-on-error: ${{ github.event_name == 'pull_request' }}
+        # The dispatch input reaches the shell as an ENV VALUE, never as an
+        # inline ${{ }} interpolation — env values are not shell-evaluated, so
+        # a hostile or typo'd tag cannot inject commands (PRR-006).
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -uo pipefail
+          # ARGS only ever carries the constant --route-on-drift flag, so the
+          # deliberate word-split below is over repo-controlled text.
           ARGS=""
           if [ "${{ github.event_name != 'pull_request' }}" = "true" ]; then
             ARGS="--route-on-drift"
           fi
-          TAG="${{ inputs.tag || '' }}"
-          if [ -n "$TAG" ]; then
-            ARGS="$ARGS --tag $TAG"
-          fi
           # shellcheck disable=SC2086 — ARGS is deliberately word-split
-          bun scripts/check-host-contract.ts $ARGS 2>&1 | tee host-contract-output.txt
+          if [ -n "$INPUT_TAG" ]; then
+            bun scripts/check-host-contract.ts $ARGS --tag "$INPUT_TAG" 2>&1 | tee host-contract-output.txt
+          else
+            bun scripts/check-host-contract.ts $ARGS 2>&1 | tee host-contract-output.txt
+          fi
           exit "${PIPESTATUS[0]}"
       - name: Record compared tag in job summary
         if: always()
