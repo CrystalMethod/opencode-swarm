@@ -2641,7 +2641,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/hooks/knowledge-validator.ts'],
 		writerCitations: [
-			'src/hooks/knowledge-validator.ts:869 quarantineEntry (cap 100, lock, atomic store rewrite + sidecar append) / :788 appendUnactionable (cap 200, Jaccard dedupe) / :1026 restoreEntry / :1178 unarchiveEntry',
+			'src/hooks/knowledge-validator.ts:881 quarantineEntry (cap 100, lock, atomic store rewrite + sidecar append) / :788 appendUnactionable (cap 200, Jaccard dedupe) / :1045 restoreEntry / :1197 unarchiveEntry',
 			'rejected + rewrites written via knowledge-store.ts:1010 (cap 20) / :325 (MAX_REWRITE_HISTORY 2000)',
 		],
 		readerCitations: ['readKnowledge delegates (knowledge-store.ts:288-353); curator-postmortem reads unactionable ≤1000 (curator-postmortem.ts:43,1213)'],
