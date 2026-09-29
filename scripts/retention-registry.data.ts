@@ -2664,7 +2664,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		legacyCompatibility: 'restore/unarchive paths return quarantined/archived entries',
 		healthSignal: 'n/a',
 		owner: 'this-gate',
-		disposition: { kind: 'not-a-defect', proof: 'Every list has a hard FIFO cap (20/100/200/2000) enforced under the knowledge lock (knowledge-store.ts:330,1013; knowledge-validator.ts:810,1009-1017).' },
+		disposition: { kind: 'not-a-defect', proof: 'Every list has a hard FIFO cap (20/100/200/2000) enforced under the knowledge lock (knowledge-store.ts:1057,374; knowledge-validator.ts:810,1009-1017).' },
 	},
 	{
 		id: 'knowledge-retractions',
