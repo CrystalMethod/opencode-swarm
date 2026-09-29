@@ -293,6 +293,9 @@ export const KNOWN_TELEMETRY_KEYS: Readonly<Record<string, readonly string[]>> =
 		]),
 		plan_md_write_failed: Object.freeze(['directory', 'error', 'timestamp']),
 		snapshot_failed: Object.freeze(['error', 'retries', 'source']),
+		// src/session/snapshot-coordination-init.ts settlement chokepoint
+		// (issue #2794): counts-only supersession payload.
+		plan_recovery_superseded: Object.freeze(['count', 'trigger']),
 
 		// src/hooks/conflict-resolution.ts:55-73. Note `type` and `timestamp`: this
 		// producer supplies its own, and the caller's values must keep winning in

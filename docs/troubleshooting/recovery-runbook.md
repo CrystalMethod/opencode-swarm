@@ -47,7 +47,13 @@ execution state disagree:
 4. If coordination is `superseded`, `failed`, or `timed_out` and the prior
    attempt has settled, run `/swarm recover --coordination` and inspect status
    again. A superseded attempt deliberately remains non-successful so its stale
-   recovery cannot suppress a current-generation retry.
+   recovery cannot suppress a current-generation retry. Each superseded
+   attempt also emits one counts-only `plan_recovery_superseded`
+   telemetry event (payload: within-process cumulative `count` plus a
+   `trigger` of `plan_recovery` or `coordination_fence`; issue #2794) — count
+   occurrences in `.swarm/telemetry.jsonl` (or the observability store) to
+   distinguish a one-off supersession from repeated restart flapping; an
+   empty trail means no supersession was observed.
 5. For a task classified as `stale`, `live_wedge`, or `settlement_wedge`, run
    `/swarm recover <task_id>`. This consumes only the receipt-backed local
    repair and is idempotent. For `ambiguous`, `corrupt`, or any uncertain
@@ -74,7 +80,7 @@ workflow generation is rejected without clearing newer work.
 | `settlement_wedge` | The workflow label drifted to idle/blocked while a COMMITTED accepted settlement plus green proof still justify Stage A (#2828). | Run `/swarm recover <task_id>` (or the architect-only `recover_stage_a_task` tool); same receipt-backed repair, never re-runs the coder. |
 | expired lease | The lease deadline passed, but expiry alone does not establish owner absence. | Wait for corroboration; do not treat the lease as freely reusable. |
 | old-generation late result | A result belongs to a prior restart generation. | Reject it; preserve the newer generation's state. |
-| `running` / `superseded` / `timed_out` coordination | Readiness is not yet authoritative, the attempt lost its generation, or the bounded attempt timed out. | Do not overlap retries; use `--coordination` only after the prior attempt settles. |
+| `running` / `superseded` / `timed_out` coordination | Readiness is not yet authoritative, the attempt lost its generation, or the bounded attempt timed out. | Do not overlap retries; use `--coordination` only after the prior attempt settles. Repeated `superseded` across restarts shows as accumulating `plan_recovery_superseded` events in `.swarm/telemetry.jsonl` (#2794). |
 
 The distinction between `ambiguous`, `corrupt`, and `stale` is intentional:
 unknown facts remain visible rather than being converted into a successful

@@ -11,6 +11,7 @@ import {
 	buildRehydrationCache,
 	swarmState,
 } from '../state.js';
+import { telemetry } from '../telemetry.js';
 import { withTimeout } from '../utils/timeout.js';
 import {
 	beginHydrationScope,
@@ -74,6 +75,39 @@ export interface SnapshotCoordinationResetGuard {
 
 const entries = new Map<string, ReadinessEntry>();
 let nextAttemptId = 1;
+
+// #2794: bounded, counts-only supersession bookkeeping (invariant 8 posture:
+// a single scalar — never a per-workspace map — so no project identity is
+// retained; bounded by construction). The durable trail is one
+// plan_recovery_superseded telemetry event per superseded attempt, which
+// lands in the existing .swarm/telemetry.jsonl stream and the observability
+// SQLite sink, so an operator can distinguish a one-off recovery from
+// repeated restart flapping by counting occurrences across restarts.
+const supersessionStats = { count: 0 };
+
+/**
+ * Record one superseded coordination attempt. Called exactly once per attempt
+ * from the two settlement handlers in startSnapshotCoordinationInitialization
+ * (a promise either fulfills with a 'superseded' outcome or rejects with the
+ * typed error — never both), under the same ownership guards that gate the
+ * entry state updates, so deliberate resets (closing) and evicted attempts
+ * are excluded. `trigger` is the closed two-value vocabulary distinguishing
+ * the typed plan-recovery path from a coordination-fence outcome.
+ */
+function recordSupersession(
+	trigger: 'plan_recovery' | 'coordination_fence',
+): void {
+	supersessionStats.count += 1;
+	try {
+		telemetry.planRecoverySuperseded({
+			count: supersessionStats.count,
+			trigger,
+		});
+	} catch {
+		// telemetry must never break settlement (emit() never throws today;
+		// this is defense-in-depth per AGENTS.md)
+	}
+}
 
 function isRetryableArchiveError(error: unknown): boolean {
 	const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -328,6 +362,10 @@ export function startSnapshotCoordinationInitialization(
 				entry.state = 'superseded';
 				entry.error =
 					'coordination initialization superseded by a newer hydration generation';
+				// #2794: counts-only durable trail (this guard excludes
+				// deliberate resets and evicted attempts — maintenance is not
+				// flapping).
+				recordSupersession('coordination_fence');
 				return;
 			}
 			entry.state = 'succeeded';
@@ -337,6 +375,9 @@ export function startSnapshotCoordinationInitialization(
 				if (entry.state !== 'closing' && entries.get(root) === entry) {
 					entry.state = 'superseded';
 					entry.error = error.message;
+					// #2794: the typed plan-recovery supersession signal —
+					// same ownership guard as the state update above.
+					recordSupersession('plan_recovery');
 				}
 			} else {
 				entry.state = 'failed';

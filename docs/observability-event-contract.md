@@ -3,7 +3,7 @@
 Companion to `docs/evidence-and-telemetry.md` (evidence bundles + the legacy
 telemetry stream from a user's point of view) and `docs/engineering-invariants.md`
 (the invariant this PR establishes). This document is the contract definition for
-`src/observability/`: the canonical event envelope, the 65-entry event catalog,
+`src/observability/`: the canonical event envelope, the 66-entry event catalog,
 the legacy adapter, sampling/cardinality rules, the OTel mapping pin, and the
 exhaustive producer/consumer matrix across all eighteen known observability
 stores in the repository.
@@ -16,7 +16,7 @@ Issue: #2029. This is PR 01 of 23 in the observability sequence (#2029–#2051).
 
 **What this PR defines.** A single canonical `ObservabilityEvent` envelope
 (`src/observability/envelope.ts`), a discriminated catalog of every event kind
-the codebase emits today (`src/observability/catalog.ts`, 65 entries), a
+the codebase emits today (`src/observability/catalog.ts`, 66 entries), a
 relationship-validation function, a legacy-payload adapter, deterministic
 sampling and bounded-cardinality helpers, and a versioned OTel/OpenInference
 attribute-mapping table. It wires the envelope into the one live production
@@ -199,10 +199,10 @@ those inputs before this change.
 
 ---
 
-## 5. The 65-entry catalog
+## 5. The 66-entry catalog
 
-Source: `src/observability/catalog.ts`. Exactly 65 entries = the 38 pre-existing members of
-`TelemetryEvent` (`src/telemetry.ts:16-172`) plus `agent_conflict_detected`
+Source: `src/observability/catalog.ts`. Exactly 66 entries = the 38 pre-existing members of
+`TelemetryEvent` (`src/telemetry.ts:27-210`) plus `agent_conflict_detected`
 (emitted in production via a force-cast past the type system before #2029)
 plus `close_archive_result` (issue #2030 — the structured close/archive
 result event) plus `knowledge_receipt_transition` (issue #2031, the bounded
@@ -234,8 +234,10 @@ not re-enumerated here) plus the two issue-#2482 kinds —
 `verdict_row_pipe_recovery` (absorbing #2184) — plus the issue-#2511 kind
 `delegation_read_uncertain` (advisory delegation-store read stayed uncertain
 after its one bounded retry) plus the issue-#2678 kind `prm_hard_stop_terminal`
-(the TERMINAL/handoff transition of a PRM hard-stop episode) for the honest
-38 + 14 + 7 + 3 + 1 + 1 + 1 = 65 total (the final +1 is the issue-#2676 kind `execution_attempt_recorded`).
+(the TERMINAL/handoff transition of a PRM hard-stop episode) plus the issue-#2794
+kind `plan_recovery_superseded` (counts-only supersession observability for
+restart recovery, F-004 on #2777) for the honest
+38 + 14 + 7 + 3 + 1 + 1 + 1 + 1 = 66 total (the final +1 is the issue-#2676 kind `execution_attempt_recorded`).
 
 Legend: **Owner** is `futureOwnerIssue` when `consumers` is empty (permitted
 only together with an owner — an empty consumer list with no owner is a CI
@@ -660,6 +662,18 @@ Category `plan`, severity `warning`, privacy **`sensitive`** (carries
 Category `plan`, severity `error`, privacy `sensitive` (free-text filesystem
 error message). Producer `src/plan/ledger.ts:1566`. Consumers: none — owner
 **#2047**. Retention: **#2036**. Forbidden workflow IDs: `hostSessionId`.
+
+#### plan_recovery_superseded
+Category `plan`, severity `notice`, privacy **`operational`** (counts only — a
+within-process cumulative `count` and the closed two-value `trigger`
+vocabulary `plan_recovery` / `coordination_fence`; no paths, no session or
+project identity). Producer `src/telemetry.ts:1428` (emitted at the snapshot
+coordination settlement chokepoint in
+`src/session/snapshot-coordination-init.ts`, issue #2794 — the F-004 follow-up
+on #2777/#2668). Exactly one event per coordination-initialization attempt
+that settles superseded; attempts settling under the deliberate-reset closing
+guard are excluded. Consumers: none — owner **#2047**. Retention: **#2036**.
+Forbidden workflow IDs: `hostSessionId`.
 
 ### Conflict category
 

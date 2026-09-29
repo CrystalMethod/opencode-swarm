@@ -198,7 +198,16 @@ export type TelemetryEvent =
 	// and withdrawal aggregates for the consented training-content vault.
 	// Payload is a pseudonymous project ref, a reason enum, and a count —
 	// never vault content or raw paths.
-	| 'training_vault_health';
+	| 'training_vault_health'
+	// Issue #2794 — plan-recovery supersession counts (F-004 follow-up on
+	// #2777/#2668): emitted exactly once per snapshot-coordination
+	// initialization attempt that settles superseded, at the settlement
+	// chokepoint in src/session/snapshot-coordination-init.ts. Payload is a
+	// within-process cumulative count and a closed two-value trigger
+	// vocabulary ('plan_recovery' = typed PlanRecoverySupersededError path;
+	// 'coordination_fence' = any generation-fence outcome) — counts only, no
+	// paths, no session or project identity.
+	| 'plan_recovery_superseded';
 
 /** Stable classification for how a reviewer-gate decision was established. */
 export type ReviewerGateEvidenceKind =
@@ -1400,6 +1409,23 @@ export const telemetry = {
 		},
 	): void {
 		_internals.emit('retrieval_routed', { sessionId, ...data });
+	},
+
+	/**
+	 * Issue #2794 — plan-recovery supersession count, emitted exactly once per
+	 * snapshot-coordination initialization attempt that settles superseded
+	 * (settlement chokepoint in src/session/snapshot-coordination-init.ts).
+	 * Counts ONLY — a within-process cumulative `count` and the closed
+	 * two-value `trigger` vocabulary (`plan_recovery` = the typed
+	 * PlanRecoverySupersededError path; `coordination_fence` = any
+	 * generation-fence outcome) — no paths, no session or project identity,
+	 * matching the observability contract's no-content-in-metrics rule.
+	 */
+	planRecoverySuperseded(data: {
+		count: number;
+		trigger: 'plan_recovery' | 'coordination_fence';
+	}): void {
+		_internals.emit('plan_recovery_superseded', data);
 	},
 };
 
