@@ -51,9 +51,13 @@ execution state disagree:
    attempt also emits one counts-only `plan_recovery_superseded`
    telemetry event (payload: within-process cumulative `count` plus a
    `trigger` of `plan_recovery` or `coordination_fence`; issue #2794) — count
-   occurrences in `.swarm/telemetry.jsonl` (or the observability store) to
-   distinguish a one-off supersession from repeated restart flapping; an
-   empty trail means no supersession was observed.
+   occurrences in `.swarm/telemetry.jsonl` (fold in the rotated
+   `.swarm/telemetry.jsonl.1` generation, or query the `observability_event` SQLite
+   store) to distinguish a one-off supersession from repeated restart
+   flapping. Count EVENT OCCURRENCES, not the payload `count` value: the
+   payload count is one process-wide scalar shared across every coordination
+   root, it can gap when telemetry is disabled, and it restarts at 1 per
+   process. An empty trail means no supersession was observed.
 5. For a task classified as `stale`, `live_wedge`, or `settlement_wedge`, run
    `/swarm recover <task_id>`. This consumes only the receipt-backed local
    repair and is idempotent. For `ambiguous`, `corrupt`, or any uncertain

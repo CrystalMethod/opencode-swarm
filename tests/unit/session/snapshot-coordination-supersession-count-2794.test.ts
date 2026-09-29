@@ -1,19 +1,14 @@
 /**
  * Issue #2794 — bounded, counts-only `plan_recovery_superseded` telemetry for
  * coordination-initialization supersession (F-004 follow-up on #2777/#2668).
- *
- * Coverage: increment-on-typed-supersession, increment-on-fence-supersession,
- * no-emit-on-success, no-count-on-success (success-inflation probe), cumulative
- * counting across attempts (relative assertions only — the counter is module
- * state shared across test files in one bun process), closing-guard exclusion
- * on BOTH settlement paths, and the counts-only payload key allowlist.
- *
- * Manufacture patterns and hygiene mirror
- * tests/unit/session/restart-coordination-supersession-2668.test.ts. Telemetry
- * wiring: initTelemetry(projectDirectory) on the SAME tmp project that hosts
- * the coordination fixture (emit() only fans out to listeners after the stream
- * exists); resetTelemetryForTesting() in afterEach ends the stream before
- * safeRmRecursive removes the tmp dir.
+ * Covers increment on both settlement paths, no-emit-on-success (and the
+ * success-inflation probe), cumulative counting (RELATIVE assertions only —
+ * the counter is module state shared across test files in one bun process),
+ * closing-guard exclusion incl. the timeout-overwrite window, and the
+ * counts-only payload key allowlist. Manufacture patterns/hygiene mirror
+ * tests/unit/session/restart-coordination-supersession-2668.test.ts; telemetry
+ * wiring: initTelemetry on the fixture project (emit() fans out only after the
+ * stream exists); resetTelemetryForTesting() in afterEach before removal.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -269,7 +264,7 @@ describe('issue #2794 — bounded supersession counts', () => {
 		expect(lastPayload.count).toBe(firstPayload.count + 1);
 	});
 
-	test('closing-guard settlement does not count (typed path)', async () => {
+	test('entry replaced after timeout does not count (typed path, reset awaited)', async () => {
 		const directory = makeProject('e-closing-typed');
 		initTelemetry(directory);
 		installListener();
@@ -277,9 +272,12 @@ describe('issue #2794 — bounded supersession counts', () => {
 			{ id: '1.1', files: ['src/closing.ts'], status: 'completed' },
 		]);
 
-		// Hold the attempt inside loadPlan while a deliberate reset installs the
-		// 'closing' guard; the typed supersession then settles while closing and
-		// must NOT be counted.
+		// Hold the attempt inside loadPlan while a deliberate reset runs to
+		// completion; by settle time the attempt's own timeout has fired and
+		// the reset has replaced the attempt's map entry with its guard, so
+		// the typed supersession must NOT be counted. This pins the identity
+		// half of the .catch guard; the closing half alone is pinned by the
+		// timeout-overwrite-window tests below.
 		const originalTimeoutMs = _snapshotCoordinationInternals.timeoutMs;
 		_snapshotCoordinationInternals.timeoutMs = 250;
 		let releasePlan!: () => void;
@@ -290,9 +288,8 @@ describe('issue #2794 — bounded supersession counts', () => {
 		_snapshotCoordinationInternals.loadPlan = async (root, cache, options) => {
 			loadPlanStarted = true;
 			await planBarrier;
-			// Bump the generation only after the reset guard is installed so the
-			// rejection is the typed plan-recovery supersession settling under
-			// a 'closing' entry.
+			// Bump the generation only after the reset has run so the rejection
+			// is the typed plan-recovery supersession settling after the reset.
 			beginHydrationScope(root);
 			return originalLoadPlan(root, cache, options);
 		};
@@ -300,8 +297,9 @@ describe('issue #2794 — bounded supersession counts', () => {
 		try {
 			const initialization = startSnapshotCoordinationInitialization(directory);
 			await waitFor(() => loadPlanStarted);
-			// The reset waits for the held attempt and times out (bounded), which
-			// is the deliberate-reset path: the entry is now 'closing'.
+			// The reset waits for the held attempt and times out (bounded); the
+			// attempt's own side-chain timer fires first, then the reset
+			// installs its 'closing' guard entry over the attempt's slot.
 			const guard = await beginSnapshotCoordinationReset(directory);
 			expect(guard.priorUnsettled).toBe(true);
 
@@ -364,6 +362,139 @@ describe('issue #2794 — bounded supersession counts', () => {
 
 		expect(observedOutcome).toBe('superseded');
 		guard.release();
+		expect(captured.length).toBe(0);
+	});
+
+	test('deliberate reset in the timeout-overwrite window does not count (typed path)', async () => {
+		// Pins the .catch guard's closing half ALONE: release the barrier in the
+		// window AFTER the attempt's side-chain timer has fired (400ms) but
+		// BEFORE the reset's own timer (started 250ms later, fires at 650ms), so
+		// the reset's guard entry is NOT installed yet and the entry is still
+		// mapped at settle time. The side-chain must preserve 'closing' (it
+		// must not overwrite it with 'timed_out'), making the closing half of
+		// the emit guard the only defense in this interleaving.
+		const directory = makeProject('e-window-typed');
+		initTelemetry(directory);
+		installListener();
+		await writeApprovedPlan(directory, [
+			{ id: '1.1', files: ['src/window.ts'], status: 'completed' },
+		]);
+
+		const originalTimeoutMs = _snapshotCoordinationInternals.timeoutMs;
+		_snapshotCoordinationInternals.timeoutMs = 400;
+		let releasePlan!: () => void;
+		let loadPlanStarted = false;
+		const planBarrier = new Promise<void>((resolve) => {
+			releasePlan = resolve;
+		});
+		_snapshotCoordinationInternals.loadPlan = async (root, cache, options) => {
+			loadPlanStarted = true;
+			await planBarrier;
+			beginHydrationScope(root);
+			return originalLoadPlan(root, cache, options);
+		};
+
+		try {
+			const initialization = startSnapshotCoordinationInitialization(directory);
+			await waitFor(() => loadPlanStarted);
+			// Stagger the reset 250ms behind the attempt so its timeout lands
+			// ~250ms after the attempt's — that gap is the release window.
+			await new Promise<void>((resolve) => setTimeout(resolve, 250));
+			const resetPromise = beginSnapshotCoordinationReset(directory);
+			// Release past the attempt's timer (~400ms) and before the reset's
+			// (~650ms): settle while the entry is still mapped and 'closing'
+			// (with the side-chain closing check) or 'timed_out' (without it —
+			// the mutation this test pins).
+			await new Promise<void>((resolve) => setTimeout(resolve, 250));
+			releasePlan();
+			await expect(initialization).rejects.toBeInstanceOf(
+				PlanRecoverySupersededError,
+			);
+			const guard = await resetPromise;
+			guard.release();
+			expect(captured.length).toBe(0);
+		} finally {
+			_snapshotCoordinationInternals.timeoutMs = originalTimeoutMs;
+		}
+	});
+
+	test('deliberate reset in the timeout-overwrite window does not count (fence outcome path)', async () => {
+		// Same window as the typed variant, settled through the .then
+		// 'superseded'-outcome branch: the early return must fire on the
+		// closing state the side-chain preserved.
+		const directory = makeProject('e-window-fence');
+		initTelemetry(directory);
+		installListener();
+		await writeSnapshotProjection(directory, makeSnapshot('window-fence'));
+
+		let observedOutcome: string | undefined;
+		_snapshotCoordinationInternals.initialize = async (root, scope) => {
+			const outcome = await originalInitialize(root, scope);
+			observedOutcome = outcome;
+			return outcome;
+		};
+
+		const originalTimeoutMs = _snapshotCoordinationInternals.timeoutMs;
+		_snapshotCoordinationInternals.timeoutMs = 400;
+		let releaseRead!: () => void;
+		let strictReadStarted = false;
+		const readBarrier = new Promise<void>((resolve) => {
+			releaseRead = resolve;
+		});
+		_snapshotCoordinationInternals.readSnapshotFileStrict = async (
+			root,
+			relativePath,
+		) => {
+			strictReadStarted = true;
+			await readBarrier;
+			return originalReadSnapshotFileStrict(root, relativePath);
+		};
+
+		try {
+			const initialization = startSnapshotCoordinationInitialization(directory);
+			await waitFor(() => strictReadStarted);
+			// Stagger the reset 250ms behind the attempt (same window geometry
+			// as the typed variant).
+			await new Promise<void>((resolve) => setTimeout(resolve, 250));
+			const resetPromise = beginSnapshotCoordinationReset(directory);
+			await new Promise<void>((resolve) => setTimeout(resolve, 250));
+			// Pattern B's generation bump, released inside the window so the
+			// attempt resolves with the 'superseded' OUTCOME while the entry is
+			// still mapped.
+			beginHydrationScope(directory);
+			releaseRead();
+			await initialization;
+			expect(observedOutcome).toBe('superseded');
+			const guard = await resetPromise;
+			guard.release();
+			expect(captured.length).toBe(0);
+		} finally {
+			_snapshotCoordinationInternals.timeoutMs = originalTimeoutMs;
+			_snapshotCoordinationInternals.initialize = originalInitialize;
+		}
+	});
+
+	test('plain failure settles failed without counting', async () => {
+		// Negative path: a non-typed error from the attempt (one that escapes
+		// initializeSnapshotCoordination — loadPlan-internal plain errors are
+		// advisory-caught, but a strict-read throw is not) must settle the
+		// entry 'failed' and emit NOTHING (a regression that calls
+		// recordSupersession unconditionally in the .catch would fail here).
+		const directory = makeProject('g-plain-failure');
+		initTelemetry(directory);
+		installListener();
+		await writeSnapshotProjection(directory, makeSnapshot('plain-failure'));
+		_snapshotCoordinationInternals.readSnapshotFileStrict = async () => {
+			throw new Error('boom: plain coordination failure');
+		};
+
+		await expect(
+			startSnapshotCoordinationInitialization(directory),
+		).rejects.toThrow('boom: plain coordination failure');
+		expect(getSnapshotCoordinationStatus(directory)).toMatchObject({
+			state: 'failed',
+			settled: true,
+		});
 		expect(captured.length).toBe(0);
 	});
 });

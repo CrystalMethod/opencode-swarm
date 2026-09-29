@@ -90,9 +90,12 @@ const supersessionStats = { count: 0 };
  * from the two settlement handlers in startSnapshotCoordinationInitialization
  * (a promise either fulfills with a 'superseded' outcome or rejects with the
  * typed error — never both), under the same ownership guards that gate the
- * entry state updates, so deliberate resets (closing) and evicted attempts
- * are excluded. `trigger` is the closed two-value vocabulary distinguishing
- * the typed plan-recovery path from a coordination-fence outcome.
+ * entry state updates, so settlements under a deliberate reset are excluded:
+ * while a reset is waiting the entry state is 'closing' (and the start-side
+ * timeout side-chain preserves it), and once the reset settles its guard
+ * entry replaces the attempt's in the map. `trigger` is the closed
+ * two-value vocabulary distinguishing the typed plan-recovery path from a
+ * coordination-fence outcome.
  */
 function recordSupersession(
 	trigger: 'plan_recovery' | 'coordination_fence',
@@ -362,9 +365,10 @@ export function startSnapshotCoordinationInitialization(
 				entry.state = 'superseded';
 				entry.error =
 					'coordination initialization superseded by a newer hydration generation';
-				// #2794: counts-only durable trail (this guard excludes
-				// deliberate resets and evicted attempts — maintenance is not
-				// flapping).
+				// #2794: counts-only durable trail — this guard excludes
+				// deliberate resets, including the timeout-overwrite window guarded
+				// at the side-chain below, and attempts whose map entry the reset
+				// guard replaced. Maintenance is not flapping.
 				recordSupersession('coordination_fence');
 				return;
 			}
@@ -395,7 +399,17 @@ export function startSnapshotCoordinationInitialization(
 		_snapshotCoordinationInternals.timeoutMs,
 		new Error('coordination initialization timed out'),
 	).catch((error: unknown) => {
-		if (!entry.settled && entries.get(root) === entry) {
+		// The closing check keeps a deliberate reset's 'closing' state intact:
+		// without it this handler would overwrite 'closing' with 'timed_out'
+		// while beginSnapshotCoordinationReset is still waiting, and a
+		// supersession settling in that window would then pass the settlement
+		// guards' only remaining defense and be counted as restart flapping
+		// (#2794).
+		if (
+			!entry.settled &&
+			entry.state !== 'closing' &&
+			entries.get(root) === entry
+		) {
 			entry.state = 'timed_out';
 			entry.error = error instanceof Error ? error.message : String(error);
 			advisoryWarn(

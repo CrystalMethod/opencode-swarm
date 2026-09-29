@@ -237,7 +237,7 @@ after its one bounded retry) plus the issue-#2678 kind `prm_hard_stop_terminal`
 (the TERMINAL/handoff transition of a PRM hard-stop episode) plus the issue-#2794
 kind `plan_recovery_superseded` (counts-only supersession observability for
 restart recovery, F-004 on #2777) for the honest
-38 + 14 + 7 + 3 + 1 + 1 + 1 + 1 = 66 total (the final +1 is the issue-#2676 kind `execution_attempt_recorded`).
+38 + 14 + 7 + 3 + 1 + 1 + 1 + 1 = 66 total (the two trailing +1s are the issue-#2676 kind `execution_attempt_recorded` and the issue-#2794 kind `plan_recovery_superseded`).
 
 Legend: **Owner** is `futureOwnerIssue` when `consumers` is empty (permitted
 only together with an owner — an empty consumer list with no owner is a CI
@@ -665,7 +665,10 @@ error message). Producer `src/plan/ledger.ts:1566`. Consumers: none — owner
 
 #### plan_recovery_superseded
 Category `plan`, severity `notice`, privacy **`operational`** (counts only — a
-within-process cumulative `count` and the closed two-value `trigger`
+process-wide cumulative `count` — one scalar shared across every
+coordination root in the process, so only event OCCURRENCES are meaningful;
+it can gap when telemetry is disabled and restarts at 1 per process — and the
+closed two-value `trigger`
 vocabulary `plan_recovery` / `coordination_fence`; no paths, no session or
 project identity). Producer `src/telemetry.ts:1428` (emitted at the snapshot
 coordination settlement chokepoint in
