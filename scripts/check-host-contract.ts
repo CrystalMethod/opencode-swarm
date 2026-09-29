@@ -330,10 +330,6 @@ function unifiedDiff(expected: string[], actual: string[]): string[] {
 	return lines;
 }
 
-function loadExpected(): ExpectedStructure {
-	return JSON.parse(fs.readFileSync(_internals.expectedPath, 'utf8')) as ExpectedStructure;
-}
-
 /**
  * Load + shape-check the pinned corpus. Throws a tagged error the caller
  * converts to `result=CORPUS_INVALID` so a malformed or truncated corpus

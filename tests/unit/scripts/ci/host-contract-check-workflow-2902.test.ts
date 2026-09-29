@@ -78,6 +78,10 @@ describe('host-contract-check workflow (issue #2902)', () => {
 		);
 		expect(checkStep?.env?.GH_TOKEN).toBe('${{ github.token }}');
 		expect(checkStep?.env?.GH_REPO).toBe('${{ github.repository }}');
+		// The dispatch tag must reach the shell only as an env value — never
+		// inline-interpolated (PRR-006 injection class).
+		expect(checkStep?.env?.INPUT_TAG).toBe('${{ inputs.tag }}');
+		expect(raw.includes('TAG=')).toBe(false);
 	});
 
 	test('the job summary step always runs and records the compared tag', () => {

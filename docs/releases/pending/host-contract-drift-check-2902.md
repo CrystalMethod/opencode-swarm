@@ -66,8 +66,8 @@ advisory axis now surfaces).
   naming the added `else`; the no-loop fixture exits 1 with
   `result=SOURCE_NOT_FOUND`.
 - `bun test tests/unit/scripts/check-host-contract-2902.test.ts
-  tests/unit/scripts/ci/host-contract-check-workflow-2902.test.ts` — 24 tests
-  green.
+  tests/unit/scripts/ci/host-contract-check-workflow-2902.test.ts` — 35 tests
+  green (28 + 7).
 
 ## Review hardening (swarm-pr-feedback round)
 
