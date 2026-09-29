@@ -48,8 +48,14 @@ export const _internals = {
 		undefined as unknown as typeof import('./finalize-stage.js').guaranteeAllPlansComplete,
 	getGitRepositoryStatus:
 		undefined as unknown as typeof import('../../git/branch.js').getGitRepositoryStatus,
-	resetToMainAfterMerge:
-		undefined as unknown as typeof import('../../git/branch.js').resetToMainAfterMerge,
+	// #2953: the seam value is guardResetWithRecheck (installed by
+	// wireCloseInternals) — it takes the wider options (carrying the
+	// confirmed tracked-dirty scope) and returns a result that may carry
+	// `recheckRefused` when the pre-destruction re-check refused.
+	resetToMainAfterMerge: undefined as unknown as (
+		cwd: string,
+		options?: import('./align-stage.js').GuardedResetToMainOptions,
+	) => Promise<import('./align-stage.js').GuardedResetToMainResult>,
 	resetToRemoteBranch:
 		undefined as unknown as typeof import('../../git/branch.js').resetToRemoteBranch,
 	copyDirRecursive:
