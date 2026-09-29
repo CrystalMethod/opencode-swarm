@@ -5,6 +5,7 @@
 			"src/**",
 			"!src/graphify-out",
 			"tests/**",
+			"!tests/fixtures/host",
 			"test/**",
 			"biome.json",
 			"package.json",
