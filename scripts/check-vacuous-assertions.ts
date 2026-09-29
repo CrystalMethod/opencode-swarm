@@ -12,7 +12,7 @@
  *
  * Run it anywhere:
  *
- *   bun run check:vacuous-assertions
+ *   bun run scripts/check-vacuous-assertions.ts
  *
  * Modes:
  *   (default)         diff-scoped ratchet: changed *.test.ts files must not
