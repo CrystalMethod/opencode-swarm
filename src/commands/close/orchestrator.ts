@@ -68,6 +68,7 @@ function runCloseGateGit(args: string[], cwd: string): string | null {
 		cwd,
 		encoding: 'utf8',
 		timeout: 10_000,
+		maxBuffer: 1024 * 1024,
 		windowsHide: true,
 		stdio: ['ignore', 'pipe', 'pipe'],
 	});
@@ -100,8 +101,9 @@ export function evaluateClosePurgeGate(
 ): ClosePurgeGate {
 	// #2953: the gate measurement consumes the SAME argv (GIT_STATUS_ARGS) and
 	// the SAME parser (parseTrackedDirtyPaths) as the align-stage guard's
-	// pre-destruction re-check — both live in destructive-purge.ts so the two
-	// measurements cannot diverge by construction.
+	// pre-destruction re-check — both live in destructive-purge.ts, so both
+	// reads parse identically. (Separate spawn wrappers by design: this one
+	// keeps the #2508 test seam.)
 	const statusOutput = _closeGateInternals.runGit(
 		[...GIT_STATUS_ARGS],
 		directory,

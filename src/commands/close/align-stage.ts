@@ -26,10 +26,17 @@ function renderRecheckRefusal(
 ): string {
 	const listed = newDirtyPaths.slice(0, 10);
 	const overflow = newDirtyPaths.length - listed.length;
+	// The plugin keeps .swarm/ git-excluded (ensureSwarmGitExcluded); a change
+	// under it at recheck time almost always means someone git-added runtime
+	// state — name the remediation instead of implying an external writer.
+	const swarmHint = newDirtyPaths.some((p) => p.startsWith('.swarm/'))
+		? 'One or more changed paths are under .swarm/ — this project tracks swarm runtime state in git. Consider `git rm -r --cached .swarm/` and re-adding `.swarm/` to .git/info/exclude; close never confirms runtime state as destructive scope.'
+		: undefined;
 	return [
 		`🛑 Git alignment aborted (fail-closed): ${reason} — this destructive scope was never confirmed${listed[0] ? ` (first: ${listed[0]})` : ''}.`,
 		...listed.map((p) => `  - ${p}`),
 		...(overflow > 0 ? [`  … and ${overflow} more`] : []),
+		...(swarmHint ? [swarmHint] : []),
 		'Nothing was reset or checked out; the session is finalized (finalize/archive/clean completed). Complete git alignment manually if still wanted.',
 	].join('\n');
 }

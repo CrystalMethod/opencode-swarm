@@ -42,6 +42,11 @@ records with R/C in either status column.
   shared `resetToMainAfterMerge`). Closing it requires re-checking inside
   `src/git/branch.ts`, which this change deliberately does not touch; tracked
   as follow-up material.
+- If a changed path at re-check time sits under `.swarm/`, the refusal names
+  it and suggests the untrack remediation (`git rm -r --cached .swarm/`):
+  close never treats runtime state as confirmed destructive scope, and the
+  plugin normally git-excludes `.swarm/` at init — seeing it here almost
+  always means runtime state was `git add`-ed by hand.
 - Same-path content drift (a file that was already confirmed dirty gets
   written again in-window) is still discarded — the confirmed scope is a SET of
   paths, per the #2508 two-step contract.

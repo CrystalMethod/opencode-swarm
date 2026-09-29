@@ -154,8 +154,12 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 		const root = createCloseFixture('armA');
 		await initLedgerFor(root);
 		const restore = injectInWindowWrite('t02.txt', 'IN-WINDOW-B\n');
-		const out = await handleCloseCommand(root, [], {});
-		restore();
+		let out: string;
+		try {
+			out = await handleCloseCommand(root, [], {});
+		} finally {
+			restore();
+		}
 		expect(fs.readFileSync(path.join(root, 't02.txt'), 'utf8')).toBe(
 			'IN-WINDOW-B\n',
 		);
@@ -177,8 +181,12 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 		expect(token).not.toBeNull();
 		if (!token) return;
 		const restore = injectInWindowWrite('t02.txt', 'IN-WINDOW-B\n');
-		const executed = await handleCloseCommand(root, [`--confirm=${token}`], {});
-		restore();
+		let executed: string;
+		try {
+			executed = await handleCloseCommand(root, [`--confirm=${token}`], {});
+		} finally {
+			restore();
+		}
 		expect(executed).not.toMatch(/confirmation rejected/i);
 		expect(fs.readFileSync(path.join(root, 't01.txt'), 'utf8')).toBe(
 			'user-confirmed-a\n',
@@ -202,7 +210,9 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 		const executed = await handleCloseCommand(root, [`--confirm=${token}`], {});
 		expect(executed).not.toMatch(/confirmation rejected/i);
 		expect(resetFired(root)).toBe(true);
-		expect(executed).not.toMatch(/recheck-refused/i);
+		// Real negative marker (the former /recheck-refused/i was a tautology:
+		// the refusal message never contains that substring).
+		expect(executed).not.toMatch(/alignment aborted \(fail-closed\)/);
 		// The operator-confirmed discard still happens (regression pin).
 		expect(fs.readFileSync(path.join(root, 't01.txt'), 'utf8')).not.toBe(
 			'user-confirmed-a\n',
@@ -215,8 +225,12 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 			const root = createCloseFixture(`loop${i}`);
 			await initLedgerFor(root);
 			const restore = injectInWindowWrite('t02.txt', 'IN-WINDOW-B\n');
-			const out = await handleCloseCommand(root, [], {});
-			restore();
+			let out: string;
+			try {
+				out = await handleCloseCommand(root, [], {});
+			} finally {
+				restore();
+			}
 			const survived =
 				fs.readFileSync(path.join(root, 't02.txt'), 'utf8') === 'IN-WINDOW-B\n';
 			if (survived && !resetFired(root) && /fail-closed|abort/i.test(out)) {
@@ -263,6 +277,8 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 			const out = await handleCloseCommand(root, [], {});
 			expect(out).toMatch(/fail-closed|abort/i);
 			expect(out).toMatch(/could not be re-read/i);
+			// Zero new-dirty paths: the "(first: ...)" clause must be omitted.
+			expect(out).not.toMatch(/\(first:/);
 			expect(resetFired(root)).toBe(false);
 		} finally {
 			purgeInternals.runGitStatus = real;
@@ -293,8 +309,12 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 		// In-window write to the SAME already-confirmed path: the confirmed
 		// scope is a set of paths, so this proceeds (documented boundary).
 		const restore = injectInWindowWrite('t01.txt', 'IN-WINDOW-SAME\n');
-		const executed = await handleCloseCommand(root, [`--confirm=${token}`], {});
-		restore();
+		let executed: string;
+		try {
+			executed = await handleCloseCommand(root, [`--confirm=${token}`], {});
+		} finally {
+			restore();
+		}
 		expect(executed).not.toMatch(/confirmation rejected/i);
 		expect(resetFired(root)).toBe(true);
 	}, 120_000);
@@ -316,13 +336,36 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 			const out = await handleCloseCommand(root, [], {});
 			const listed = new Set(out.match(/- t\d\d\.txt/g) ?? []).size;
 			expect(listed).toBeLessThanOrEqual(10);
-			expect(listed).toBeLessThan(15);
 			expect(out).toMatch(/and 5 more/);
 			expect(resetFired(root)).toBe(false);
 		} finally {
 			closeInternals.resetToMainAfterMerge = real;
 		}
 	}, 120_000);
+
+	test('tracked .swarm/ drift refusal carries the untrack remediation hint', async () => {
+		const { guardResetWithRecheck } = await import(
+			'../../../src/commands/close/align-stage'
+		);
+		const realRunner = purgeInternals.runGitStatus;
+		purgeInternals.runGitStatus = () => ' M .swarm/plan.json\n';
+		let resetCalled = false;
+		const refusingReset = (async () => {
+			resetCalled = true;
+			throw new Error('unreachable');
+		}) as unknown as Parameters<typeof guardResetWithRecheck>[0];
+		try {
+			const result = await guardResetWithRecheck(refusingReset, '.', {
+				expectedDirtyPaths: [],
+			});
+			expect(result.recheckRefused).toBe(true);
+			expect(result.message).toMatch(/git rm -r --cached .swarm\//);
+			expect(result.message).toMatch(/fail-closed|abort/i);
+			expect(resetCalled).toBe(false);
+		} finally {
+			purgeInternals.runGitStatus = realRunner;
+		}
+	}, 60_000);
 
 	describe('parseTrackedDirtyPaths / recheckBeforeDestructive battery', () => {
 		test('skips untracked, strips quotes, splits staged rename', () => {
@@ -339,6 +382,21 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 				'plain.txt',
 				'staged.txt',
 			]);
+		});
+
+		test('copy records (C in either column) split both sides', () => {
+			expect(parseTrackedDirtyPaths('C  from.txt -> to.txt').sort()).toEqual([
+				'from.txt',
+				'to.txt',
+			]);
+			expect(parseTrackedDirtyPaths(' C from.txt -> to.txt').sort()).toEqual([
+				'from.txt',
+				'to.txt',
+			]);
+		});
+
+		test('empty porcelain output parses to no dirty paths', () => {
+			expect(parseTrackedDirtyPaths('')).toEqual([]);
 		});
 
 		test('worktree rename (R in second column) splits both sides', () => {
@@ -414,6 +472,6 @@ describe('#2953 close alignment re-check (t1c2-r1-S-03)', () => {
 			} finally {
 				_closeGateInternals.runGit = realRunGit;
 			}
-		});
+		}, 120_000);
 	});
 });

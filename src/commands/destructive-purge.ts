@@ -77,8 +77,10 @@ export const _internals = {
 
 /**
  * Shared argv for every tracked-dirty measurement (issue #2953): the close
- * gate and the pre-destruction re-check run the identical status command, so
- * the two measurements are comparable by construction.
+ * gate and the pre-destruction re-check run the identical status command and
+ * feed the same parser, so the two measurements parse identically. (The two
+ * reads still go through separate spawn wrappers; equivalence is by
+ * convention + review, not a single shared call site.)
  */
 export const GIT_STATUS_ARGS = ['status', '--porcelain'] as const;
 
@@ -130,16 +132,20 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
 
 /**
  * Shared tracked-dirty read (issue #2953): GIT_STATUS_ARGS + the shared
- * parser around the injected-or-default runner. `runGit` lets the close gate
- * keep its own test seam (`_closeGateInternals.runGit`) while the args and
- * the parse remain identical to the re-check's.
+ * parser around the default runner (test seam: `_internals.runGitStatus`).
+ * The close gate composes the same argv + parser directly through its own
+ * long-standing `_closeGateInternals.runGit` seam rather than calling this
+ * helper, so its existing #2508 fail-closed tests keep their injection point.
  */
-export function readTrackedDirtyPaths(
-	directory: string,
-	runGit?: (args: readonly string[], cwd: string) => string | null,
-): { ok: true; dirtyPaths: string[] } | { ok: false } {
-	const runner = runGit ?? _internals.runGitStatus;
-	const statusOutput = runner(GIT_STATUS_ARGS, directory);
+export function readTrackedDirtyPaths(directory: string):
+	| {
+			ok: true;
+			dirtyPaths: string[];
+	  }
+	| {
+			ok: false;
+	  } {
+	const statusOutput = _internals.runGitStatus(GIT_STATUS_ARGS, directory);
 	if (statusOutput === null) return { ok: false };
 	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(statusOutput) };
 }
