@@ -2651,7 +2651,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writeLimits: {
 			bound: 'rejected FIFO 20 (default); quarantined FIFO 100; unactionable FIFO 200 (deduped); rewrites FIFO 2000',
 			scope: 'global',
-			citation: 'src/hooks/knowledge-store.ts:1013,330; src/hooks/knowledge-validator.ts:810,1009-1017',
+			citation: 'src/hooks/knowledge-store.ts:1057,374; src/hooks/knowledge-validator.ts:810,1009-1017',
 		},
 		readBound: { pattern: 'full-file', bound: '≤ cap per list (20/100/200/2000)', sync: true, citation: 'citations above' },
 		lockModel: 'directory proper-lockfile (retries 5, stale 5000) — same knowledge lock domain',
