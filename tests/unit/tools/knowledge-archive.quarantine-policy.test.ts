@@ -89,9 +89,14 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 					'Cohort-safety policy blocked this quarantine:',
 				);
 				// No silent-success divergence: the entry was NOT moved and no
-				// tombstone was written (those are success-path-only).
+				// tombstone was written (those are success-path-only). The issue's
+				// wording also requires "no archived tombstone event" — the
+				// events.jsonl file must not even come into existence on denial.
 				const entries = await readKnowledge<SwarmKnowledgeEntry>(swarmPath);
 				expect(entries.some((e) => e.id === 'owned-by-other')).toBe(true);
+				expect(entries.find((e) => e.id === 'owned-by-other')?.status).toBe(
+					'candidate',
+				);
 				expect(
 					existsSync(
 						swarmPath.replace(
@@ -103,6 +108,11 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 				expect(
 					existsSync(
 						swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-rejected.jsonl'),
+					),
+				).toBe(false);
+				expect(
+					existsSync(
+						swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-events.jsonl'),
 					),
 				).toBe(false);
 			} finally {
@@ -130,8 +140,31 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 				expect(parsed.error).toContain(
 					'Cohort-safety policy blocked this quarantine:',
 				);
+				// Same store assertions as the cross-owned case: the entry stays
+				// put and no success-path side-effect file appears.
 				const entries = await readKnowledge<SwarmKnowledgeEntry>(swarmPath);
 				expect(entries.some((e) => e.id === 'legacy-entry')).toBe(true);
+				expect(entries.find((e) => e.id === 'legacy-entry')?.status).toBe(
+					'candidate',
+				);
+				expect(
+					existsSync(
+						swarmPath.replace(
+							/knowledge\.jsonl$/,
+							'knowledge-quarantined.jsonl',
+						),
+					),
+				).toBe(false);
+				expect(
+					existsSync(
+						swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-rejected.jsonl'),
+					),
+				).toBe(false);
+				expect(
+					existsSync(
+						swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-events.jsonl'),
+					),
+				).toBe(false);
 			} finally {
 				Object.assign(policyInternals, snapshot);
 			}
@@ -168,6 +201,39 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 		}
 	});
 
+	it('invalid_input: tool maps the callee guard rejection to the fallback error shape', async () => {
+		const dir = canonicalMkdtemp('swarm-j4-invalid-');
+		try {
+			const swarmPath = resolveSwarmKnowledgePath(dir);
+			// An entry id carrying a literal newline: JSONL round-trips it, so
+			// the tool's PRR-003 pre-check FINDS the entry (id match), but
+			// quarantineEntry's entryId guard (NUL/newline) then rejects the
+			// call — exercising the tool's terminal invalid_input arm, which
+			// no direct-call test reaches.
+			const entry = makeSwarmEntry('bad\nid');
+			await appendKnowledge(swarmPath, entry);
+			const raw = await knowledge_archive.execute(
+				{ id: 'bad\nid', reason: 'guard probe', mode: 'quarantine' },
+				makeCtx(dir),
+			);
+			const parsed = JSON.parse(raw);
+			expect(parsed.success).toBe(false);
+			expect(parsed.error).toContain(
+				'quarantine rejected: invalid directory, entry id, or reporter',
+			);
+			// invalid_input returns before any mutation: the entry is intact.
+			const entries = await readKnowledge<SwarmKnowledgeEntry>(swarmPath);
+			expect(entries.some((e) => e.id === 'bad\nid')).toBe(true);
+			expect(
+				existsSync(
+					swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-quarantined.jsonl'),
+				),
+			).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it('not_found: in-lock race through the tool reports the pre-check shape', async () => {
 		const dir = canonicalMkdtemp('swarm-j4-race-');
 		try {
@@ -192,9 +258,15 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 				await new Promise((resolve) => setTimeout(resolve, 150));
 				// Entry vanishes between the unlocked pre-check and the locked
 				// read → the not_found arm fires inside the lock. Both legs
-				// report the identical {success:false, message} shape; this
-				// construction prefers the in-lock leg, and deleting that arm
-				// would flip the result to the error-shape default.
+				// report the identical {success:false, message} shape, and the
+				// scheduling is deterministic in outcome: the pre-check either
+				// completes BEFORE the deletion (the entry exists, so the tool
+				// proceeds into the lock-blocked callee → in-lock leg) or AFTER
+				// it (pre-check leg) — either way the result below is the same
+				// truthful not-found, so the pinned shape holds on both paths.
+				// Deleting the in-lock arm would still flip a pre-check-passing
+				// run to the error-shape default, which is the non-vacuity this
+				// test guarantees.
 				const remaining = (
 					await readKnowledge<SwarmKnowledgeEntry>(swarmPath)
 				).filter((e) => e.id !== 'race-entry');
@@ -209,6 +281,12 @@ describe('knowledge_archive — quarantine policy truthfulness (#2950)', () => {
 				const parsed = JSON.parse(await pending);
 				expect(parsed.success).toBe(false);
 				expect(parsed.message).toBe('entry not found');
+				// Neither leg mutates the store: no tombstone on not-found.
+				expect(
+					existsSync(
+						swarmPath.replace(/knowledge\.jsonl$/, 'knowledge-rejected.jsonl'),
+					),
+				).toBe(false);
 			} finally {
 				if (!released) {
 					await release().catch(() => {});
