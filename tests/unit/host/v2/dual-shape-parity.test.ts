@@ -239,7 +239,7 @@ describe('v2 dual-shape entrypoint (issue #3004)', () => {
 
 	test('synthesized ToolContext resolves directory from the setup root, not cwd (invariant 4)', async () => {
 		const { _internals } = await import('../../../../src/host/v2/tools');
-		const projectRoot = mkdtempSync(join(tmpdir(), 'swarm-v2-root-'));
+		const projectRoot = canonicalMkdtemp('swarm-v2-root-');
 		try {
 			const controller = new AbortController();
 			let progressed: Record<string, unknown> | undefined;
