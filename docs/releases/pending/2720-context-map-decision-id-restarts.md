@@ -11,12 +11,14 @@
   `A1`, so `.swarm/context-map.json` no longer accumulates duplicate `DecisionEntry.id`
   values across restarts.
 - The module-level `decisionCounter` is gone; ids are never derived from process state.
-- New unit suite `tests/unit/context-map/decision-id-allocation.test.ts` pins the
-  allocation contract: fresh map starts at `A1`; continuation from the max suffix
-  (contiguous, non-contiguous, and leading-zero legacy ids); foreign/non-`A`/non-string
-  ids ignored; BigInt exactness beyond 2^53; distinct sequential ids for multiple
-  decisions in one call; and a real save-load disk round-trip proving no duplicate ids
-  land in the persisted file across a simulated restart.
+- New unit suites pin the allocation contract: `decision-id-allocation.test.ts`
+  (14 tests — fresh map starts at `A1`; continuation from the max suffix (contiguous,
+  non-contiguous, and leading-zero legacy ids); foreign/non-`A`/non-string ids ignored;
+  BigInt exactness beyond 2^53; distinct sequential ids for multiple decisions in one
+  call; and a real save-load disk round-trip proving no duplicate ids land in the
+  persisted file across a simulated restart) and `decision-id-totality.test.ts` (3 tests —
+  allocation skips null/non-object entries in a loadable-but-corrupt map instead of
+  throwing, and the update still persists).
 - The `DecisionEntry.id` doc example now states the actual `A1, A2, ...` grammar.
 
 ## Why
@@ -36,6 +38,11 @@ external consumer that treats the id as a key.
 - This guarantees no restart-induced duplication. It does not claim global cross-process
   uniqueness: `saveContextMap` rewrites the whole file last-writer-wins, a pre-existing
   property of every context-map field.
+- Boundary: the in-tree Task-tool post-hook (`context_map.enabled` path) does not
+  currently pass `decisions`, so today the recording path this hardens is exercised via
+  the module's public API (tests, direct callers, and any future wiring) rather than by
+  the default hook payload. The allocation change is inert for callers that record no
+  decisions.
 - Same defect class, different subsystem: the full-auto v2 mirror's process-local
   `reactiveOversightSequence` (which can destructively overwrite evidence files after a
   restart) is tracked separately as #3011.
@@ -46,8 +53,8 @@ external consumer that treats the id as a key.
   holding `A1..A3` allocates `A4`, and a record-save-reload-record cycle persists
   `A1..A5` with no duplicates (`repro-check.sh run`, base 675e9ab03).
 - Existing context-map suites stay green (70 pass / 0 fail:
-  `post-agent-update`, `post-agent-wiring`, `persistence`), plus the new 16-test
-  allocation suite; `bun run typecheck`, `bun run build`, Node-ESM import of
-  `dist/index.js`, biome, and the check:invariants / check:mock-cleanup /
-  check:registry-citations / check:test-clock / drift:check gates all pass at the fixed
-  tree.
+  `post-agent-update`, `post-agent-wiring`, `persistence`), plus the new 14-test
+  allocation suite and 3-test totality suite; `bun run typecheck`, `bun run build`,
+  Node-ESM import of `dist/index.js`, biome, and the check:invariants /
+  check:mock-cleanup / check:registry-citations / check:test-clock / drift:check gates
+  all pass at the fixed tree.

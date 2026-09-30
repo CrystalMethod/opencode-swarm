@@ -89,7 +89,7 @@ export function allocateDecisionId(
 ): string {
 	let max = 0n;
 	for (const entry of decisions) {
-		if (typeof entry.id !== 'string') continue;
+		if (typeof entry?.id !== 'string') continue;
 		const match = /^A(\d+)$/.exec(entry.id);
 		if (!match) continue;
 		const value = BigInt(match[1]);

@@ -13,15 +13,14 @@
 
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
-
 import {
 	_internals,
 	allocateDecisionId,
 	updateContextMapAfterAgent,
 } from '../../../src/context-map/post-agent-update';
 import type { ContextMap, DecisionEntry } from '../../../src/types/context-map';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -294,9 +293,7 @@ describe('updateContextMapAfterAgent durable decision ids', () => {
 
 describe('decision id durability on real disk (issue #2720)', () => {
 	test('two sequential calls against a persisted map yield no duplicate ids on disk', () => {
-		const dir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'ctxmap-2720-rt-')),
-		);
+		const dir = canonicalMkdtemp('ctxmap-2720-rt-');
 		try {
 			// Seed exactly what a previous process persisted.
 			const seed = makeContextMap([
