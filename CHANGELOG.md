@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.188.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.1...v7.188.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **ci:** check-test-clock scans src/** tests and emits a raw-clock ratchet ([#2951](https://github.com/ZaxbyHub/opencode-swarm/issues/2951)) ([062e9ba](https://github.com/ZaxbyHub/opencode-swarm/commit/062e9babac3cfb71c83a544e6ffc2457fe7eb0b7))
+
 ## [7.188.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.0...v7.188.1) (2026-09-30)
 
 
