@@ -1,5 +1,27 @@
 # Changelog
 
+## [7.188.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.3...v7.188.0) (2026-09-29)
+
+
+### Features
+
+* **observability:** track bounded supersession counts for restart recovery ([#2794](https://github.com/ZaxbyHub/opencode-swarm/issues/2794)) ([4bdda24](https://github.com/ZaxbyHub/opencode-swarm/commit/4bdda240e4154eb11c5fdbf9921046b25e915215))
+* **observability:** track bounded supersession counts for restart recovery ([#2794](https://github.com/ZaxbyHub/opencode-swarm/issues/2794)) ([79f9743](https://github.com/ZaxbyHub/opencode-swarm/commit/79f974337bbd20e09fe04a025c8d4c4d01553098))
+
+
+### Bug Fixes
+
+* **ci:** add weekly host-contract drift check against npm-latest host source ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([f38a747](https://github.com/ZaxbyHub/opencode-swarm/commit/f38a747af391ebcf8e3d1ac5e42a00dfac97a29c))
+* **ci:** add weekly host-contract drift check against npm-latest host source ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([b135518](https://github.com/ZaxbyHub/opencode-swarm/commit/b135518ea93d3bde3ce9226afd83fc8fdf5c760c))
+* **ci:** address implementation-review MINORs in check-host-contract ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([b902925](https://github.com/ZaxbyHub/opencode-swarm/commit/b90292527a78e2ee01773fc71ed57affed60bc96))
+* **ci:** close swarm-pr-review findings on the host-contract check ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([46486f3](https://github.com/ZaxbyHub/opencode-swarm/commit/46486f3407c626e8397a12ccaa3014e4409d9ca5))
+* **ci:** review nits — drop dead loader, pin INPUT_TAG wiring, ignore test scratch dir ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([822c42d](https://github.com/ZaxbyHub/opencode-swarm/commit/822c42d5f66b539e9574fed969a2147122ec3372))
+* **close:** re-verify tree cleanliness before the destructive align reset ([4fdbc40](https://github.com/ZaxbyHub/opencode-swarm/commit/4fdbc4091e40aaeaf60f85bd0486ad634abc133f))
+* **close:** resolve review findings on [#2953](https://github.com/ZaxbyHub/opencode-swarm/issues/2953) (refusal hint, test hygiene) ([6ad6dc1](https://github.com/ZaxbyHub/opencode-swarm/commit/6ad6dc19f592695f6c0f1eadfe9132a49e68961a))
+* **knowledge:** truthful quarantine outcomes in knowledge_archive ([#2950](https://github.com/ZaxbyHub/opencode-swarm/issues/2950)) ([fc18d21](https://github.com/ZaxbyHub/opencode-swarm/commit/fc18d2187881599ae84ba8bcfb59d09e9c5aad94))
+* **knowledge:** truthful quarantine outcomes in knowledge_archive ([#2950](https://github.com/ZaxbyHub/opencode-swarm/issues/2950)) ([5fd5fe5](https://github.com/ZaxbyHub/opencode-swarm/commit/5fd5fe586d619e235507fc3e65589beb46d9a627))
+* **observability:** close PR [#2999](https://github.com/ZaxbyHub/opencode-swarm/issues/2999) review findings (PRR2-001..006) ([5ba80e5](https://github.com/ZaxbyHub/opencode-swarm/commit/5ba80e50c93503821d1270fec06fadf7522d159e))
+
 ## [7.187.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.2...v7.187.3) (2026-09-28)
 
 
