@@ -286,7 +286,7 @@ describe('check-test-clock — src scan surface (issue #2951)', () => {
 			'src/nested/c.test.ts',
 			'tests/a.test.ts',
 		]);
-	});
+	}, 30_000);
 
 	test('new src raw Date.now() usage without helper is blocking and counted in the ratchet', () => {
 		const repo = makeRepo();

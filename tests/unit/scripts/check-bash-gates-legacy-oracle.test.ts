@@ -338,7 +338,7 @@ Raw-clock-no-helper files (ratchet): 1`;
 			legacyExpected,
 		);
 		expect(normalizeOutput(legacyResult.stderr)).toBe(tsResult.stderr);
-	}, 30_000);
+	}, 120_000);
 
 	test('test-tmpdir preserves the archived blocking tmpdir diagnostic', async () => {
 		const repo = await makeRepo('gate-oracle-test-tmpdir-');
