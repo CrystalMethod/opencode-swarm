@@ -32,6 +32,7 @@ import type {
 	V2ToolInfo,
 } from '../../../../src/host/v2/types';
 import { TOOL_NAMES } from '../../../../src/tools/tool-metadata';
+import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
 const REPO_ROOT = join(import.meta.dir, '..', '..', '..', '..');
 
@@ -211,7 +212,7 @@ describe('v2 dual-shape entrypoint (issue #3004)', () => {
 	});
 
 	test('setup(ctx) registers the v1 tool-name set via ctx.tool.transform', async () => {
-		const directory = mkdtempSync(join(tmpdir(), 'swarm-v2-parity-'));
+		const directory = canonicalMkdtemp('swarm-v2-parity-');
 		try {
 			const mod = (await import(pathToFileURL(ensureBundle()).href)) as {
 				default?: { setup?: (ctx: unknown) => Promise<unknown> };
@@ -276,7 +277,7 @@ describe('v2 dual-shape entrypoint (issue #3004)', () => {
 	}, 20_000);
 
 	test('setup registers lifecycle hooks and returns a resolvable cleanup', async () => {
-		const directory = mkdtempSync(join(tmpdir(), 'swarm-v2-life-'));
+		const directory = canonicalMkdtemp('swarm-v2-life-');
 		try {
 			const mod = (await import(pathToFileURL(ensureBundle()).href)) as {
 				default?: { setup?: (ctx: unknown) => Promise<() => Promise<void>> };
