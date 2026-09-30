@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.188.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.0...v7.188.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **test:** add vacuous-assertion ratchet and clean up 18 cannot-fail sites ([#2903](https://github.com/ZaxbyHub/opencode-swarm/issues/2903)) ([a631469](https://github.com/ZaxbyHub/opencode-swarm/commit/a63146949d8cf90a932ef9999de8251b7afbe142))
+* **test:** close swarm-pr-review findings PRR-001..010 on the vacuous ratchet ([#2903](https://github.com/ZaxbyHub/opencode-swarm/issues/2903)) ([cd0dc7f](https://github.com/ZaxbyHub/opencode-swarm/commit/cd0dc7fea0f01929b0dc64ad18fbd4e9364f9c37))
+
 ## [7.188.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.3...v7.188.0) (2026-09-29)
 
 
