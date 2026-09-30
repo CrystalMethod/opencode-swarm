@@ -42,6 +42,13 @@
  *     .length/.size accessor).
  *   - Known residual gap, documented deliberately: `expect(NaN).toBe(NaN)` is
  *     vacuous under Object.is but outside the frozen rule set.
+ *   - `expect(null).toBeDefined()` IS flagged (null is a defined value, so the
+ *     assertion can never fail); `expect(undefined).toBeDefined()` is not —
+ *     it is unsatisfiable rather than vacuous, so flagging it would be noise.
+ *   - A corrupt or unreadable BASE-side baseline collapses into the
+ *     "Baseline introduction" path (the shrink-only arm then starts on the
+ *     next PR); a corrupt WORKING-TREE baseline instead degrades to an empty
+ *     map, which makes the diff arm stricter (fail-closed).
  *   - Base-drift note: like every frozen-baseline gate, a main-side PR that
  *     lands an unmarked site after this branch point can surface as a diff-arm
  *     violation here; the sanctioned recovery is rebase onto fresh main, then
@@ -93,7 +100,7 @@ const LITERAL_SAME_TO_BE = new RegExp(
 	`expect\\((\\s*${LITERAL_BODY}\\s*)\\)\\s*\\.\\s*toBe\\((\\s*${LITERAL_BODY}\\s*)\\)`,
 );
 const LITERAL_TO_BE_DEFINED = new RegExp(
-	`expect\\(\\s*(?:'(?:[^'\\\r\n]|\\\\.)*'|"(?:[^"\\\r\n]|\\\\.)*"|-?\\d+(?:\\.\\d+)?|true|false)\\s*\\)\\s*\\.\\s*toBeDefined\\(\\)`,
+	`expect\\(\\s*(?:'(?:[^'\\\r\n]|\\\\.)*'|"(?:[^"\\\r\n]|\\\\.)*"|-?\\d+(?:\\.\\d+)?|true|false|null)\\s*\\)\\s*\\.\\s*toBeDefined\\(\\)`,
 );
 
 interface NormalizedLiteral {
@@ -248,7 +255,7 @@ export function evaluateRatchet(input: RatchetEvaluationInput): RatchetEvaluatio
 		if (allowed === undefined) {
 			if (now > 0) {
 				messages.push(
-					`ERROR (new occurrences): ${file} has ${now} unmarked vacuous assertion site(s) and no baseline entry (issue #2903).`,
+					`ERROR (new occurrences): ${file} has ${now} unmarked vacuous assertion site(s) and no usable baseline entry (missing or dropped as non-numeric) (issue #2903).`,
 				);
 				messages.push(
 					'  Replace with a concrete falsifiable expectation, or mark the deliberate probe with `// vacuous-ok: <reason>`.',
@@ -485,7 +492,14 @@ export function main(startDir: string = process.cwd(), argv: string[] = process.
 		const rel = path.isAbsolute(target)
 			? path.relative(cwd, target).split(path.sep).join('/')
 			: target;
-		const sites = scanContent(fs.readFileSync(path.resolve(cwd, rel), 'utf8'));
+		let sites: VacuousSite[];
+		try {
+			sites = scanContent(fs.readFileSync(path.resolve(cwd, rel), 'utf8'));
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException | null)?.code ?? 'unreadable';
+			console.error(`check-vacuous-assertions: cannot read ${rel} (${code})`);
+			return 2;
+		}
 		for (const site of sites) {
 			console.log(`${rel}:${site.line}: rule ${site.rule}`);
 		}

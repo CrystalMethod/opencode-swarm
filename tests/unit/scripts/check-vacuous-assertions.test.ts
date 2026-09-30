@@ -344,6 +344,45 @@ describe('materialized-fixture integrity', () => {
 	});
 });
 
+describe('feedback coverage (PRR-006/007/008/010)', () => {
+	const counts = (map: Record<string, number>) => (file: string) =>
+		map[file] ?? null;
+
+	it('strips CR before matching (CRLF files scan identically to LF)', () => {
+		const vacuous = 'expect(items.' + 'length).toBeGreaterThanOrEqual(0);'; // vacuous-ok: detector fixture
+		const content = ['const preamble = 0;', vacuous].join('\r\n') + '\r\n';
+		expect(scanContent(content)).toEqual([{ line: 2, rule: 'len-ge-0' }]);
+	});
+
+	it('passes the baseline-growth arm when the baseline is unchanged vs base', () => {
+		const r = evaluateRatchet({
+			changedFiles: [],
+			currentCount: counts({}),
+			baseline: { 'b.test.ts': 2 },
+			baselineAtBase: { 'b.test.ts': 2 },
+			enforce: true,
+		});
+		expect(r.violations).toBe(0);
+		expect(r.exitCode).toBe(0);
+	});
+
+	it('parseBaseline drops negative, fractional, and null values; throws on arrays and malformed JSON', () => {
+		expect(parseBaseline('{"a.test.ts": -1, "b.test.ts": 1.5}')).toEqual({});
+		expect(parseBaseline('{"c.test.ts": null}')).toEqual({});
+		expect(() => parseBaseline('[]')).toThrow();
+		expect(() => parseBaseline('{oops')).toThrow();
+	});
+
+	it('flags the null literal in toBeDefined; the undefined literal stays unflagged (unsatisfiable, not vacuous)', () => {
+		const nullSites = scanLines([
+			'expect(null).toBeDefined(); // vacuous-ok: detector fixture',
+		]);
+		expect(nullSites).toEqual([{ line: 1, rule: 'literal-to-be-defined' }]);
+		const undefinedSites = scanLines(['expect(undefined).toBeDefined();']);
+		expect(undefinedSites).toEqual([]);
+	});
+});
+
 describe('self-scan (dogfood)', () => {
 	it('this test file itself scans to zero unmarked findings', () => {
 		const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8');
