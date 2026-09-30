@@ -434,4 +434,49 @@ describe('check-test-clock — src scan surface (issue #2951)', () => {
 		);
 		expect(result.stdout).toContain('Raw-clock-no-helper files (ratchet): 2');
 	}, 30_000);
+
+	test('ratchet sums blocking and pre-existing buckets (PRR-005)', () => {
+		const repo = makeRepo();
+		const violating = [
+			"import { test } from 'bun:test';",
+			'test("uses real time", () => {',
+			'  const nowMs = Date.now();',
+			'  expect(nowMs).toBeGreaterThan(0);',
+			'});',
+		].join('\n');
+		write(repo, 'src/legacy.test.ts', violating);
+		commit(repo, 'seed pre-existing src violator');
+		git(repo, 'branch', '-f', 'origin/main');
+		write(repo, 'src/fresh.test.ts', violating);
+		commit(repo, 'add a second violating src file on the branch');
+
+		const result = runScript(repo);
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('New violations (blocking): 1');
+		expect(result.stdout).toContain(
+			'Pre-existing violations (non-blocking warnings): 1',
+		);
+		expect(result.stdout).toContain('Raw-clock-no-helper files (ratchet): 2');
+	}, 30_000);
+
+	test('tests/ control: new raw clock usage blocks (PRR-012, issue AC1)', () => {
+		const repo = makeRepo();
+		write(
+			repo,
+			'tests/unit/control.test.ts',
+			[
+				"import { test } from 'bun:test';",
+				'test("uses real time", () => {',
+				'  const nowMs = Date.now();',
+				'  expect(nowMs).toBeGreaterThan(0);',
+				'});',
+			].join('\n'),
+		);
+		commit(repo, 'add tests-tree control violation');
+
+		const result = runScript(repo);
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('New violations (blocking): 1');
+		expect(result.stdout).toContain('tests/unit/control.test.ts');
+	}, 30_000);
 });
