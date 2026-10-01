@@ -26,7 +26,7 @@ PR-workflow response gate that relied on the v1 text-completion hook is inert
 on v2 (no v2 equivalent); the v1 command-interception hook has no v2
 counterpart (self-registered commands carry their own execute); worktree-lane
 external-directory permission scoping is not yet ported to the v2 permission
-surface; client-dependent background dispatch surfaces run
+surface; the compaction customizer's directive output has no v2 mapping (the turn-generation advance still runs); v1 TUI-side `$ARGUMENTS` expansion is replaced by direct substitution in the command bridge; v2 tool-after results surface a `state` discrimination field where v1 carried it implicitly; client-dependent background dispatch surfaces run
 their client-absent paths; tool `title`/`attachments` have no v2 surface; the
 in-session model override from the quota-fallback fix (#2989) applies to v1
 hosts until an equivalent v2 prompt surface is confirmed. A dual-host CI lane

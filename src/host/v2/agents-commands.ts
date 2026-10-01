@@ -134,28 +134,21 @@ export async function registerV2AgentsAndCommands(
 	>;
 
 	const agentRegistration = await withTimeout(
-		ctx.agent.transform(
-			(editor: V2AgentEditor & { add?(info: V2AgentInfo): void }) => {
-				for (const [name, config] of Object.entries(agentTable)) {
-					if (!config || typeof config !== 'object') continue;
-					if (config.disable === true) {
-						// v1 auto-select disables competing built-ins by flag; v2 removes.
-						editor.remove(name);
-						continue;
-					}
-					const mapped = mapV1AgentToV2(name, config);
-					if (typeof editor.add === 'function') {
-						editor.add(mapped);
-						continue;
-					}
-					// The v2 AgentEditor exposes update(id, fn) as its create-or-update
-					// primitive for ids the registry does not know yet.
-					editor.update(name, (agent: V2AgentInfo) => {
-						Object.assign(agent, mapped);
-					});
+		ctx.agent.transform((editor: V2AgentEditor) => {
+			for (const [name, config] of Object.entries(agentTable)) {
+				if (!config || typeof config !== 'object') continue;
+				if (config.disable === true) {
+					// v1 auto-select disables competing built-ins by flag; v2 removes.
+					editor.remove(name);
+					continue;
 				}
-			},
-		),
+				const mapped = mapV1AgentToV2(name, config);
+				// update(id, fn) is the v2 AgentEditor's create-or-update primitive.
+				editor.update(name, (agent: V2AgentInfo) => {
+					Object.assign(agent, mapped);
+				});
+			}
+		}),
 		V2_REGISTRATION_TIMEOUT_MS,
 		new Error('[opencode-swarm] v2: agent transform exceeded budget'),
 	);

@@ -179,8 +179,18 @@ function buildPermissionBridge(
 	const permission = ctx.permission;
 	if (!permission || typeof permission.reply !== 'function') return undefined;
 	return async (input: unknown): Promise<void> => {
+		const askInput = input as
+			| { permission?: unknown; patterns?: unknown }
+			| undefined;
 		log('v2 permission bridge invoked (best-effort passthrough)', {
-			input: String(JSON.stringify(input ?? null)).slice(0, 200),
+			// Minimization: never log the ask payload body (paths, prompt text).
+			permission:
+				typeof askInput?.permission === 'string'
+					? askInput.permission
+					: 'unknown',
+			patternCount: Array.isArray(askInput?.patterns)
+				? askInput.patterns.length
+				: 0,
 		});
 		await withTimeout(
 			Promise.resolve(permission.reply?.(input)),

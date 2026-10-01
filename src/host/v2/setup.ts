@@ -37,11 +37,12 @@
 import { z } from 'zod';
 import { ensureAgentSession, swarmState } from '../../state';
 import { log } from '../../utils';
+import { resolveProjectRootDecision } from '../../utils/project-boundary';
 import { withTimeout } from '../../utils/timeout';
 import { registerV2AgentsAndCommands } from './agents-commands';
 import { startDeferredEventPump } from './events';
 import { registerV2ContextHook } from './guidance';
-import { registerV2PromptHook, registerV2ToolHooks } from './hooks';
+import { registerV2SessionHooks, registerV2ToolHooks } from './hooks';
 import { registerV2Tools } from './tools';
 import type { V1HooksSubset, V2PluginContext, V2Registration } from './types';
 
@@ -89,7 +90,18 @@ export async function openCodeSwarmV2Setup(
 			'[opencode-swarm] v2 setup: host Context carried no location.directory; refusing to start (invariant 4).',
 		);
 	}
-	const directory = rawDirectory;
+	// Route the raw directory through the same project-root decision the v1
+	// init path applies (issue #2127): a subdirectory owned by a parent
+	// project root redirects, so session-scoped state does not split-brain
+	// between two .swarm trees. Fail-closed keeps the raw directory (matching
+	// the v1 bootstrapRoot behavior) with state writes disabled upstream.
+	const rootDecision = resolveProjectRootDecision(rawDirectory);
+	const directory =
+		rootDecision.kind === 'redirect'
+			? rootDecision.owningRoot
+			: rootDecision.kind === 'root'
+				? rootDecision.directory
+				: rawDirectory;
 	const state: CollectedState = { registrations: [] };
 
 	// v1 PluginInput view — the init core consumes only `directory` and
@@ -157,7 +169,7 @@ export async function openCodeSwarmV2Setup(
 		});
 	});
 	await withTimeout(
-		registerV2PromptHook(ctx, hooks, directory, state.registrations),
+		registerV2SessionHooks(ctx, hooks, directory, state.registrations),
 		V2_SETUP_TIMEOUT_MS,
 		new Error(
 			'[opencode-swarm] v2 setup: prompt-hook registration exceeded budget',
@@ -224,14 +236,16 @@ export function seedV1SessionState(
 	if (typeof sessionID !== 'string' || sessionID.length === 0) return undefined;
 	const agentName = normalizeV2AgentRef(agentRef);
 	if (agentName === undefined) return sessionID;
-	if (!swarmState.activeAgent.has(sessionID)) {
-		swarmState.activeAgent.set(sessionID, agentName);
-	}
 	try {
 		ensureAgentSession(sessionID, agentName, directory);
 	} catch {
 		// ensureAgentSession is best-effort here; the v1 chain re-resolves.
 	}
+	// Always re-pair: ensureAgentSession may have rewritten
+	// agentSessions[sessionID].agentName on a mid-session agent switch, and
+	// the v1 contract keeps activeAgent in sync with it — a first-write-wins
+	// guard here left the two maps diverged.
+	swarmState.activeAgent.set(sessionID, agentName);
 	return sessionID;
 }
 

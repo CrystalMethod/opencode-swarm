@@ -11,6 +11,7 @@
  *
  * Only the surfaces this adapter consumes are typed. Unknown fields are
  * intentionally left off; the adapter never relies on their absence.
+ * Upstream: @opencode/plugin@2.0.20 and @opencode/schema@2.0.20 (MIT, sst/opencode).
  */
 
 /** v2 `App` — host identity (dist/app.d.ts). */
@@ -240,13 +241,6 @@ export interface V2EventDomain {
 	) => AsyncIterable<V2EventEnvelope> | Promise<AsyncIterable<V2EventEnvelope>>;
 }
 
-/** v2 `StorageDomain` (unused by this adapter; typed for completeness). */
-export interface V2StorageDomain {
-	readonly get: (key: string) => Promise<unknown>;
-	readonly set: (key: string, value: unknown) => Promise<void>;
-	readonly remove: (key: string) => Promise<void>;
-}
-
 /** v2 `PermissionDomain` (only used for the v1 ask() bridge, best-effort). */
 export interface V2PermissionDomain {
 	readonly reply?: (input: unknown) => Promise<unknown>;
@@ -272,7 +266,6 @@ export interface V2PluginContext {
 	readonly session: V2SessionDomain;
 	readonly event: V2EventDomain;
 	readonly permission?: V2PermissionDomain;
-	readonly storage?: V2StorageDomain;
 	readonly [key: string]: unknown;
 }
 
@@ -293,8 +286,7 @@ export interface V1HooksSubset {
 	agent?: Record<string, unknown>;
 	config?: (opencodeConfig: Record<string, unknown>) => Promise<void>;
 	event?: (input: {
-		type?: string;
-		properties?: Record<string, unknown>;
+		event: { type?: string; properties?: Record<string, unknown> };
 	}) => Promise<void>;
 	dispose?: () => Promise<void>;
 	'command.execute.before'?: (input: unknown, output: unknown) => Promise<void>;

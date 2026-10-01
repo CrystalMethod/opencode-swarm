@@ -54,8 +54,23 @@ export function mapV2EventToV1(
 				properties: { ...(sessionID ? { sessionID } : {}), ...data },
 			};
 		case 'session.execution.failed':
+			// v1 consumers key on 'session.error' (the src/index.ts session.error
+			// branch: model-fallback advance, pr-workflow auto-wake).
 			return {
-				type: 'session.idle-error',
+				type: 'session.error',
+				properties: { ...(sessionID ? { sessionID } : {}), ...data },
+			};
+		case 'session.deleted':
+			// v1 terminal cleanup (delegation-gate sessionEnded, owner cleanup,
+			// pr-workflow gate terminalization) keys on 'session.deleted'.
+			return {
+				type: 'session.deleted',
+				properties: { ...(sessionID ? { sessionID } : {}), ...data },
+			};
+		case 'session.created':
+			// v1 pr-workflow session resolver keys on 'session.created'.
+			return {
+				type: 'session.created',
 				properties: { ...(sessionID ? { sessionID } : {}), ...data },
 			};
 		case 'session.text.delta':
@@ -86,7 +101,7 @@ async function deferredDispatch(
 	if (typeof handler !== 'function') return;
 	await withTimeout(
 		Promise.resolve(
-			handler({ type: mapped.type, properties: mapped.properties }),
+			handler({ event: { type: mapped.type, properties: mapped.properties } }),
 		),
 		V2_EVENT_BATCH_TIMEOUT_MS,
 		new Error('[opencode-swarm] v2: event dispatch exceeded budget'),

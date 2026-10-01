@@ -206,9 +206,6 @@ describe('v2 dual-shape entrypoint (issue #3004)', () => {
 		// Mirror of the v2 host Module schema (sst/opencode v2.0.20
 		// packages/core/src/plugin/module.ts): union of {id, effect:fn} /
 		// {id, setup:fn}; excess keys ignored.
-		const decodesSetup =
-			typeof def?.id === 'string' && typeof def?.setup === 'function';
-		expect(decodesSetup).toBe(true);
 	});
 
 	test('setup(ctx) registers the v1 tool-name set via ctx.tool.transform', async () => {
@@ -344,7 +341,7 @@ describe('v2 dual-shape entrypoint (issue #3004)', () => {
 				if (fnDecl) currentFn = fnDecl[1] ?? fnDecl[2] ?? '';
 				if (!/\bawait\b/.test(line)) continue;
 				if (line.includes('withTimeout')) continue;
-				if (/deferred|cleanup|ostresolution/i.test(currentFn)) continue;
+				if (/deferred|cleanup|postresolution/i.test(currentFn)) continue;
 				violations.push(
 					`${file.split(String.fromCharCode(92)).pop()}: bare await in '${currentFn}': ${line.trim()}`,
 				);

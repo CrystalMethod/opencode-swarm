@@ -131,13 +131,25 @@ export async function onV2ContextEvent(
 		});
 
 		// Partition carriers vs kept messages, then re-home the carriers.
+		// Pair views with their original v2 messages by IDENTITY, not position:
+		// the v1 chain can insert carriers (unshift/splice) or rebuild the
+		// array (materializeSystemGuidanceInPlace), so positional pairing would
+		// write one message's transformed text back onto a different message.
+		const originalById = new Map<string, V2Message>();
+		const originalsWithoutId: V2Message[] = [];
+		for (const message of originalMessages) {
+			const id = typeof message.id === 'string' ? message.id : undefined;
+			if (id !== undefined && id.length > 0) originalById.set(id, message);
+			else originalsWithoutId.push(message);
+		}
+		const usedIds = new Set<string>();
+		let nextIdless = 0;
 		const keptParts: Array<{
 			message: V2Message;
 			parts: Array<{ type: string; text?: string }>;
 		}> = [];
 		event.system = event.system ?? [];
-		for (let i = 0; i < views.length; i += 1) {
-			const view = views[i];
+		for (const view of views) {
 			const id = view.info.id;
 			if (typeof id === 'string' && id.startsWith(GUIDANCE_CARRIER_ID_PREFIX)) {
 				// Re-homed carrier (R1): fenced text becomes a system part.
@@ -152,11 +164,31 @@ export async function onV2ContextEvent(
 				}
 				continue;
 			}
-			const message = originalMessages[i];
+			let message: V2Message | undefined;
+			if (
+				typeof id === 'string' &&
+				id.length > 0 &&
+				originalById.has(id) &&
+				!usedIds.has(id)
+			) {
+				message = originalById.get(id);
+				usedIds.add(id);
+			} else if (
+				(id === undefined || id.length === 0) &&
+				nextIdless < originalsWithoutId.length
+			) {
+				// Id-less views pair positionally with id-less originals only.
+				message = originalsWithoutId[nextIdless];
+				nextIdless += 1;
+			}
 			if (message) {
 				keptParts.push({ message, parts: view.parts });
 			}
+			// Views with no identity match are dropped from the pairing (their
+			// write-back is skipped) rather than written onto a wrong message.
 		}
+		// Write the (non-carrier) transformed text parts back onto their
+		// identity-paired v2 messages, then reassign the array in place.
 		for (const { message, parts } of keptParts) {
 			writeBackTextParts(message, parts);
 		}

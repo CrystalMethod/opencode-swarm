@@ -878,7 +878,15 @@ export function computeEffectiveTruncatableTools(
  * bounded-init behavior including the deferred-task drain (bundled-skill
  * sync, repo-graph, retention sweeps).
  */
+let serverInitInvocations = 0;
+
 const runServerInit = async (ctx: Parameters<Plugin>[0]) => {
+	serverInitInvocations += 1;
+	if (serverInitInvocations > 1) {
+		log(
+			'[opencode-swarm] WARNING: plugin initialization invoked more than once in this process; module-level swarm state is shared between invocations (dual host load?)',
+		);
+	}
 	// Startup latency contract (#2670): server-interval origin. begin() also
 	// opens the startup advisory window and resets per-boot contract state.
 	beginStartupServerInterval();

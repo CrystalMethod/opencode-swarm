@@ -103,6 +103,7 @@ async function onV2ToolAfter(
 
 function translateV2ResultToV1Output(event: V2ToolHookInput): {
 	title: string;
+	state: 'error' | 'completed';
 	output: string;
 	metadata: Record<string, unknown>;
 } {
@@ -111,7 +112,7 @@ function translateV2ResultToV1Output(event: V2ToolHookInput): {
 			event.error && typeof event.error.message === 'string'
 				? event.error.message
 				: 'tool error';
-		return { title: 'error', output: message, metadata: {} };
+		return { title: 'error', state: 'error', output: message, metadata: {} };
 	}
 	const result = event.result;
 	const content =
@@ -125,6 +126,7 @@ function translateV2ResultToV1Output(event: V2ToolHookInput): {
 				: '';
 	return {
 		title: '',
+		state: 'completed',
 		output: content,
 		metadata: (result?.metadata as Record<string, unknown>) ?? {},
 	};
@@ -240,8 +242,8 @@ export async function registerV2ToolHooks(
 	registrations.push(after);
 }
 
-/** Register the compaction + prompt hooks. */
-export async function registerV2PromptHook(
+/** Register the compaction + prompt session hooks. */
+export async function registerV2SessionHooks(
 	ctx: V2PluginContext,
 	hooks: V1HooksSubset,
 	directory: string,
