@@ -10,6 +10,7 @@ import type {
 	CapsuleMetadata,
 	ContextCapsule,
 	ReadPolicyEntry,
+	RoleProfile,
 } from '../../../src/types/context-capsule';
 
 describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
