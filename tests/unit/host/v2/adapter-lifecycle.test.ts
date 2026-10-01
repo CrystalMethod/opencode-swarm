@@ -187,3 +187,30 @@ describe('command execute -> session.prompt bridge (PRR-011)', () => {
 		expect(prompts[0].input).toEqual({ text: '/swarm status now show lanes' });
 	});
 });
+
+describe('permission-bridge presence path (PRR-011)', () => {
+	test('ask() routes through ctx.permission.reply when the surface exists', async () => {
+		const { _internals } = await import('../../../../src/host/v2/tools');
+		const replied: unknown[] = [];
+		const v2ctx = {
+			sessionID: 's',
+			agent: 'architect',
+			messageID: 'm',
+			id: 'c',
+			signal: new AbortController().signal,
+			progress: async () => {},
+		};
+		const bridge = async (input: unknown) => {
+			replied.push(input);
+		};
+		const v1 = _internals.synthesizeV1ToolContext(v2ctx, '/tmp/proj', bridge);
+		const ask = {
+			permission: 'bash',
+			patterns: ['rm -rf /'],
+			always: [],
+			metadata: {},
+		};
+		await v1.ask(ask);
+		expect(replied).toEqual([ask]);
+	});
+});
