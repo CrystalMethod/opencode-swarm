@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.188.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.2...v7.188.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **context-map:** durable decision identity across restarts ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([103f809](https://github.com/ZaxbyHub/opencode-swarm/commit/103f809bc0ccec33db0131406ae9f37355042be1))
+* **context-map:** durable decision identity across restarts ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([55eb264](https://github.com/ZaxbyHub/opencode-swarm/commit/55eb26494a8de06b589a64e3d6d3b3968c7e947e))
+* **context-map:** resolve PR-review feedback on decision-id allocation ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([58c7a8b](https://github.com/ZaxbyHub/opencode-swarm/commit/58c7a8b68ae1a12b5ea0e7592fdde1be8fc39de4))
+* **context-map:** resolve review findings on decision-id allocation ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([e9aff0a](https://github.com/ZaxbyHub/opencode-swarm/commit/e9aff0a515023473ca54cc7e0c5fb5bc7a62dd4f))
+
 ## [7.188.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.1...v7.188.2) (2026-09-30)
 
 
