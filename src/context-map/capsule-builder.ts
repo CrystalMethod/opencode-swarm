@@ -310,6 +310,14 @@ export function selectCapsuleDecisions(
 	const scoped: DecisionEntry[] = [];
 	const others: DecisionEntry[] = [];
 	for (const entry of decisions) {
+		// Null/malformed stored entries (legacy corruption — the class
+		// allocateDecisionId and the append dedup already tolerate) are
+		// skipped: the capsule is a read surface and must never throw on
+		// them, because the injection hook swallows errors silently and
+		// the critic would lose the whole capsule.
+		if (entry === null || typeof entry !== 'object') {
+			continue;
+		}
 		if (entry.task_id === taskId) {
 			scoped.push(entry);
 		} else {
@@ -330,10 +338,10 @@ export function selectCapsuleDecisions(
  */
 function formatDecisionLine(entry: DecisionEntry): string {
 	let line = `- [${entry.id}] ${entry.decision}`;
-	if (entry.rationale && entry.rationale.trim() !== '') {
+	if (String(entry.rationale ?? '').trim() !== '') {
 		line += ` — ${entry.rationale}`;
 	}
-	if (entry.task_id && entry.task_id.trim() !== '') {
+	if (String(entry.task_id ?? '').trim() !== '') {
 		line += ` (task ${entry.task_id})`;
 	}
 	return line;

@@ -141,6 +141,28 @@ describe('buildCapsule decisions section (#3016)', () => {
 		expect(capsule.content).toContain('- [A7] Bare decision\n');
 	});
 
+	test('null/malformed stored entries are skipped, not thrown on (#3016 review)', () => {
+		const dir = makeMapProject([
+			null,
+			{ ...decision(2, '1.1'), rationale: 42 as unknown as string },
+			decision(1, '1.1'),
+		]);
+		const { capsule } = buildCapsule({
+			task_id: '1.1',
+			agent_role: 'critic',
+			delegation_reason: 'critic_plan_review',
+			files_in_scope: [],
+			task_goal: 'g',
+			directory: dir,
+		});
+		// The null entry is skipped; the well-formed entry renders; the
+		// non-string rationale on an object entry renders without suffixes.
+		expect(capsule.content).toContain('## Decisions');
+		expect(capsule.content).toContain('[A1] Decision 1 — rationale 1');
+		expect(capsule.decisions?.map((d) => d.id)).toEqual(['A2', 'A1']);
+		expect(capsule.content).not.toContain('[undefined]');
+	});
+
 	test('Decisions survives pruning when File Details is dropped first', () => {
 		const dir = makeMapProject([decision(1, '1.1')]);
 		// Seed one file entry so File Details exists to be pruned first.
