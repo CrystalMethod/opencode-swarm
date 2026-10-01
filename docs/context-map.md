@@ -57,6 +57,8 @@ Each agent role receives a capsule tailored to its responsibilities. The capsule
 
 > **Note:** The capsule builder supports all fields listed below. The currently wired automatic hook passes `task_goal` as empty and uses `delegation_reason: 'new_task'`. Optional fields (prior rejection, required fix, review checklist, coverage targets, relevant facts) are available when the builder is invoked with those parameters.
 
+> **Decisions recording and surfacing (#3016):** Decisions are recorded from the `## Decisions` section of `.swarm/context.md` (architect-maintained) by the post-agent hook and surfaced in critic capsules. The sync runs at Task-tool completion when the session's chat-boundary agent is an architect role; without a chat-boundary record in this process (never recorded, evicted past the 256-session bound, or cleared at session end) it falls back to the live active-agent pointer, which Task completions may reset to the orchestrator name. The decisions log is append-only with first-write-wins text: re-recording a decision does not duplicate it, an edited rationale never updates the stored entry, and a re-worded decision text is a new entry. One sync records at most the most recent 50 context.md entries — entries beyond that window are never retroactively recorded. A persisted map whose `decisions`, `files`, or `task_history` fields are missing or mis-shaped (or whose keys are absent) is treated as corrupt and replaced by a fresh map.
+
 ### Coder
 
 - File summaries for the task's scoped files (up to 15)
@@ -121,6 +123,7 @@ Capsule content is bounded by `max_capsule_tokens` (default: 2000). When a capsu
 4. **Required Fix**
 5. **Prior Rejection**
 6. **Relevant Facts**
+7. **Decisions** (last to be removed — a critic's core design-level context)
 
 The **Task Goal**, **Files in Scope**, and **Read Policy** sections are mandatory and are never pruned.
 

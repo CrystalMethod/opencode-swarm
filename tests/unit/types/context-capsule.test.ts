@@ -156,6 +156,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: false,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			expect(profile.role).toBe('coder');
@@ -164,6 +165,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 			expect(profile.include_rejection).toBe(false);
 			expect(profile.include_coverage).toBe(false);
 			expect(profile.include_claims).toBe(false);
+			expect(profile.include_decisions).toBe(false);
 		});
 
 		test('accepts RoleProfile with all optional fields populated', () => {
@@ -174,6 +176,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: true,
 				include_coverage: true,
 				include_claims: true,
+				include_decisions: false,
 			};
 
 			expect(profile.role).toBe('test_engineer');
@@ -192,6 +195,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: false,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			// @ts-expect-error - strategy is required
@@ -201,6 +205,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: false,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			// @ts-expect-error - max_files is required
@@ -210,6 +215,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: false,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			// @ts-expect-error - include_rejection is required
@@ -219,6 +225,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				max_files: 10,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			// @ts-expect-error - include_coverage is required
@@ -228,6 +235,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				max_files: 10,
 				include_rejection: false,
 				include_claims: false,
+				include_decisions: false,
 			};
 
 			// @ts-expect-error - include_claims is required
@@ -237,6 +245,17 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				max_files: 10,
 				include_rejection: false,
 				include_coverage: false,
+				include_decisions: false,
+			};
+
+			// @ts-expect-error - include_decisions is required (#3016)
+			const missingIncludeDecisions: RoleProfile = {
+				role: 'coder',
+				strategy: 'test',
+				max_files: 10,
+				include_rejection: false,
+				include_coverage: false,
+				include_claims: false,
 			};
 		});
 
@@ -249,6 +268,7 @@ describe('src/types/context-capsule.ts - TYPE SAFETY TESTS', () => {
 				include_rejection: false,
 				include_coverage: false,
 				include_claims: false,
+				include_decisions: false,
 				extraField: 'should not be allowed',
 			};
 		});
