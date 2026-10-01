@@ -1084,6 +1084,20 @@ export async function detectTestFramework(
 	if (detectRSpec(baseDir)) return 'rspec';
 	if (detectMinitest(baseDir)) return 'minitest';
 
+	// Last-resort nested Maven fallback: only after every root-level detector
+	// has returned no match. This covers projects where the Maven module lives
+	// in a nested directory (e.g. backend/pom.xml or services/backend/pom.xml)
+	// and mvn or a wrapper is available inside that module directory.
+	const mavenModuleDir = resolveMavenModuleDir(baseDir, files);
+	if (mavenModuleDir) {
+		const hasMvnw =
+			_internals.existsSync(path.join(mavenModuleDir, 'mvnw')) ||
+			_internals.existsSync(path.join(mavenModuleDir, 'mvnw.cmd'));
+		if (_internals.isCommandAvailable('mvn') || hasMvnw) {
+			return 'maven';
+		}
+	}
+
 	return 'none';
 }
 
@@ -3288,10 +3302,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		} else if (useDispatch) {
 			framework = await detectTestFrameworkViaDispatch(workingDir);
 			if (framework === 'none') {
-				framework = await detectTestFramework(workingDir);
+				framework = await detectTestFramework(workingDir, _files);
 			}
 		} else {
-			framework = await detectTestFramework(workingDir);
+			framework = await detectTestFramework(workingDir, _files);
 		}
 
 		if (framework === 'none') {
