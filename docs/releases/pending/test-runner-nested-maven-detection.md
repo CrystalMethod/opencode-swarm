@@ -30,7 +30,9 @@ used `mvn` even when a wrapper existed. A `buildTestCommand` override in the Jav
 backend now prefers the Maven wrapper exactly like framework selection does:
 `./mvnw` (`mvnw.cmd` on Windows) when present in the module directory, otherwise
 `mvn` from `PATH`, with `-Dtest=<targets>` support. The legacy switch
-(`SWARM_LANG_BACKEND=legacy`) Maven case was brought to parity.
+(`SWARM_LANG_BACKEND=legacy`) Maven case was brought to parity. On Windows, a
+lone `mvnw.cmd` (with no POSIX `mvnw`) now also dispatches `mvnw.cmd`, matching
+the legacy switch's behavior.
 
 ### Known caveats
 

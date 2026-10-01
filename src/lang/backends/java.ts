@@ -315,9 +315,11 @@ function buildTestCommand(
 ): string[] | null {
 	if (framework !== 'maven') return null;
 	if (opts?.nativeTarget) return null;
-	const args: string[] = wrapperExists(dir, 'mvnw')
-		? [resolveMvnwCommand(dir), 'test']
-		: ['mvn', 'test'];
+	const args: string[] =
+		wrapperExists(dir, 'mvnw') ||
+		(process.platform === 'win32' && wrapperExists(dir, 'mvnw.cmd'))
+			? [resolveMvnwCommand(dir), 'test']
+			: ['mvn', 'test'];
 	if (opts?.targets && opts.targets.length > 0) {
 		args.push(`-Dtest=${opts.targets.join(',')}`);
 	}
