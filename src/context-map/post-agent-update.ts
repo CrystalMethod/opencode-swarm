@@ -527,16 +527,24 @@ export function updateContextMapAfterAgent(
 		map = _internals.appendTaskHistory(map, taskSummary);
 
 		// 4. Append decisions
-		if (params.decisions) {
+		if (params.decisions && params.decisions.length > 0) {
+			// Derive the first id from the current map, then advance the suffix
+			// locally per append: O(map.decisions + decisions) total instead of
+			// rescanning the whole array per decision. Each emitted id keeps allocateDecisionId's
+			// `A<n>` output grammar (the append below reassigns `map`, so a
+			// mid-call re-derivation would see prior appends — equivalent output,
+			// just quadratic).
+			let nextSuffix = BigInt(allocateDecisionId(map.decisions).slice(1));
 			for (const entry of params.decisions) {
 				const decision: DecisionEntry = {
-					id: allocateDecisionId(map.decisions),
+					id: `A${nextSuffix.toString()}`,
 					decision: entry.decision,
 					rationale: entry.rationale,
 					timestamp: new Date().toISOString(),
 					task_id: params.task_id,
 				};
 				map = _internals.appendDecision(map, decision);
+				nextSuffix += 1n;
 			}
 		}
 

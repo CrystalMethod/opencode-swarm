@@ -16,9 +16,11 @@
   non-contiguous, and leading-zero legacy ids); foreign/non-`A`/non-string ids ignored;
   BigInt exactness beyond 2^53; distinct sequential ids for multiple decisions in one
   call; and a real save-load disk round-trip proving no duplicate ids land in the
-  persisted file across a simulated restart) and `decision-id-totality.test.ts` (3 tests —
-  allocation skips null/non-object entries in a loadable-but-corrupt map instead of
-  throwing, and the update still persists).
+  persisted file across a simulated restart); `decision-id-totality.test.ts` (4 tests —
+  allocation skips null/non-object entries and near-miss id shapes such as `A1x` or a
+  trailing newline in a loadable-but-corrupt map instead of throwing, and the update
+  still persists); and `decision-id-roundtrip.test.ts` (1 test — two decisions recorded
+  in ONE call witnessed through the real save/load persistence path).
 - The `DecisionEntry.id` doc example now states the actual `A1, A2, ...` grammar.
 
 ## Why
@@ -40,9 +42,10 @@ external consumer that treats the id as a key.
   property of every context-map field.
 - Boundary: the in-tree Task-tool post-hook (`context_map.enabled` path) does not
   currently pass `decisions`, so today the recording path this hardens is exercised via
-  the module's public API (tests, direct callers, and any future wiring) rather than by
-  the default hook payload. The allocation change is inert for callers that record no
-  decisions.
+  the module's public API (tests, direct callers) rather than by the default hook
+  payload. The allocation change is inert for callers that record no decisions. The
+  missing producer, the missing capsule consumer, and the two doc overclaims around
+  decisions are tracked in #3016.
 - Same defect class, different subsystem: the full-auto v2 mirror's process-local
   `reactiveOversightSequence` (which can destructively overwrite evidence files after a
   restart) is tracked separately as #3011.
@@ -54,7 +57,7 @@ external consumer that treats the id as a key.
   `A1..A5` with no duplicates (`repro-check.sh run`, base 675e9ab03).
 - Existing context-map suites stay green (70 pass / 0 fail:
   `post-agent-update`, `post-agent-wiring`, `persistence`), plus the new 14-test
-  allocation suite and 3-test totality suite; `bun run typecheck`, `bun run build`,
+  allocation suite, 4-test totality suite, and 1-test round-trip suite; `bun run typecheck`, `bun run build`,
   Node-ESM import of `dist/index.js`, biome, and the check:invariants /
   check:mock-cleanup / check:registry-citations / check:test-clock / drift:check gates
   all pass at the fixed tree.

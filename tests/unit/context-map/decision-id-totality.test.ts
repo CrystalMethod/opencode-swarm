@@ -63,6 +63,20 @@ describe('allocateDecisionId totality over corrupt entries', () => {
 			] as unknown as DecisionEntry[]),
 		).toBe('A3');
 	});
+
+	test('near-miss id shapes do not count as A-suffix ids', () => {
+		// Anchored ^A\d+$ with no dot-all or multiline flags: trailing junk,
+		// leading whitespace, a hyphen, and a trailing newline all miss, so a
+		// map holding only such ids allocates from A1.
+		expect(
+			allocateDecisionId([
+				makeDecision('A1x'),
+				makeDecision(' A1'),
+				makeDecision('A-1'),
+				makeDecision('A1\n'),
+			]),
+		).toBe('A1');
+	});
 });
 
 describe('updateContextMapAfterAgent survives corrupt decision entries', () => {
