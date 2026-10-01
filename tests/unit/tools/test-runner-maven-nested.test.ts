@@ -289,4 +289,73 @@ describe('nested Maven module detection and execution', () => {
 			}
 		});
 	});
+
+	describe('file-less scope guards with nested Maven detection', () => {
+		test('scope=convention with no files and no targets returns the explicit guard error', async () => {
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+
+			const result = await test_runner.execute(
+				{ scope: 'convention' },
+				{ directory: tempDir },
+			);
+			const parsed = JSON.parse(result);
+
+			expect(parsed.success).toBe(false);
+			expect(parsed.error).toContain(
+				'scope "convention", "graph", and "impact" require explicit files or targets array',
+			);
+			expect(spawnCalls.length).toBe(0);
+		});
+
+		test('scope=convention with targets only does not crash and returns structured error for maven', async () => {
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+
+			const result = await test_runner.execute(
+				{ scope: 'convention', targets: ['SomeTest'] },
+				{ directory: tempDir },
+			);
+			const parsed = JSON.parse(result);
+
+			expect(parsed.success).toBe(false);
+			expect(parsed.framework).toBe('maven');
+			expect(parsed.error).toContain(
+				'Provided files contain no recognized source files or direct test files',
+			);
+			expect(spawnCalls.length).toBe(0);
+		});
+
+		test('scope=graph with targets only does not crash and returns structured error for maven', async () => {
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+
+			const result = await test_runner.execute(
+				{ scope: 'graph', targets: ['SomeTest'] },
+				{ directory: tempDir },
+			);
+			const parsed = JSON.parse(result);
+
+			expect(parsed.success).toBe(false);
+			expect(parsed.framework).toBe('maven');
+			expect(parsed.error).toContain(
+				'Provided files contain no source files with recognized extensions',
+			);
+			expect(spawnCalls.length).toBe(0);
+		});
+
+		test('scope=impact with targets only does not crash and returns structured error for maven', async () => {
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+
+			const result = await test_runner.execute(
+				{ scope: 'impact', targets: ['SomeTest'] },
+				{ directory: tempDir },
+			);
+			const parsed = JSON.parse(result);
+
+			expect(parsed.success).toBe(false);
+			expect(parsed.framework).toBe('maven');
+			expect(parsed.error).toContain(
+				'Provided files contain no source files with recognized extensions',
+			);
+			expect(spawnCalls.length).toBe(0);
+		});
+	});
 });
