@@ -1767,7 +1767,14 @@ function buildTestCommand(
 		}
 		case 'maven': {
 			// maven has no bail support — silently ignore
-			const args: string[] = ['mvn', 'test'];
+			const isWindows = process.platform === 'win32';
+			const hasMvnwCmd = fs.existsSync(path.join(baseDir, 'mvnw.cmd'));
+			const hasMvnw = fs.existsSync(path.join(baseDir, 'mvnw'));
+			const args: string[] = [];
+			if (hasMvnwCmd && isWindows) args.push('mvnw.cmd');
+			else if (hasMvnw) args.push('./mvnw');
+			else args.push('mvn');
+			args.push('test');
 			if (targets && targets.length > 0) {
 				args.push(`-Dtest=${targets.join(',')}`);
 			}

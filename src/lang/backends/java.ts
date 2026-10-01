@@ -21,6 +21,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
+	BuildTestCommandOpts,
 	FrameworkSelection,
 	LanguageBackend,
 	TestFrameworkSelection,
@@ -300,6 +301,30 @@ async function selectFramework(
 }
 
 /**
+ * Build the Maven test command with wrapper preference for the default
+ * dispatch path. Matches `defaultBuildTestCommand`'s maven case shape:
+ * `[<mvn|wrapper>, 'test']` plus `-Dtest=<targets>` when targets are given.
+ * Non-Maven frameworks and native targets are delegated back to the default
+ * backend by returning null.
+ */
+function buildTestCommand(
+	framework: string,
+	_files: string[],
+	dir: string,
+	opts?: BuildTestCommandOpts,
+): string[] | null {
+	if (framework !== 'maven') return null;
+	if (opts?.nativeTarget) return null;
+	const args: string[] = wrapperExists(dir, 'mvnw')
+		? [resolveMvnwCommand(dir), 'test']
+		: ['mvn', 'test'];
+	if (opts?.targets && opts.targets.length > 0) {
+		args.push(`-Dtest=${opts.targets.join(',')}`);
+	}
+	return args;
+}
+
+/**
  * Build the Java backend from the registered profile.
  */
 export function buildJavaBackend(): LanguageBackend {
@@ -316,6 +341,7 @@ export function buildJavaBackend(): LanguageBackend {
 		selectTestFramework,
 		selectEntryPoints,
 		selectFramework,
+		buildTestCommand,
 	};
 }
 
