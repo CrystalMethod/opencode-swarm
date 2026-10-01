@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	_internals,
@@ -8,6 +7,7 @@ import {
 	resolveMavenModuleDir,
 	test_runner,
 } from '../../../src/tools/test-runner';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const originalBunSpawn = _internals.bunSpawn;
 const originalIsCommandAvailable = _internals.isCommandAvailable;
@@ -39,9 +39,7 @@ function mockBunSpawn(
 }
 
 function createTempDir(): string {
-	return fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'test-runner-maven-nested-')),
-	);
+	return canonicalMkdtemp('test-runner-maven-nested-');
 }
 
 function createFile(dir: string, filePath: string, content = ''): void {
