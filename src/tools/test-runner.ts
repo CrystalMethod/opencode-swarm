@@ -3381,15 +3381,15 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			// effectiveScope is already 'all', testFiles stays empty
 			// Fall through to runTests which handles empty files for scope 'all'
 		} else if (scope === 'convention') {
-			const directTestFiles = args.files!.filter((file) =>
+			const directTestFiles = _files.filter((file) =>
 				isConventionTestFilePath(file),
 			);
-			const sourceFiles = args.files!.filter((file) => {
+			const sourceFiles = _files.filter((file) => {
 				if (directTestFiles.includes(file)) return false;
 				const ext = path.extname(file).toLowerCase();
 				return SOURCE_EXTENSIONS.has(ext);
 			});
-			const invalidFiles = args.files!.filter(
+			const invalidFiles = _files.filter(
 				(file) =>
 					!directTestFiles.includes(file) && !sourceFiles.includes(file),
 			);
@@ -3421,7 +3421,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				return JSON.stringify(errorResult, null, 2);
 			}
 
-			selectionSourceFiles = normalizeSelectionFiles(args.files!, workingDir);
+			selectionSourceFiles = normalizeSelectionFiles(_files, workingDir);
 
 			// Guard: Reject when too many source files would cause fan-out to many test files.
 			// Direct test files are exempt — they are explicitly named and don't fan out.
@@ -3451,9 +3451,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			].filter((file, index, items) => items.indexOf(file) === index);
 		} else if (scope === 'graph') {
 			// Try to find related tests via import analysis
-			// args.files is guaranteed non-empty by the guard above
+			// args.files may be omitted when targets are provided, so use the
+			// defaulted _files array (which may be empty).
 			const sourceFiles = normalizeSelectionFiles(
-				args.files!.filter((f) => {
+				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {
 						return false;
 					}
@@ -3464,7 +3465,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			);
 			selectionSourceFiles = sourceFiles;
 
-			// Guard: If args.files was provided but all entries are non-source files, reject
+			// Guard: If no source files are present (files omitted with targets, or files provided but all non-source), reject
 			if (sourceFiles.length === 0) {
 				const errorResult: TestErrorResult = {
 					success: false,
