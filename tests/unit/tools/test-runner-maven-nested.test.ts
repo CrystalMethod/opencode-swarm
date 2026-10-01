@@ -208,11 +208,14 @@ describe('nested Maven module detection and execution', () => {
 		});
 
 		test('ignores a pom.xml above the project root', () => {
-			const parentDir = path.dirname(tempDir);
-			createFile(tempDir, 'src/test/java/FooTest.java', '');
-			fs.writeFileSync(path.join(parentDir, 'pom.xml'), '<project/>');
+			const leakRoot = canonicalMkdtemp('leak-');
+			tempDirs.push(leakRoot);
+			const projDir = path.join(leakRoot, 'proj');
+			fs.mkdirSync(projDir, { recursive: true });
+			createFile(projDir, 'src/test/java/FooTest.java', '');
+			fs.writeFileSync(path.join(leakRoot, 'pom.xml'), '<project/>');
 
-			const result = resolveMavenModuleDir(tempDir, [
+			const result = resolveMavenModuleDir(projDir, [
 				'src/test/java/FooTest.java',
 			]);
 
