@@ -260,13 +260,56 @@ describe('nested Maven module detection and execution', () => {
 			expect(result).toBe(path.join(tempDir, 'alpha'));
 		});
 
-		test('root-level pom detector wins over the nested fallback', async () => {
+		// Precedence verification (F-3b): In test-runner.ts, detectJavaMaven(baseDir)
+		// runs BEFORE detectGradle and detectDotnetTest, and well before
+		// resolveMavenModuleDir. detectJavaMaven only checks existsSync(pom.xml),
+		// while detectDotnetTest calls readdirSync(cwd) to scan for a .csproj and
+		// resolveMavenModuleDir's file-less probe also calls readdirSync on the
+		// probe root. When a root pom.xml exists, detectJavaMaven returns early and
+		// neither the dotnet detector nor the nested probe is reached — so
+		// readdirSync must never be called with the probe root. Swapping the
+		// maven/dotnet order makes detectDotnetTest read the root dir first and
+		// this assertion fails.
+		test('root pom wins before the dotnet detector (readdir never probes root)', async () => {
 			createFile(tempDir, 'pom.xml', '<project/>');
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 
-			const result = await detectTestFramework(tempDir);
+			const readdirArgs: string[] = [];
+			const origReaddir = _internals.readdirSync;
+			_internals.readdirSync = ((p: fs.PathLike, options?: unknown) => {
+				readdirArgs.push(p.toString());
+				return origReaddir(p as any, options as any);
+			}) as unknown as typeof _internals.readdirSync;
 
-			expect(result).toBe('maven');
+			try {
+				const result = await detectTestFramework(tempDir);
+				expect(result).toBe('maven');
+				// Probe root argument (tempDir) must never be read by readdirSync
+				// when root pom exists: detectJavaMaven returns early without
+				// triggering resolveMavenModuleDir's probe or detectDotnetTest.
+				expect(readdirArgs).not.toContain(path.resolve(tempDir));
+			} finally {
+				_internals.readdirSync = origReaddir;
+			}
+		});
+
+		test('root pom keeps scope:all spawn cwd at root with nested backend/pom.xml', async () => {
+			createFile(tempDir, 'pom.xml', '<project/>');
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+
+			const priorEnv = process.env.SWARM_ALLOW_FULL_SUITE;
+			process.env.SWARM_ALLOW_FULL_SUITE = '1';
+			try {
+				await test_runner.execute({ scope: 'all' }, { directory: tempDir });
+				expect(spawnCalls.length).toBe(1);
+				expect(spawnCalls[0].opts.cwd).toBe(tempDir);
+			} finally {
+				if (priorEnv === undefined) {
+					delete process.env.SWARM_ALLOW_FULL_SUITE;
+				} else {
+					process.env.SWARM_ALLOW_FULL_SUITE = priorEnv;
+				}
+			}
 		});
 	});
 
