@@ -3528,9 +3528,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			}
 		} else if (scope === 'impact') {
 			// Impact scope: use test-impact analyzer to find tests covering changed files
-			// args.files is guaranteed non-empty by the guard above
+			// args.files may be omitted when targets are provided, so use the
+			// defaulted _files array (which may be empty).
 			const sourceFiles = normalizeSelectionFiles(
-				args.files!.filter((f) => {
+				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {
 						return false;
 					}
