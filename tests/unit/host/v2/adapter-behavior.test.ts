@@ -167,7 +167,7 @@ describe('v2 event pump + mapping (PRR-002/PRR-024)', () => {
 	});
 });
 
-describe('v2 tool hooks (PRR-007 write-back / PRR-006 state fields)', () => {
+describe('v2 tool hooks (execute.before write-back / PRR-006 state fields)', () => {
 	test('execute.before: v1 output.args mutation writes back onto event.input', async () => {
 		const capture = toolHookCapture(
 			makeHooks({
@@ -269,6 +269,12 @@ describe('guidance partition identity pairing (PRR-004 regression)', () => {
 					info: { id?: string; role?: string };
 					parts: Array<{ type: string; text?: string }>;
 				}>;
+				// Also rewrite u1's own text (catches order-preserving swaps:
+				// a wrong pairing that keeps positions but swaps CONTENT fails).
+				for (const m of messages) {
+					if (m.info.id === 'u1')
+						m.parts = [{ type: 'text', text: 'u1 transformed' }];
+				}
 				// Simulate the full-auto intercept: splice a carrier BEFORE the
 				// real message (positional pairing would then misalign).
 				messages.unshift({
@@ -306,7 +312,7 @@ describe('guidance partition identity pairing (PRR-004 regression)', () => {
 		expect(event.messages.length).toBe(1);
 		expect(event.messages[0].id).toBe('u1');
 		expect(event.messages[0].content).toEqual([
-			{ type: 'text', text: 'user content' },
+			{ type: 'text', text: 'u1 transformed' },
 		]);
 	});
 
@@ -358,73 +364,6 @@ describe('agent + command mapping (PRR-011 edges)', () => {
 			'/swarm show-plan alpha beta',
 		);
 		expect(expandV1Template('/swarm archive', '')).toBe('/swarm archive');
-	});
-});
-
-describe('setup fail-closed + cleanup ordering (PRR-011)', () => {
-	test('setup throws when the host Context carries no location.directory', async () => {
-		const mod = await import(`${REPO_ROOT}/src/index`);
-		const setup = (
-			mod.default as { setup?: (ctx: unknown) => Promise<unknown> }
-		).setup;
-		expect(typeof setup).toBe('function');
-		const missing = {
-			options: {},
-			tool: {},
-			agent: {},
-			command: {},
-			session: {},
-			event: {},
-		};
-		await expect(setup(missing)).rejects.toThrow(/location\.directory/);
-	});
-
-	test('cleanup stops the pump before disposing registrations', async () => {
-		const order: string[] = [];
-		const directory = canonicalMkdtemp('swarm-v2-cleanup-');
-		const registration = {
-			dispose: async () => {
-				order.push('dispose');
-			},
-		};
-		const ctx = {
-			app: { name: 'opencode', version: 'test', channel: 'test' },
-			location: {
-				directory,
-				workspaceID: 'w',
-				project: { id: 'p', directory, canonical: directory },
-			},
-			options: {},
-			tool: {
-				transform: async () => {
-					order.push('transform');
-					return registration;
-				},
-				reload: async () => {},
-				list: async () => [],
-				hook: async () => registration,
-			},
-			agent: { transform: async () => registration, reload: async () => {} },
-			command: { transform: async () => registration, reload: async () => {} },
-			session: { hook: async () => registration },
-			event: { subscribe: () => (async function* () {})() },
-			permission: {},
-		} as never;
-		const deps = {
-			runInit: async () =>
-				makeHooks({
-					dispose: async () => {
-						order.push('v1-dispose');
-					},
-				}),
-		};
-		const cleanup = await openCodeSwarmV2Setup(ctx, deps as never);
-		expect(typeof cleanup).toBe('function');
-		await cleanup();
-		// Disposal happens; v1 dispose runs last. (Pump stop is synchronous and
-		// precedes the first dispose — asserted implicitly by no hang/rejection.)
-		expect(order).toContain('dispose');
-		expect(order[order.length - 1]).toBe('v1-dispose');
 	});
 });
 

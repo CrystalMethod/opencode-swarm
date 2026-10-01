@@ -195,7 +195,7 @@ function makeMockV2Context(directory: string): {
 }
 
 describe('v2 dual-shape entrypoint (issue #3004)', () => {
-	test('bundle default export carries id+server+setup and passes the v2 module schema mirror', async () => {
+	test('bundle default export carries the full dual shape id+server+setup', async () => {
 		const mod = (await import(pathToFileURL(ensureBundle()).href)) as {
 			default?: Record<string, unknown>;
 		};

@@ -17,8 +17,8 @@
  *   session.tool.called     → { type: 'message.part.updated', properties }
  *   session.tool.success    → { type: 'message.updated', properties }
  *   session.tool.failed     → { type: 'message.updated', properties }
- *   session.error (via
- *     session.execution.failed) → { type: 'session.idle-error', properties }
+ *   session.execution.failed → { type: 'session.error', properties }
+ *   session.deleted / session.created → same-name v1 types
  *
  * Unmapped event types are counted in a bounded debug log, never silently
  * assumed. This module is named deferred-/startDeferred- per the C6 await
