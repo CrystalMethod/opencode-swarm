@@ -7,7 +7,9 @@ run fell through to no framework and the nested module was never exercised.
 
 A new exported resolver, `resolveMavenModuleDir(root, files?)`, now backs a
 last-resort nested fallback that runs **only after every existing root-level
-detector returns no match** (root-level precedence is unchanged):
+detector returns no match**. The nested `cwd` override applies only when the
+project root itself has no `pom.xml`; a root-level `pom.xml` keeps precedence
+and the run stays rooted at the project root:
 
 - With test files provided, each file is resolved against the project root,
   paths outside the root are dropped, and the directory is walked upward to the

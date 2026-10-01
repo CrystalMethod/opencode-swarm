@@ -91,6 +91,22 @@ describe('nested Maven module detection and execution', () => {
 			}
 		});
 
+		test('scope:all stays at root when root pom.xml exists (aggregator reactor)', async () => {
+			createFile(tempDir, 'pom.xml', '<project/>');
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+			createFile(
+				tempDir,
+				'backend/src/test/java/FooTest.java',
+				'class FooTest {}',
+			);
+
+			await test_runner.execute({ scope: 'all' }, { directory: tempDir });
+
+			expect(spawnCalls.length).toBe(1);
+			expect(spawnCalls[0].cmd).toEqual(['mvn', 'test']);
+			expect(spawnCalls[0].opts.cwd).toBe(tempDir);
+		});
+
 		test('scope:all file-less runs mvn test from the nested module dir', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 

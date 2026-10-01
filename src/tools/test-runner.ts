@@ -3347,16 +3347,22 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		}
 
 		// For Maven projects with a nested module layout, run the command from the
-		// module directory that owns the pom.xml. This applies only to non-target
-		// scopes: scope:'target' native execution remains rooted at the project root
-		// because runTests resolves native targets against the cwd argument.
+		// module directory that owns the pom.xml. This applies only when the project
+		// root itself has no pom.xml and the scope is not 'target': scope:'target'
+		// native execution remains rooted at the project root because runTests
+		// resolves native targets against the cwd argument. When the root already
+		// contains a pom.xml (aggregator reactor), execution stays at the root.
 		// Convention-scope note: when Java test files are resolved but no targets are
 		// provided, the pre-existing class-based structured error
 		// ('maven does not support targeted test-file execution') is intentionally
 		// retained unchanged — deriving -Dtest class names from file paths is out of
 		// scope; the file-less convention scenario runs `mvn test` in the resolved
 		// module dir.
-		if (scope !== 'target' && framework === 'maven') {
+		if (
+			scope !== 'target' &&
+			framework === 'maven' &&
+			!_internals.existsSync(path.join(workingDir, 'pom.xml'))
+		) {
 			const mavenModuleDir = resolveMavenModuleDir(workingDir, _files);
 			if (mavenModuleDir) {
 				nativeExecutionDirectory = mavenModuleDir;
