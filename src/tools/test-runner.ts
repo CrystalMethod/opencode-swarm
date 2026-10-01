@@ -43,6 +43,7 @@ export const MAX_SAFE_SOURCE_FILES = 1;
 export const MAX_RAW_FILE_ENTRIES = 512;
 export const MAX_FILE_PATH_LENGTH = 4096;
 export const MAX_GRAPH_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_MAVEN_MODULE_PROBE_ENTRIES = 100; // one-level nested module scan cap
 
 const DEFAULT_LOAD_IMPACT_MAP = loadImpactMap;
 
@@ -889,7 +890,85 @@ export async function parseTestOutputViaDispatch(
 	}
 }
 
-export async function detectTestFramework(cwd: string): Promise<TestFramework> {
+/**
+ * Resolve the nearest Maven module directory under `root`.
+ *
+ * When `files` is provided, each file is resolved against `root`, paths
+ * outside `root` are dropped, and the directory containing each remaining file
+ * is walked upward toward `root` until a `pom.xml` is found. The first match
+ * wins.
+ *
+ * When `files` is absent/empty, the immediate subdirectories of `root` are
+ * probed one level deep (skipping `node_modules` and `.git`, capped at
+ * {@link MAX_MAVEN_MODULE_PROBE_ENTRIES}, sorted by name) for a `pom.xml`.
+ *
+ * Known limitations:
+ * - Multi-module reactor: nearest `pom.xml` wins. A child module that depends
+ *   on sibling reactor modules may require the aggregator pom (out of scope).
+ * - `scope:'target'` native execution remains rooted at the project root; this
+ *   resolver does not change native target handling.
+ */
+export function resolveMavenModuleDir(
+	root: string,
+	files?: string[],
+): string | null {
+	const resolvedRoot = path.resolve(root);
+
+	if (files && files.length > 0) {
+		for (const file of files) {
+			const resolvedFile = path.resolve(resolvedRoot, file);
+			const relativeToRoot = path.relative(resolvedRoot, resolvedFile);
+			if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+				continue;
+			}
+
+			let current = path.dirname(resolvedFile);
+			while (true) {
+				if (_internals.existsSync(path.join(current, 'pom.xml'))) {
+					return current;
+				}
+				if (current === resolvedRoot) break;
+				const parent = path.dirname(current);
+				if (parent === current) break;
+				const parentRelative = path.relative(resolvedRoot, parent);
+				if (
+					parentRelative.startsWith('..') ||
+					path.isAbsolute(parentRelative)
+				) {
+					break;
+				}
+				current = parent;
+			}
+		}
+		return null;
+	}
+
+	// File-less probe: one level deep, bounded, sorted for deterministic ties.
+	let entries: string[];
+	try {
+		entries = _internals.readdirSync(resolvedRoot);
+	} catch {
+		return null;
+	}
+
+	entries.sort((a, b) => a.localeCompare(b));
+	let inspected = 0;
+	for (const entry of entries) {
+		if (entry === 'node_modules' || entry === '.git') continue;
+		if (inspected >= MAX_MAVEN_MODULE_PROBE_ENTRIES) break;
+		inspected++;
+		const candidate = path.join(resolvedRoot, entry);
+		if (_internals.existsSync(path.join(candidate, 'pom.xml'))) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+export async function detectTestFramework(
+	cwd: string,
+	files?: string[],
+): Promise<TestFramework> {
 	const baseDir = cwd;
 	// Check for package.json to detect JS/TS frameworks
 	try {
