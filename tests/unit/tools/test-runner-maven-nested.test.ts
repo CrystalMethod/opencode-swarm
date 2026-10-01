@@ -78,6 +78,21 @@ describe('nested Maven module detection and execution', () => {
 	});
 
 	describe('end-to-end default dispatch', () => {
+		let priorAllowFullSuite: string | undefined;
+
+		beforeEach(() => {
+			priorAllowFullSuite = process.env.SWARM_ALLOW_FULL_SUITE;
+			process.env.SWARM_ALLOW_FULL_SUITE = '1';
+		});
+
+		afterEach(() => {
+			if (priorAllowFullSuite === undefined) {
+				delete process.env.SWARM_ALLOW_FULL_SUITE;
+			} else {
+				process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
+			}
+		});
+
 		test('scope:all file-less runs mvn test from the nested module dir', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 
@@ -147,8 +162,8 @@ describe('nested Maven module detection and execution', () => {
 			createFile(tempDir, 'go.mod', 'module example\n\ngo 1.21');
 			createFile(
 				tempDir,
-				'foo_test.go',
-				'package foo\nfunc TestFoo(t *testing.T) {}',
+				'pkg/foo_test.go',
+				'package pkg\nfunc TestFoo(t *testing.T) {}',
 			);
 
 			await test_runner.execute(
@@ -157,7 +172,7 @@ describe('nested Maven module detection and execution', () => {
 					native_target: {
 						framework: 'go-test',
 						name: 'TestFoo',
-						path: path.join(tempDir, 'foo_test.go'),
+						path: 'pkg',
 					},
 				},
 				{ directory: tempDir },
@@ -206,7 +221,7 @@ describe('nested Maven module detection and execution', () => {
 			expect(result).toBeNull();
 		});
 
-		test('drops file paths outside the project root', () => {
+		test('drops outside-root file paths and returns null when no in-root file remains', () => {
 			const otherDir = createTempDir();
 			tempDirs.push(otherDir);
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
@@ -216,7 +231,7 @@ describe('nested Maven module detection and execution', () => {
 				path.join(otherDir, 'src/test/java/FooTest.java'),
 			]);
 
-			expect(result).toBe(path.join(tempDir, 'backend'));
+			expect(result).toBeNull();
 		});
 
 		test('deterministic tie-break picks the first directory alphabetically', () => {
@@ -228,13 +243,13 @@ describe('nested Maven module detection and execution', () => {
 			expect(result).toBe(path.join(tempDir, 'alpha'));
 		});
 
-		test('root-level pom wins so the module dir stays the root', () => {
+		test('root-level pom detector wins over the nested fallback', async () => {
 			createFile(tempDir, 'pom.xml', '<project/>');
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 
-			const result = resolveMavenModuleDir(tempDir);
+			const result = await detectTestFramework(tempDir);
 
-			expect(result).toBe(tempDir);
+			expect(result).toBe('maven');
 		});
 	});
 
