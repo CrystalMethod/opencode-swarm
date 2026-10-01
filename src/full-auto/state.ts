@@ -17,6 +17,7 @@ import lockfileImport from 'proper-lockfile';
 import { validateSwarmPath } from '../hooks/utils';
 import { compositeSessionKey } from '../utils/canonical-root.js';
 import * as logger from '../utils/logger';
+import { FULL_AUTO_OVERSIGHT_EVIDENCE_FILE_RE } from './evidence-names';
 
 // proper-lockfile ships JS-only with no TS types; cast to a minimal interface
 // covering the `lockSync` API we use. The synchronous adapter rejects positive
@@ -989,15 +990,80 @@ export function resetFullAutoDenials(
  * Atomically increment and return the durable oversight-evidence sequence
  * counter. Used by `writeFullAutoOversightEvidence` to produce stable,
  * non-colliding evidence filenames across process restarts. (C4 fix.)
+ *
+ * #3011: before allocating, the counter is caught up to the highest sequence
+ * observable in persisted evidence filenames (`.swarm/evidence/<phase>/full-auto-N.json`).
+ * This makes the returned value strictly greater than every sequence already
+ * on disk, not just greater than previously allocated values — so a directory
+ * written by an older process that stamped sequences without advancing the
+ * durable counter (the pre-#3011 reactive mirror) can never have an evidence
+ * file reissued over it. The scan runs inside the same `withStateLock` as the
+ * read-modify-write, so concurrent allocations stay serialized. A missing
+ * evidence directory scans as 0; an unexpected scan failure of an existing
+ * directory throws (fail-closed, mirroring the TASK 6 oversight-persistence
+ * philosophy this allocator already serves).
  */
 export function nextFullAutoOversightSequence(directory: string): number {
 	return withStateLock(directory, () => {
 		const persisted = _internals.readPersisted(directory);
-		const next = (persisted.oversightSequence ?? 0) + 1;
+		const fileMax = maxPersistedOversightEvidenceSequence(directory);
+		const next = Math.max(persisted.oversightSequence ?? 0, fileMax) + 1;
 		persisted.oversightSequence = next;
 		writePersisted(directory, persisted);
 		return next;
 	});
+}
+
+/**
+ * Highest oversight sequence encoded in a persisted evidence filename under
+ * `.swarm/evidence/`, or 0 when none exist. Filename grammar comes from
+ * `evidence-names.ts` (the same module the evidence writer builds names with),
+ * so writer and scanner cannot drift. Runs under the caller's state lock.
+ */
+function maxPersistedOversightEvidenceSequence(directory: string): number {
+	const evidenceRoot = validateSwarmPath(directory, 'evidence');
+	let phaseDirs: fs.Dirent[];
+	try {
+		if (!fs.existsSync(evidenceRoot)) return 0;
+		phaseDirs = fs.readdirSync(evidenceRoot, { withFileTypes: true });
+	} catch (error) {
+		const msg = error instanceof Error ? error.message : String(error);
+		logger.error(
+			`[full-auto/state] Failed to scan evidence root for sequence catch-up: ${msg}`,
+		);
+		throw new Error(
+			`Full-Auto oversight evidence scan failed for sequence allocation: ${msg}`,
+		);
+	}
+	let max = 0;
+	for (const entry of phaseDirs) {
+		if (!entry.isDirectory()) continue;
+		const phaseDir = validateSwarmPath(
+			directory,
+			path.posix.join('evidence', entry.name),
+		);
+		let files: string[];
+		try {
+			files = fs.readdirSync(phaseDir);
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			logger.error(
+				`[full-auto/state] Failed to scan evidence phase dir ${entry.name} for sequence catch-up: ${msg}`,
+			);
+			throw new Error(
+				`Full-Auto oversight evidence scan failed for sequence allocation: ${msg}`,
+			);
+		}
+		for (const file of files) {
+			const match = file.match(FULL_AUTO_OVERSIGHT_EVIDENCE_FILE_RE);
+			if (!match) continue;
+			const sequence = Number(match[1]);
+			if (Number.isFinite(sequence) && sequence > max) {
+				max = sequence;
+			}
+		}
+	}
+	return max;
 }
 
 export function recordFullAutoOversight(

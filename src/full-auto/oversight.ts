@@ -44,6 +44,7 @@ import {
 	type ParsedCriticResponse,
 	parseCriticResponseFields,
 } from './critic-response-parser';
+import { fullAutoOversightEvidenceFileName } from './evidence-names';
 import {
 	incrementOversightFailureCounter,
 	loadFullAutoRunState,
@@ -305,7 +306,11 @@ export async function writeFullAutoOversightEvidence(
 			path.posix.join('evidence', String(phase)),
 		);
 		fs.mkdirSync(evidenceDir, { recursive: true });
-		const fileName = `full-auto-${event.oversight_sequence}.json`;
+		// #3011: the filename grammar lives in evidence-names.ts so the
+		// allocator's catch-up scanner (state.ts) cannot drift from it.
+		const fileName = fullAutoOversightEvidenceFileName(
+			event.oversight_sequence,
+		);
 		const filePath = validateSwarmPath(
 			directory,
 			path.posix.join('evidence', String(phase), fileName),
