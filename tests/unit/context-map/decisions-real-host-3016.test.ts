@@ -124,13 +124,32 @@ describe('real-host decisions wiring (#3016, PR #3023 feedback)', () => {
 		expect(readMap(directory).decisions).toHaveLength(0);
 	});
 
-	// NOTE (#3023 FB-004): a behavioral test for the terminal `?? 'unknown'`
-	// fallback is NOT achievable through the real hook — the hook chain itself
-	// repopulates `swarmState.activeAgent` (the delegation-tracker resets it to
-	// the orchestrator name on task completion) before the context-map block
-	// reads it, so the undefined-role path is shadowed in practice. The
-	// fallback is pinned by the anchored regex in
-	// index-decisions-wiring-ratchet-3016.test.ts instead.
+	test('session with no chat-boundary record and no activeAgent records nothing (undefined-role fail-closed, #3023 FB-004)', async () => {
+		const { plugin, directory } = await bootWithDecisions(
+			'Ungated decision: must not be recorded',
+		);
+		// Simulate a session with NO chat-boundary record and NO activeAgent
+		// entry (ensureAgentSession implicitly sets activeAgent, so delete it
+		// after): role resolution falls through to the terminal
+		// `?? 'unknown'` fallback in src/index.ts, which must stay fail-closed.
+		// With that fallback deleted, agent_role is undefined, the helper's
+		// gate guard short-circuits, and this decision WOULD be recorded —
+		// this test fails under that mutation (verified by the fix-round
+		// reviewer's shipped-vs-mutated probe). task_history must still be
+		// recorded to prove the context-map block itself ran.
+		resetSwarmState();
+		const session = ensureAgentSession(SESSION_ID, 'architect', directory);
+		session.currentTaskId = '1.1';
+		swarmState.activeAgent.delete(SESSION_ID);
+		await plugin.hooks['tool.execute.after'](
+			{ tool: 'task', sessionID: SESSION_ID, callID: 'call-1' },
+			{ state: 'completed', output: 'task finished' },
+		);
+
+		const persisted = readMap(directory);
+		expect(persisted.task_history['1.1']).toBeDefined();
+		expect(persisted.decisions).toHaveLength(0);
+	});
 
 	test('decision text is sanitized before persistence', async () => {
 		const { plugin, directory } = await bootWithDecisions(
