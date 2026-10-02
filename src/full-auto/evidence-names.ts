@@ -9,8 +9,8 @@
  * here — instead of an inline template in the writer and a separate regex in
  * the scanner — makes writer/scanner drift impossible.
  *
- * Leaf module: imports only `node:path` so both `oversight.ts` and `state.ts`
- * can share it without an import cycle.
+ * Leaf module: imports nothing at all (pure string/regex builders), so both
+ * `oversight.ts` and `state.ts` can share it without an import cycle.
  */
 
 /**

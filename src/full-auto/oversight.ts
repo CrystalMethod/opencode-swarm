@@ -55,13 +55,6 @@ import {
 	terminateFullAutoRun,
 } from './state';
 
-// In-memory shadow of the durable oversight sequence counter. Maintained
-// only so tests can reset it via `_internals.resetSequence()`; production
-// reads always go through `nextFullAutoOversightSequence` which consults
-// the durable state file.
-let oversightSequenceCounter = 0;
-void oversightSequenceCounter; // referenced via _internals.resetSequence
-
 export interface FullAutoCriticResult extends ParsedCriticResponse {}
 
 export type FullAutoTriggerSource =
@@ -343,9 +336,6 @@ export async function dispatchFullAutoOversight(
 	// collide after a process restart. The counter is monotonic across
 	// restarts and stored in `.swarm/full-auto-state.json`.
 	const sequence = nextFullAutoOversightSequence(input.directory);
-	// Keep the in-memory counter in sync for any test that resets it via
-	// `_internals.resetSequence()`.
-	oversightSequenceCounter = sequence;
 	const beforeStatus = loadFullAutoRunState(
 		input.directory,
 		input.sessionID,
@@ -879,16 +869,12 @@ export async function dispatchFullAutoOversight(
  * Test-only DI seam.
  */
 export const _internals: {
-	resetSequence: () => void;
 	now: () => number;
 	sleep: typeof sleep;
 	setTimer: typeof setTimeout;
 	clearTimer: typeof clearTimeout;
 	teardownEphemeralSession: typeof teardownEphemeralSession;
 } = {
-	resetSequence: () => {
-		oversightSequenceCounter = 0;
-	},
 	now: () => performance.now(),
 	sleep,
 	setTimer: setTimeout,

@@ -17,11 +17,20 @@
 - The allocator itself was hardened against an upgrade window found in plan
   review: it now catches the persisted counter up to the highest sequence
   observable in existing evidence filenames
-  (`.swarm/evidence/<phase>/full-auto-N.json`) inside the same lock, so a
-  directory written by the OLD buggy code (evidence files present, counter
-  still 0) can never have an evidence file reissued over it. Missing evidence
-  directories scan as 0; an unexpected scan failure of an existing directory
-  throws fail-closed, matching the TASK 6 oversight-persistence philosophy.
+  (`.swarm/evidence/<numeric-phase>/full-auto-N.json`) inside the same lock,
+  so a directory written by the OLD buggy code (evidence files present,
+  counter still 0) can never have an evidence file reissued over it. The
+  catch-up walk descends only into numeric phase directories — the evidence
+  tree also holds per-task-id directories (plus `gate-audit/` and `sbom/`)
+  that the oversight writer never uses — keeping the locked walk bounded by
+  plan phase count. Missing or non-directory evidence paths scan as 0; an
+  unexpected scan failure throws a stable typed error (raw filesystem detail
+  goes to the log only, never into v1 pause reasons).
+- Both the persisted counter and scanned filename values are honored only as
+  non-negative safe integers: a corrupt persisted counter is ignored and
+  re-derived from disk, a hand-planted `full-auto-<huge>.json` filename
+  cannot pin the allocation, and the safe-integer ceiling fails closed
+  instead of silently sticking (`n + 1 === n`).
 - The filename grammar (`full-auto-{seq}.json`) now lives once in the new
   leaf `src/full-auto/evidence-names.ts`, used by BOTH the evidence writer
   and the allocator's scanner, so the two cannot drift apart.
@@ -29,13 +38,16 @@
 ## Residual (deliberate, precise scope)
 
 The fix guarantees no evidence filename is ever reissued in any directory
-shape and that no two post-fix events duplicate each other. A post-fix
-sequence value may still numerically overlap a BUGGY-ERA event-only
-(non-evidence) sequence value already present in `events.jsonl` from before
-the upgrade: nothing consumes `oversight_sequence` as a lookup key (phase
-approval scans evidence files gap-tolerantly), the event log is append-only
-audit history, and healing it would require scanning/rewriting it under the
-state lock. This overlap is accepted, not an oversight.
+shape and that no two post-fix events duplicate each other. Two precise
+limits: (1) a post-fix sequence value may still numerically overlap a
+BUGGY-ERA event-only (non-evidence) sequence value already present in
+`events.jsonl` from before the upgrade — nothing consumes `oversight_sequence`
+as a lookup key (phase approval scans evidence files gap-tolerantly), the
+event log is append-only audit history, and healing it would require
+scanning/rewriting it under the state lock; (2) a process still running the
+PRE-fix build against an upgraded directory can still re-issue its own
+process-local sequences — the guarantee is a property of the fixed code, not
+of version mixes. Both limits are accepted, not oversights.
 
 ## Tests
 
@@ -46,6 +58,11 @@ state lock. This overlap is accepted, not an oversight.
   gap-tolerance — all driven through the real
   `dispatchCriticAndWriteEvent`/`dispatchFullAutoOversight` in spawned bun
   child processes (true restart simulation).
+- `tests/unit/full-auto/oversight-sequence-allocator.test.ts` (new): direct
+  unit coverage of the allocator and its catch-up scan — multi-phase-dir max
+  selection, non-numeric directory skipping, missing/non-directory evidence
+  roots, safe-integer guards on scanned and persisted values, the stable
+  fail-closed scan error with no counter burn, and the safe-integer ceiling.
 - `tests/unit/full-auto/oversight-sequence-guardrail.test.ts` (new,
   recurring ratchet): classifies every module-level numeric counter in
   `src/` (defect class "process-local identity state stamped into durable

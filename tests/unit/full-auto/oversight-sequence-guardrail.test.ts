@@ -33,6 +33,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 import {
 	FULL_AUTO_OVERSIGHT_EVIDENCE_FILE_RE,
 	fullAutoOversightEvidenceFileName,
@@ -72,14 +73,12 @@ const CLASSIFIED: Record<string, string> = {
 		'ordering: nextRegistrationSequence orders in-memory registrations; identity is randomUUID ownerToken',
 	'src/context-map/telemetry.ts':
 		'metrics: _recordCount / _lastWarnAt (telemetry cadence)',
-	'src/full-auto/oversight.ts':
-		'shadow: oversightSequenceCounter is test-only (_internals.resetSequence); production allocation always routes through the durable nextFullAutoOversightSequence',
 	'src/events/core-events.ts':
 		'metrics: _appendCount / _lastWarnAt (append budget telemetry)',
 	'src/hooks/knowledge-injector.ts':
 		'cache: knowledgeGeneration (injection freshness comparison, not identity)',
 	'src/hooks/pr-workflow-auto-wake.ts':
-		'ordering: nextMarkerID is one input to Date.now()-prefixed collision-resistant message ids',
+		'ordering: nextMarkerID is one input to the timestamp-prefixed collision-resistant message id grammar',
 	'src/hooks/skill-usage-pending.ts':
 		'timestamp: _pressureCheckedAt (pressure check cadence)',
 	'src/hooks/trajectory-step-state.ts':
@@ -104,7 +103,7 @@ const CLASSIFIED: Record<string, string> = {
 	'src/session/snapshot-coordination-init.ts':
 		'ordering: nextAttemptId orders in-process readiness entries; durable authority derives from the persisted generation (+1) and the hydration scope token (#2667/#2668)',
 	'src/utils/bun-compat.ts':
-		'ordering: tempCounter (transient os.tmpdir scratch names, not durable records)',
+		'ordering: tempCounter (transient scratch temp-dir names, not durable records)',
 	'src/utils/git-executable.ts': 'cache: cacheGeneration (resolution epoch)',
 	'src/utils/gh-executable.ts': 'cache: cacheGeneration (resolution epoch)',
 	'src/utils/glab-executable.ts': 'cache: cacheGeneration (resolution epoch)',
@@ -171,9 +170,7 @@ describe('issue #3011 guardrail — process-local identity counters over durable
 	test('guardrail bites: the original #3011 defect shape is unclassified and fails the scan', () => {
 		// Fixture reproducing the pre-fix source shape: a module-level counter
 		// stamped into a persisted oversight event with no classification.
-		const fixtureDir = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'p3011-guardrail-')),
-		);
+		const fixtureDir = canonicalMkdtemp('p3011-guardrail-');
 		try {
 			fs.mkdirSync(path.join(fixtureDir, 'hooks'), { recursive: true });
 			fs.writeFileSync(

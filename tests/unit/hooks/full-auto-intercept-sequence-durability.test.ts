@@ -21,9 +21,9 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..', '..');
@@ -95,7 +95,8 @@ if (mode === 'seed-evidence') {
 			{
 				type: 'full_auto_oversight',
 				sentinel: 'PRE-RESTART-SENTINEL',
-				timestamp: new Date().toISOString(),
+				// Static literal: inert fixture timestamp (check:test-clock-safe).
+				timestamp: '2026-10-01T00:00:00.000Z',
 				phase: 1,
 				trigger_source: 'phase_boundary',
 				verdict: 'APPROVED',
@@ -189,8 +190,10 @@ function runChild(
 ): ChildOutcome {
 	const res = spawnSync(process.execPath, [childScript, workDir, ...args], {
 		cwd,
-		stdin: 'ignore',
-		timeout: 60_000,
+		// spawnSync's real option is stdio (not stdin); 'ignore' detaches the
+		// child from our pipes so it can never block on a never-closed stdin.
+		stdio: 'ignore',
+		timeout: 30_000,
 		encoding: 'utf-8',
 	});
 	return {
@@ -243,9 +246,7 @@ function evidenceEntry(workDir: string, file: string): string {
 }
 
 function makeWorkspace(): { tmpBase: string; workDir: string; script: string } {
-	const tmpBase = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'p3011-durability-')),
-	);
+	const tmpBase = canonicalMkdtemp('p3011-durability-');
 	const workDir = path.join(tmpBase, 'work');
 	fs.mkdirSync(workDir, { recursive: true });
 	const script = path.join(tmpBase, 'child-3011-durability.ts');
@@ -264,7 +265,7 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 		} finally {
 			fs.rmSync(tmpBase, { recursive: true, force: true });
 		}
-	}, 240_000);
+	}, 150_000);
 
 	test('two fresh processes coexist: no evidence overwrite, no reused sequence', async () => {
 		const { tmpBase, workDir, script } = makeWorkspace();
@@ -283,7 +284,7 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 		} finally {
 			fs.rmSync(tmpBase, { recursive: true, force: true });
 		}
-	}, 240_000);
+	}, 150_000);
 
 	test('v1 dispatch then mirror in a fresh process share one collision domain', async () => {
 		const { tmpBase, workDir, script } = makeWorkspace();
@@ -302,7 +303,7 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 		} finally {
 			fs.rmSync(tmpBase, { recursive: true, force: true });
 		}
-	}, 240_000);
+	}, 150_000);
 
 	test('buggy-era directory (evidence ahead of counter) heals without overwrite', async () => {
 		const { tmpBase, workDir, script } = makeWorkspace();
@@ -320,16 +321,14 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 		} finally {
 			fs.rmSync(tmpBase, { recursive: true, force: true });
 		}
-	}, 240_000);
+	}, 150_000);
 
 	test('phase approval accepts gap-holed, non-contiguous evidence directories', async () => {
 		const { verifyFullAutoPhaseApproval } = await import(
 			srcAbs('full-auto/phase-approval.js')
 		);
 		const { startFullAutoRun } = await import(srcAbs('full-auto/state.js'));
-		const tmpBase = fs.realpathSync(
-			fs.mkdtempSync(path.join(os.tmpdir(), 'p3011-gaps-')),
-		);
+		const tmpBase = canonicalMkdtemp('p3011-gaps-');
 		try {
 			startFullAutoRun(tmpBase, 'sess-gaps', undefined, {
 				planID: 'plan-gaps',
@@ -344,9 +343,10 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 					path.join(evidenceDir, `full-auto-${seq}.json`),
 					JSON.stringify({
 						type: 'full_auto_oversight',
-						timestamp: new Date().toISOString(),
+						timestamp: '2026-10-01T00:00:00.000Z',
 						phase: 1,
 						trigger_source: 'phase_boundary',
+						// Static literal timestamp above: inert fixture (check:test-clock-safe).
 						verdict: 'APPROVED',
 						evidence_checked: [
 							'tests/unit/hooks/full-auto-intercept-sequence-durability.test.ts',

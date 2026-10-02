@@ -992,22 +992,51 @@ export function resetFullAutoDenials(
  * non-colliding evidence filenames across process restarts. (C4 fix.)
  *
  * #3011: before allocating, the counter is caught up to the highest sequence
- * observable in persisted evidence filenames (`.swarm/evidence/<phase>/full-auto-N.json`).
- * This makes the returned value strictly greater than every sequence already
- * on disk, not just greater than previously allocated values — so a directory
+ * observable in persisted evidence filenames
+ * (`.swarm/evidence/<numeric-phase>/full-auto-N.json`), so a directory
  * written by an older process that stamped sequences without advancing the
  * durable counter (the pre-#3011 reactive mirror) can never have an evidence
  * file reissued over it. The scan runs inside the same `withStateLock` as the
- * read-modify-write, so concurrent allocations stay serialized. A missing
- * evidence directory scans as 0; an unexpected scan failure of an existing
- * directory throws (fail-closed, mirroring the TASK 6 oversight-persistence
- * philosophy this allocator already serves).
+ * read-modify-write, so concurrent allocations stay serialized.
+ *
+ * #3024 feedback hardening:
+ * - The walk descends ONLY into numeric phase directories — the evidence
+ *   tree also holds one directory per task id (plus gate-audit/ and sbom/)
+ *   that the oversight writer never uses, so skipping non-numeric names
+ *   keeps the locked walk bounded by plan phase count instead of the full
+ *   evidence-tree size (PR #3024 review F3: measured ~1 ms/dir under lock).
+ * - Both the persisted counter and every scanned filename value are treated
+ *   as valid only when they are non-negative safe integers (F2): a corrupt
+ *   persisted value is ignored (forcing the scan to re-derive from disk),
+ *   unsafe filename values are skipped, and an allocation would exceed
+ *   `Number.MAX_SAFE_INTEGER` fails closed rather than silently sticking.
+ * - A missing evidence directory scans as 0; a non-directory at the evidence
+ *   path also scans as 0 (no readable evidence records exist behind it — the
+ *   evidence writer's own `mkdirSync` fails closed downstream); an unexpected
+ *   scan failure throws a stable typed error (raw fs detail goes to the debug
+ *   log only, matching the `makeLockError` convention in this module).
  */
 export function nextFullAutoOversightSequence(directory: string): number {
 	return withStateLock(directory, () => {
 		const persisted = _internals.readPersisted(directory);
-		const fileMax = maxPersistedOversightEvidenceSequence(directory);
-		const next = Math.max(persisted.oversightSequence ?? 0, fileMax) + 1;
+		const persistedCounter = persisted.oversightSequence;
+		const safeCounter =
+			typeof persistedCounter === 'number' &&
+			Number.isSafeInteger(persistedCounter) &&
+			persistedCounter >= 0
+				? persistedCounter
+				: 0;
+		const fileMax = _internals.scanOversightEvidenceSequence(directory);
+		const base = Math.max(safeCounter, fileMax);
+		if (base >= Number.MAX_SAFE_INTEGER) {
+			logger.error(
+				`[full-auto/state] Oversight sequence allocation refused at the safe-integer ceiling (${base})`,
+			);
+			throw new Error(
+				'Full-Auto oversight sequence allocation exhausted the safe-integer ceiling',
+			);
+		}
+		const next = base + 1;
 		persisted.oversightSequence = next;
 		writePersisted(directory, persisted);
 		return next;
@@ -1016,34 +1045,42 @@ export function nextFullAutoOversightSequence(directory: string): number {
 
 /**
  * Highest oversight sequence encoded in a persisted evidence filename under
- * `.swarm/evidence/`, or 0 when none exist. Filename grammar comes from
- * `evidence-names.ts` (the same module the evidence writer builds names with),
- * so writer and scanner cannot drift. Runs under the caller's state lock.
+ * `.swarm/evidence/<numeric-phase>/`, or 0 when none exist. Filename grammar
+ * comes from `evidence-names.ts` (the same module the evidence writer builds
+ * names with), so writer and scanner cannot drift. Runs under the caller's
+ * state lock. Exposed on `_internals` for direct unit testing and for
+ * failure-injection tests of the allocator's fail-closed path.
  */
 function maxPersistedOversightEvidenceSequence(directory: string): number {
 	const evidenceRoot = validateSwarmPath(directory, 'evidence');
 	let phaseDirs: fs.Dirent[];
 	try {
 		if (!fs.existsSync(evidenceRoot)) return 0;
+		if (!fs.statSync(evidenceRoot).isDirectory()) return 0;
 		phaseDirs = fs.readdirSync(evidenceRoot, { withFileTypes: true });
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		logger.error(
 			`[full-auto/state] Failed to scan evidence root for sequence catch-up: ${msg}`,
 		);
+		// Stable thrown message only — raw fs detail can embed absolute paths
+		// and this error surfaces verbatim in v1 pause reasons.
 		throw new Error(
-			`Full-Auto oversight evidence scan failed for sequence allocation: ${msg}`,
+			'Full-Auto oversight evidence scan failed for sequence allocation',
 		);
 	}
 	let max = 0;
 	for (const entry of phaseDirs) {
+		// Oversight evidence lives only under numeric phase directories;
+		// skip task-id dirs, gate-audit/, sbom/, and stray files.
+		if (!/^\d+$/.test(entry.name)) continue;
 		if (!entry.isDirectory()) continue;
-		const phaseDir = validateSwarmPath(
-			directory,
-			path.posix.join('evidence', entry.name),
-		);
 		let files: string[];
 		try {
+			const phaseDir = validateSwarmPath(
+				directory,
+				path.posix.join('evidence', entry.name),
+			);
 			files = fs.readdirSync(phaseDir);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
@@ -1051,14 +1088,17 @@ function maxPersistedOversightEvidenceSequence(directory: string): number {
 				`[full-auto/state] Failed to scan evidence phase dir ${entry.name} for sequence catch-up: ${msg}`,
 			);
 			throw new Error(
-				`Full-Auto oversight evidence scan failed for sequence allocation: ${msg}`,
+				'Full-Auto oversight evidence scan failed for sequence allocation',
 			);
 		}
 		for (const file of files) {
 			const match = file.match(FULL_AUTO_OVERSIGHT_EVIDENCE_FILE_RE);
 			if (!match) continue;
 			const sequence = Number(match[1]);
-			if (Number.isFinite(sequence) && sequence > max) {
+			// Unsafe integers (> 2^53-1, e.g. from a hand-planted filename)
+			// are skipped: the writer can never emit them back, and honoring
+			// them would pin `base + 1` at the planted value.
+			if (Number.isSafeInteger(sequence) && sequence > max) {
 				max = sequence;
 			}
 		}
@@ -1184,4 +1224,10 @@ export const _internals: {
 	readPersisted: typeof readPersistedForMutation;
 	writePersisted: typeof writePersisted;
 	lockfile: StateLockFile;
-} = { readPersisted: readPersistedForMutation, writePersisted, lockfile };
+	scanOversightEvidenceSequence: typeof maxPersistedOversightEvidenceSequence;
+} = {
+	readPersisted: readPersistedForMutation,
+	writePersisted,
+	lockfile,
+	scanOversightEvidenceSequence: maxPersistedOversightEvidenceSequence,
+};
