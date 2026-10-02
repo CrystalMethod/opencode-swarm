@@ -348,7 +348,10 @@ import {
 	ensureSwarmGitExcluded,
 } from './utils/gitignore-warning';
 import { resolveProjectRootDecision } from './utils/project-boundary';
-import { isQuotaError } from './utils/provider-error-classification.js';
+import {
+	isQuotaError,
+	isStickyModelError,
+} from './utils/provider-error-classification.js';
 import { withTimeout, withTimeoutSignal } from './utils/timeout';
 import { truncateToolOutput } from './utils/tool-output';
 
@@ -3942,11 +3945,24 @@ async function initializeOpenCodeSwarm(
 						// editor is create-or-update and a bare role key would
 						// mint a phantom agent on multi-swarm configs). No-op on v1.
 						if (routedAdvance?.accepted && !routedAdvance.exhausted) {
-							const chainModel =
-								routedAdvance.fallbackIndex === 0
-									? routeModel.primaryModel
-									: routeModel.fallbackModels[routedAdvance.fallbackIndex - 1];
-							if (typeof chainModel === 'string' && chainModel.length > 0) {
+							// #3029 review F-003: fallbackIndex counts positions in the
+							// NORMALIZED chain (deduped, parse-filtered), so it must index
+							// the chain's own modelString — indexing the raw fallback list
+							// mismaps when a fallback duplicates the primary or is
+							// unparseable (applies the failing primary or skips a valid
+							// fallback).
+							// #3029 review F-002: the v2 apply is host-global (sticky until
+							// restart), so only apply it for the sticky-appropriate error
+							// classes — the retired/unavailable-model scenario this
+							// surface exists for, or quota exhaustion — never for a single
+							// transient timeout/5xx.
+							const stickyEligible = isStickyModelError(errorSignal);
+							const chainModel = routedAdvance.modelString;
+							if (
+								stickyEligible &&
+								typeof chainModel === 'string' &&
+								chainModel.length > 0
+							) {
 								void applyV2AgentModelOverride(
 									routeModel.exactAgentName,
 									chainModel,
@@ -4008,11 +4024,17 @@ async function initializeOpenCodeSwarm(
 								// Issue #3022 (AC3): apply the advanced model on v2
 								// hosts by rewriting the REGISTERED agent's model
 								// reference (no-op on v1, where the chat-boundary
-								// override owns application).
-								void applyV2AgentModelOverride(
-									routeModel.exactAgentName,
-									advanced.modelString,
-								);
+								// override owns application). #3029 review F-002: the
+								// v2 apply is host-global (sticky until restart), so
+								// gate it to the sticky-appropriate error classes —
+								// retired/unavailable model or quota — never a single
+								// transient timeout/5xx.
+								if (isStickyModelError(errorSignal)) {
+									void applyV2AgentModelOverride(
+										routeModel.exactAgentName,
+										advanced.modelString,
+									);
+								}
 							}
 						}
 						// Unknown identity (error before any chat.message recorded

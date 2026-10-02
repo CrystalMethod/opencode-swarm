@@ -21,13 +21,28 @@
 
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
-import type { V2AgentEditor, V2PluginContext } from './types';
+import type { V2AgentEditor, V2PluginContext, V2Registration } from './types';
 
 const V2_MODEL_APPLY_TIMEOUT_MS = 10_000;
 
 type AgentTransform = V2PluginContext['agent']['transform'];
 
 let registeredTransform: AgentTransform | undefined;
+
+/**
+ * Host registrations held per applied agent (#3029 review F-002). Each
+ * `transform(...)` returns a Registration whose `dispose()` is the HOST'S
+ * UNDO PATH for that transform's rewrites (state re-materializes from
+ * initial() plus the remaining transforms), so a registration must neither
+ * leak (unbounded) nor be disposed on behalf of a DIFFERENT agent — that
+ * would revert the other agent's sticky model rewrite and reintroduce the
+ * #3022 unavailable-model failure for it. Keyed by the exact registered
+ * agent name; re-apply replaces only that agent's entry; cleanup disposes
+ * all. FIFO eviction above MAX disposes the evicted rewrite and is
+ * reachable only under implausible distinct-agent churn.
+ */
+const MAX_HELD_APPLY_REGISTRATIONS = 128;
+const registrationsByAgent = new Map<string, V2Registration>();
 
 /**
  * Remember the v2 agent transform surface for later model rewrites. Called
@@ -44,9 +59,21 @@ export function registerV2AgentTransformSurface(ctx: V2PluginContext): void {
 	}
 }
 
-/** Drop the registered surface (v2 cleanup). */
+/**
+ * Drop the registered surface and dispose every held apply registration
+ * (v2 cleanup). Best-effort: disposal failure is logged, never thrown.
+ */
 export function clearV2AgentTransformSurface(): void {
 	registeredTransform = undefined;
+	const held = [...registrationsByAgent.values()];
+	registrationsByAgent.clear();
+	for (const reg of held) {
+		void reg.dispose().catch((err: unknown) => {
+			log('v2 model-apply registration dispose failed (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+	}
 }
 
 /** True when a v2 apply surface is registered (test/diagnostic seam). */
@@ -84,7 +111,7 @@ export async function applyV2AgentModelOverride(
 	const providerID = modelString.slice(0, separator);
 	const id = modelString.slice(separator + 1);
 	try {
-		await withTimeout(
+		const applied = await withTimeout(
 			Promise.resolve(
 				transform((editor: V2AgentEditor) => {
 					// update(id, fn) is create-or-update; agentName must be the
@@ -99,6 +126,32 @@ export async function applyV2AgentModelOverride(
 				`[opencode-swarm] v2: model apply for ${agentName} exceeded budget`,
 			),
 		);
+		// Hold this agent's registration, replacing only the SAME agent's
+		// previous entry (F-002): host dispose is the transform's undo path,
+		// so disposing a different agent's registration would revert that
+		// agent's sticky model rewrite.
+		const previous = registrationsByAgent.get(agentName);
+		registrationsByAgent.set(agentName, applied);
+		while (registrationsByAgent.size > MAX_HELD_APPLY_REGISTRATIONS) {
+			const oldest = registrationsByAgent.keys().next().value;
+			if (typeof oldest !== 'string') break;
+			const evicted = registrationsByAgent.get(oldest);
+			registrationsByAgent.delete(oldest);
+			void evicted?.dispose().catch((err: unknown) => {
+				log('v2 evicted model-apply registration dispose failed (non-fatal)', {
+					agentName: oldest,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+		}
+		if (previous) {
+			void previous.dispose().catch((err: unknown) => {
+				log('v2 previous model-apply registration dispose failed (non-fatal)', {
+					agentName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+		}
 		log('v2 agent model applied', { agentName, modelString });
 		return true;
 	} catch (err) {

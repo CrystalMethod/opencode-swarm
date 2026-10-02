@@ -104,3 +104,16 @@ export function isTransientProviderError(signal: string): boolean {
 export function isQuotaError(signal: string): boolean {
 	return signal.length > 0 && QUOTA_ERROR_PATTERN.test(signal);
 }
+
+/**
+ * True when the error class warrants a STICKY host-global model rewrite on
+ * v2 hosts (#3029 review F-002): the applied model persists on the
+ * registered agent until restart, so it must fire only for the classes
+ * where permanently rerouting the agent matches the v1 sticky fallback
+ * semantics — the retired/unavailable-model scenario the fallback chain
+ * exists for, and quota exhaustion. A single transient timeout/5xx advances
+ * only the per-session fallback selection and must not rewrite the agent.
+ */
+export function isStickyModelError(signal: string): boolean {
+	return MODEL_UNAVAILABLE_PATTERN.test(signal) || isQuotaError(signal);
+}
