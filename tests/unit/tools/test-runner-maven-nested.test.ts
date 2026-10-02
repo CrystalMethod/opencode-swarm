@@ -38,9 +38,7 @@ function mockBunSpawn(
 	} as unknown as ReturnType<typeof _internals.bunSpawn>;
 }
 
-function createTempDir(): string {
-	return canonicalMkdtemp('test-runner-maven-nested-');
-}
+const createTempDir = () => canonicalMkdtemp('test-runner-maven-nested-');
 
 function createFile(dir: string, filePath: string, content = ''): void {
 	const fullPath = path.join(dir, filePath);
@@ -84,11 +82,9 @@ describe('nested Maven module detection and execution', () => {
 		});
 
 		afterEach(() => {
-			if (priorAllowFullSuite === undefined) {
+			if (priorAllowFullSuite === undefined)
 				delete process.env.SWARM_ALLOW_FULL_SUITE;
-			} else {
-				process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
-			}
+			else process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
 		});
 
 		test('scope:all stays at root when root pom.xml exists (aggregator reactor)', async () => {
@@ -260,16 +256,8 @@ describe('nested Maven module detection and execution', () => {
 			expect(result).toBe(path.join(tempDir, 'alpha'));
 		});
 
-		// Precedence verification (F-3b): In test-runner.ts, detectJavaMaven(baseDir)
-		// runs BEFORE detectGradle and detectDotnetTest (enforcing Maven-before-dotnet order),
-		// and well before resolveMavenModuleDir. detectJavaMaven only checks existsSync(pom.xml),
-		// while detectDotnetTest calls readdirSync(cwd) to scan for a .csproj and
-		// resolveMavenModuleDir's file-less probe also calls readdirSync on the
-		// probe root. When a root pom.xml exists, detectJavaMaven returns early and
-		// neither the dotnet detector nor the nested probe is reached — so
-		// readdirSync must never be called with the probe root. Swapping the
-		// maven/dotnet order makes detectDotnetTest read the root dir first and
-		// this assertion fails.
+		// F-3b: detectJavaMaven runs before detectGradle/detectDotnetTest and
+		// resolveMavenModuleDir; root pom returns early so readdirSync never probes root.
 		test('root pom wins before the dotnet detector (readdir never probes root)', async () => {
 			createFile(tempDir, 'pom.xml', '<project/>');
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
@@ -284,9 +272,7 @@ describe('nested Maven module detection and execution', () => {
 			try {
 				const result = await detectTestFramework(tempDir);
 				expect(result).toBe('maven');
-				// Probe root argument (tempDir) must never be read by readdirSync
-				// when root pom exists: detectJavaMaven returns early without
-				// triggering resolveMavenModuleDir's probe or detectDotnetTest.
+				// Probe root (tempDir) never read: detectJavaMaven returns early.
 				expect(readdirArgs).not.toContain(path.resolve(tempDir));
 			} finally {
 				_internals.readdirSync = origReaddir;
@@ -304,11 +290,8 @@ describe('nested Maven module detection and execution', () => {
 				expect(spawnCalls.length).toBe(1);
 				expect(spawnCalls[0].opts.cwd).toBe(tempDir);
 			} finally {
-				if (priorEnv === undefined) {
-					delete process.env.SWARM_ALLOW_FULL_SUITE;
-				} else {
-					process.env.SWARM_ALLOW_FULL_SUITE = priorEnv;
-				}
+				if (priorEnv === undefined) delete process.env.SWARM_ALLOW_FULL_SUITE;
+				else process.env.SWARM_ALLOW_FULL_SUITE = priorEnv;
 			}
 		});
 	});
@@ -359,11 +342,9 @@ describe('nested Maven module detection and execution', () => {
 		});
 
 		afterEach(() => {
-			if (priorAllowFullSuite === undefined) {
+			if (priorAllowFullSuite === undefined)
 				delete process.env.SWARM_ALLOW_FULL_SUITE;
-			} else {
-				process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
-			}
+			else process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
 		});
 
 		const cases = [
