@@ -368,37 +368,37 @@ describe('nested Maven module detection and execution', () => {
 
 		const cases = [
 			{
-				name: 'win32 with both mvnw and mvnw.cmd yields mvnw.cmd',
+				name: 'win32 both -> mvnw.cmd',
 				platform: 'win32' as const,
 				files: ['mvnw', 'mvnw.cmd'],
 				expected: ['mvnw.cmd', 'test'],
 			},
 			{
-				name: 'posix with both mvnw and mvnw.cmd yields ./mvnw',
+				name: 'posix both -> ./mvnw',
 				platform: 'linux' as const,
 				files: ['mvnw', 'mvnw.cmd'],
 				expected: ['./mvnw', 'test'],
 			},
 			{
-				name: 'posix with mvnw only yields ./mvnw',
+				name: 'posix mvnw only -> ./mvnw',
 				platform: 'linux' as const,
 				files: ['mvnw'],
 				expected: ['./mvnw', 'test'],
 			},
 			{
-				name: 'neither wrapper yields mvn',
+				name: 'neither -> mvn',
 				platform: 'linux' as const,
 				files: [],
 				expected: ['mvn', 'test'],
 			},
 			{
-				name: 'win32 with lone mvnw.cmd yields mvnw.cmd',
+				name: 'win32 lone mvnw.cmd -> mvnw.cmd',
 				platform: 'win32' as const,
 				files: ['mvnw.cmd'],
 				expected: ['mvnw.cmd', 'test'],
 			},
 			{
-				name: 'posix with lone mvnw.cmd falls back to mvn',
+				name: 'posix lone mvnw.cmd -> mvn',
 				platform: 'linux' as const,
 				files: ['mvnw.cmd'],
 				expected: ['mvn', 'test'],
@@ -407,43 +407,26 @@ describe('nested Maven module detection and execution', () => {
 
 		for (const tc of cases) {
 			test(tc.name, async () => {
-				const originalPlatform = process.platform;
-				const originalBackend = process.env.SWARM_LANG_BACKEND;
+				const origPlatform = process.platform;
+				const origBackend = process.env.SWARM_LANG_BACKEND;
 				try {
 					Object.defineProperty(process, 'platform', { value: tc.platform });
-
-					// Test default dispatch backend
-					delete process.env.SWARM_LANG_BACKEND;
-					const dispatchDir = createTempDir();
-					tempDirs.push(dispatchDir);
-					createFile(dispatchDir, 'pom.xml', '<project/>');
-					for (const file of tc.files) {
-						createFile(dispatchDir, file, '');
+					for (const backend of [undefined, 'legacy']) {
+						if (backend === undefined) delete process.env.SWARM_LANG_BACKEND;
+						else process.env.SWARM_LANG_BACKEND = backend;
+						const dir = createTempDir();
+						tempDirs.push(dir);
+						createFile(dir, 'pom.xml', '<project/>');
+						for (const file of tc.files) createFile(dir, file, '');
+						spawnCalls = [];
+						await test_runner.execute({ scope: 'all' }, { directory: dir });
+						expect(spawnCalls.length).toBe(1);
+						expect(spawnCalls[0].cmd).toEqual(tc.expected);
 					}
-					spawnCalls = [];
-					await test_runner.execute({ scope: 'all' }, { directory: dispatchDir });
-					expect(spawnCalls.length).toBe(1);
-					expect(spawnCalls[0].cmd).toEqual(tc.expected);
-
-					// Test legacy backend
-					process.env.SWARM_LANG_BACKEND = 'legacy';
-					const legacyDir = createTempDir();
-					tempDirs.push(legacyDir);
-					createFile(legacyDir, 'pom.xml', '<project/>');
-					for (const file of tc.files) {
-						createFile(legacyDir, file, '');
-					}
-					spawnCalls = [];
-					await test_runner.execute({ scope: 'all' }, { directory: legacyDir });
-					expect(spawnCalls.length).toBe(1);
-					expect(spawnCalls[0].cmd).toEqual(tc.expected);
 				} finally {
-					Object.defineProperty(process, 'platform', { value: originalPlatform });
-					if (originalBackend === undefined) {
-						delete process.env.SWARM_LANG_BACKEND;
-					} else {
-						process.env.SWARM_LANG_BACKEND = originalBackend;
-					}
+					Object.defineProperty(process, 'platform', { value: origPlatform });
+					if (origBackend === undefined) delete process.env.SWARM_LANG_BACKEND;
+					else process.env.SWARM_LANG_BACKEND = origBackend;
 				}
 			});
 		}
