@@ -78,7 +78,10 @@ import {
 	WatchdogConfigSchema,
 } from './config/schema';
 import { createRoleFilterSystemHook } from './context/role-filter.js';
-import { updateContextMapAfterAgent } from './context-map/post-agent-update.js';
+import {
+	extractContextDecisionsFromContextMd,
+	updateContextMapAfterAgent,
+} from './context-map/post-agent-update.js';
 import {
 	closeDashboardServerForRootIfOwner,
 	type DashboardHandle,
@@ -5878,6 +5881,12 @@ async function initializeOpenCodeSwarm(
 								implementation_summary: agentOutput.slice(0, 500),
 								task_goal: '',
 								final_status: 'completed',
+								decisions: extractContextDecisionsFromContextMd(bootstrapRoot, {
+									agent_role:
+										resolveSessionChatAgent(input.sessionID) ??
+										swarmState.activeAgent.get(input.sessionID) ??
+										'unknown',
+								}),
 								directory: bootstrapRoot,
 							});
 						}
