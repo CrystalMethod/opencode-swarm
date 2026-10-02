@@ -34,11 +34,9 @@ describe('#3022 v2 event-name contract (mapV2EventToV1 case labels)', () => {
 			'../../../../src/host/v2/events.ts',
 		);
 		const source = fs.readFileSync(sourcePath, 'utf-8');
-		const labels = [
-			...source.matchAll(/^\t\tcase '([^']+)':/gm),
-		].map((m) => m[1] as string);
-		expect([...labels].sort()).toEqual(
-			[...FROZEN_CASE_LABELS].sort(),
+		const labels = [...source.matchAll(/^\t\tcase '([^']+)':/gm)].map(
+			(m) => m[1] as string,
 		);
+		expect([...labels].sort()).toEqual([...FROZEN_CASE_LABELS].sort());
 	});
 });
