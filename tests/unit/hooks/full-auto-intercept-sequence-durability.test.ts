@@ -11,7 +11,8 @@
  * writer derives its filename from the stamped sequence).
  *
  * Fresh-process mechanics: every behavioral case spawns real bun child
- * processes via spawnSync (array-form argv, stdin ignored, 60 s timeout) so a
+ * processes via spawnSync (array-form argv, stdin detached via stdio, 30 s
+ * child timeout) so a
  * "process restart" is genuine module-state reset, not a cache-busting trick.
  * Infra failures throw with the SEQ_TEST_INFRA: prefix so they can never be
  * confused with contract failures. Uses the `_internals.swarmState
