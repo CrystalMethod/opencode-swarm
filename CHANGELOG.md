@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.188.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.4...v7.188.5) (2026-10-02)
+
+
+### Bug Fixes
+
+* **full-auto:** durable mirror oversight sequence across restarts ([#3011](https://github.com/ZaxbyHub/opencode-swarm/issues/3011)) ([0196644](https://github.com/ZaxbyHub/opencode-swarm/commit/0196644045850d4ea5f58e6853f3c6025791fc1e))
+
 ## [7.188.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.3...v7.188.4) (2026-10-02)
 
 
