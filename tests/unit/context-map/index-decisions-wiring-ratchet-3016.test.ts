@@ -49,5 +49,12 @@ describe('src/index.ts context-map decisions wiring (#3016)', () => {
 		expect(callSite).toMatch(
 			/\?\?\s*swarmState\.activeAgent\.get\(input\.sessionID\)/,
 		);
+		// FB-004 (#3023 review): the terminal `?? 'unknown'` fallback is
+		// load-bearing — deleting it makes an undefined role bypass the
+		// helper's gate (the guard short-circuits on `!== undefined`), so the
+		// fail-closed default must be pinned at the call site too.
+		expect(callSite).toMatch(
+			/swarmState\.activeAgent\.get\(input\.sessionID\)\s*\?\?\s*'unknown'/,
+		);
 	});
 });

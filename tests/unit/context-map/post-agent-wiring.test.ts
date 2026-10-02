@@ -341,6 +341,7 @@ describe('post-agent-update wiring smoke tests (Task 4.2)', () => {
 		// - implementation_summary: agentOutput.slice(0, 500)
 		// - task_goal: '' (wiring has no goal)
 		// - final_status: 'completed' (wiring always passes 'completed')
+		// - decisions: extractContextDecisionsFromContextMd(bootstrapRoot, {...})
 		// - directory: ctx.directory (injected by createSwarmTool)
 		const agentOutput =
 			'This is a simulated long agent output that gets truncated to 500 characters by the wiring in src/index.ts using agentOutput.slice(0, 500). '.repeat(
@@ -355,6 +356,7 @@ describe('post-agent-update wiring smoke tests (Task 4.2)', () => {
 			implementation_summary: truncatedSummary,
 			task_goal: '',
 			final_status: 'completed',
+			decisions: [], // wired to extractContextDecisionsFromContextMd (#3016)
 			directory: '/fake',
 		});
 

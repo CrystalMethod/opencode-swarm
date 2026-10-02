@@ -337,7 +337,15 @@ export function selectCapsuleDecisions(
  * durable `A<n>` identity allocated at record time (#2720/#3015).
  */
 function formatDecisionLine(entry: DecisionEntry): string {
-	let line = `- [${entry.id}] ${entry.decision}`;
+	// Null/non-object entries never reach here (filtered by
+	// selectCapsuleDecisions), but a hand-mangled OBJECT entry can still lack
+	// id/decision — render a visible placeholder instead of `undefined`.
+	const id = String(entry.id ?? '').trim() !== '' ? entry.id : '?';
+	const text =
+		String(entry.decision ?? '').trim() !== ''
+			? entry.decision
+			: '(malformed entry)';
+	let line = `- [${id}] ${text}`;
 	if (String(entry.rationale ?? '').trim() !== '') {
 		line += ` — ${entry.rationale}`;
 	}

@@ -18,7 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-
+import { sanitizeContextText } from '../hooks/context-sanitizer';
 import type {
 	ContextMap,
 	DecisionEntry,
@@ -74,6 +74,16 @@ export interface ExtractContextDecisionsOptions {
  * retroactively recorded.
  */
 export const MAX_CONTEXT_MD_DECISIONS = 50;
+
+/**
+ * Character bound for the context.md content handed to the shared extractor
+ * (PR #3023 feedback FB-005). The shared extractor's own cap slices a PREFIX
+ * (oldest-first), which would invert the most-recent window for pathological
+ * file sizes and silently drop a `## Decisions` heading lying beyond the
+ * slice; this module slices from the TAIL instead so the most recent content
+ * is what gets scanned.
+ */
+export const MAX_CONTEXT_MD_CONTENT_CHARS = 1_000_000;
 
 /**
  * Parameters for updating the Context Map after an agent completes a task.
@@ -182,7 +192,13 @@ export function extractContextDecisionsFromContextMd(
 			return [];
 		}
 		const content = _internals.readFileSync(contextMdPath, 'utf-8');
-		const extracted = extractContextDecisions(content);
+		// Tail-slice before the shared extractor so the bounded scan keeps the
+		// MOST RECENT content (the extractor's internal cap slices a prefix).
+		const bounded =
+			content.length > MAX_CONTEXT_MD_CONTENT_CHARS
+				? content.slice(content.length - MAX_CONTEXT_MD_CONTENT_CHARS)
+				: content;
+		const extracted = extractContextDecisions(bounded);
 
 		const decisions: PostAgentDecision[] = [];
 		for (const entry of extracted) {
@@ -193,12 +209,19 @@ export function extractContextDecisionsFromContextMd(
 					: entry.text.slice(0, separatorIndex);
 			const rationale =
 				separatorIndex === -1 ? '' : entry.text.slice(separatorIndex + 2);
-			if (decision.trim() === '') {
+			// Empty-text bullets carry no identity; pure-marker residue (e.g. a
+			// bare checkmark the shared extractor deliberately preserves) is
+			// equally junk once the bracketed markers are gone.
+			if (decision.trim() === '' || /^[\s✅]*$/.test(decision)) {
 				continue;
 			}
 			decisions.push({
-				decision,
-				rationale,
+				// #3023 review PRR-001: the same source file is sanitized by
+				// every other injection consumer (curator, system-enhancer,
+				// extractors); persisted and capsule-rendered decision text
+				// must pass the shared sanitizer too.
+				decision: sanitizeContextText(decision),
+				rationale: sanitizeContextText(rationale),
 				...(entry.phase === null ? {} : { phase: entry.phase }),
 			});
 		}
@@ -211,6 +234,16 @@ export function extractContextDecisionsFromContextMd(
 		return [];
 	}
 }
+
+/**
+ * Upper bound for the PERSISTED decisions log in `.swarm/context-map.json`
+ * (PR #3023 feedback FB-002). The log is append-only within this window:
+ * after each update the most recent entries are kept and older ones are
+ * trimmed at save time, so reworded decision variants cannot grow the file
+ * without bound. The capsule read surface is additionally capped by
+ * `MAX_CAPSULE_DECISIONS` in the capsule builder.
+ */
+export const MAX_PERSISTED_DECISIONS = 200;
 
 /**
  * Derive a TaskContextSummary-compatible final_status from the agent's
@@ -679,6 +712,17 @@ export function updateContextMapAfterAgent(
 				map = _internals.appendDecision(map, decision);
 				nextSuffix += 1n;
 			}
+		}
+
+		// Bound the persisted log (FB-002): keep the most recent entries when
+		// the append-only log exceeds the window.
+		if (map.decisions.length > MAX_PERSISTED_DECISIONS) {
+			map = {
+				...map,
+				decisions: map.decisions.slice(
+					map.decisions.length - MAX_PERSISTED_DECISIONS,
+				),
+			};
 		}
 
 		// 5. Save and return

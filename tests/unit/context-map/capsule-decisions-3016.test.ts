@@ -141,6 +141,21 @@ describe('buildCapsule decisions section (#3016)', () => {
 		expect(capsule.content).toContain('- [A7] Bare decision\n');
 	});
 
+	test('empty-object entry renders a placeholder, never undefined (#3023 PRR-009)', () => {
+		const dir = makeMapProject([{} as unknown as DecisionEntry]);
+		const { capsule } = buildCapsule({
+			task_id: '1.1',
+			agent_role: 'critic',
+			delegation_reason: 'critic_plan_review',
+			files_in_scope: [],
+			task_goal: 'g',
+			directory: dir,
+		});
+		expect(capsule.content).toContain('## Decisions');
+		expect(capsule.content).toContain('(malformed entry)');
+		expect(capsule.content).not.toContain('undefined');
+	});
+
 	test('null/malformed stored entries are skipped, not thrown on (#3016 review)', () => {
 		const dir = makeMapProject([
 			null,
