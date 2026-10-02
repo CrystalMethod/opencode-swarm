@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.188.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.5...v7.188.6) (2026-10-02)
+
+
+### Bug Fixes
+
+* **ci:** diff release-owned files from the merge-base ([#2997](https://github.com/ZaxbyHub/opencode-swarm/issues/2997)) ([de21735](https://github.com/ZaxbyHub/opencode-swarm/commit/de21735d56cbd4b00a02e083146443e8b31cdb0f))
+* **ci:** diff release-owned files from the merge-base ([#2997](https://github.com/ZaxbyHub/opencode-swarm/issues/2997)) ([eb8ec26](https://github.com/ZaxbyHub/opencode-swarm/commit/eb8ec268573f923e80c5186e413f1a3e52f57813))
+* **models:** rotate default models onto the verified zen keyless roster and fire model-unavailable fallback on v2 ([17d4d53](https://github.com/ZaxbyHub/opencode-swarm/commit/17d4d538c16748cda66bccd6009d936c64ebf8fd))
+* **models:** rotate default models onto the verified zen keyless roster and fire model-unavailable fallback on v2 ([#3022](https://github.com/ZaxbyHub/opencode-swarm/issues/3022)) ([785064a](https://github.com/ZaxbyHub/opencode-swarm/commit/785064add0493b23348e35dd482e572d7735aecd))
+* **v2:** per-agent registration hold, sticky-error narrowing, and normalized fallback modelString ([#3029](https://github.com/ZaxbyHub/opencode-swarm/issues/3029) review followup) ([a57d0bf](https://github.com/ZaxbyHub/opencode-swarm/commit/a57d0bf771a7049f96ef4fc1ec37fc07e5869d0f))
+* **v2:** per-agent registration hold, sticky-error narrowing, normalized fallback modelString ([#3029](https://github.com/ZaxbyHub/opencode-swarm/issues/3029) review followup) ([115c8d3](https://github.com/ZaxbyHub/opencode-swarm/commit/115c8d33f6e8372a1e0bb592f6e5f916f0de8a0d))
+
 ## [7.188.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.4...v7.188.5) (2026-10-02)
 
 
