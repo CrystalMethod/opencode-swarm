@@ -24,6 +24,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
+import { withFrozenClock } from '../../helpers/test-clock';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..', '..');
@@ -190,9 +191,9 @@ function runChild(
 ): ChildOutcome {
 	const res = spawnSync(process.execPath, [childScript, workDir, ...args], {
 		cwd,
-		// spawnSync's real option is stdio (not stdin); 'ignore' detaches the
-		// child from our pipes so it can never block on a never-closed stdin.
-		stdio: 'ignore',
+		// spawnSync's real option is stdio (not stdin): ignore stdin only and
+		// pipe stdout/stderr so the child's observables stay capturable.
+		stdio: ['ignore', 'pipe', 'pipe'],
 		timeout: 30_000,
 		encoding: 'utf-8',
 	});
@@ -356,11 +357,19 @@ describe('issue #3011 — mirror oversight_sequence durability', () => {
 					'utf-8',
 				);
 			}
-			const decision = verifyFullAutoPhaseApproval(
-				tmpBase,
-				'sess-gaps',
-				1,
-				{} as Parameters<typeof verifyFullAutoPhaseApproval>[3],
+			// The fixture timestamp is a fixed literal; freeze the read clock just
+			// after it so phase-approval's 24h staleness TTL can never age the
+			// record out (deterministic regardless of when the suite runs).
+			const FROZEN_NOW = Date.parse('2026-10-01T00:00:00.000Z') + 1_000;
+			const decision = withFrozenClock(
+				() =>
+					verifyFullAutoPhaseApproval(
+						tmpBase,
+						'sess-gaps',
+						1,
+						{} as Parameters<typeof verifyFullAutoPhaseApproval>[3],
+					),
+				{ fixedNow: FROZEN_NOW },
 			);
 			expect(decision.ok).toBe(true);
 		} finally {
