@@ -201,7 +201,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * they fire ONLY when the user explicitly wrote the key — schema defaults never
  * produce noise (same contract as the #2102 raw collectors above). The inert set
  * comes from CONFIG_CONSUMERS (`src/config/consumers.ts`), the single
- * declaration of consumer truth enforced by `bun run check:config-consumption`.
+ * declaration of consumer truth enforced by `bun run scripts/check-config-consumption.ts`.
  */
 function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
 	const findings: ConfigFinding[] = [];

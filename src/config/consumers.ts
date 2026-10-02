@@ -3,8 +3,9 @@
  * WHICH production code consumes each top-level `PluginConfigSchema` key.
  *
  * Every key MUST declare either `consumers` (repo-relative `path:symbol` citations,
- * each verified by `bun run check:config-consumption`) or `inert` (a reason string;
- * `/swarm config doctor` then warns when a user's config file sets the key).
+ * each verified by `bun run scripts/check-config-consumption.ts`) or `inert` (a
+ * reason string; `/swarm config doctor` then warns when a user's config file
+ * sets the key).
  * Exhaustive by construction: `Record<TopLevelConfigKey, ...>` fails `bun run typecheck`
  * the moment a schema key is added without an entry here.
  *
@@ -23,7 +24,10 @@ import type { PluginConfigSchema } from './schema.js';
 
 export type TopLevelConfigKey = keyof typeof PluginConfigSchema.shape;
 
-/** `'src/path/to/file.ts:symbol'` - the symbol is the enclosing exported declaration. */
+/** `'src/path/to/file.ts:symbol'` - the symbol is a representative exported
+ * declaration in the cited file. The gate verifies the symbol is DECLARED in the
+ * file and that the FILE references the key (file-level reference; the symbol
+ * anchors the citation for human readers, it does not scope the search). */
 export type ConsumerCitation = string;
 
 export type ConfigConsumerDeclaration =

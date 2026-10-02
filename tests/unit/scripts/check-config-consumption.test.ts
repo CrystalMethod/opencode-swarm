@@ -116,6 +116,67 @@ describe('check-config-consumption — matching model', () => {
 			),
 		).toBe(false);
 	});
+	it('escaped-backtick template does not desync the scanner (both key reads validate)', () => {
+		// Round-4 F-3 pin (real instance: commands/skill-opt.ts:123): the escaped
+		// backticks inside the template must not toggle quote state, so the real
+		// accesses before AND after the template both still validate.
+		const before = 'export const label = cfg.future_dead;\n';
+		const template =
+			'const block = `\\`\\`\\`json\\n${JSON.stringify(x)}\\n\\`\\`\\`;\n';
+		const after = '\nexport const tail = cfg.future_dead;\n';
+		const src = before + template + after;
+		expect(
+			keyReferenced(
+				'future_dead',
+				scanSource(src, ''),
+				scanSource(src, 'future_dead'),
+			),
+		).toBe(true);
+	});
+	it('a brace-bearing string inside an interpolation does not desync the scanner', () => {
+		// Round-4 F-3 pin: `{`/`}` inside a string argument inside ${...} must not
+		// confuse the brace-depth walk — the real read still validates.
+		const src =
+			"export const label = `${fmt('{')} ${cfg['future_dead']}`;\nexport const a = 1;\n";
+		expect(
+			keyReferenced(
+				'future_dead',
+				scanSource(src, ''),
+				scanSource(src, 'future_dead'),
+			),
+		).toBe(true);
+	});
+	it('a comment inside an interpolation containing .KEY does not validate', () => {
+		// Round-4 F-3 pin: comment stripping applies inside ${...} code, so a
+		// commented-out read never counts.
+		const src =
+			"export const label = `${/* cfg.future_dead */ 'x'}`;\nexport const a = 1;\n";
+		expect(
+			keyReferenced(
+				'future_dead',
+				scanSource(src, ''),
+				scanSource(src, 'future_dead'),
+			),
+		).toBe(false);
+	});
+	it('cfg.KEY inside a help-text string does not validate (member form in string)', () => {
+		// Round-2/round-4 pin: code-shaped text in string contents is masked, so
+		// `.future_dead` in help text, template text, and path strings never counts.
+		const cases = [
+			'export const HELP = "set cfg.future_dead to true for speed";\nexport const a = 1;\n',
+			'export const PROMPT = `toggle .future_dead when needed`;\nexport const a = 1;\n',
+			"export const GIT_DIR = join(root, '.future_dead');\nexport const a = 1;\n",
+		];
+		for (const src of cases) {
+			expect(
+				keyReferenced(
+					'future_dead',
+					scanSource(src, ''),
+					scanSource(src, 'future_dead'),
+				),
+			).toBe(false);
+		}
+	});
 	it('real bracket access, case labels, and interpolation reads validate', () => {
 		const bracket =
 			"export function readCfg(cfg: Record<string, unknown>) {\n\treturn cfg['future_dead'] === true;\n}\n";
