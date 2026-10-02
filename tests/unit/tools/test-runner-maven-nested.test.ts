@@ -261,8 +261,8 @@ describe('nested Maven module detection and execution', () => {
 		});
 
 		// Precedence verification (F-3b): In test-runner.ts, detectJavaMaven(baseDir)
-		// runs BEFORE detectGradle and detectDotnetTest, and well before
-		// resolveMavenModuleDir. detectJavaMaven only checks existsSync(pom.xml),
+		// runs BEFORE detectGradle and detectDotnetTest (enforcing Maven-before-dotnet order),
+		// and well before resolveMavenModuleDir. detectJavaMaven only checks existsSync(pom.xml),
 		// while detectDotnetTest calls readdirSync(cwd) to scan for a .csproj and
 		// resolveMavenModuleDir's file-less probe also calls readdirSync on the
 		// probe root. When a root pom.xml exists, detectJavaMaven returns early and
