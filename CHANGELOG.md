@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.188.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.3...v7.188.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **context-map:** record and surface decisions end-to-end ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([66e91f6](https://github.com/ZaxbyHub/opencode-swarm/commit/66e91f645cfe304b6dfbcff379514bd089f692c0))
+* **context-map:** record and surface decisions end-to-end ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([9d0efd8](https://github.com/ZaxbyHub/opencode-swarm/commit/9d0efd814b51fdb7acf5600cd88cde92d8616afe))
+* **context-map:** resolve review findings on decisions wiring ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([b7a53ef](https://github.com/ZaxbyHub/opencode-swarm/commit/b7a53ef01809304d58b856681368575f9f758c85))
+* **context-map:** resolve swarm-pr-review findings on decisions pipeline ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([fd0ce4d](https://github.com/ZaxbyHub/opencode-swarm/commit/fd0ce4d8e9d702a6dd3904c350abe092a50e1711))
+* **context-map:** restore RoleProfile import in capsule types test ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([91b818f](https://github.com/ZaxbyHub/opencode-swarm/commit/91b818f7393cd18da69642babcff93748b5c6cd8))
+* **lang:** parse .tsx with the tsx grammar in syntax_check ([#3013](https://github.com/ZaxbyHub/opencode-swarm/issues/3013)) ([b5bc780](https://github.com/ZaxbyHub/opencode-swarm/commit/b5bc780749b4ae195c2788a7ab8f62d1d97451de))
+
 ## [7.188.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.2...v7.188.3) (2026-10-01)
 
 
