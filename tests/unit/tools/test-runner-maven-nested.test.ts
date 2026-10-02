@@ -350,6 +350,105 @@ describe('nested Maven module detection and execution', () => {
 		});
 	});
 
+	describe('F-3c wrapper and executable argv table', () => {
+		let priorAllowFullSuite: string | undefined;
+
+		beforeEach(() => {
+			priorAllowFullSuite = process.env.SWARM_ALLOW_FULL_SUITE;
+			process.env.SWARM_ALLOW_FULL_SUITE = '1';
+		});
+
+		afterEach(() => {
+			if (priorAllowFullSuite === undefined) {
+				delete process.env.SWARM_ALLOW_FULL_SUITE;
+			} else {
+				process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
+			}
+		});
+
+		const cases = [
+			{
+				name: 'win32 with both mvnw and mvnw.cmd yields mvnw.cmd',
+				platform: 'win32' as const,
+				files: ['mvnw', 'mvnw.cmd'],
+				expected: ['mvnw.cmd', 'test'],
+			},
+			{
+				name: 'posix with both mvnw and mvnw.cmd yields ./mvnw',
+				platform: 'linux' as const,
+				files: ['mvnw', 'mvnw.cmd'],
+				expected: ['./mvnw', 'test'],
+			},
+			{
+				name: 'posix with mvnw only yields ./mvnw',
+				platform: 'linux' as const,
+				files: ['mvnw'],
+				expected: ['./mvnw', 'test'],
+			},
+			{
+				name: 'neither wrapper yields mvn',
+				platform: 'linux' as const,
+				files: [],
+				expected: ['mvn', 'test'],
+			},
+			{
+				name: 'win32 with lone mvnw.cmd yields mvnw.cmd',
+				platform: 'win32' as const,
+				files: ['mvnw.cmd'],
+				expected: ['mvnw.cmd', 'test'],
+			},
+			{
+				name: 'posix with lone mvnw.cmd falls back to mvn',
+				platform: 'linux' as const,
+				files: ['mvnw.cmd'],
+				expected: ['mvn', 'test'],
+			},
+		];
+
+		for (const tc of cases) {
+			test(tc.name, async () => {
+				const originalPlatform = process.platform;
+				const originalBackend = process.env.SWARM_LANG_BACKEND;
+				try {
+					Object.defineProperty(process, 'platform', { value: tc.platform });
+
+					// Test default dispatch backend
+					delete process.env.SWARM_LANG_BACKEND;
+					const dispatchDir = createTempDir();
+					tempDirs.push(dispatchDir);
+					createFile(dispatchDir, 'pom.xml', '<project/>');
+					for (const file of tc.files) {
+						createFile(dispatchDir, file, '');
+					}
+					spawnCalls = [];
+					await test_runner.execute({ scope: 'all' }, { directory: dispatchDir });
+					expect(spawnCalls.length).toBe(1);
+					expect(spawnCalls[0].cmd).toEqual(tc.expected);
+
+					// Test legacy backend
+					process.env.SWARM_LANG_BACKEND = 'legacy';
+					const legacyDir = createTempDir();
+					tempDirs.push(legacyDir);
+					createFile(legacyDir, 'pom.xml', '<project/>');
+					for (const file of tc.files) {
+						createFile(legacyDir, file, '');
+					}
+					spawnCalls = [];
+					await test_runner.execute({ scope: 'all' }, { directory: legacyDir });
+					expect(spawnCalls.length).toBe(1);
+					expect(spawnCalls[0].cmd).toEqual(tc.expected);
+				} finally {
+					Object.defineProperty(process, 'platform', { value: originalPlatform });
+					if (originalBackend === undefined) {
+						delete process.env.SWARM_LANG_BACKEND;
+					} else {
+						process.env.SWARM_LANG_BACKEND = originalBackend;
+					}
+				}
+			});
+		}
+	});
+
 	describe('file-less scope guards with nested Maven detection', () => {
 		test('scope=convention with no files and no targets returns the explicit guard error', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
