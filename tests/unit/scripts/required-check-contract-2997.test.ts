@@ -446,4 +446,51 @@ describe('issue #2997 release-owner guard merge-base diff semantics', () => {
 			rmSync(f.root, { recursive: true, force: true });
 		}
 	}, 20_000);
+
+	test('merge_group base comparison is case-insensitive (uppercase declared base)', () => {
+		const f = buildFixture();
+		try {
+			// git prints merge-base output in lowercase hex; the declared
+			// base_sha must compare equal regardless of casing, so dropping
+			// the declared-base side's toLowerCase() makes this throw
+			// /is not the merge-base/ (the merge-base-output side is an
+			// equivalent mutant: git never emits uppercase OIDs).
+			expect(
+				changedFilesForGuard(
+					f.root,
+					guardContext(
+						f.mainTip.toUpperCase(),
+						f.ownerGroupHead,
+						'merge_group',
+					),
+				),
+			).toEqual(['package.json']);
+		} finally {
+			rmSync(f.root, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	test('fail closed when the merge-base output is not a 40-hex SHA (sha256 repo)', () => {
+		const root = canonicalMkdtemp('required-check-2997-sha256-');
+		try {
+			// A sha256-object-format repository makes `git merge-base` exit 0
+			// while printing a 64-hex OID: this exercises the value-validation
+			// leg of the fail-closed throw (the orphan-history test covers only
+			// the exit-code leg). Removing the isCommitSha check would let the
+			// guard proceed to an owner-file diff and return [] instead.
+			git(root, 'init', '-q', '-b', 'main', '--object-format=sha256');
+			git(root, 'config', 'user.email', 'test@example.com');
+			git(root, 'config', 'user.name', 'Test');
+			writeFileSync(join(root, 'README.md'), 'base\n');
+			git(root, 'add', '.');
+			git(root, 'commit', '-q', '-m', 'sha256 root');
+			const head = git(root, 'rev-parse', 'HEAD');
+			expect(head).toMatch(/^[0-9a-f]{64}$/);
+			expect(() =>
+				changedFilesForGuard(root, guardContext(head, head)),
+			).toThrow(/cannot resolve merge-base/);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 20_000);
 });

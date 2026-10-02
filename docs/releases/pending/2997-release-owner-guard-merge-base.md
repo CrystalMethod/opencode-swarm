@@ -61,6 +61,10 @@ issue-requested two-dot vs merge-base contrast across a release-please-style
 merge (clean PR accepted), genuine-edit true positive with message precision,
 merge_group equivalence for single-PR and chained two-PR batches, and both
 fail-closed legs (unresolvable merge-base; merge_group base that is not the
-merge-base). The existing `required-check-contract-wiring-2677.test.ts` pins
+merge-base). A review round added mutation pins for the two fail-closed
+sub-conditions: the merge_group base comparison is pinned case-insensitive
+(uppercase declared base), and a sha256-object-format fixture exercises the
+non-40-hex merge-base value leg that the orphan-history test cannot reach.
+The existing `required-check-contract-wiring-2677.test.ts` pins
 are unchanged (`releaseOwnerDiffArgs` still emits the bounded two-dot pathspec
 diff; it now receives the resolved merge-base).

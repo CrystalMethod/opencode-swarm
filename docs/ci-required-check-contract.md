@@ -89,3 +89,8 @@ merge can never produce an unauthorized-edit accusation. Merge-group ranges
 are constructed on top of their declared `base_sha`, so their merge-base
 resolves to the declared base; the guard enforces that equivalence and fails
 closed if it ever does not hold.
+
+The job's bootstrap leg — reachable only while the checker itself is absent
+at the base SHA, i.e. the pull request introducing it — keeps a raw two-dot
+owner-file diff and permits only an empty one, so it fails in the safe
+direction and never substitutes for the merge-base semantics above.
