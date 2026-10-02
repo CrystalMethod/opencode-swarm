@@ -240,6 +240,7 @@ import {
 	recordDeniedToolCall,
 } from './hooks/trajectory-logger';
 import { estimateTokens } from './hooks/utils';
+import { applyV2AgentModelOverride } from './host/v2/model-apply';
 import {
 	openCodeSwarmV2Setup,
 	type V2SetupDependencies,
@@ -3928,13 +3929,30 @@ async function initializeOpenCodeSwarm(
 						errorSignal &&
 						isRetryableProviderFailure(classifyProviderFailure(errorSignal))
 					) {
-						advancePendingTaskModelRoute({
+						const routedAdvance = advancePendingTaskModelRoute({
 							childSessionID,
 							role: route.role,
 							actionDigest: route.actionDigest,
 							primaryModel: routeModel.primaryModel,
 							fallbackModels: routeModel.fallbackModels,
 						});
+						// Issue #3022 (AC3): on v2 hosts the advanced model has no
+						// output.message.model surface to land on — rewrite the
+						// REGISTERED agent's model reference (exact name; the v2
+						// editor is create-or-update and a bare role key would
+						// mint a phantom agent on multi-swarm configs). No-op on v1.
+						if (routedAdvance?.accepted && !routedAdvance.exhausted) {
+							const chainModel =
+								routedAdvance.fallbackIndex === 0
+									? routeModel.primaryModel
+									: routeModel.fallbackModels[routedAdvance.fallbackIndex - 1];
+							if (typeof chainModel === 'string' && chainModel.length > 0) {
+								void applyV2AgentModelOverride(
+									routeModel.exactAgentName,
+									chainModel,
+								);
+							}
+						}
 					} else if (
 						!route &&
 						routeModel &&
@@ -3986,6 +4004,14 @@ async function initializeOpenCodeSwarm(
 									{
 										dedupeKey: `[primary-model-fallback:${routeModel.role}]`,
 									},
+								);
+								// Issue #3022 (AC3): apply the advanced model on v2
+								// hosts by rewriting the REGISTERED agent's model
+								// reference (no-op on v1, where the chat-boundary
+								// override owns application).
+								void applyV2AgentModelOverride(
+									routeModel.exactAgentName,
+									advanced.modelString,
 								);
 							}
 						}

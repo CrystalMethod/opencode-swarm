@@ -56,7 +56,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 ```json
 {
   "agents": {
-    "coder": { "model": "opencode/minimax-m2.5-free" },
+    "coder": { "model": "opencode/nemotron-3-ultra-free" },
     "reviewer": { "model": "opencode/big-pickle" }
   }
 }
