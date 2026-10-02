@@ -30,6 +30,10 @@ describe('check-config-consumption — citation paths', () => {
 		expect(citationAllowed('src/config/schema.ts')).toBe(false);
 		expect(citationAllowed('lib/config.ts')).toBe(false);
 		expect(citationAllowed('../etc/passwd')).toBe(false);
+		// Final-critic round 1: the declaration file references every key (the
+		// Record is exhaustive), so a self-citation would let a dead key certify
+		// itself — declaration-definition is not consumption.
+		expect(citationAllowed('src/config/consumers.ts')).toBe(false);
 	});
 	it('canonicalizes path aliases before the path rules', () => {
 		// dotdot alias of the doctor file canonicalizes to the doctor file

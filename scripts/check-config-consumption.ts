@@ -40,6 +40,10 @@ export const DOCTOR_FILE_EXEMPT = new Set(['$schema', 'config_format_version']);
 /** DI/test seams — not consumers regardless of what the surrounding file reads. */
 export const SEAM_SYMBOLS = new Set(['_internals', '_test_exports']);
 const SCHEMA_FILE = 'src/config/schema.ts';
+/** The declaration file itself references every key (the Record is exhaustive),
+ * so a self-citation would let a dead key certify itself — declaration-definition
+ * is not consumption, same rationale as the schema.ts ban. */
+const DECLARATION_FILE = 'src/config/consumers.ts';
 
 /** Reserved introducers whose final word-chars would otherwise read as an identifier
  * before an array literal (`return ['KEY']`, `yield ['KEY']`, ...). */
@@ -254,6 +258,7 @@ export function citationAllowed(file: string): boolean {
 	if (!f.startsWith('src/')) return false;
 	if (lower.endsWith('.test.ts') || lower.endsWith('.test.tsx')) return false;
 	if (lower === SCHEMA_FILE) return false;
+	if (lower === DECLARATION_FILE) return false;
 	return true;
 }
 
@@ -337,7 +342,7 @@ export function collectFindings(opts: CollectOptions): ConsumptionFinding[] {
 					kind: 'path-not-allowed',
 					key,
 					citation: citeCanon,
-					detail: `citations must live in non-test src/** and never in ${SCHEMA_FILE} (schema-definition is not consumption)`,
+					detail: `citations must live in non-test src/** and never in ${SCHEMA_FILE} or ${DECLARATION_FILE} (schema/declaration-definition is not consumption)`,
 				});
 				continue;
 			}
