@@ -32,11 +32,11 @@ import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { canonicalMkdtemp } from '../../helpers/tmpdir';
 import {
 	FULL_AUTO_OVERSIGHT_EVIDENCE_FILE_RE,
 	fullAutoOversightEvidenceFileName,
 } from '../../../src/full-auto/evidence-names';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..', '..');
