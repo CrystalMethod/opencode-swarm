@@ -3,11 +3,15 @@
  *
  * The settlement loop admits tasks by the session's in-memory
  * `taskWorkflowStates` while the dispatch side reads the durable evidence.
- * A durable-only Stage A writer (recover_rework_task / recover_stage_a_task /
- * stage-a-repair, or a mechanical write landing on another session's map)
- * leaves the views diverged, and every later reviewer/test_engineer verdict
- * was silently skipped before any #2817 drop site — no gate write, no
- * advisory, no recovery short of a fresh session (the frozen checks in
+ * Covered durable-only writers: recover_rework_task (rework_required views)
+ * and the idle-start recoveries (recover_stage_a_task / stage-a-repair from
+ * idle, or a mechanical write landing on another session's map). NOT covered
+ * (unchanged behavior): recovery from a BLOCKED in-memory view — the
+ * at-or-above guard refuses to overwrite it (writer-side refresh tracked as
+ * a follow-up issue). Such a writer leaves the views diverged, and every
+ * later reviewer/test_engineer verdict was silently skipped before any
+ * #2817 drop site — no gate write, no advisory, no recovery short of a
+ * fresh session (the frozen checks in
  * .agents/issue-traces/3032-reset-session-stage-b-gate-persistence/repro/
  * pin the full reset-session journey; this file pins the two resync layers
  * and their boundaries on the plain seeding surface).

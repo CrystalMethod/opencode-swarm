@@ -3495,19 +3495,27 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
 /**
  * Issue #3032: a Stage B settlement admits tasks by the session's in-memory
  * workflow view while the dispatch side reads the durable evidence, so a
- * durable-only writer (recover_rework_task / recover_stage_a_task /
- * stage-a-repair, or a mechanical Stage A write landing on another session's
- * map) can wedge every later verdict silently. A stale view is repairable
- * when it is absent, rework_required (WORKFLOW_STATE_RANK is a plan-vs-
- * evidence PRECEDENCE order, not a workflow progress order — rework_required
- * ranks ABOVE the Stage B eligible states even though rework_required ->
- * pre_check_passed is forward progress), or ranks below it: idle /
- * coder_delegated always, and pre_check_passed when the durable state is
- * reviewer_run. An at-or-above view (tests_run / blocked / closed /
- * complete) is never overwritten: completion permissively admits only
- * tests_run / complete (blocked and closed are terminal), and the map-ahead
- * shape needs its missing non-Stage B gate, not a reviewer/test_engineer
- * re-run.
+ * durable-only writer can wedge every later verdict silently. The COVERED
+ * writers: recover_rework_task (rework_required views) and the idle-start
+ * recoveries — recover_stage_a_task / stage-a-repair from idle, or a
+ * mechanical Stage A write landing on another session's map — whose views
+ * are absent, rework_required, or rank below the durable eligible state.
+ * NOT covered: recovery from a BLOCKED in-memory view (recover_stage_a_task
+ * / stage-a-repair also accept blocked starts) — blocked is at-or-above and
+ * this guard refuses to overwrite it, so that shape still needs a fresh
+ * session; a writer-side refresh is tracked as a follow-up issue. A stale
+ * view is repairable when it is absent, rework_required (WORKFLOW_STATE_RANK
+ * is a plan-vs-evidence PRECEDENCE order, not a workflow progress order —
+ * rework_required ranks ABOVE the Stage B eligible states even though
+ * rework_required -> pre_check_passed is forward progress), or ranks below
+ * the durable eligible state (idle / coder_delegated always, and
+ * pre_check_passed when the durable state is reviewer_run). An at-or-above
+ * view (tests_run / blocked / closed / complete) is never overwritten:
+ * completion permissively admits only tests_run / complete (blocked and
+ * closed are terminal), a tests_run-ahead view needs its missing non-Stage
+ * B gate rather than a reviewer/test_engineer re-run, and a blocked view
+ * over eligible durable evidence is the uncovered blocked-start recovery
+ * above.
  */
 function isRepairableStageBView(
 	existingView: TaskWorkflowState | undefined,
