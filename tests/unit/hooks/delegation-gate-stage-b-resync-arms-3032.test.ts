@@ -205,9 +205,13 @@ ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
 ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
 			},
 		);
-		// Divergence after dispatch: stale in-memory view AND the durable state
-		// rewound to genuinely ineligible (settlement-failed recovery shape).
-		session.taskWorkflowStates.set(TASK_ID, 'rework_required');
+		// Divergence after dispatch: an at-or-above in-memory view (the barrier
+		// over-advance shape, map tests_run) AND the durable state rewound to
+		// genuinely ineligible (settlement-failed recovery shape). The views are
+		// deliberately DIVERGENT so the arm's effect is observable: with the
+		// arm intact the map stays tests_run; with the arm removed the resync
+		// would downgrade the map to rework_required (rank 5 > 4).
+		session.taskWorkflowStates.set(TASK_ID, 'tests_run');
 		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
 			type: 'accepted_mutation',
 			agentType: 'coder',
@@ -227,8 +231,9 @@ ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
 			},
 			{ output: APPROVED_OUTPUT },
 		);
-		// Durable rework_required is not Stage B eligible: no resync, no gate.
-		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('rework_required');
+		// Durable rework_required is not Stage B eligible: no resync (the
+		// map-ahead view is never downgraded), no gate.
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('tests_run');
 		const evidence = await readTaskEvidence(tempDir, TASK_ID);
 		expect(evidence?.gates?.reviewer).toBeUndefined();
 	});
