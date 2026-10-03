@@ -117,6 +117,7 @@ import {
 	markStageBRouteRequired,
 	recordStageBCompletion,
 	reserveStageBRouteEvidence,
+	setDispatchParent,
 	swarmState,
 	updateTaskWorkflowCache,
 } from '../state';
@@ -3831,6 +3832,13 @@ export function createDelegationGateHook(
 		parentSessionID: string;
 		childSessionID: string;
 	}): Promise<void> => {
+		// Issue #3036: record the host-observed dispatch pair BEFORE any early
+		// return below — reviewer/test-engineer children return at the
+		// SCOPE_NOT_DECLARED guard and never reach ensureAgentSession, yet their
+		// knowledge_receipt filings still need the lineage to authorize against
+		// the architect-stamped membership. The parent id here is the host's
+		// `part.sessionID`, never tool-controlled metadata.
+		setDispatchParent(input.childSessionID, input.parentSessionID);
 		const bindRouteChildSession = (): void => {
 			const routeBindings = stageBRouteSlotByCallID.get(input.callID);
 			if (!routeBindings) return;

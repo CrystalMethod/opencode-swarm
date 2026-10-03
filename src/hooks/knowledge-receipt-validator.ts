@@ -50,6 +50,12 @@ export interface ReceiptValidationContext {
 	cohort_id?: string;
 	source_link_id?: string;
 	grace_days?: number;
+	/**
+	 * Issue #3036: additional sessions authorized to file this receipt beyond
+	 * the filer itself, resolved server-side from registered dispatch lineage
+	 * by the knowledge_receipt tool (the filer plus its dispatch parent).
+	 */
+	authorized_filing_sessions?: string[];
 	items: ReceiptItem[];
 	no_relevant_knowledge: boolean;
 }
@@ -81,6 +87,8 @@ export type ReceiptValidationResult =
 			rejected_items?: Array<{
 				item: ReceiptItem;
 				reason: ReceiptRejectReason;
+				/** Issue #3036: named-mismatch + remedy text for wrong_session rejections. */
+				detail?: string;
 			}>;
 	  }
 	| {
@@ -91,6 +99,8 @@ export type ReceiptValidationResult =
 			rejected_items?: Array<{
 				item: ReceiptItem;
 				reason: ReceiptRejectReason;
+				/** Issue #3036: named-mismatch + remedy text for wrong_session rejections. */
+				detail?: string;
 			}>;
 	  };
 
@@ -169,6 +179,7 @@ export async function validateReceipt(
 		cohort_id: ctx.cohort_id,
 		source_link_id: ctx.source_link_id,
 		grace_days: ctx.grace_days,
+		authorized_filing_sessions: ctx.authorized_filing_sessions,
 		items: items.map((item) => ({
 			entry_id: item.id,
 			outcome: item.outcome,
@@ -203,6 +214,15 @@ export async function validateReceipt(
 	const idempotent_skips = committed.idempotent
 		.map((id) => takeItem(id))
 		.filter((item): item is ReceiptItem => item !== undefined);
+	const wrongSessionStamps = committed.wrong_session_membership_sessions ?? {};
+	// Issue #3036: name both sides of a session mismatch plus the sanctioned
+	// remedy (#2817 visibility posture) — a bare reason code is a dead end for
+	// a legitimately re-dispatched filer.
+	const wrongSessionDetail = (id: string): string | undefined => {
+		const stamp = wrongSessionStamps[id];
+		if (!stamp) return undefined;
+		return `wrong_session for id ${id}: knowledge captured in session ${stamp} but filed from ${ctx.session_id}; file from the capturing session or its dispatched child (after a reset-session, a re-dispatched child is authorized), or surface fresh knowledge via knowledge_recall`;
+	};
 	const rejected_items = committed.rejected.map((item) => ({
 		item: takeItem(item.entry_id) ?? {
 			id: item.entry_id,
@@ -215,10 +235,19 @@ export async function validateReceipt(
 		accepted.length === 0 &&
 		idempotent_skips.length === 0
 	) {
+		const first = rejected_items[0];
 		return reject(
-			rejected_items[0].reason,
-			`${rejected_items[0].reason} for id ${rejected_items[0].item.id}`,
-			rejected_items,
+			first.reason,
+			wrongSessionDetail(first.item.id) ??
+				`${first.reason} for id ${first.item.id}`,
+			rejected_items.map((entry) =>
+				entry.reason === 'wrong_session'
+					? {
+							...entry,
+							detail: wrongSessionDetail(entry.item.id),
+						}
+					: entry,
+			),
 		);
 	}
 
@@ -272,7 +301,18 @@ export async function validateReceipt(
 		...(committed.terminal_event_id
 			? { no_relevant_event_id: committed.terminal_event_id }
 			: {}),
-		...(rejected_items.length ? { rejected_items } : {}),
+		...(rejected_items.length
+			? {
+					rejected_items: rejected_items.map((entry) =>
+						entry.reason === 'wrong_session'
+							? {
+									...entry,
+									detail: wrongSessionDetail(entry.item.id),
+								}
+							: entry,
+					),
+				}
+			: {}),
 	};
 }
 

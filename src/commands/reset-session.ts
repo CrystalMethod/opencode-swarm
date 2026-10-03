@@ -172,10 +172,17 @@ async function releaseKnowledgeGateObligations(
 			releasedPairs.push(`${traceId}/${item.entry_id}`);
 		}
 		if (committed.rejected.length > 0) {
+			const reasons = committed.rejected.map((item) => item.reason).join('; ');
+			// Issue #3036: append the session-mismatch naming and remedy after the
+			// existing reasons (the shipped message prefix stays byte-identical).
+			const hasWrongSession = committed.rejected.some(
+				(item) => item.reason === 'wrong_session',
+			);
 			results.push(
-				`⚠️ Partially released trace ${sanitizeDiagnosticText(traceId, 64)}: ${committed.rejected
-					.map((item) => item.reason)
-					.join('; ')}`,
+				`⚠️ Partially released trace ${sanitizeDiagnosticText(traceId, 64)}: ${reasons}` +
+					(hasWrongSession
+						? ` — knowledge captured in a different session than ${sanitizeDiagnosticText(sessionID, 64)}; a re-dispatched child session is an authorized filer, or surface fresh knowledge via knowledge_recall for a new trace`
+						: ''),
 			);
 		}
 	}
