@@ -3501,11 +3501,13 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
  * when it is absent, rework_required (WORKFLOW_STATE_RANK is a plan-vs-
  * evidence PRECEDENCE order, not a workflow progress order — rework_required
  * ranks ABOVE the Stage B eligible states even though rework_required ->
- * pre_check_passed is forward progress), or ranks below the durable eligible
- * state (idle / coder_delegated). An at-or-above view (tests_run / blocked /
- * closed / complete) is never overwritten: update_task_status's permissive
- * map fallback reads those, and the map-ahead shape needs its missing
- * non-Stage B gate, not a reviewer/test_engineer re-run.
+ * pre_check_passed is forward progress), or ranks below it: idle /
+ * coder_delegated always, and pre_check_passed when the durable state is
+ * reviewer_run. An at-or-above view (tests_run / blocked / closed /
+ * complete) is never overwritten: completion permissively admits only
+ * tests_run / complete (blocked and closed are terminal), and the map-ahead
+ * shape needs its missing non-Stage B gate, not a reviewer/test_engineer
+ * re-run.
  */
 function isRepairableStageBView(
 	existingView: TaskWorkflowState | undefined,

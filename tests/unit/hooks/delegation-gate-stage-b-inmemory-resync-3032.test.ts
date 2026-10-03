@@ -179,6 +179,58 @@ ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
 	});
 
+	it('A1: test_engineer settles from the stale view one durable step after the reviewer (barrier order kept)', async () => {
+		const sessionID = 'sess-3032-te';
+		tempDir = makeTempDir('dg-3032-te-');
+		await seedDurablePreCheckPassed(tempDir);
+		// The #3032 wedge across BOTH Stage B gates: reviewer settles from the
+		// repaired view, then a durable-only writer re-stales the map before the
+		// test_engineer dispatch (durable is now reviewer_run).
+		const session = await setupSession(tempDir, sessionID, 'rework_required');
+		const hook = createDelegationGateHook(fullConfig(), tempDir);
+
+		await hook.toolBefore(
+			{ tool: 'Task', sessionID, callID: 'call-3032-te-r' },
+			{
+				args: reviewerArgs(`Review task-${TASK_ID} and return a structured approval.
+ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
+			},
+		);
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'call-3032-te-r',
+				args: reviewerArgs(
+					`ACCEPTANCE: return a structured approval for task-${TASK_ID}.`,
+				),
+			},
+			{ output: APPROVED_OUTPUT },
+		);
+		expect(
+			(await readTaskEvidence(tempDir, TASK_ID))?.gates?.reviewer,
+		).toBeDefined();
+
+		session.taskWorkflowStates.set(TASK_ID, 'rework_required');
+		await hook.toolBefore(
+			{ tool: 'Task', sessionID, callID: 'call-3032-te-t' },
+			{ args: testEngineerArgs() },
+		);
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('reviewer_run');
+		await hook.toolAfter(
+			{
+				tool: 'Task',
+				sessionID,
+				callID: 'call-3032-te-t',
+				args: testEngineerArgs(),
+			},
+			{ output: PASS_OUTPUT },
+		);
+		const evidence = await readTaskEvidence(tempDir, TASK_ID);
+		expect(evidence?.gates?.test_engineer).toBeDefined();
+		expect(evidence?.gates?.reviewer).toBeDefined();
+	});
+
 	it("context mismatch: a verdict for a task NOT in this call's dispatch context is not resynced and not settled", async () => {
 		const sessionID = 'sess-3032-ctx';
 		tempDir = makeTempDir('dg-3032-ctx-');
@@ -336,6 +388,11 @@ ACCEPTANCE: return a structured approval for task-${TASK_ID}.`),
 		const evidence = await readTaskEvidence(tempDir, TASK_ID);
 		expect(evidence?.gates?.reviewer).toBeDefined();
 		expect(evidence?.gates?.test_engineer).toBeDefined();
+		// PRR-011 pin: the second reviewer verdict must not rewrite the durable
+		// gate record — lastTransitionId stays at the test_engineer write.
+		expect(evidence?.workflow?.lastTransitionId).toBe(
+			'gate:call-3032-ahead-t:1.1',
+		);
 	});
 
 	it('control: an in-sync journey settles exactly as before', async () => {
