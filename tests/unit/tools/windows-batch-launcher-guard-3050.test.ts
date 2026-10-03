@@ -94,10 +94,13 @@ describe('#3050 guardrail: batch wrappers must route through the contained launc
 		const offenders: string[] = [];
 
 		for (const file of sourceFiles(SRC_DIR)) {
-			const text = fs.readFileSync(file, 'utf8');
-			const offenders = unsanctionedConstructions(text);
-			if (offenders.length > 0) {
-				out.push(`${path.relative(REPO_ROOT, file)}: ${offenders.join('; ')}`);
+			const unsanctioned = unsanctionedConstructions(
+				fs.readFileSync(file, 'utf8'),
+			);
+			if (unsanctioned.length > 0) {
+				offenders.push(
+					`${path.relative(REPO_ROOT, file)}: ${unsanctioned.join('; ')}`,
+				);
 			}
 		}
 

@@ -150,4 +150,22 @@ describe('#3050: build_check does not overcorrect', () => {
 		expect('spawn_error' in run).toBe(false);
 		expect(result.verdict).toBe('pass');
 	});
+
+	test('a spawn error with an empty message emits no field', async () => {
+		// The writer guards on the message, not merely on the Error being
+		// truthy. Without this case a regression to `!== undefined` would emit
+		// `spawn_error: ''` — a present-but-blank field, which is exactly the
+		// state the field's own doc comment says must not happen.
+		const result = await runWith(
+			fakeProc({
+				exitCode: null,
+				exited: SPAWN_CREATION_FAILURE_EXIT_CODE,
+				spawnError: new Error(''),
+			}),
+		);
+
+		const run = result.runs[0]!;
+		expect('spawn_error' in run).toBe(false);
+		expect(run.exit_code).toBe(SPAWN_CREATION_FAILURE_EXIT_CODE);
+	});
 });
