@@ -58,7 +58,6 @@ export const CONFIG_CONSUMERS: Record<
 			'src/agents/index.ts:_swarmAgentsMap',
 			'src/commands/full-auto.ts:handleFullAutoCommand',
 			'src/commands/harness.ts:summarizeBlueprint',
-			'src/commands/registry.ts:COMMAND_REGISTRY',
 		],
 	},
 	default_agent: {
@@ -303,7 +302,6 @@ export const CONFIG_CONSUMERS: Record<
 	},
 	docs: {
 		consumers: [
-			'src/gate-evidence.ts:deriveRequiredGates',
 			'src/hooks/system-enhancer.ts:createSystemEnhancerHook',
 			'src/services/config-doctor.ts:validateConfigKey',
 		],
@@ -392,10 +390,7 @@ export const CONFIG_CONSUMERS: Record<
 	},
 	forge: {
 		consumers: [
-			'src/background/pr-event-subscribers.ts:handlePrEvent',
-			'src/background/pr-feedback-loop-runtime.ts:createRuntime',
-			'src/background/pr-feedback-loop.ts:LoopStateSchema',
-			'src/background/pr-monitor-worker.ts:PrMonitorWorker',
+			'src/providers/forge-provider.ts:resolveForgeContextFromPluginConfig',
 		],
 	},
 	observability: {

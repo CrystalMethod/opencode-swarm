@@ -206,6 +206,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
 	const findings: ConfigFinding[] = [];
 	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
+	// One dedupe set across both files so an inert key present in user AND
+	// project configs is reported once (same convention as the sibling
+	// unrecognized-keys collector).
+	const seen = new Set<string>();
 
 	for (const configPath of [userConfigPath, projectConfigPath]) {
 		if (!fs.existsSync(configPath)) continue;
@@ -216,8 +220,10 @@ function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
 			if (!isPlainObject(raw)) continue;
 
 			for (const key of Object.keys(raw)) {
+				if (seen.has(key)) continue;
 				const declaration = CONFIG_CONSUMERS[key as TopLevelConfigKey];
 				if (!declaration || !('inert' in declaration)) continue;
+				seen.add(key);
 				findings.push({
 					id: 'inert-config-key',
 					title: `Inert config key: ${key}`,

@@ -346,6 +346,11 @@ export function collectFindings(opts: CollectOptions): ConsumptionFinding[] {
 				});
 				continue;
 			}
+			// Placement is a property of where the citation LIVES, not whether it is
+			// fresh — set it before the freshness checks so a stale non-doctor
+			// citation reports only [stale-citation], never a misleading
+			// [doctor-file-only] on top.
+			if (!isDoctorCitation(citeCanon)) sawNonDoctor = true;
 			if (!opts.tree.files.has(file)) {
 				findings.push({ kind: 'missing-file', key, citation: citeCanon, detail: `cited file does not exist` });
 				continue;
@@ -363,9 +368,7 @@ export function collectFindings(opts: CollectOptions): ConsumptionFinding[] {
 			const keep = scanSource(raw, key);
 			if (!keyReferenced(key, noKeep, keep)) {
 				findings.push({ kind: 'stale-citation', key, citation: citeCanon, detail: `cited file does not reference the key (stale citation)` });
-				continue;
 			}
-			if (!isDoctorCitation(citeCanon)) sawNonDoctor = true;
 		}
 		if (!sawNonDoctor && !DOCTOR_FILE_EXEMPT.has(key)) {
 			findings.push({
