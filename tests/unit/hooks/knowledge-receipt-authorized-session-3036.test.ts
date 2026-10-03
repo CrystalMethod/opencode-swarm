@@ -12,6 +12,8 @@ import {
 	type ReceiptLedgerResult,
 	validateAndCommitTerminalBatch,
 } from '../../../src/hooks/knowledge-receipt-ledger.js';
+import { setDispatchParent } from '../../../src/state.js';
+import { knowledge_receipt } from '../../../src/tools/knowledge-receipt.js';
 import { createSafeTestDir } from '../../helpers/safe-test-dir.js';
 
 const ARCH = 'ses-arch-3036-led';
@@ -127,6 +129,34 @@ describe('knowledge receipt authorized filing (issue #3036)', () => {
 		expect(committed.rejected).toEqual([
 			{ entry_id: entry, reason: 'wrong_session' },
 		]);
+	});
+
+	test('tool filing attributes the ACTUAL filer in the knowledge event (review round-1 nit)', async () => {
+		// Drive the real tool surface: register the child's dispatch lineage,
+		// then file from the child session and read the knowledge event.
+		setDispatchParent(CHILD, ARCH);
+		const raw = await knowledge_receipt.execute(
+			{
+				trace_id: trace,
+				applied: [{ id: entry, how: 'applied during the dispatched review' }],
+			} as never,
+			{ directory, sessionID: CHILD, agent: 'reviewer' } as never,
+		);
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		expect(parsed.recorded).toBe(true);
+		const eventsPath = path.join(directory, '.swarm', 'knowledge-events.jsonl');
+		const lines = fs
+			.readFileSync(eventsPath, 'utf-8')
+			.split('\n')
+			.filter((line) => line.trim().length > 0)
+			.map((line) => JSON.parse(line) as Record<string, unknown>);
+		const applied = lines.filter(
+			(line) => line.type === 'applied' && line.knowledge_id === entry,
+		);
+		expect(applied.length).toBeGreaterThan(0);
+		for (const event of applied) {
+			expect(event.session_id).toBe(CHILD);
+		}
 	});
 
 	test('same-session filing needs no attestation (legacy callers unchanged)', async () => {

@@ -114,6 +114,36 @@ describe('dispatch parent lineage (issue #3036)', () => {
 		).toBeDefined();
 	});
 
+	test('FIFO cap also bounds the adoption write path and the pending queue (review round 1)', () => {
+		// Adoption-driven map growth: every dispatch records a pending and the
+		// child adopts it (no taskMetadata interleave) — the map must stay
+		// capped with the earliest entries evicted, exactly like the direct set.
+		for (let i = 0; i < MAX_TRACKED_DISPATCH_PARENTS + 10; i += 1) {
+			recordPendingDispatchAuthorization(`ses-arch-adopt-${i}`, 'reviewer');
+			ensureAgentSession(`ses-child-adopt-${i}`, 'reviewer');
+		}
+		expect(swarmState.dispatchParentByChildSession.size).toBe(
+			MAX_TRACKED_DISPATCH_PARENTS,
+		);
+		expect(resolveDispatchParent('ses-child-adopt-0')).toBeUndefined();
+		expect(
+			resolveDispatchParent(
+				`ses-child-adopt-${MAX_TRACKED_DISPATCH_PARENTS + 9}`,
+			),
+		).toBe(`ses-arch-adopt-${MAX_TRACKED_DISPATCH_PARENTS + 9}`);
+		resetSwarmState();
+		// Pending-queue cap at record time: oldest facts evicted first.
+		for (let i = 0; i < MAX_TRACKED_DISPATCH_PARENTS + 10; i += 1) {
+			recordPendingDispatchAuthorization(`ses-arch-queue-${i}`, 'reviewer');
+		}
+		expect(swarmState.pendingDispatchAuthorizations).toHaveLength(
+			MAX_TRACKED_DISPATCH_PARENTS,
+		);
+		expect(swarmState.pendingDispatchAuthorizations[0]?.parentSessionId).toBe(
+			`ses-arch-queue-10`,
+		);
+	});
+
 	test('reset and end-of-session clear the lineage (child-keyed and parent-valued)', () => {
 		setDispatchParent('ses-child-c1', 'ses-arch-parent');
 		setDispatchParent('ses-child-c2', 'ses-arch-parent');

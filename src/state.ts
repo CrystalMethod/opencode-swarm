@@ -1367,11 +1367,10 @@ export function recordPendingDispatchAuthorization(
  * adoption for the same child and consumes the matching pending fact so it
  * cannot be adopted by a later same-role registration.
  */
-export function setDispatchParent(
+function setDispatchParentEntry(
 	childSessionId: string,
 	parentSessionId: string,
 ): void {
-	if (!childSessionId || !parentSessionId) return;
 	swarmState.dispatchParentByChildSession.set(childSessionId, parentSessionId);
 	if (
 		swarmState.dispatchParentByChildSession.size > MAX_TRACKED_DISPATCH_PARENTS
@@ -1383,6 +1382,14 @@ export function setDispatchParent(
 			swarmState.dispatchParentByChildSession.delete(oldestKey);
 		}
 	}
+}
+
+export function setDispatchParent(
+	childSessionId: string,
+	parentSessionId: string,
+): void {
+	if (!childSessionId || !parentSessionId) return;
+	setDispatchParentEntry(childSessionId, parentSessionId);
 	const now = Date.now();
 	pruneExpiredPendingDispatchAuthorizations(now);
 	const normalizedParent = parentSessionId;
@@ -1428,10 +1435,7 @@ function adoptPendingDispatchAuthorization(
 	if (matchIndex < 0) return;
 	const [adopted] = pendings.splice(matchIndex, 1);
 	if (!adopted) return;
-	swarmState.dispatchParentByChildSession.set(
-		newSessionId,
-		adopted.parentSessionId,
-	);
+	setDispatchParentEntry(newSessionId, adopted.parentSessionId);
 }
 
 /** Issue #3036: clear dispatch lineage for a session (child-keyed and parent-valued). */

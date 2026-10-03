@@ -3149,7 +3149,8 @@ export async function validateAndCommitTerminalBatch(
 					(candidate): candidate is string => typeof candidate === 'string',
 				)
 				.map((candidate) => candidate.trim())
-				.filter((candidate) => candidate.length > 0),
+				.filter((candidate) => candidate.length > 0)
+				.slice(0, 8),
 		);
 		const wrongSessionStamps: Record<string, string> = {};
 		let authorized = false;
@@ -3175,9 +3176,10 @@ export async function validateAndCommitTerminalBatch(
 				// other session mismatch stays fail-closed wrong_session.
 				const roleMatches =
 					!membership.agent ||
-					!input.agent ||
-					stripKnownSwarmPrefix(membership.agent).toLowerCase() ===
-						stripKnownSwarmPrefix(input.agent).toLowerCase();
+					(input.agent !== undefined &&
+						input.agent !== '' &&
+						stripKnownSwarmPrefix(membership.agent).toLowerCase() ===
+							stripKnownSwarmPrefix(input.agent).toLowerCase());
 				const sessionAuthorized =
 					authorizedFilingSessions.has(membership.session_id) && roleMatches;
 				if (!sessionAuthorized) {
