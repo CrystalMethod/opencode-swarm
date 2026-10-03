@@ -7,12 +7,12 @@
  * and the idle-start recoveries (recover_stage_a_task / stage-a-repair from
  * idle, or a mechanical write landing on another session's map). Recovery
  * from a BLOCKED in-memory view is covered WRITER-SIDE by issue #3043 (both
- * settlement-wedge writers refresh the recovering session's view at write
- * time — see tests/unit/workflow/settlement-recovery-blocked-start-view-3043.test.ts);
+ * settlement-wedge writers refresh the recovering session's view in the
+ * same call — see tests/unit/workflow/settlement-recovery-blocked-start-view-3043.test.ts);
  * this consumer-side guard still refuses at-or-above views, so a blocked view
  * in a session that did NOT run the recovery stays unrepaired — the pinned
- * cross-session residual: such a diverged view leaves every
- * later reviewer/test_engineer verdict was silently skipped before any
+ * cross-session residual: in such a diverged view every later
+ * reviewer/test_engineer verdict is silently skipped before any
  * #2817 drop site — no gate write, no advisory, no recovery short of a
  * fresh session (the frozen checks in
  * .agents/issue-traces/3032-reset-session-stage-b-gate-persistence/repro/

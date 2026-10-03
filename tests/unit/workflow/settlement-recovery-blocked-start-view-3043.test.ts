@@ -206,15 +206,21 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('blocked');
 	});
 
-	it('duplicated transition: the refresh follows the transition-result snapshot, never a fabricated recovery', async () => {
+	it('pre-recorded repair id: the refresh follows the transition-result snapshot of the applied write', async () => {
 		tempDir = makeTempDir('sr-3043-dup-');
 		const { writePlan } = await import(
 			'../hooks/_stage-b-settlement-2817-helpers.js'
 		);
 		writePlan(tempDir);
-		// Seed the wedge with the repair's OWN deterministic transition id
-		// already recorded, so the repair's write is a duplicate no-op inside
-		// the evidence lock and the evidence snapshot it returns says blocked.
+		// Seed the wedge with a stage_a_passed carrying the repair's OWN
+		// deterministic transition id in its history, then re-block the task.
+		// The repair's write is NOT a duplicate in this shape (the later
+		// task_blocked overwrote lastTransitionId, and isDuplicateTransition
+		// compares against it), so it applies — pinning that the refresh
+		// follows the applied write's transition-result snapshot. A true
+		// concurrent duplicate (duplicated=true over recovered evidence)
+		// needs a real scan-to-write race and is not deterministically
+		// constructible through repairWedgedStageA.
 		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
 			type: 'accepted_mutation',
 			agentType: 'coder',
@@ -242,18 +248,10 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 			sessionId: sessionID,
 		});
 
-		const durableState = (await readTaskEvidence(tempDir, TASK_ID))?.workflow
-			?.state;
-		if (durableState === 'blocked') {
-			// Duplicate fired: durable never advanced, so no refresh may be
-			// fabricated from the stale scan snapshot — the map stays wedged.
-			expect(session.taskWorkflowStates.get(TASK_ID)).toBe('blocked');
-		} else {
-			// Reducer applied the write: durable recovered, so the refresh
-			// MUST have followed the transition-result snapshot.
-			expect(durableState).toBe('pre_check_passed');
-			expect(session.taskWorkflowStates.get(TASK_ID)).toBe('pre_check_passed');
-		}
+		expect((await readTaskEvidence(tempDir, TASK_ID))?.workflow?.state).toBe(
+			'pre_check_passed',
+		);
+		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('pre_check_passed');
 	});
 
 	it('skip-outcome extension: /swarm recover re-run un-wedges an already-recovered task', async () => {
