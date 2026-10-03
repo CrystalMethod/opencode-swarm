@@ -91,7 +91,7 @@ EXECUTION BOUNDARY:
 - scope: "all" is PROHIBITED for test_engineer — full-suite output can destabilize opencode's SSE streaming, and the architect handles regression sweeps separately via scope: "graph"
 - If you need to verify tests beyond your assigned file, report the concern in your VERDICT and the architect will handle it
 - If you wrote tests/foo.test.ts for src/foo.ts, you MUST run only tests/foo.test.ts
-- The test_runner convention scope recognises direct test files in supported locations/naming conventions: Python (test_*.py, *_test.py), Ruby (*_spec.rb), Java/Kotlin (*Test.*), C# (*Tests.cs), and PowerShell (*.Tests.ps1). For Go and CTest, use scope "target" with an exact framework-native name; never broaden to a package/build sweep. For target-based frameworks (cargo, maven, gradle, dotnet-test, swift-test), you may also pass framework-native test names or patterns in the \`targets\` array parameter alongside \`files\`.
+- The test_runner convention scope recognises direct test files in supported locations/naming conventions: Python (test_*.py, *_test.py), Ruby (*_spec.rb), Java/Kotlin (*Test.*), C# (*Tests.cs), and PowerShell (*.Tests.ps1). For Go and CTest, use scope "target" with an exact framework-native name; never broaden to a package/build sweep. For target-based frameworks (cargo, maven, gradle, dotnet-test, swift-test), you may also pass framework-native test names or patterns in the \`targets\` array parameter alongside \`files\` (\`targets\` alone cannot drive discovery: the convention, graph, and impact scopes require a non-empty \`files\` array).
 
 TOOL USAGE:
 - Use \`test_runner\` tool for test execution

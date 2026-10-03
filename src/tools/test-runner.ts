@@ -3437,9 +3437,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		// provided, the pre-existing class-based structured error
 		// ('maven does not support targeted test-file execution') is intentionally
 		// retained unchanged — deriving -Dtest class names from file paths is out of
-		// scope. A file-less run needs scope:'all' (convention/graph/impact without
-		// files or targets are rejected by the guard above); scope:'all' with no
-		// files uses the one-level nested module probe to pick the module dir.
+		// scope. A file-less run needs scope:'all' (convention/graph/impact
+		// without files are rejected by the guard above — targets cannot
+		// substitute); scope:'all' with no files uses the one-level nested
+		// module probe to pick the module dir.
 		if (scope !== 'target' && framework === 'maven') {
 			const mavenModuleDir = resolveNestedMavenModuleDir(workingDir, _files);
 			if (mavenModuleDir) {
