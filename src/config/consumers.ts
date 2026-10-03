@@ -57,7 +57,6 @@ export const CONFIG_CONSUMERS: Record<
 		consumers: [
 			'src/agents/index.ts:_swarmAgentsMap',
 			'src/commands/full-auto.ts:handleFullAutoCommand',
-			'src/commands/harness.ts:summarizeBlueprint',
 		],
 	},
 	default_agent: {

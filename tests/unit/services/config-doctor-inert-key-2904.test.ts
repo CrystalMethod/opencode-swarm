@@ -110,4 +110,27 @@ describe('config doctor — inert-config-key advisory (issue #2904 AC3)', () => 
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
+
+	it('reports an inert key set in BOTH user and project configs exactly once (F-004b dedupe)', () => {
+		const dir = tempProject();
+		const userConfigDir = path.join(XDG_ROOT, 'opencode');
+		try {
+			// User config (via XDG_CONFIG_HOME) and project config both set the
+			// inert key — one dedupe set across both files reports it once.
+			fs.mkdirSync(userConfigDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(userConfigDir, 'opencode-swarm.json'),
+				JSON.stringify({ parallelization: { enabled: true } }),
+				'utf8',
+			);
+			writeProjectConfig(dir, { parallelization: { enabled: true } });
+			const result = runConfigDoctor(defaults(), dir);
+			const inert = result.findings.filter((f) => f.id === 'inert-config-key');
+			expect(inert.length).toBe(1);
+			expect(inert[0]?.path).toBe('parallelization');
+		} finally {
+			fs.rmSync(userConfigDir, { recursive: true, force: true });
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });

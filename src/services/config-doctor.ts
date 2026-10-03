@@ -207,8 +207,8 @@ function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
 	const findings: ConfigFinding[] = [];
 	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
 	// One dedupe set across both files so an inert key present in user AND
-	// project configs is reported once (same convention as the sibling
-	// unrecognized-keys collector).
+	// project configs is reported once (same convention as the
+	// collectRawValueConstraintFindings collector below).
 	const seen = new Set<string>();
 
 	for (const configPath of [userConfigPath, projectConfigPath]) {

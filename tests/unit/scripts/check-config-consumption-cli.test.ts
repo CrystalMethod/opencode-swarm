@@ -58,6 +58,8 @@ describe('check-config-consumption — CLI surface (issue #2904 F-003)', () => {
 	it('exits 0 with the verified-count line on the real repository root', () => {
 		const res = runGate(REPO_ROOT);
 		expect(res.status).toBe(0);
+		// Deliberate tripwire: this pin breaks on any future schema-key addition,
+		// forcing the count here and in src/config/consumers.ts to move together.
 		expect(res.out).toContain('83 keys verified');
 	});
 
@@ -82,7 +84,7 @@ describe('check-config-consumption — CLI surface (issue #2904 F-003)', () => {
 				// Symbol declared but the key never referenced — the true stale-citation shape.
 				'export function readAlpha(): boolean {\n\treturn true;\n}\n',
 			);
-			const res = runGate(fx);
+			const res = runGate(fx, { CONFIG_CONSUMPTION_ENFORCE: '1' });
 			expect(res.status).toBe(1);
 			expect(res.out).toContain('stale');
 		} finally {
@@ -115,7 +117,7 @@ describe('check-config-consumption — CLI surface (issue #2904 F-003)', () => {
 				"{ consumers: ['src/config/consumers.ts:CONFIG_CONSUMERS'] }",
 				READER,
 			);
-			const res = runGate(fx);
+			const res = runGate(fx, { CONFIG_CONSUMPTION_ENFORCE: '1' });
 			expect(res.status).toBe(1);
 			expect(res.out).toContain('path-not-allowed');
 		} finally {

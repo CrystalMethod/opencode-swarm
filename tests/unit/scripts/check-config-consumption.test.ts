@@ -434,6 +434,51 @@ describe('check-config-consumption — collectFindings fixtures', () => {
 		}
 	});
 
+	it('a stale non-doctor citation emits stale-citation but NOT doctor-file-only (F-004a)', () => {
+		// Placement is a property of where the citation lives, not freshness: a
+		// legal non-doctor citation satisfies the doctor-file rule even while
+		// stale (the stale finding itself fails the gate). Regression pin for the
+		// review fix that moved sawNonDoctor ahead of the freshness checks.
+		const stale = 'export function readGamma(): boolean {\n\treturn true;\n}\n';
+		const findings = collectFindings({
+			schemaKeys: SCHEMA_KEYS,
+			declarations: {
+				alpha: { consumers: ['src/alpha-reader.ts:readAlpha'] },
+				beta: { inert: 'x' },
+				gamma: { consumers: ['src/gamma-reader.ts:readGamma'] },
+			},
+			tree: makeTree({
+				'src/alpha-reader.ts': READER,
+				'src/gamma-reader.ts': stale,
+				[DOCTOR_FILE]: DOCTOR_SRC,
+			}),
+		});
+		expect(
+			findings.some((f) => f.kind === 'stale-citation' && f.key === 'gamma'),
+		).toBe(true);
+		expect(
+			findings.some((f) => f.kind === 'doctor-file-only' && f.key === 'gamma'),
+		).toBe(false);
+		// Control: the same key cited ONLY in the doctor file still trips the rule.
+		const doctorOnly = collectFindings({
+			schemaKeys: SCHEMA_KEYS,
+			declarations: {
+				alpha: { consumers: ['src/alpha-reader.ts:readAlpha'] },
+				beta: { inert: 'x' },
+				gamma: { consumers: [`${DOCTOR_FILE}:validateConfigKey`] },
+			},
+			tree: makeTree({
+				'src/alpha-reader.ts': READER,
+				[DOCTOR_FILE]: DOCTOR_SRC,
+			}),
+		});
+		expect(
+			doctorOnly.some(
+				(f) => f.kind === 'doctor-file-only' && f.key === 'gamma',
+			),
+		).toBe(true);
+	});
+
 	it('doctor-file path aliases are still recognized as doctor citations', () => {
 		const findings = collectFindings({
 			schemaKeys: SCHEMA_KEYS,
