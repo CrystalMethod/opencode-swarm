@@ -9,7 +9,10 @@ import {
 	buildMavenTestCommand,
 	resolveMavenWrapperCommand,
 } from '../lang/backends/java';
-import { buildNativeTargetCommand } from '../lang/default-backend';
+import {
+	buildGradleTestCommand,
+	buildNativeTargetCommand,
+} from '../lang/default-backend';
 import {
 	analyzeImpact,
 	getImpactCacheStatus,
@@ -1842,21 +1845,12 @@ function buildTestCommand(
 			return buildMavenTestCommand(baseDir, targets);
 		}
 		case 'gradle': {
-			// gradle has no bail support — silently ignore
-			const isWindows = process.platform === 'win32';
-			const hasGradlewBat = fs.existsSync(path.join(baseDir, 'gradlew.bat'));
-			const hasGradlew = fs.existsSync(path.join(baseDir, 'gradlew'));
-			const args: string[] = [];
-			if (hasGradlewBat && isWindows) args.push('gradlew.bat');
-			else if (hasGradlew) args.push('./gradlew');
-			else args.push('gradle');
-			args.push('test');
-			if (targets && targets.length > 0) {
-				for (const target of targets) {
-					args.push('--tests', target);
-				}
-			}
-			return args;
+			// gradle has no bail support — silently ignore. Shared with the
+			// default backend's dispatch buildTestCommand via
+			// `buildGradleTestCommand` so both paths emit identical argv
+			// (runnable wrapper first — the cmd.exe launcher for gradlew.bat
+			// on win32, an executable ./gradlew on POSIX — otherwise gradle).
+			return buildGradleTestCommand(baseDir, targets);
 		}
 		case 'dotnet-test': {
 			// dotnet-test has no bail support — silently ignore
@@ -2760,14 +2754,19 @@ export async function runTests(
 			totals.total = parsedTestCases.length;
 		}
 
-		// Determine success based on exit code and failures
+		// Determine success based on exit code and failures. A spawn-creation
+		// failure (`proc.spawnError`, the bunSpawn value contract — the process
+		// never started) is classified ahead of everything else as a launch
+		// failure, never a test regression (issue #3039).
 		const isTimeout = timedOutByDeadline;
+		const spawnFailure = proc.spawnError;
 		const nativeTargetObserved = resolvedNativeTarget
 			? didExecuteNativeTarget(resolvedNativeTarget, output)
 			: true;
 		const testPassed =
 			exitCode === 0 &&
 			!isTimeout &&
+			!spawnFailure &&
 			totals.failed === 0 &&
 			nativeTargetObserved;
 
@@ -2802,17 +2801,21 @@ export async function runTests(
 				duration_ms,
 				totals,
 				rawOutput: output,
-				error: isTimeout
-					? `Tests timed out after ${timeout_ms}ms`
-					: !nativeTargetObserved
-						? `Native target "${resolvedNativeTarget?.name}" did not execute`
-						: `Tests failed with ${totals.failed} failures`,
-				message: isTimeout
-					? `${framework} tests timed out after ${timeout_ms}ms`
-					: !nativeTargetObserved
-						? `${framework} did not report the exact requested native target; refusing a false-green 0/0 result`
-						: `${framework} tests failed (${totals.failed}/${totals.total} failed)`,
-				outcome: isTimeout ? 'error' : 'regression',
+				error: spawnFailure
+					? `Test command failed to launch: ${spawnFailure.message}`
+					: isTimeout
+						? `Tests timed out after ${timeout_ms}ms`
+						: !nativeTargetObserved
+							? `Native target "${resolvedNativeTarget?.name}" did not execute`
+							: `Tests failed with ${totals.failed} failures`,
+				message: spawnFailure
+					? `${framework} test process could not be started: ${spawnFailure.message} — a launch failure (for example a missing executable or unusable working directory), not a test regression. Check the command, PATH, and cwd instead of the tests.`
+					: isTimeout
+						? `${framework} tests timed out after ${timeout_ms}ms`
+						: !nativeTargetObserved
+							? `${framework} did not report the exact requested native target; refusing a false-green 0/0 result`
+							: `${framework} tests failed (${totals.failed}/${totals.total} failed)`,
+				outcome: spawnFailure || isTimeout ? 'error' : 'regression',
 				testCases: parsedTestCases,
 			};
 
@@ -3162,7 +3165,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			.array(z.string())
 			.optional()
 			.describe(
-				"Framework-native test names or patterns to filter which tests run. Supported by cargo, go-test, maven, gradle, dotnet-test, ctest, and swift-test. Each entry is passed as-is to the framework's native filter flag.",
+				"Framework-native test names or patterns to filter which tests run. Supported by cargo, go-test, maven, gradle, dotnet-test, ctest, and swift-test. Each entry is passed as-is to the framework's native filter flag. Targets only filter a files-driven selection — provide a non-empty files array for the convention, graph, and impact scopes; targets alone cannot drive discovery.",
 			),
 		coverage: z
 			.boolean()
@@ -3321,20 +3324,28 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			// Allow through — env opt-in confirmed
 		}
 
-		// Hard guard: convention, graph, and impact scopes require explicit files (or targets) to prevent unsafe full-project discovery
+		// Hard guard: convention, graph, and impact scopes require a non-empty
+		// files array to prevent unsafe full-project discovery (issue #3041).
+		// `targets` alone cannot substitute: the schema documents targets as a
+		// filter over a files-driven selection, and command builders for
+		// file-based frameworks (bun, jest, vitest, mocha, pytest, ...) ignore
+		// targets entirely, so a targets-only call there would silently run the
+		// FULL suite — the exact hazard this guard exists to prevent.
+		// Targets-only calls always errored downstream before (with a
+		// misleading files-centric message), so rejecting them up front is not
+		// a regression.
 		if (
 			(scope === 'convention' || scope === 'graph' || scope === 'impact') &&
-			(!args.files || args.files.length === 0) &&
-			(!args.targets || args.targets.length === 0)
+			(!args.files || args.files.length === 0)
 		) {
 			const errorResult: TestErrorResult = {
 				success: false,
 				framework: 'none',
 				scope,
 				error:
-					'scope "convention", "graph", and "impact" require explicit files or targets array - omitting both causes unsafe full-project discovery',
+					'scope "convention", "graph", and "impact" require a non-empty files array - targets only filter which tests run and cannot substitute for files (omitting files causes unsafe full-project discovery)',
 				message:
-					'When using scope "convention", "graph", or "impact", you must provide a non-empty "files" array (or "targets" for framework-native test names). Example: { scope: "convention", files: ["tests/test_calc.py"] }',
+					'When using scope "convention", "graph", or "impact", provide at least one source or direct-test file in "files"; "targets" only filter which tests run within that selection and cannot drive discovery on their own. Example: { scope: "convention", files: ["tests/test_calc.py"] }',
 				outcome: 'error',
 				resolution: makeResolution(scope, scope, [], [], 'skip', workingDir),
 			};
@@ -3523,9 +3534,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				...getTestFilesFromConvention(sourceFiles, workingDir),
 			].filter((file, index, items) => items.indexOf(file) === index);
 		} else if (scope === 'graph') {
-			// Try to find related tests via import analysis
-			// args.files may be omitted when targets are provided, so use the
-			// defaulted _files array (which may be empty).
+			// Try to find related tests via import analysis. Files are always
+			// present here (the guard above rejects an empty files array before
+			// discovery), so the defaulted `_files` array is never empty on
+			// this path.
 			const sourceFiles = normalizeSelectionFiles(
 				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {
@@ -3600,9 +3612,9 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				);
 			}
 		} else if (scope === 'impact') {
-			// Impact scope: use test-impact analyzer to find tests covering changed files
-			// args.files may be omitted when targets are provided, so use the
-			// defaulted _files array (which may be empty).
+			// Impact scope: use test-impact analyzer to find tests covering changed files.
+			// Files are always present here (the guard above rejects an empty
+			// files array before discovery).
 			const sourceFiles = normalizeSelectionFiles(
 				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {

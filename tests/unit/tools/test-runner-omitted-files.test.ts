@@ -1,10 +1,10 @@
 /**
- * FB-T2: the `_files` default (args.files || []) fix in the convention, graph
- * and impact branches is framework-independent. Before the fix, a targets-only
- * call (files omitted) dereferenced `args.files!` and threw
- * "Cannot read properties of undefined (reading 'filter')" once a framework
- * was detected. The Maven variant lives in test-runner-maven-nested.test.ts;
- * this pins the same guard for a non-Maven (Bun) project on both backends.
+ * Targets-only calls (files omitted) in the convention/graph/impact scopes
+ * are rejected UP FRONT by the hard guard (#3041): one unified, accurate
+ * error naming targets' filter-only role, framework 'none' (the guard fires
+ * before detection), no spawn, no TypeError. The Maven variant lives in
+ * test-runner-maven-nested.test.ts; this pins a non-Maven (Bun) project on
+ * both backends.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -46,15 +46,17 @@ const cases = [
 	{
 		scope: 'convention' as const,
 		error:
-			'Provided files contain no recognized source files or direct test files',
+			'scope "convention", "graph", and "impact" require a non-empty files array - targets only filter which tests run and cannot substitute for files (omitting files causes unsafe full-project discovery)',
 	},
 	{
 		scope: 'graph' as const,
-		error: 'Provided files contain no source files with recognized extensions',
+		error:
+			'scope "convention", "graph", and "impact" require a non-empty files array - targets only filter which tests run and cannot substitute for files (omitting files causes unsafe full-project discovery)',
 	},
 	{
 		scope: 'impact' as const,
-		error: 'Provided files contain no source files with recognized extensions',
+		error:
+			'scope "convention", "graph", and "impact" require a non-empty files array - targets only filter which tests run and cannot substitute for files (omitting files causes unsafe full-project discovery)',
 	},
 ];
 
@@ -72,7 +74,7 @@ describe('targets without files on a Bun project', () => {
 				const parsed = JSON.parse(raw);
 
 				expect(parsed.success).toBe(false);
-				expect(parsed.framework).toBe('bun');
+				expect(parsed.framework).toBe('none');
 				expect(parsed.error).toBe(error);
 				expect(raw).not.toContain('Cannot read properties of undefined');
 			}

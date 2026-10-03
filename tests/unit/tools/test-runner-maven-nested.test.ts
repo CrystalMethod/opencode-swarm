@@ -416,9 +416,7 @@ describe('nested Maven module detection and execution', () => {
 			const parsed = JSON.parse(result);
 
 			expect(parsed.success).toBe(false);
-			expect(parsed.error).toContain(
-				'scope "convention", "graph", and "impact" require explicit files or targets array',
-			);
+			expect(parsed.error).toContain('require a non-empty files array');
 			expect(spawnCalls.length).toBe(0);
 		});
 
@@ -432,10 +430,8 @@ describe('nested Maven module detection and execution', () => {
 			const parsed = JSON.parse(result);
 
 			expect(parsed.success).toBe(false);
-			expect(parsed.framework).toBe('maven');
-			expect(parsed.error).toContain(
-				'Provided files contain no recognized source files or direct test files',
-			);
+			expect(parsed.framework).toBe('none');
+			expect(parsed.error).toContain('require a non-empty files array');
 			expect(spawnCalls.length).toBe(0);
 		});
 
@@ -449,10 +445,8 @@ describe('nested Maven module detection and execution', () => {
 			const parsed = JSON.parse(result);
 
 			expect(parsed.success).toBe(false);
-			expect(parsed.framework).toBe('maven');
-			expect(parsed.error).toContain(
-				'Provided files contain no source files with recognized extensions',
-			);
+			expect(parsed.framework).toBe('none');
+			expect(parsed.error).toContain('require a non-empty files array');
 			expect(spawnCalls.length).toBe(0);
 		});
 
@@ -466,10 +460,8 @@ describe('nested Maven module detection and execution', () => {
 			const parsed = JSON.parse(result);
 
 			expect(parsed.success).toBe(false);
-			expect(parsed.framework).toBe('maven');
-			expect(parsed.error).toContain(
-				'Provided files contain no source files with recognized extensions',
-			);
+			expect(parsed.framework).toBe('none');
+			expect(parsed.error).toContain('require a non-empty files array');
 			expect(spawnCalls.length).toBe(0);
 		});
 	});
