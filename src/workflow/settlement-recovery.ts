@@ -8,6 +8,12 @@ import { sanitizeDiagnosticText } from '../scope/path-identity.js';
 import { ensureAgentSession } from '../state.js';
 import { listCoderSettlementWalStates } from './coder-settlement.js';
 import {
+	applySessionWorkflowView,
+	isStageARecoveredState,
+	type StageARecoveredState,
+	shouldRefreshStageARecoveryView,
+} from './session-view.js';
+import {
 	appendStageARepairEvent,
 	hasGreenPostSettlementPreCheck,
 	latestCommittedAcceptedSettlementMs,
@@ -126,6 +132,18 @@ export async function recoverStageATaskSupervised(
 		workflow.state === 'reviewer_run' ||
 		workflow.state === 'tests_run'
 	) {
+		// Issue #3043: even the no-op call leaves the caller's session view
+		// consistent with durable — a session whose map still says `blocked`
+		// (the blocked-start wedge) is un-wedged here without any durable
+		// write, mirroring the fresh-write branch below.
+		if (
+			shouldRefreshStageARecoveryView(
+				session.taskWorkflowStates.get(taskId),
+				workflow.state as StageARecoveredState,
+			)
+		) {
+			applySessionWorkflowView(session, taskId, workflow);
+		}
 		return {
 			taskId,
 			generation: workflow.generation,
@@ -192,6 +210,23 @@ export async function recoverStageATaskSupervised(
 		transitionId,
 	});
 	const updatedWorkflow = getTaskWorkflowSnapshot(updated);
+
+	// Issue #3043: the blocked-start arm of the #3032 split-brain. This writer
+	// just committed the audited settlement-backed stage_a_passed, so it is
+	// the authority that a `blocked` (or lagging) in-memory view in THIS
+	// session is drift — refresh the caller's session view from the durable
+	// snapshot it just wrote. The consumer-side #3038 guard keeps refusing
+	// at-or-above views; only this writer-side refresh may clear `blocked`.
+	if (isStageARecoveredState(updatedWorkflow.state)) {
+		if (
+			shouldRefreshStageARecoveryView(
+				session.taskWorkflowStates.get(taskId),
+				updatedWorkflow.state,
+			)
+		) {
+			applySessionWorkflowView(session, taskId, updatedWorkflow);
+		}
+	}
 
 	// Best-effort audit event through the shared #2665 stage_a_repair wrapper;
 	// the durable transition above is authoritative, and the append outcome is
