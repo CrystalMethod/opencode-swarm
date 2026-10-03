@@ -18,6 +18,7 @@ import {
 	tokenizeCommand,
 } from '../build/command-resolution';
 import { isCommandAvailable } from '../build/discovery';
+import { resolveContainedWindowsBatchCommand } from '../utils/windows-batch';
 import type {
 	BuildCommandSelection,
 	BuildTestCommandOpts,
@@ -104,6 +105,52 @@ export async function defaultSelectTestFramework(
  * `opts.scope` defaults to `'all'`; `opts.coverage` defaults to `false`.
  * Returns null when the framework name is not in the supported set.
  */
+/**
+ * Build the Gradle test argv for `dir` (issue #3040). On win32 with a
+ * `gradlew.bat` wrapper, route through the contained cmd.exe launcher
+ * (`resolveContainedWindowsBatchCommand`) — Bun resolves a bare executable
+ * name against PATH only, never the spawn cwd, so a bare `gradlew.bat` can
+ * never start. Falls back to plain `gradle` from PATH when the helper rejects
+ * the wrapper or an argument (including a token ending in a backslash, which
+ * the launcher's quoting would mangle — the same guard `buildMavenTestCommand`
+ * carries). When `gradlew.bat` is absent, the historical chain applies on ANY
+ * platform — `./gradlew` when a `gradlew` file exists (yes, even on win32,
+ * preserving the pre-#3040 behavior), else `gradle`. Shared by
+ * `defaultBuildTestCommand` and the test-runner's legacy
+ * (`SWARM_LANG_BACKEND=legacy`) switch so both routes emit identical argv.
+ */
+export function buildGradleTestCommand(
+	dir: string,
+	targets?: string[],
+): string[] {
+	const args: string[] = ['test'];
+	if (targets && targets.length > 0) {
+		for (const target of targets) {
+			args.push('--tests', target);
+		}
+	}
+	if (process.platform === 'win32') {
+		const hasGradlewBat = fs.existsSync(path.join(dir, 'gradlew.bat'));
+		if (hasGradlewBat) {
+			// The win32 launcher quotes every token inside one cmd.exe command
+			// string, so a token ending in a backslash would turn its closing
+			// quote into `\"` and be mangled; plain `gradle` argv keeps it
+			// intact.
+			if (args.some((arg) => arg.endsWith('\\'))) {
+				return ['gradle', ...args];
+			}
+			return (
+				resolveContainedWindowsBatchCommand(dir, 'gradlew.bat', args) ?? [
+					'gradle',
+					...args,
+				]
+			);
+		}
+	}
+	const hasGradlew = fs.existsSync(path.join(dir, 'gradlew'));
+	return hasGradlew ? ['./gradlew', ...args] : ['gradle', ...args];
+}
+
 export function defaultBuildTestCommand(
 	profile: LanguageProfile,
 	framework: string,
@@ -224,20 +271,12 @@ export function defaultBuildTestCommand(
 			return args;
 		}
 		case 'gradle': {
-			const isWindows = process.platform === 'win32';
-			const hasGradlewBat = fs.existsSync(path.join(dir, 'gradlew.bat'));
-			const hasGradlew = fs.existsSync(path.join(dir, 'gradlew'));
-			const args: string[] = [];
-			if (hasGradlewBat && isWindows) args.push('gradlew.bat');
-			else if (hasGradlew) args.push('./gradlew');
-			else args.push('gradle');
-			args.push('test');
-			if (targets && targets.length > 0) {
-				for (const target of targets) {
-					args.push('--tests', target);
-				}
-			}
-			return args;
+			// gradle has no bail support — silently ignore. Shared with the
+			// test-runner's legacy switch via `buildGradleTestCommand` so both
+			// paths emit identical argv (runnable wrapper first — the
+			// cmd.exe launcher for gradlew.bat on win32, an executable
+			// ./gradlew on POSIX — otherwise gradle).
+			return buildGradleTestCommand(dir, targets);
 		}
 		case 'dotnet-test': {
 			const args: string[] = ['dotnet', 'test'];
