@@ -1371,6 +1371,10 @@ function setDispatchParentEntry(
 	childSessionId: string,
 	parentSessionId: string,
 ): void {
+	if (!childSessionId || !parentSessionId) return;
+	// Delete-then-set refreshes insertion order so re-confirmed pairs are
+	// evicted last (FIFO by last write, not by first insert).
+	swarmState.dispatchParentByChildSession.delete(childSessionId);
 	swarmState.dispatchParentByChildSession.set(childSessionId, parentSessionId);
 	if (
 		swarmState.dispatchParentByChildSession.size > MAX_TRACKED_DISPATCH_PARENTS
@@ -1446,6 +1450,12 @@ export function clearDispatchLineageForSession(sessionId: string): void {
 			swarmState.dispatchParentByChildSession.delete(child);
 		}
 	}
+	// The queued dispatch facts of the ended parent are equally dead — drop them
+	// so a later same-role child cannot adopt lineage to a dead session.
+	swarmState.pendingDispatchAuthorizations =
+		swarmState.pendingDispatchAuthorizations.filter(
+			(pending) => pending.parentSessionId !== sessionId,
+		);
 }
 
 function isBoundedGenerationValue(value: string, maxLength: number): boolean {
@@ -2283,6 +2293,9 @@ export function sweepStaleSessions(
 		// delegationChains is keyed by sessionID; the evicted session's chain is
 		// now unreachable, so drop it in the same pass to reclaim its memory.
 		swarmState.delegationChains.delete(id);
+		// Issue #3036: swept sessions must drop their dispatch lineage too —
+		// otherwise ghost child→parent entries outlive the session they key.
+		clearDispatchLineageForSession(id);
 		// activeAgent is keyed by sessionID too. Without this, evicted sessions
 		// leave permanent ghost entries that the snapshot writer re-serializes
 		// on every tool.execute.after, growing state.json without bound and

@@ -7,6 +7,7 @@
  * diagnostic or promotion projection is written.
  */
 
+import { sanitizeDiagnosticText } from '../scope/path-identity.js';
 import type { KnowledgeEvent, RetrievedEvent } from './knowledge-events.js';
 import {
 	commitEmptyRetrieval,
@@ -217,11 +218,12 @@ export async function validateReceipt(
 	const wrongSessionStamps = committed.wrong_session_membership_sessions ?? {};
 	// Issue #3036: name both sides of a session mismatch plus the sanctioned
 	// remedy (#2817 visibility posture) — a bare reason code is a dead end for
-	// a legitimately re-dispatched filer.
+	// a legitimately re-dispatched filer. Session ids are host-minted, but the
+	// sibling reset-session surface sanitizes the same shape, so match it.
 	const wrongSessionDetail = (id: string): string | undefined => {
 		const stamp = wrongSessionStamps[id];
 		if (!stamp) return undefined;
-		return `wrong_session for id ${id}: knowledge captured in session ${stamp} but filed from ${ctx.session_id}; file from the capturing session or its dispatched child (after a reset-session, a re-dispatched child is authorized), or surface fresh knowledge via knowledge_recall`;
+		return `wrong_session for id ${sanitizeDiagnosticText(id, 64)}: knowledge captured in session ${sanitizeDiagnosticText(stamp, 64)} but filed from ${sanitizeDiagnosticText(ctx.session_id, 64)}; file from the capturing session or its dispatched child (after a reset-session, a re-dispatched child is authorized), or surface fresh knowledge via knowledge_recall`;
 	};
 	const rejected_items = committed.rejected.map((item) => ({
 		item: takeItem(item.entry_id) ?? {

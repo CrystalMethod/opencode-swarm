@@ -187,6 +187,108 @@ describe('knowledge receipt authorized filing (issue #3036)', () => {
 		}
 	});
 
+	test('converse normalization: prefixed membership stamp matches plain filer role (PRR-008)', async () => {
+		// Seed a membership whose agent carries the swarm prefix.
+		unwrap(
+			await commitDisplayedMembership(directory, {
+				trace_id: 'trace-3036-led-prefixed',
+				session_id: ARCH,
+				exposure_kind: 'delegate_directive',
+				task_id: '2.3',
+				agent: 'swarm1_reviewer',
+				entries: [
+					{ entry_id: 'entry-3036-led-pfx', critical: true, rank: 1, score: 1 },
+				],
+			}),
+		);
+		const committed = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: 'trace-3036-led-prefixed',
+				session_id: CHILD,
+				task_id: '2.3',
+				agent: 'reviewer',
+				authorized_filing_sessions: [CHILD, ARCH],
+				items: [{ entry_id: 'entry-3036-led-pfx', outcome: 'applied' }],
+			}),
+		);
+		expect(committed.rejected).toEqual([]);
+	});
+
+	test('authorized set is truncated to MAX_AUTHORIZED_FILING_SESSIONS (PRR-002)', async () => {
+		// ARCH appears at index 10 — beyond the cap — so the attestation must
+		// NOT authorize; a filer-side-only set would wrongly accept.
+		const padded = Array.from({ length: 10 }, (_, i) => `ses-filler-${i}`);
+		const committed = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: trace,
+				session_id: CHILD,
+				task_id: '2.3',
+				agent: 'reviewer',
+				authorized_filing_sessions: [CHILD, ...padded, ARCH],
+				items: [{ entry_id: entry, outcome: 'applied' }],
+			}),
+		);
+		expect(committed.rejected).toEqual([
+			{ entry_id: entry, reason: 'wrong_session' },
+		]);
+	});
+
+	test('authorized set entries are trimmed (PRR-014 trim pin)', async () => {
+		const committed = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: trace,
+				session_id: CHILD,
+				task_id: '2.3',
+				agent: 'reviewer',
+				authorized_filing_sessions: [CHILD, `  ${ARCH}  `],
+				items: [{ entry_id: entry, outcome: 'applied' }],
+			}),
+		);
+		expect(committed.rejected).toEqual([]);
+	});
+
+	test('mixed batch: accepted authorized item + wrong_session rejection carries per-entry stamp map (PRR-003)', async () => {
+		// Seed a second membership stamped by a FOREIGN session.
+		unwrap(
+			await commitDisplayedMembership(directory, {
+				trace_id: trace,
+				session_id: FOREIGN,
+				exposure_kind: 'delegate_directive',
+				task_id: '2.3',
+				agent: 'reviewer',
+				entries: [
+					{
+						entry_id: 'entry-3036-led-foreign',
+						critical: true,
+						rank: 2,
+						score: 1,
+					},
+				],
+			}),
+		);
+		const committed = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: trace,
+				session_id: CHILD,
+				task_id: '2.3',
+				agent: 'reviewer',
+				authorized_filing_sessions: [CHILD, ARCH],
+				items: [
+					{ entry_id: entry, outcome: 'applied' },
+					{ entry_id: 'entry-3036-led-foreign', outcome: 'applied' },
+				],
+			}),
+		);
+		expect(committed.accepted).toHaveLength(1);
+		expect(committed.accepted[0]?.entry_id).toBe(entry);
+		expect(committed.rejected).toEqual([
+			{ entry_id: 'entry-3036-led-foreign', reason: 'wrong_session' },
+		]);
+		expect(committed.wrong_session_membership_sessions).toEqual({
+			'entry-3036-led-foreign': FOREIGN,
+		});
+	});
+
 	test('same-session filing needs no attestation (legacy callers unchanged)', async () => {
 		const committed = unwrap(
 			await validateAndCommitTerminalBatch(directory, {

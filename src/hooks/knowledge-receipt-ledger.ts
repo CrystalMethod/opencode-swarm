@@ -3031,6 +3031,13 @@ export interface TerminalBatchInput {
 	};
 }
 
+/**
+ * Issue #3036: upper bound on lineage-attested sessions accepted per terminal
+ * batch (applied after trim + dedupe). The only production caller passes at
+ * most two host-minted ids (filer + dispatch parent).
+ */
+export const MAX_AUTHORIZED_FILING_SESSIONS = 8;
+
 export async function validateAndCommitTerminalBatch(
 	directory: string,
 	input: TerminalBatchInput,
@@ -3141,16 +3148,21 @@ export async function validateAndCommitTerminalBatch(
 		const stagedOutcomes = new Map<string, ReceiptOutcome>();
 		const reservedEventIds = new Set<string>();
 		// Issue #3036: sanitized authorized-filer set — trimmed, non-empty,
-		// deduped. The filer's own session is authorized by the equality path
-		// below; this set carries only lineage-attested additional sessions.
+		// deduped, then capped (dedupe before cap so duplicates never crowd out
+		// distinct authorized sessions). The filer's own session is authorized
+		// by the equality path below; this set carries only lineage-attested
+		// additional sessions.
 		const authorizedFilingSessions = new Set(
-			(input.authorized_filing_sessions ?? [])
-				.filter(
-					(candidate): candidate is string => typeof candidate === 'string',
-				)
+			[
+				...new Set(
+					(input.authorized_filing_sessions ?? []).filter(
+						(candidate): candidate is string => typeof candidate === 'string',
+					),
+				),
+			]
 				.map((candidate) => candidate.trim())
 				.filter((candidate) => candidate.length > 0)
-				.slice(0, 8),
+				.slice(0, MAX_AUTHORIZED_FILING_SESSIONS),
 		);
 		const wrongSessionStamps: Record<string, string> = {};
 		let authorized = false;

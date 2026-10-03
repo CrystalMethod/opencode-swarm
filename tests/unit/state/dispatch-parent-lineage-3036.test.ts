@@ -18,6 +18,7 @@ import {
 	setDispatchParent,
 	startAgentSession,
 	swarmState,
+	sweepStaleSessions,
 } from '../../../src/state';
 import { freezeClock } from '../../helpers/test-clock.js';
 
@@ -91,18 +92,43 @@ describe('dispatch parent lineage (issue #3036)', () => {
 			fixedNow: 1_700_000_000_000,
 			isoNow: '2023-11-14T22:13:20.000Z',
 		});
-		recordPendingDispatchAuthorization('ses-arch-old', 'reviewer');
-		// Age the entry past the TTL and record a fresh one.
-		swarmState.pendingDispatchAuthorizations[0].recordedAt =
-			1_700_000_000_000 - PENDING_DISPATCH_AUTHORIZATION_TTL_MS - 1;
-		recordPendingDispatchAuthorization('ses-arch-new', 'test_engineer');
+		try {
+			recordPendingDispatchAuthorization('ses-arch-old', 'reviewer');
+			// Age the entry past the TTL and record a fresh one.
+			swarmState.pendingDispatchAuthorizations[0].recordedAt =
+				1_700_000_000_000 - PENDING_DISPATCH_AUTHORIZATION_TTL_MS - 1;
+			recordPendingDispatchAuthorization('ses-arch-new', 'test_engineer');
+			expect(
+				swarmState.pendingDispatchAuthorizations.map((p) => p.parentSessionId),
+			).toEqual(['ses-arch-new']);
+			// An expired pending is never adoptable.
+			ensureAgentSession('ses-child-old', 'reviewer');
+			expect(resolveDispatchParent('ses-child-old')).toBeUndefined();
+		} finally {
+			restoreClock();
+		}
+	});
+
+	test('ended parent drops its queued pendings (PRR-011)', () => {
+		recordPendingDispatchAuthorization('ses-arch-dying', 'reviewer');
+		recordPendingDispatchAuthorization('ses-arch-surviving', 'test_engineer');
+		endAgentSession('ses-arch-dying');
 		expect(
 			swarmState.pendingDispatchAuthorizations.map((p) => p.parentSessionId),
-		).toEqual(['ses-arch-new']);
-		// An expired pending is never adoptable.
-		ensureAgentSession('ses-child-old', 'reviewer');
-		expect(resolveDispatchParent('ses-child-old')).toBeUndefined();
-		restoreClock();
+		).toEqual(['ses-arch-surviving']);
+	});
+
+	test('stale-session sweep drops the lineage map entry (PRR-009)', () => {
+		startAgentSession('ses-arch-swept', 'architect');
+		setDispatchParent('ses-child-swept', 'ses-arch-swept');
+		expect(resolveDispatchParent('ses-child-swept')).toBe('ses-arch-swept');
+		// Age the session past the sweep threshold and run the sweep directly.
+		const session = swarmState.agentSessions.get('ses-arch-swept');
+		if (!session) throw new Error('fixture session missing');
+		session.lastToolCallTime = 1_000;
+		sweepStaleSessions(5_000, 10_000, undefined);
+		expect(swarmState.agentSessions.has('ses-arch-swept')).toBe(false);
+		expect(resolveDispatchParent('ses-child-swept')).toBeUndefined();
 	});
 
 	test('FIFO cap bounds both structures (invariant 8)', () => {
