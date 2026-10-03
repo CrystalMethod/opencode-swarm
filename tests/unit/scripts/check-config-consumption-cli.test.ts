@@ -75,7 +75,7 @@ describe('check-config-consumption — CLI surface (issue #2904 F-003)', () => {
 		}
 	});
 
-	it('exits 1 without ENFORCE on a stale citation, naming it as stale', () => {
+	it('exits 1 under enforced mode on a stale citation, naming it as stale', () => {
 		const fx = canonicalMkdtemp('2904-cli-stale-');
 		try {
 			writeFixture(
