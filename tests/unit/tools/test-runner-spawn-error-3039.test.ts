@@ -105,6 +105,10 @@ describe('#3039: launch failures classify as error, not regression', () => {
 			expect(result.error).toContain(
 				'Executable not found in $PATH: "definitely-missing-runner-3039"',
 			);
+			// The message carries the user-facing "launch failure, not a test
+			// regression" guidance (PRR-006).
+			expect(result.message).toContain('could not be started');
+			expect(result.message).toContain('not a test regression');
 		});
 	}
 

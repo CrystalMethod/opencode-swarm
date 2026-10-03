@@ -3550,7 +3550,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			);
 			selectionSourceFiles = sourceFiles;
 
-			// Guard: If no source files are present (files omitted with targets, or files provided but all non-source), reject
+			// Guard: reject when none of the provided files is a recognized
+			// source file. Files are always present here (the guard above
+			// rejects an empty files array before discovery), so this only
+			// fires when every entry was non-source.
 			if (sourceFiles.length === 0) {
 				const errorResult: TestErrorResult = {
 					success: false,

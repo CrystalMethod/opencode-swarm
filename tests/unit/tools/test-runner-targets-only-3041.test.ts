@@ -83,6 +83,10 @@ describe('#3041: targets-only calls are rejected up front, accurately', () => {
 					expect(parsed.error).toMatch(/targets/i);
 					// Never the misleading files-centric text.
 					expect(parsed.error).not.toContain('Provided files contain');
+					// The message spells out the files-requirement guidance (PRR-006).
+					expect(parsed.message).toContain(
+						'provide at least one source or direct-test file',
+					);
 					expect(spawnCount).toBe(0);
 				} finally {
 					if (backend !== undefined) delete process.env.SWARM_LANG_BACKEND;

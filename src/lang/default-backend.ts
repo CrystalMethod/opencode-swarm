@@ -113,10 +113,11 @@ export async function defaultSelectTestFramework(
  * never start. Falls back to plain `gradle` from PATH when the helper rejects
  * the wrapper or an argument (including a token ending in a backslash, which
  * the launcher's quoting would mangle — the same guard `buildMavenTestCommand`
- * carries). Non-win32 keeps the historical chain: `./gradlew` when a `gradlew`
- * file exists, else `gradle`. Shared by `defaultBuildTestCommand` and the
- * test-runner's legacy (`SWARM_LANG_BACKEND=legacy`) switch so both routes
- * emit identical argv.
+ * carries). When `gradlew.bat` is absent, the historical chain applies on ANY
+ * platform — `./gradlew` when a `gradlew` file exists (yes, even on win32,
+ * preserving the pre-#3040 behavior), else `gradle`. Shared by
+ * `defaultBuildTestCommand` and the test-runner's legacy
+ * (`SWARM_LANG_BACKEND=legacy`) switch so both routes emit identical argv.
  */
 export function buildGradleTestCommand(
 	dir: string,
