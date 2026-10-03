@@ -12,11 +12,11 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { defaultBuildTestCommand } from '../../../src/lang/default-backend';
 import { LANGUAGE_REGISTRY } from '../../../src/lang/profiles';
 import { _internals, runTests } from '../../../src/tools/test-runner';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const realBunSpawn = _internals.bunSpawn;
 const realIsCommandAvailable = _internals.isCommandAvailable;
@@ -52,9 +52,7 @@ function isCmdExeLauncher(argv: readonly string[]): boolean {
 }
 
 beforeEach(() => {
-	tempDir = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'gradle-launcher-3040-')),
-	);
+	tempDir = canonicalMkdtemp('gradle-launcher-3040-');
 	fs.writeFileSync(path.join(tempDir, 'build.gradle'), 'plugins {}\n');
 	fs.writeFileSync(
 		path.join(tempDir, 'gradlew.bat'),

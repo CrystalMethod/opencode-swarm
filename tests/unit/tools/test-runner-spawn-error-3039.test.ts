@@ -13,9 +13,9 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { _internals, runTests } from '../../../src/tools/test-runner';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const realBunSpawn = _internals.bunSpawn;
 const realIsCommandAvailable = _internals.isCommandAvailable;
@@ -65,9 +65,7 @@ const JEST_PASS = 'Tests: 0 failed, 5 passed, 5 total';
 const JEST_FAIL = 'Tests: 2 failed, 3 passed, 5 total';
 
 beforeEach(() => {
-	tempDir = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-error-3039-')),
-	);
+	tempDir = canonicalMkdtemp('spawn-error-3039-');
 	fs.writeFileSync(
 		path.join(tempDir, 'package.json'),
 		JSON.stringify({ name: 'fixture', scripts: { test: 'jest' } }),
