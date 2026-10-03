@@ -19,6 +19,7 @@ import {
 	startAgentSession,
 	swarmState,
 } from '../../../src/state';
+import { freezeClock } from '../../helpers/test-clock.js';
 
 describe('dispatch parent lineage (issue #3036)', () => {
 	beforeEach(() => {
@@ -86,10 +87,14 @@ describe('dispatch parent lineage (issue #3036)', () => {
 	});
 
 	test('pending entries expire after the TTL', () => {
+		const restoreClock = freezeClock({
+			fixedNow: 1_700_000_000_000,
+			isoNow: '2023-11-14T22:13:20.000Z',
+		});
 		recordPendingDispatchAuthorization('ses-arch-old', 'reviewer');
 		// Age the entry past the TTL and record a fresh one.
 		swarmState.pendingDispatchAuthorizations[0].recordedAt =
-			Date.now() - PENDING_DISPATCH_AUTHORIZATION_TTL_MS - 1;
+			1_700_000_000_000 - PENDING_DISPATCH_AUTHORIZATION_TTL_MS - 1;
 		recordPendingDispatchAuthorization('ses-arch-new', 'test_engineer');
 		expect(
 			swarmState.pendingDispatchAuthorizations.map((p) => p.parentSessionId),
@@ -97,6 +102,7 @@ describe('dispatch parent lineage (issue #3036)', () => {
 		// An expired pending is never adoptable.
 		ensureAgentSession('ses-child-old', 'reviewer');
 		expect(resolveDispatchParent('ses-child-old')).toBeUndefined();
+		restoreClock();
 	});
 
 	test('FIFO cap bounds both structures (invariant 8)', () => {

@@ -115,6 +115,34 @@ describe('knowledge receipt authorized filing (issue #3036)', () => {
 		expect(committed.rejected).toEqual([]);
 	});
 
+	test('attested session with an EMPTY filing agent role is rejected (fail-closed, review round-2)', async () => {
+		const committedEmpty = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: trace,
+				session_id: CHILD,
+				task_id: '2.3',
+				agent: '',
+				authorized_filing_sessions: [CHILD, ARCH],
+				items: [{ entry_id: entry, outcome: 'applied' }],
+			}),
+		);
+		expect(committedEmpty.rejected).toEqual([
+			{ entry_id: entry, reason: 'wrong_session' },
+		]);
+		const committedMissing = unwrap(
+			await validateAndCommitTerminalBatch(directory, {
+				trace_id: trace,
+				session_id: CHILD,
+				task_id: '2.3',
+				authorized_filing_sessions: [CHILD, ARCH],
+				items: [{ entry_id: entry, outcome: 'ignored' }],
+			}),
+		);
+		expect(committedMissing.rejected).toEqual([
+			{ entry_id: entry, reason: 'wrong_session' },
+		]);
+	});
+
 	test('empty/whitespace authorized entries are ignored (sanitization)', async () => {
 		const committed = unwrap(
 			await validateAndCommitTerminalBatch(directory, {

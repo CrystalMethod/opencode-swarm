@@ -10,5 +10,5 @@ Issue #3036 (follow-up to #3032): both reviewer and test_engineer agents had the
 
 ## Notes
 
-- Known residuals (by design, disclosed): same-role sibling cross-filing within one architect parent remains possible (the exposure was addressed to that role under that parent); memberships stamped by dead child sessions (background-lane flows) stay fenced and are now named-with-remedy instead of silent.
-- Tests: `tests/unit/state/dispatch-parent-lineage-3036.test.ts` (9), `tests/unit/hooks/knowledge-receipt-authorized-session-3036.test.ts` (6), plus close-command transitive stubs for the new state exports.
+- Known residuals (by design, disclosed): same-role sibling cross-filing within one architect parent remains possible (the exposure was addressed to that role under that parent); a cross-parent window exists where a child registered before its dispatch's host event may transiently adopt a different architect's same-role pending within the 10-minute TTL window (the host-observed pair overwrites it when it lands, and the fence still requires the role match); memberships stamped by dead child sessions (background-lane flows) stay fenced and are now named-with-remedy instead of silent.
+- Tests: `tests/unit/state/dispatch-parent-lineage-3036.test.ts` (10), `tests/unit/hooks/knowledge-receipt-authorized-session-3036.test.ts` (8), plus close-command transitive stubs for the new state exports.
