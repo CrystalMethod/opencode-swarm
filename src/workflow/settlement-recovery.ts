@@ -10,7 +10,6 @@ import { listCoderSettlementWalStates } from './coder-settlement.js';
 import {
 	applySessionWorkflowView,
 	isStageARecoveredState,
-	type StageARecoveredState,
 	shouldRefreshStageARecoveryView,
 } from './session-view.js';
 import {
@@ -137,9 +136,10 @@ export async function recoverStageATaskSupervised(
 		// (the blocked-start wedge) is un-wedged here without any durable
 		// write, mirroring the fresh-write branch below.
 		if (
+			isStageARecoveredState(workflow.state) &&
 			shouldRefreshStageARecoveryView(
 				session.taskWorkflowStates.get(taskId),
-				workflow.state as StageARecoveredState,
+				workflow.state,
 			)
 		) {
 			applySessionWorkflowView(session, taskId, workflow);

@@ -4,13 +4,12 @@
  *
  * The two blocked-start durable writers (recover_stage_a_task via
  * recoverStageATaskSupervised, and /swarm recover via repairWedgedStageA)
- * used to advance durable evidence without touching any session's
+ * advanced durable evidence without touching any session's
  * taskWorkflowStates map, so a session whose map legitimately held `blocked`
- * wedged every later Stage B verdict (dispatch admits from durable; the
- * settlement loop filters on the map and the #3038 guard refuses blocked).
- * These tests pin the writer-side refresh (workflow/session-view.ts), its
- * no-downgrade boundary, the /swarm recover skip-outcome extension, the
- * duplicated-transition snapshot rule, and the cross-session residual.
+ * wedged every later Stage B verdict. Pins the writer-side refresh, its
+ * no-downgrade boundary, the /swarm recover skip-outcome extension, and the
+ * cross-session residual. Wiring and per-call-site no-downgrade coverage
+ * lives in stage-a-repair-session-view-wiring-3043.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -115,6 +114,13 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 			session.stageBCompletion = new Map();
 		}
 		session.stageBCompletion.set(TASK_ID, new Set(['reviewer']));
+		// Seed the council maps so the clear assertions below discriminate.
+		session.taskCouncilApproved?.set(TASK_ID, {
+			verdict: 'APPROVE',
+			roundNumber: 1,
+			quorumSize: 1,
+		});
+		session.taskCouncilWorkflowGeneration?.set(TASK_ID, 1);
 
 		const raw = await executeRecoverStageATask(
 			{ task_id: TASK_ID, reason: 'test: blocked-start settlement wedge' },
@@ -149,8 +155,7 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 		});
 		expect(first.alreadyRecovered).toBe(false);
 
-		// The wedge shape the no-op call must self-heal: durable already
-		// recovered, map re-diverged to blocked.
+		// The no-op call must self-heal: durable recovered, map re-diverged.
 		session.taskWorkflowStates.set(TASK_ID, 'blocked' as never);
 		const evidencePath = path.join(
 			tempDir,
@@ -212,15 +217,13 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 			'../hooks/_stage-b-settlement-2817-helpers.js'
 		);
 		writePlan(tempDir);
-		// Seed the wedge with a stage_a_passed carrying the repair's OWN
-		// deterministic transition id in its history, then re-block the task.
-		// The repair's write is NOT a duplicate in this shape (the later
-		// task_blocked overwrote lastTransitionId, and isDuplicateTransition
-		// compares against it), so it applies — pinning that the refresh
-		// follows the applied write's transition-result snapshot. A true
-		// concurrent duplicate (duplicated=true over recovered evidence)
-		// needs a real scan-to-write race and is not deterministically
-		// constructible through repairWedgedStageA.
+		// Seed a stage_a_passed carrying the repair's OWN deterministic
+		// transition id in its history, then re-block. The repair's write is
+		// NOT a duplicate (task_blocked overwrote lastTransitionId, which
+		// isDuplicateTransition compares against), pinning that the refresh
+		// follows the applied write's snapshot. A true concurrent duplicate
+		// (duplicated=true over recovered evidence) needs a scan-to-write
+		// race and is not deterministically constructible here.
 		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
 			type: 'accepted_mutation',
 			agentType: 'coder',
