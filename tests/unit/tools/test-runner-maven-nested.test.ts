@@ -1,18 +1,27 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { _internals as javaInternals } from '../../../src/lang/backends/java';
 import {
 	_internals,
 	detectTestFramework,
 	resolveMavenModuleDir,
 	test_runner,
 } from '../../../src/tools/test-runner';
+import { _internals as batchInternals } from '../../../src/utils/windows-batch';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const originalBunSpawn = _internals.bunSpawn;
 const originalIsCommandAvailable = _internals.isCommandAvailable;
 const originalExistsSync = _internals.existsSync;
 const originalReaddirSync = _internals.readdirSync;
+const originalIsExecutableFile = javaInternals.isExecutableFile;
+const originalComSpec = batchInternals.comSpec;
+const originalPlatform = process.platform;
+
+function setPlatform(platform: NodeJS.Platform): void {
+	Object.defineProperty(process, 'platform', { value: platform });
+}
 
 let spawnCalls: Array<{ cmd: string[]; opts: { cwd?: string } }> = [];
 
@@ -63,6 +72,9 @@ describe('nested Maven module detection and execution', () => {
 		_internals.isCommandAvailable = originalIsCommandAvailable;
 		_internals.existsSync = originalExistsSync;
 		_internals.readdirSync = originalReaddirSync;
+		javaInternals.isExecutableFile = originalIsExecutableFile;
+		batchInternals.comSpec = originalComSpec;
+		setPlatform(originalPlatform);
 		for (const dir of tempDirs) {
 			try {
 				fs.rmSync(dir, { recursive: true, force: true });
@@ -113,10 +125,12 @@ describe('nested Maven module detection and execution', () => {
 			expect(spawnCalls[0].opts.cwd).toBe(path.join(tempDir, 'backend'));
 		});
 
-		test('scope:all prefers ./mvnw when mvn is not on PATH', async () => {
+		test('scope:all prefers an executable ./mvnw when mvn is not on PATH (POSIX)', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 			createFile(tempDir, 'backend/mvnw', '#!/bin/sh\n');
 			_internals.isCommandAvailable = () => false;
+			setPlatform('linux');
+			javaInternals.isExecutableFile = () => true;
 
 			await test_runner.execute({ scope: 'all' }, { directory: tempDir });
 
@@ -305,112 +319,90 @@ describe('nested Maven module detection and execution', () => {
 			expect(result).toBe('maven');
 		});
 
-		test('prefers mvnw in the module dir when mvn is unavailable', async () => {
+		test('POSIX: accepts an executable mvnw without mvn, rejects a non-executable one', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 			createFile(tempDir, 'backend/mvnw', '#!/bin/sh\n');
 			_internals.isCommandAvailable = () => false;
+			setPlatform('linux');
 
-			const result = await detectTestFramework(tempDir);
-
-			expect(result).toBe('maven');
+			javaInternals.isExecutableFile = () => true;
+			expect(await detectTestFramework(tempDir)).toBe('maven');
+			javaInternals.isExecutableFile = () => false;
+			expect(await detectTestFramework(tempDir)).toBe('none');
 		});
 
-		test('Windows mvnw.cmd preference without mvn on PATH', async () => {
+		// FB-F3c: the detector consults the shared runnable-wrapper predicate, so a
+		// lone mvnw.cmd is only usable on win32 (via the cmd.exe launcher).
+		test('lone mvnw.cmd module is detected without mvn on PATH only on win32', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
-			createFile(tempDir, 'backend/mvnw.cmd', '');
+			createFile(tempDir, 'backend/mvnw.cmd', '@echo off\r\n');
+			createFile(tempDir, 'sys/cmd.exe', '');
+			batchInternals.comSpec = () => path.join(tempDir, 'sys', 'cmd.exe');
 			_internals.isCommandAvailable = () => false;
-			const originalPlatform = process.platform;
 
-			try {
-				Object.defineProperty(process, 'platform', { value: 'win32' });
-				const result = await detectTestFramework(tempDir);
-				expect(result).toBe('maven');
-			} finally {
-				Object.defineProperty(process, 'platform', {
-					value: originalPlatform,
-				});
-			}
+			setPlatform('win32');
+			expect(await detectTestFramework(tempDir)).toBe('maven');
+			setPlatform('linux');
+			expect(await detectTestFramework(tempDir)).toBe('none');
+		});
+
+		test('win32: a POSIX-only mvnw is not a usable wrapper', async () => {
+			createFile(tempDir, 'backend/pom.xml', '<project/>');
+			createFile(tempDir, 'backend/mvnw', '#!/bin/sh\n');
+			_internals.isCommandAvailable = () => false;
+			javaInternals.isExecutableFile = () => true;
+			setPlatform('win32');
+
+			expect(await detectTestFramework(tempDir)).toBe('none');
 		});
 	});
 
-	describe('F-3c wrapper and executable argv table', () => {
-		let priorAllowFullSuite: string | undefined;
-
+	// W-GATE: a root pom.xml disables the nested fallback in detection too, so
+	// detection and the execute cwd override cannot disagree.
+	describe('root pom.xml gates the nested fallback', () => {
 		beforeEach(() => {
-			priorAllowFullSuite = process.env.SWARM_ALLOW_FULL_SUITE;
+			createFile(tempDir, 'pom.xml', '<project/>');
+			_internals.isCommandAvailable = () => false;
+			setPlatform('linux');
+			javaInternals.isExecutableFile = () => true;
+		});
+
+		test('root pom + api/mvnw without mvn: detect none, execute spawns nothing', async () => {
+			createFile(tempDir, 'api/pom.xml', '<project/>');
+			createFile(tempDir, 'api/mvnw', '#!/bin/sh\n');
+			expect(await detectTestFramework(tempDir)).toBe('none');
+
+			// Legacy detection only: the dispatch path's ROOT detection consults the
+			// real PATH for mvn (host-dependent); the nested fallback under test is
+			// the legacy detector's, which uses the stubbed isCommandAvailable.
+			const prior = process.env.SWARM_ALLOW_FULL_SUITE;
+			const priorBackend = process.env.SWARM_LANG_BACKEND;
 			process.env.SWARM_ALLOW_FULL_SUITE = '1';
+			process.env.SWARM_LANG_BACKEND = 'legacy';
+			try {
+				const parsed = JSON.parse(
+					await test_runner.execute({ scope: 'all' }, { directory: tempDir }),
+				);
+				expect(parsed.framework).toBe('none');
+				expect(parsed.error).toBe('No test framework detected');
+				expect(spawnCalls.length).toBe(0);
+			} finally {
+				if (prior === undefined) delete process.env.SWARM_ALLOW_FULL_SUITE;
+				else process.env.SWARM_ALLOW_FULL_SUITE = prior;
+				if (priorBackend === undefined) delete process.env.SWARM_LANG_BACKEND;
+				else process.env.SWARM_LANG_BACKEND = priorBackend;
+			}
 		});
 
-		afterEach(() => {
-			if (priorAllowFullSuite === undefined)
-				delete process.env.SWARM_ALLOW_FULL_SUITE;
-			else process.env.SWARM_ALLOW_FULL_SUITE = priorAllowFullSuite;
+		test('root pom + core/mvnw with files in core: detect none', async () => {
+			createFile(tempDir, 'core/pom.xml', '<project/>');
+			createFile(tempDir, 'core/mvnw', '#!/bin/sh\n');
+			createFile(tempDir, 'core/src/test/java/FooTest.java', '');
+
+			expect(
+				await detectTestFramework(tempDir, ['core/src/test/java/FooTest.java']),
+			).toBe('none');
 		});
-
-		const cases = [
-			{
-				name: 'win32 both -> mvnw.cmd',
-				platform: 'win32' as const,
-				files: ['mvnw', 'mvnw.cmd'],
-				expected: ['mvnw.cmd', 'test'],
-			},
-			{
-				name: 'posix both -> ./mvnw',
-				platform: 'linux' as const,
-				files: ['mvnw', 'mvnw.cmd'],
-				expected: ['./mvnw', 'test'],
-			},
-			{
-				name: 'posix mvnw only -> ./mvnw',
-				platform: 'linux' as const,
-				files: ['mvnw'],
-				expected: ['./mvnw', 'test'],
-			},
-			{
-				name: 'neither -> mvn',
-				platform: 'linux' as const,
-				files: [],
-				expected: ['mvn', 'test'],
-			},
-			{
-				name: 'win32 lone mvnw.cmd -> mvnw.cmd',
-				platform: 'win32' as const,
-				files: ['mvnw.cmd'],
-				expected: ['mvnw.cmd', 'test'],
-			},
-			{
-				name: 'posix lone mvnw.cmd -> mvn',
-				platform: 'linux' as const,
-				files: ['mvnw.cmd'],
-				expected: ['mvn', 'test'],
-			},
-		];
-
-		for (const tc of cases) {
-			test(tc.name, async () => {
-				const origPlatform = process.platform;
-				const origBackend = process.env.SWARM_LANG_BACKEND;
-				try {
-					Object.defineProperty(process, 'platform', { value: tc.platform });
-					for (const backend of [undefined, 'legacy']) {
-						if (backend === undefined) delete process.env.SWARM_LANG_BACKEND;
-						else process.env.SWARM_LANG_BACKEND = backend;
-						const dir = createTempDir();
-						tempDirs.push(dir);
-						createFile(dir, 'pom.xml', '<project/>');
-						for (const file of tc.files) createFile(dir, file, '');
-						spawnCalls = [];
-						await test_runner.execute({ scope: 'all' }, { directory: dir });
-						expect(spawnCalls.length).toBe(1);
-						expect(spawnCalls[0].cmd).toEqual(tc.expected);
-					}
-				} finally {
-					Object.defineProperty(process, 'platform', { value: origPlatform });
-					if (origBackend === undefined) delete process.env.SWARM_LANG_BACKEND;
-					else process.env.SWARM_LANG_BACKEND = origBackend;
-				}
-			});
-		}
 	});
 
 	describe('file-less scope guards with nested Maven detection', () => {

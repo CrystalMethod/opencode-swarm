@@ -5,6 +5,10 @@ import { z } from 'zod';
 import { resolveLocalNodeTool } from '../build/command-resolution';
 import { isCommandAvailable } from '../build/discovery';
 import type { NativeTestTarget, TestScope } from '../lang/backend';
+import {
+	buildMavenTestCommand,
+	resolveMavenWrapperCommand,
+} from '../lang/backends/java';
 import { buildNativeTargetCommand } from '../lang/default-backend';
 import {
 	analyzeImpact,
@@ -29,6 +33,7 @@ import {
 	containsControlChars,
 	containsPathTraversal,
 } from '../utils/path-security';
+import { isWindowsCommandInterpreterLaunch } from '../utils/windows-batch';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
 
@@ -891,16 +896,38 @@ export async function parseTestOutputViaDispatch(
 }
 
 /**
+ * True when a `path.relative(root, x)` result points outside `root`. Matches
+ * only a real `..` path SEGMENT, so an in-root entry whose name merely starts
+ * with `..` (e.g. `..foo/`) is not misclassified as an escape.
+ */
+function relativeEscapesRoot(relative: string): boolean {
+	return (
+		relative === '..' ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	);
+}
+
+/**
  * Resolve the nearest Maven module directory under `root`.
  *
  * When `files` is provided, each file is resolved against `root`, paths
  * outside `root` are dropped, and the directory containing each remaining file
  * is walked upward toward `root` until a `pom.xml` is found. The first match
- * wins.
+ * wins (files are tried in the given order; later files are consulted only
+ * when an earlier one resolves to no module).
  *
- * When `files` is absent/empty, the immediate subdirectories of `root` are
- * probed one level deep (skipping `node_modules` and `.git`, capped at
- * {@link MAX_MAVEN_MODULE_PROBE_ENTRIES}, sorted by name) for a `pom.xml`.
+ * When `files` is absent/empty, the immediate entries of `root` are probed one
+ * level deep for a `pom.xml`: hidden entries (any name starting with `.`) and
+ * `node_modules` are skipped, the remaining entries are sorted by name and at
+ * most {@link MAX_MAVEN_MODULE_PROBE_ENTRIES} of them are inspected.
+ *
+ * Containment is checked on canonical paths: a candidate module directory is
+ * accepted only when its realpath stays inside the realpath of `root`, so a
+ * symlink or junction that leads outside the project is skipped (the walk /
+ * probe continues with the next candidate). If `root` itself cannot be
+ * realpath'd, no module is resolved (fail closed). The returned path is the
+ * LEXICAL module path under `root`.
  *
  * Known limitations:
  * - Multi-module reactor: nearest `pom.xml` wins. A child module that depends
@@ -914,27 +941,46 @@ export function resolveMavenModuleDir(
 ): string | null {
 	const resolvedRoot = path.resolve(root);
 
+	// Canonical root, computed once on first use; null = root not resolvable.
+	let rootReal: string | null | undefined;
+	const isContainedModuleDir = (dir: string): boolean => {
+		if (rootReal === undefined) {
+			try {
+				rootReal = _internals.realpathSync(resolvedRoot);
+			} catch {
+				rootReal = null;
+			}
+		}
+		if (rootReal === null) return false;
+		let dirReal: string;
+		try {
+			dirReal = _internals.realpathSync(dir);
+		} catch {
+			return false;
+		}
+		return !relativeEscapesRoot(path.relative(rootReal, dirReal));
+	};
+
 	if (files && files.length > 0) {
 		for (const file of files) {
 			const resolvedFile = path.resolve(resolvedRoot, file);
 			const relativeToRoot = path.relative(resolvedRoot, resolvedFile);
-			if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
+			if (relativeEscapesRoot(relativeToRoot)) {
 				continue;
 			}
 
 			let current = path.dirname(resolvedFile);
 			while (true) {
-				if (_internals.existsSync(path.join(current, 'pom.xml'))) {
+				if (
+					_internals.existsSync(path.join(current, 'pom.xml')) &&
+					isContainedModuleDir(current)
+				) {
 					return current;
 				}
 				if (current === resolvedRoot) break;
 				const parent = path.dirname(current);
 				if (parent === current) break;
-				const parentRelative = path.relative(resolvedRoot, parent);
-				if (
-					parentRelative.startsWith('..') ||
-					path.isAbsolute(parentRelative)
-				) {
+				if (relativeEscapesRoot(path.relative(resolvedRoot, parent))) {
 					break;
 				}
 				current = parent;
@@ -954,15 +1000,35 @@ export function resolveMavenModuleDir(
 	entries.sort((a, b) => a.localeCompare(b));
 	let inspected = 0;
 	for (const entry of entries) {
-		if (entry === 'node_modules' || entry === '.git') continue;
+		// Hidden entries (.git, .idea, .github, ...) and node_modules are never
+		// Maven modules; skip them BEFORE the cap so they cannot exhaust it.
+		if (entry.startsWith('.') || entry === 'node_modules') continue;
 		if (inspected >= MAX_MAVEN_MODULE_PROBE_ENTRIES) break;
 		inspected++;
 		const candidate = path.join(resolvedRoot, entry);
-		if (_internals.existsSync(path.join(candidate, 'pom.xml'))) {
+		if (
+			_internals.existsSync(path.join(candidate, 'pom.xml')) &&
+			isContainedModuleDir(candidate)
+		) {
 			return candidate;
 		}
 	}
 	return null;
+}
+
+/**
+ * Nested Maven module directory for `root`, or null when `root` itself holds a
+ * `pom.xml`. A root-level pom (single module or aggregator reactor) keeps
+ * precedence: detection and execution both stay at the project root, so the
+ * nested fallback must never apply there. Shared by `detectTestFramework`'s
+ * nested fallback and the test_runner cwd override so the two cannot diverge.
+ */
+function resolveNestedMavenModuleDir(
+	root: string,
+	files?: string[],
+): string | null {
+	if (_internals.existsSync(path.join(root, 'pom.xml'))) return null;
+	return resolveMavenModuleDir(root, files);
 }
 
 export async function detectTestFramework(
@@ -1085,17 +1151,20 @@ export async function detectTestFramework(
 	if (detectMinitest(baseDir)) return 'minitest';
 
 	// Last-resort nested Maven fallback: only after every root-level detector
-	// has returned no match. This covers projects where the Maven module lives
-	// in a nested directory (e.g. backend/pom.xml or services/backend/pom.xml)
-	// and mvn or a wrapper is available inside that module directory.
-	const mavenModuleDir = resolveMavenModuleDir(baseDir, files);
-	if (mavenModuleDir) {
-		const hasMvnw =
-			_internals.existsSync(path.join(mavenModuleDir, 'mvnw')) ||
-			_internals.existsSync(path.join(mavenModuleDir, 'mvnw.cmd'));
-		if (_internals.isCommandAvailable('mvn') || hasMvnw) {
-			return 'maven';
-		}
+	// has returned no match, and never when the root itself has a pom.xml (the
+	// root keeps precedence; execution would stay at the root, where only a
+	// root-level `mvn` could run). This covers projects where the Maven module
+	// lives in a nested directory (e.g. backend/pom.xml or
+	// services/backend/pom.xml) and `mvn` is on PATH or a RUNNABLE wrapper
+	// exists in that module directory — the same wrapper predicate the command
+	// builder uses, so detection never accepts a wrapper that would not launch.
+	const mavenModuleDir = resolveNestedMavenModuleDir(baseDir, files);
+	if (
+		mavenModuleDir &&
+		(_internals.isCommandAvailable('mvn') ||
+			resolveMavenWrapperCommand(mavenModuleDir, ['test']) !== null)
+	) {
+		return 'maven';
 	}
 
 	return 'none';
@@ -1766,19 +1835,11 @@ function buildTestCommand(
 			return args;
 		}
 		case 'maven': {
-			// maven has no bail support — silently ignore
-			const isWindows = process.platform === 'win32';
-			const hasMvnwCmd = fs.existsSync(path.join(baseDir, 'mvnw.cmd'));
-			const hasMvnw = fs.existsSync(path.join(baseDir, 'mvnw'));
-			const args: string[] = [];
-			if (hasMvnwCmd && isWindows) args.push('mvnw.cmd');
-			else if (hasMvnw) args.push('./mvnw');
-			else args.push('mvn');
-			args.push('test');
-			if (targets && targets.length > 0) {
-				args.push(`-Dtest=${targets.join(',')}`);
-			}
-			return args;
+			// maven has no bail support — silently ignore. Shared with the Java
+			// backend's dispatch buildTestCommand so both paths emit identical
+			// argv (runnable wrapper first — the cmd.exe launcher for mvnw.cmd on
+			// win32, an executable ./mvnw on POSIX — otherwise mvn).
+			return buildMavenTestCommand(baseDir, targets);
 		}
 		case 'gradle': {
 			// gradle has no bail support — silently ignore
@@ -2614,6 +2675,13 @@ export async function runTests(
 			cwd: executionCwd,
 			timeout: timeout_ms,
 			killProcessTree: true,
+			// A constrained cmd.exe launcher (the Maven wrapper on win32) carries a
+			// pre-quoted `call "<abs>" "<arg>"` tail; keep the spawner from
+			// re-quoting it into a command line cmd.exe cannot parse. Same pattern
+			// as lint.ts / pkg-audit.ts.
+			...(isWindowsCommandInterpreterLaunch(command)
+				? { windowsVerbatimArguments: true }
+				: {}),
 		});
 
 		// Race with timeout — but read streams CONCURRENTLY with waiting for exit.
@@ -3348,22 +3416,21 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 
 		// For Maven projects with a nested module layout, run the command from the
 		// module directory that owns the pom.xml. This applies only when the project
-		// root itself has no pom.xml and the scope is not 'target': scope:'target'
-		// native execution remains rooted at the project root because runTests
-		// resolves native targets against the cwd argument. When the root already
-		// contains a pom.xml (aggregator reactor), execution stays at the root.
+		// root itself has no pom.xml (resolveNestedMavenModuleDir — the same gate
+		// detectTestFramework's nested fallback uses) and the scope is not
+		// 'target': scope:'target' native execution remains rooted at the project
+		// root because runTests resolves native targets against the cwd argument.
+		// When the root already contains a pom.xml (aggregator reactor), execution
+		// stays at the root.
 		// Convention-scope note: when Java test files are resolved but no targets are
 		// provided, the pre-existing class-based structured error
 		// ('maven does not support targeted test-file execution') is intentionally
 		// retained unchanged — deriving -Dtest class names from file paths is out of
-		// scope; the file-less convention scenario runs `mvn test` in the resolved
-		// module dir.
-		if (
-			scope !== 'target' &&
-			framework === 'maven' &&
-			!_internals.existsSync(path.join(workingDir, 'pom.xml'))
-		) {
-			const mavenModuleDir = resolveMavenModuleDir(workingDir, _files);
+		// scope. A file-less run needs scope:'all' (convention/graph/impact without
+		// files or targets are rejected by the guard above); scope:'all' with no
+		// files uses the one-level nested module probe to pick the module dir.
+		if (scope !== 'target' && framework === 'maven') {
+			const mavenModuleDir = resolveNestedMavenModuleDir(workingDir, _files);
 			if (mavenModuleDir) {
 				nativeExecutionDirectory = mavenModuleDir;
 			}
@@ -3838,6 +3905,7 @@ export const _internals: {
 	existsSync: typeof fs.existsSync;
 	readdirSync: typeof fs.readdirSync;
 	readFileSync: typeof fs.readFileSync;
+	realpathSync: typeof fs.realpathSync;
 	resolveLocalNodeTool: typeof resolveLocalNodeTool;
 	bunSpawn: typeof bunSpawn;
 	buildNativeTargetCommand: typeof buildNativeTargetCommand;
@@ -3853,6 +3921,7 @@ export const _internals: {
 	existsSync: fs.existsSync,
 	readdirSync: fs.readdirSync,
 	readFileSync: fs.readFileSync,
+	realpathSync: fs.realpathSync,
 	resolveLocalNodeTool,
 	bunSpawn,
 	buildNativeTargetCommand,

@@ -27,13 +27,14 @@ Behavior is now:
 - **`files` provided** — behavior is identical to before.
 
 Three misleading comments were corrected (the guard accepts `targets` alone, so
-`files` can legitimately be empty in those branches). Four regression tests pin
-the guard and the three scope branches (no `TypeError`, correct structured
-error, no spawn).
+`files` can legitimately be empty in those branches). Regression tests pin the
+guard and the three scope branches (no `TypeError`, correct structured error, no
+spawn) for a nested-Maven project and for a Bun project, on both the default
+dispatch path and `SWARM_LANG_BACKEND=legacy` for the Bun project.
 
 ### Known caveat
 
 When `targets` is given without `files`, the structured error still reads
 "Provided files contain…", which is misleading since no files were provided.
 Whether `targets` should bypass the `files` requirement in `convention` scope is
-a deferred design question, not addressed here.
+an open design question, not addressed here (tracked in #3041).
