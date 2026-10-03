@@ -10,8 +10,8 @@
  * settlement-wedge writers refresh the recovering session's view at write
  * time — see tests/unit/workflow/settlement-recovery-blocked-start-view-3043.test.ts);
  * this consumer-side guard still refuses at-or-above views, so a blocked view
- * in a session that did NOT run the recovery stays unrepaired (the pinned
- * cross-session residual). Such a writer leaves the views diverged, and every
+ * in a session that did NOT run the recovery stays unrepaired — the pinned
+ * cross-session residual: such a diverged view leaves every
  * later reviewer/test_engineer verdict was silently skipped before any
  * #2817 drop site — no gate write, no advisory, no recovery short of a
  * fresh session (the frozen checks in

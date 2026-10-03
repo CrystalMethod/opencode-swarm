@@ -5,14 +5,12 @@
  * The two blocked-start durable writers (recover_stage_a_task via
  * recoverStageATaskSupervised, and /swarm recover via repairWedgedStageA)
  * used to advance durable evidence without touching any session's
- * taskWorkflowStates map. A session whose map legitimately held `blocked`
- * (the task_blocked terminal writes durable + map together) then wedged
- * every later Stage B verdict: dispatch is admitted from durable, but the
- * settlement loop filters on the map, refuses the #3038 at-or-above repair,
- * and silently skips. These tests pin the writer-side refresh
- * (workflow/session-view.ts), its no-downgrade boundary, the /swarm recover
- * skip-outcome extension, and the cross-session residual (a foreign
- * session's blocked view is deliberately NOT refreshed).
+ * taskWorkflowStates map, so a session whose map legitimately held `blocked`
+ * wedged every later Stage B verdict (dispatch admits from durable; the
+ * settlement loop filters on the map and the #3038 guard refuses blocked).
+ * These tests pin the writer-side refresh (workflow/session-view.ts), its
+ * no-downgrade boundary, the /swarm recover skip-outcome extension, the
+ * duplicated-transition snapshot rule, and the cross-session residual.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -206,6 +204,56 @@ describe('issue #3043 — blocked-start recovery refreshes the session view', ()
 		expect(session.taskWorkflowStates.get('1.2')).toBe('pre_check_passed');
 		// Not in scope: 1.1 was not requested, its re-diverged view stays.
 		expect(session.taskWorkflowStates.get(TASK_ID)).toBe('blocked');
+	});
+
+	it('duplicated transition: the refresh follows the transition-result snapshot, never a fabricated recovery', async () => {
+		tempDir = makeTempDir('sr-3043-dup-');
+		const { writePlan } = await import(
+			'../hooks/_stage-b-settlement-2817-helpers.js'
+		);
+		writePlan(tempDir);
+		// Seed the wedge with the repair's OWN deterministic transition id
+		// already recorded, so the repair's write is a duplicate no-op inside
+		// the evidence lock and the evidence snapshot it returns says blocked.
+		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
+			type: 'accepted_mutation',
+			agentType: 'coder',
+			expectedGeneration: 0,
+			transitionId: `coder:dup-${TASK_ID}`,
+		});
+		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
+			type: 'stage_a_passed',
+			settlementRecovery: true,
+			expectedGeneration: 1,
+			transitionId: `stage-a-repair:${TASK_ID}:1`,
+		});
+		await transitionTaskWorkflowEvidence(tempDir, TASK_ID, {
+			type: 'task_blocked',
+			expectedGeneration: 1,
+			transitionId: `terminal:dup-${TASK_ID}`,
+		});
+		writeCommittedWal(tempDir, TASK_ID, true);
+		await writeGreenBundles(tempDir);
+
+		const sessionID = 'sess-3043-dup';
+		const session = await architectSession(tempDir, sessionID, 'blocked');
+		await repairWedgedStageA(tempDir, {
+			taskIds: [TASK_ID],
+			sessionId: sessionID,
+		});
+
+		const durableState = (await readTaskEvidence(tempDir, TASK_ID))?.workflow
+			?.state;
+		if (durableState === 'blocked') {
+			// Duplicate fired: durable never advanced, so no refresh may be
+			// fabricated from the stale scan snapshot — the map stays wedged.
+			expect(session.taskWorkflowStates.get(TASK_ID)).toBe('blocked');
+		} else {
+			// Reducer applied the write: durable recovered, so the refresh
+			// MUST have followed the transition-result snapshot.
+			expect(durableState).toBe('pre_check_passed');
+			expect(session.taskWorkflowStates.get(TASK_ID)).toBe('pre_check_passed');
+		}
 	});
 
 	it('skip-outcome extension: /swarm recover re-run un-wedges an already-recovered task', async () => {

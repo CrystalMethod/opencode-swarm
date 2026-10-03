@@ -3502,8 +3502,10 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
  * are absent, rework_required, or rank below the durable eligible state.
  * Recovery from a BLOCKED in-memory view (recover_stage_a_task /
  * stage-a-repair also accept blocked starts) is covered WRITER-SIDE by issue
- * #3043: both writers refresh the recovering/invoking session's view at
- * write time (see workflow/session-view.ts), so this consumer-side guard
+ * #3043: both writers refresh the recovering/invoking session's view in
+ * the same call (see workflow/session-view.ts; the /swarm recover
+ * skip-outcome branch verifies durable via one bounded re-read), so this
+ * consumer-side guard
  * keeps refusing to overwrite it — an at-or-above view in a session that did
  * NOT run the recovery (cross-session divergence) is still never repaired
  * here and needs a fresh session or a re-run of the recovery in that
