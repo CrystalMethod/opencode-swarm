@@ -15,9 +15,10 @@ legacy switch, and the PHP backend's framework selection — now share one
 `buildPhpVendorCommand` helper. On Windows the `.bat` shim is launched through
 the contained `cmd.exe` launcher (`resolveContainedWindowsBatchCommand`), the
 same path the Maven and Gradle wrappers already use; when that launcher declines
-(missing shim, a test-file path carrying a `cmd.exe` metacharacter, an argument
-ending in a backslash that the launcher's quoting would mangle, an unresolvable
-`ComSpec`) the command falls back to running the PHP interpreter against the
+(missing shim, a wrapper symlink resolving outside the project directory, a
+test-file path carrying a `cmd.exe` metacharacter, an argument ending in a
+backslash that the launcher's quoting would mangle, an unresolvable `ComSpec`)
+the command falls back to running the PHP interpreter against the
 extensionless Composer proxy instead of re-emitting the batch file.
 Non-Windows behaviour is unchanged.
 
