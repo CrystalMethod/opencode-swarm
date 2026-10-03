@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.188.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.6...v7.188.7) (2026-10-03)
+
+
+### Bug Fixes
+
+* **config:** close reviewer round-2 findings on the ratchet fix round ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([18832bb](https://github.com/ZaxbyHub/opencode-swarm/commit/18832bb5156cea58343dd00118c6dcfc0c565c56))
+* **config:** close swarm-pr-review findings F-001..F-004 on the config-consumption ratchet ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([d848998](https://github.com/ZaxbyHub/opencode-swarm/commit/d848998b88718f6aac572e3b34ee4562c806d566))
+* **config:** config-consumption ratchet for every PluginConfigSchema key ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([a9e60ca](https://github.com/ZaxbyHub/opencode-swarm/commit/a9e60ca707fbaad54038724a60d8b0935b1d0475))
+* **workflow:** resync Stage B settlement view from durable evidence ([#3032](https://github.com/ZaxbyHub/opencode-swarm/issues/3032)) ([9cb9eee](https://github.com/ZaxbyHub/opencode-swarm/commit/9cb9eee7011c822042767dca97d5b5c0f56ddcc6))
+
 ## [7.188.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.5...v7.188.6) (2026-10-02)
 
 
