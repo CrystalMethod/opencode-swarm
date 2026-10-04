@@ -43,6 +43,7 @@ import { projectDbExists } from '../../db/project-db.js';
 import { derivePlanId, derivePlanIdentityHash } from '../../plan/utils.js';
 import { atomicWriteSwarmFileSync } from '../../utils/atomic-write.js';
 import * as logger from '../../utils/logger.js';
+import type { EpicWaveComponents } from './components.js';
 import { isEpicModeConfigEnabledForDirectory } from './config-gate.js';
 import type { EpicSizingVerdict } from './sizing.js';
 
@@ -93,7 +94,11 @@ export interface EpicMergeFailureSnapshot {
 export interface EpicWaveRecord {
 	seq: number;
 	phase: number;
-	/** `parallel` (planner wave) or `exclusive` (a task that runs alone). */
+	/**
+	 * `parallel` (tasks of conflict-free components), `exclusive` (a task
+	 * that runs alone), or `serial-component` (one task of a densely coupled
+	 * component; no other ready task could join it). See `components.ts`.
+	 */
 	kind: 'parallel' | 'exclusive' | 'serial-component';
 	taskIds: string[];
 	files: Record<string, string[]>;
@@ -102,6 +107,12 @@ export interface EpicWaveRecord {
 		pairs: EpicCochangePair[];
 		threshold: { npmi: number; minCoChanges: number };
 	} | null;
+	/**
+	 * Epic v2 C5: the phase's components when the wave was issued (pending
+	 * task → component, component modes/densities). Absent on waves issued
+	 * before C5.
+	 */
+	components?: EpicWaveComponents;
 	/** HEAD when the wave was issued (null: non-git / unborn). */
 	baseHead: string | null;
 	issuedAt: string;
@@ -307,6 +318,23 @@ const waveSchema = z
 				threshold: z.object({ npmi: z.number(), minCoChanges: z.number() }),
 			})
 			.nullable(),
+		components: z
+			.object({
+				byTask: z.record(z.string(), z.string()),
+				modes: z.record(
+					z.string(),
+					z.enum(['exclusive', 'serial-component', 'parallel']),
+				),
+				density: z.record(z.string(), z.number()),
+				exclusive: z.record(
+					z.string(),
+					z.enum(['global-file', 'protected-path', 'no-scope', 'hot-module']),
+				),
+				threshold: z.number(),
+				truncated: z.boolean(),
+			})
+			.passthrough()
+			.optional(),
 		baseHead: z.string().nullable(),
 		issuedAt: z.string(),
 		closedAt: z.string().optional(),

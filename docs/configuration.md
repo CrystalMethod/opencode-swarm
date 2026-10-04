@@ -2582,7 +2582,7 @@ The execution profile controls plan-scoped execution preferences. MODE: PLAN dra
 
 ### `turbo.epic` — Epic Mode settings
 
-Epic Mode is an optional, coupling-aware execution mode: once an epic is opened for an epic-sized plan, `epic_next_wave` issues the plan's tasks as concurrent waves (disjoint declared scopes, phases in order) that the architect dispatches as visible coder `Task` calls. Every key defaults to off; see [Epic Mode](modes.md#epic-mode-preview) for the design.
+Epic Mode is an optional, coupling-aware execution mode: once an epic is opened for an epic-sized plan, `epic_next_wave` issues the plan's tasks as concurrent waves (non-conflicting declared scopes, one task per densely coupled component, phases in order) that the architect dispatches as visible coder `Task` calls. Every key defaults to off; see [Epic Mode](modes.md#epic-mode-preview) for the design.
 
 **Two independent opt-in master gates:**
 
@@ -2594,8 +2594,8 @@ Epic Mode is an optional, coupling-aware execution mode: once an epic is opened 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mode.enabled` | boolean | `false` | Master gate for Epic Mode (see above). |
-| `mode.activation_threshold` | number | `0.3` | Static ceiling of the calibration threshold override reported by `/swarm epic calibration`. The plan-wide `p` activation gate was removed (sizing at `/swarm epic start` replaced it); this value no longer forces serial execution. |
-| `mode.min_commits_for_signal` | number | `20` | Retired: read by nothing (the activation gate was removed); still accepted so existing configs stay valid. |
+| `mode.activation_threshold` | number | `0.3` | **Intra-component density threshold** (Epic v2 C5 — new meaning). `epic_next_wave` splits a phase's pending tasks into conflict components (path ∪ co-change); a component whose density (conflicting pairs / all pairs inside it) exceeds this value is `serial-component` and contributes one task per wave, otherwise its non-conflicting tasks share waves. Range 0–1: lower serializes more clusters; `1` keeps tasks apart only where they conflict. Also the static ceiling of the calibration threshold override reported by `/swarm epic calibration` (display only). See [Wave composition](modes.md#the-epic_next_wave-flow). |
+| `mode.min_commits_for_signal` | — | — | **Retired** (Epic v2 C5). Accepted and ignored — stripped before validation, read by nothing — with a precise "retired" warning from the loader (once, `/swarm diagnose`) and a `retired-config-key` finding from `/swarm config doctor`, instead of an unrecognized-key `stripped_keys` recovery. Marked `deprecated` in the JSON schema. Remove it. |
 | `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal (see above). |
 | `cochange.threshold` | number | `0.6` | NPMI floor (range `[-1, 1]`) for a file pair to be treated as historically co-changing. Stricter than `co_change_analyzer`'s discovery default (`0.5`). |
 | `cochange.min_co_changes` | number | `5` | Minimum raw co-change count required before NPMI is considered, to suppress small-sample noise. Stricter than the analyzer's discovery default (`3`). |
@@ -2606,12 +2606,12 @@ Epic Mode is an optional, coupling-aware execution mode: once an epic is opened 
 | `calibration.loosen_window` | number | `10` | Consecutive clean tasks required before one loosening step. |
 | `sizing.min_tasks` | integer | `6` | `/swarm epic start` refuses (`not-epic-sized`, reason `too-few-tasks`) a plan with fewer pending tasks. |
 | `sizing.min_scope_coverage` | number | `0.8` | Minimum share (0–1) of pending tasks with a live declared scope or `files_touched` (`insufficient-scope-coverage`). |
-| `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a wave-planner dry run (`insufficient-parallelism`). Must be ≥ 1. |
+| `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a dry run of the Epic component planner — the one `epic_next_wave` uses, with the same hot modules, co-change signal and density threshold (`insufficient-parallelism`). Must be ≥ 1. |
 | `sizing.coder_fraction` | number | `0.6` | Share (0–1) of a task's time that parallel coders overlap; QA and architect turns stay serial. |
 | `commit_policy` | `"epic-branch"` \| `"current-branch"` | `"epic-branch"` | Git projects. `epic-branch`: `/swarm epic start` checks out `swarm/epic/<epicKey>` (refusing a detached HEAD or a leftover branch of the same name), every Epic commit goes there, `epic_next_wave` blocks with `EPIC_BRANCH_MISMATCH` while HEAD is elsewhere, and `/swarm epic close` lands it onto the original branch (`--land squash` default — staged, uncommitted; `merge`; `none`). `current-branch`: commits stay on the branch current at start; close lands nothing. See [Epic branch and landing](modes.md#epic-branch-and-landing). |
 | `retain_refs` | boolean | `false` | Git projects. Keep the epic's refs `refs/swarm/epics/<epicKey>/{base,waves/<seq>,tasks/<id>}` after `/swarm epic close` (and `/swarm close` finalization). Off: close deletes them after the close report recorded their values. The refs are never pushed or cloned by default (`--mirror` copies them). See [Commits: landing, residue, refs](modes.md#commits-landing-residue-refs). |
 
-`/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced. The `sizing` block is `.strict()` like the rest of `turbo.epic`: an unknown key fails validation.
+`/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced. The `sizing` block is `.strict()` like the rest of `turbo.epic`: an unknown key fails validation (retired keys, listed above, are the only keys accepted and ignored).
 
 **Example** — Enable Epic Mode with the co-change signal:
 

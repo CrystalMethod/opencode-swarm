@@ -4585,10 +4585,9 @@
                       "maximum": 1
                     },
                     "min_commits_for_signal": {
-                      "default": 20,
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9007199254740991
+                      "deprecated": true,
+                      "description": "Retired (Epic v2): accepted and ignored with a warning. Remove it.",
+                      "type": "number"
                     }
                   },
                   "additionalProperties": false
@@ -4825,10 +4824,9 @@
                       "maximum": 1
                     },
                     "min_commits_for_signal": {
-                      "default": 20,
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9007199254740991
+                      "deprecated": true,
+                      "description": "Retired (Epic v2): accepted and ignored with a warning. Remove it.",
+                      "type": "number"
                     }
                   },
                   "additionalProperties": false

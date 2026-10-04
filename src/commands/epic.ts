@@ -14,8 +14,10 @@
  *                          — lifecycle state, orphan detection, sentinel/row
  *                            repair, recorded worktree merge failures, and
  *                            the one-time retirement of Epic v1 session state
- *                            (including the epic's waves, phases and
- *                            divergence recorded by `epic_next_wave`);
+ *                            (including the epic's waves, phases, the
+ *                            phase's task components recorded with the
+ *                            latest wave, and divergence recorded by
+ *                            `epic_next_wave`);
  *                            `--repair-refs` re-adopts task commits a rebase
  *                            or amend made unreachable (Epic v2 C3)
  *   /swarm epic calibration — Capability D calibration state
@@ -622,6 +624,59 @@ function renderRecordLines(
 	return lines;
 }
 
+const EXCLUSIVE_REASON_TEXT: Record<string, string> = {
+	'global-file': 'global file',
+	'protected-path': 'protected path',
+	'no-scope': 'no usable scope',
+	'hot-module': 'learned hot module',
+};
+
+const MODE_ORDER: Record<string, number> = {
+	exclusive: 0,
+	'serial-component': 1,
+	parallel: 2,
+};
+
+/** The phase's components recorded when wave `seq` was issued (Epic v2 C5). */
+function renderComponentLines(
+	seq: number,
+	components: NonNullable<EpicRecordV1['waves'][number]['components']>,
+): string[] {
+	const members = new Map<string, string[]>();
+	for (const [taskId, componentId] of Object.entries(components.byTask)) {
+		const list = members.get(componentId) ?? [];
+		list.push(taskId);
+		members.set(componentId, list);
+	}
+	const ids = [...members.keys()].sort(
+		(a, b) =>
+			(MODE_ORDER[components.modes[a] ?? 'parallel'] ?? 2) -
+				(MODE_ORDER[components.modes[b] ?? 'parallel'] ?? 2) ||
+			(members.get(b)?.length ?? 0) - (members.get(a)?.length ?? 0) ||
+			a.localeCompare(b),
+	);
+	const lines = [
+		`- Components when wave ${seq} was issued (density threshold ${components.threshold}; an exclusive task runs alone, a serial component runs one task per wave, a parallel component's unconflicting tasks share waves):`,
+	];
+	for (const id of ids.slice(0, 12)) {
+		const tasks = (members.get(id) ?? []).sort((a, b) => a.localeCompare(b));
+		const mode = components.modes[id] ?? 'parallel';
+		const detail =
+			mode === 'exclusive'
+				? (EXCLUSIVE_REASON_TEXT[components.exclusive[id] ?? ''] ?? 'exclusive')
+				: `${tasks.length} task(s), density ${(components.density[id] ?? 0).toFixed(2)}`;
+		lines.push(
+			`  - \`${id}\` ${mode} (${detail}): ${tasks.slice(0, 8).join(', ')}${tasks.length > 8 ? `, +${tasks.length - 8} more` : ''}`,
+		);
+	}
+	if (ids.length > 12)
+		lines.push(`  - … +${ids.length - 12} more component(s)`);
+	if (components.truncated) {
+		lines.push('  - (task list capped; not every pending task is shown)');
+	}
+	return lines;
+}
+
 /** Waves, phases and divergence recorded by `epic_next_wave` (Epic v2 C2). */
 function renderWaveLines(record: EpicRecordV1): string[] {
 	const lines: string[] = [];
@@ -643,6 +698,10 @@ function renderWaveLines(record: EpicRecordV1): string[] {
 		lines.push(
 			`- **Active:** wave ${active.seq} (phase ${active.phase}, ${active.kind}) — ${active.taskIds.join(', ')} — issued ${active.issuedAt}`,
 		);
+	}
+	const latest = active ?? waves[waves.length - 1];
+	if (latest?.components) {
+		lines.push(...renderComponentLines(latest.seq, latest.components));
 	}
 	const phases = Object.entries(record.phases ?? {}).sort(
 		([a], [b]) => Number(a) - Number(b),

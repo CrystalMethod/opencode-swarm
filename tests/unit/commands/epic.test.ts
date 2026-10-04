@@ -179,6 +179,18 @@ describe('handleEpicCommand — status', () => {
 					taskIds: ['1.3'],
 					files: { '1.3': ['package.json'] },
 					cochange: null,
+					components: {
+						byTask: { '1.3': '1.3', '1.4': '1.4', '1.5': '1.4', '1.6': '1.6' },
+						modes: {
+							'1.3': 'exclusive',
+							'1.4': 'serial-component',
+							'1.6': 'parallel',
+						},
+						density: { '1.3': 0, '1.4': 1, '1.6': 0 },
+						exclusive: { '1.3': 'global-file' },
+						threshold: 0.3,
+						truncated: false,
+					},
 					baseHead: null,
 					issuedAt: '2026-01-01T02:00:00.000Z',
 					status: 'issued',
@@ -219,6 +231,14 @@ describe('handleEpicCommand — status', () => {
 		expect(out).toContain(
 			'Phase 1: active; 1 phase review run(s) (last: reviewer:NEEDS_REVISION critic:not-run)',
 		);
+		expect(out).toContain(
+			'- Components when wave 2 was issued (density threshold 0.3;',
+		);
+		expect(out).toContain('  - `1.3` exclusive (global file): 1.3');
+		expect(out).toContain(
+			'  - `1.4` serial-component (2 task(s), density 1.00): 1.4, 1.5',
+		);
+		expect(out).toContain('  - `1.6` parallel (1 task(s), density 0.00): 1.6');
 		expect(out).toContain('- 1.1 (wave 1): src/c.ts');
 		expect(out).toContain('- wave 1 (unattributed): src/stray.ts');
 		expect(out).not.toContain('activation decision');

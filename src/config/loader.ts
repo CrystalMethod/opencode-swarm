@@ -9,6 +9,7 @@ import { sanitizeMalformedValues } from './sanitize-malformed-values';
 import {
 	CONSERVATIVE_PRESET_BASE,
 	ExternalSkillsConfigSchema,
+	findRetiredEpicConfigKeys,
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	type GateConfigOverrides,
 	GateConfigSchema,
@@ -33,6 +34,12 @@ export const MAX_CONFIG_FILE_BYTES = 102_400;
 let lastUnknownTopLevelSig: string | null = null;
 
 /**
+ * Dedup signature for the step-4c retired-Epic-key warning (Epic v2): same
+ * one-slot, once-per-distinct-set contract as `lastUnknownTopLevelSig`.
+ */
+let lastRetiredEpicKeysSig: string | null = null;
+
+/**
  * Dedup set for gates-section sanitize advisories (issue #2524): gate tools
  * self-load config per tool invocation, so a malformed `gates` section would
  * otherwise buffer the identical warning on every call until the deferred
@@ -54,6 +61,9 @@ function gatesAdvisoryWarn(message: string, data?: unknown): void {
 export const _internals = {
 	resetUnknownTopLevelKeyWarning(): void {
 		lastUnknownTopLevelSig = null;
+	},
+	resetRetiredEpicKeyWarning(): void {
+		lastRetiredEpicKeysSig = null;
 	},
 	resetGatesAdvisoryDedup(): void {
 		gatesAdvisorySignatures.clear();
@@ -750,6 +760,21 @@ function buildConfigWithMeta(
 		}
 	}
 
+	// 4c. Retired Epic keys (Epic v2): the schema accepts and strips them so
+	//     the strict `turbo.epic.mode` object never drops the whole `turbo`
+	//     block; nothing reads them. Warn once per distinct key set (4b's
+	//     dedup contract); `/swarm config doctor` reports them as well.
+	const retiredEpicKeys = findRetiredEpicConfigKeys(mergedRaw);
+	if (retiredEpicKeys.length > 0) {
+		const signature = retiredEpicKeys.join('\u0000');
+		if (signature !== lastRetiredEpicKeysSig) {
+			lastRetiredEpicKeysSig = signature;
+			advisoryWarn(
+				`[opencode-swarm] Ignored ${retiredEpicKeys.length} retired Epic config key(s): ${retiredEpicKeys.join(', ')}. They have no effect (the rest of the turbo block is kept) — remove them; see docs/configuration.md (Epic Mode).`,
+			);
+		}
+	}
+
 	// Fail-secure closure: when a config file existed but could not be loaded,
 	// force guardrails ENABLED on any recovered config (issue #1778 H6 F2).
 	const secure = (cfg: PluginConfig): PluginConfig =>
@@ -1065,6 +1090,7 @@ export function loadGateOverrides(
 export function resetConfigAdvisoryDedup(): void {
 	gatesAdvisorySignatures.clear();
 	lastUnknownTopLevelSig = null;
+	lastRetiredEpicKeysSig = null;
 }
 
 /**

@@ -136,8 +136,10 @@ export function buildDispatchInstructions(wave: EpicWaveView): string {
 	const n = wave.taskIds.length;
 	const kind =
 		wave.kind === 'exclusive'
-			? 'exclusive — this task runs alone (it touches a global, protected, or historically hot file)'
-			: 'parallel — the tasks have disjoint declared scopes';
+			? 'exclusive — this task runs alone (it touches a global, protected, or historically hot file, or has no usable scope)'
+			: wave.kind === 'serial-component'
+				? 'serial-component — this task belongs to a densely coupled cluster of tasks that run one per wave, and no other ready task could join it'
+				: 'parallel — the tasks have disjoint declared scopes (at most one task per densely coupled cluster)';
 	return [
 		`Wave ${wave.seq} of phase ${wave.phase} (${kind}): ${n} task(s) — ${wave.taskIds.join(', ')}.`,
 		'1. Tell the user, in one sentence, which tasks this wave runs and why.',

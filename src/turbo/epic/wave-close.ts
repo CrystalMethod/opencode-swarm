@@ -27,7 +27,7 @@
  * After the close is committed, the divergence of every completed task with
  * actual files is appended to `.swarm/epic/divergence.jsonl` and the
  * calibration engine is rolled forward (hot modules learned here make tasks
- * run alone in later waves — see `wave-select.ts`). Calibration is
+ * exclusive — alone — in later waves, see `components.ts`). Calibration is
  * best-effort: a failure never blocks the wave flow.
  */
 

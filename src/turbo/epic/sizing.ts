@@ -6,9 +6,9 @@
  *   T  = pending tasks (status ∉ {completed, closed}) across the plan
  *   C  = pending tasks with a non-empty scope (live declared scope, else
  *        `files_touched`)
- *   L  = serial steps of a dry-run of the Epic wave planner over every phase
- *        with pending tasks (waves + serialized + degraded tasks), under the
- *        epic's own wave-width cap
+ *   L  = serial steps of a dry-run of the Epic component planner
+ *        (`components.ts`) over every phase with pending tasks (waves + tasks
+ *        it can never schedule), under the epic's own wave-width cap
  *
  *   coverage = C / T,  S = T / L,  S_eff = 1 / ((1 − c) + c / S)   (Amdahl)
  *

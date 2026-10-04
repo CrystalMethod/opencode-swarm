@@ -56,7 +56,11 @@ import { hasActiveTurboMode } from '../../state.js';
 import * as logger from '../../utils/logger.js';
 import { withTimeout } from '../../utils/timeout.js';
 import { listCoderSettlementWalStates } from '../../workflow/coder-settlement.js';
+import type { PlanTask as PartitionTask } from '../lean/partition-common.js';
 import { listRecoveryRecords, recoveryReadErrored } from '../lean/recovery.js';
+import { loadCalibrationState } from './calibration.js';
+import { getCoChangeData } from './cochange-source.js';
+import { dryRunEpicPhase } from './components.js';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
 	isEpicModeConfigEnabled,
@@ -84,11 +88,14 @@ import {
 import { isFullSha, syncEpicRefs } from './markers.js';
 import { computePlanKey, PLAN_SCOPE_RESOLVE_TIMEOUT_MS } from './plan-key.js';
 import {
+	type EpicPlanningSignals,
+	loadEpicPlanningSignals,
+} from './planning-signals.js';
+import {
 	type EpicSizingVerdict,
 	evaluateEpicSizing,
 	resolveEpicSizingThresholds,
 } from './sizing.js';
-import { planEpicWaves } from './wave-planner.js';
 
 export type EpicStartRefusal =
 	| 'epic-disabled-by-config'
@@ -330,15 +337,19 @@ function isPending(status: string | undefined): boolean {
 
 /**
  * Sizing inputs from the plan: pending tasks, scoped tasks, and the serial
- * step count of a wave-planner dry run (every phase, under `maxParallel`,
- * over the estimated scopes). Cross-phase dependencies count as satisfied
- * (phases run in order).
+ * step count L of a dry run of the Epic component planner
+ * (`components.ts`, the planner `epic_next_wave` issues waves with) over
+ * every phase, under `maxParallel`, over the estimated scopes and the same
+ * planning signals (hot modules, co-change, density threshold). L = waves
+ * + tasks the planner can never schedule (a dependency cycle). Cross-phase
+ * dependencies count as satisfied (phases run in order).
  */
 export function computeEpicSizing(
 	directory: string,
 	plan: Plan,
 	config: PluginConfig,
 	maxParallel: number,
+	signals: EpicPlanningSignals,
 ): EpicSizingVerdict {
 	const pendingIds: string[] = [];
 	for (const phase of plan.phases) {
@@ -353,8 +364,7 @@ export function computeEpicSizing(
 	);
 	// Estimated scope: the live declared scope, else `files_touched`
 	// (declarations are per phase and expire, so most tasks are estimated
-	// from the plan at start time). Passed explicitly to the planner so
-	// `require_declared_scope` does not serialize an estimated task.
+	// from the plan at start time).
 	const scopes: Record<string, string[]> = Object.create(null);
 	let scoped = 0;
 	for (const phase of plan.phases) {
@@ -365,37 +375,27 @@ export function computeEpicSizing(
 			if (scopes[task.id].length > 0) scoped += 1;
 		}
 	}
-	// Preview copy: closed tasks behave as resolved for dependency purposes.
-	const preview = {
-		phases: plan.phases.map((phase) => ({
-			...phase,
-			tasks: (phase.tasks ?? []).map((task) =>
-				task.status === 'closed'
-					? { ...task, status: 'completed' as const }
-					: task,
-			),
-		})),
-	};
 	const leanConfig = {
 		...DEFAULT_LEAN_TURBO_CONFIG,
 		...(config.turbo?.lean ?? {}),
-		max_parallel_coders: maxParallel,
 	};
 	let serialSteps = 0;
-	for (const phase of preview.phases) {
-		if (!phase.tasks.some((task) => isPending(task.status))) continue;
-		const waves = planEpicWaves(
-			directory,
-			phase.id,
-			preview as Parameters<typeof planEpicWaves>[2],
-			leanConfig,
-			scopes,
-			() => true,
+	for (const phase of plan.phases) {
+		const pending = (phase.tasks ?? []).filter((task) =>
+			isPending(task.status),
 		);
-		serialSteps +=
-			waves.waves.length +
-			waves.serializedTasks.length +
-			waves.degradedTasks.length;
+		if (pending.length === 0) continue;
+		const dryRun = dryRunEpicPhase({
+			directory,
+			tasks: pending as unknown as PartitionTask[],
+			scopes,
+			leanConfig,
+			hotModules: signals.hotModules,
+			cochange: signals.cochange,
+			maxParallel,
+			densityThreshold: signals.densityThreshold,
+		});
+		serialSteps += dryRun.waves.length + dryRun.unscheduled.length;
 	}
 	return evaluateEpicSizing(
 		{ pendingTasks: pendingIds.length, scopedTasks: scoped, serialSteps },
@@ -628,7 +628,17 @@ export async function startEpic(
 					DEFAULT_LEAN_TURBO_CONFIG.max_parallel_coders,
 			)
 		: 1;
-	const sizing = computeEpicSizing(directory, plan, config, maxParallel);
+	const signals = await loadEpicPlanningSignals(directory, config, {
+		loadCalibrationState: _internals.loadCalibrationState,
+		getCoChangeData: _internals.getCoChangeData,
+	});
+	const sizing = computeEpicSizing(
+		directory,
+		plan,
+		config,
+		maxParallel,
+		signals,
+	);
 	if (sizing.pendingTasks === 0) {
 		// Nothing to run: --force cannot open an empty epic.
 		return refused(
@@ -808,6 +818,8 @@ export const _internals = {
 	readCurrentBranch,
 	undoEpicBranchCreate,
 	resolveEpicDeclaredScopes,
+	loadCalibrationState,
+	getCoChangeData,
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
 	findRunningLeanRun,
 	gitExec: (args: string[], cwd: string): string =>

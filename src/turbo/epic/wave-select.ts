@@ -1,10 +1,10 @@
 /**
- * Epic v2 C2 — choose the NEXT wave of the current phase.
+ * Epic v2 C2/C5 — choose the NEXT wave of the current phase.
  *
  * `epic_next_wave` issues one wave at a time. This module decides which
- * tasks that wave contains, reusing the Epic wave planner (`planEpicWaves`)
- * for the first concurrent wave of the phase's unresolved tasks. It never
- * writes: the caller freezes the result into the epic record.
+ * tasks that wave contains with the Epic component planner
+ * (`components.ts`: conflict graph → components → modes → greedy wave). It
+ * never writes: the caller freezes the result into the epic record.
  *
  * Inputs and rules:
  *   - batch = the phase's tasks that are not completed / closed / blocked;
@@ -18,26 +18,29 @@
  *   - scopes: the live `declare_scope` binding, else `files_touched` (an
  *     estimate); the chosen members must all have a live binding, otherwise
  *     the result is `declare-scopes` (suggested files = `files_touched`);
- *   - exclusive first: a ready task the planner degraded (global file /
- *     protected path) or serialized runs ALONE;
- *   - otherwise the planner's first wave, minus learned hot-module tasks
- *     (calibration, they run alone once nothing else is ready) and minus
- *     tasks that co-change-conflict with an earlier member when the
- *     co-change signal is enabled (path conflicts are already excluded by
- *     the planner). Deferred tasks come back in a later wave.
+ *   - components over the batch: a task touching a global file, a
+ *     protected path or a learned hot module (calibration), or with no
+ *     usable scope, is exclusive and runs ALONE first; other tasks are
+ *     grouped into conflict components (path ∪ co-change, the wave
+ *     verdict's predicate) and a densely coupled component
+ *     (`serial-component`) contributes at most one task per wave;
+ *   - the wave records every batch task's component and each component's
+ *     mode (`components`), shown by `/swarm epic status`; past waves'
+ *     records age components so none starves.
  */
 
 import type { Plan } from '../../config/plan-schema.js';
 import type { LeanTurboConfig } from '../../config/schema.js';
-import type { CoChangeEntry } from '../../tools/co-change-analyzer.js';
-import { normalizePath, pathsConflict } from '../lean/conflicts.js';
-import type { PlanPhase } from '../lean/partition-common.js';
+import { normalizePath } from '../lean/conflicts.js';
+import type { PlanTask as PartitionTask } from '../lean/partition-common.js';
 import {
-	type CoChangeThreshold,
-	epicPairConflict,
-} from './cochange-conflict.js';
+	type EpicCochangeSignal,
+	type EpicWaveComponents,
+	type EpicWaveHistoryEntry,
+	planNextEpicWave,
+	toWaveComponents,
+} from './components.js';
 import type { EpicCochangePair } from './lifecycle.js';
-import { planEpicWaves } from './wave-planner.js';
 
 /** Max co-change pairs frozen into one wave record. */
 export const MAX_WAVE_COCHANGE_PAIRS = 256;
@@ -61,7 +64,11 @@ export interface EpicWaveSelectionInput {
 	/** Learned hot modules (calibration); tasks touching them run alone. */
 	hotModules: readonly string[];
 	/** Co-change signal (null = disabled by config). */
-	cochange: { pairs: CoChangeEntry[]; threshold: CoChangeThreshold } | null;
+	cochange: EpicCochangeSignal | null;
+	/** Intra-component density above which a component runs serially. */
+	densityThreshold: number;
+	/** This phase's earlier waves, oldest first (component ages). */
+	waveHistory: readonly EpicWaveHistoryEntry[];
 }
 
 export interface EpicPredecessorProblem {
@@ -73,10 +80,11 @@ export interface EpicPredecessorProblem {
 export type EpicWaveSelection =
 	| {
 			kind: 'wave';
-			waveKind: 'parallel' | 'exclusive';
+			waveKind: 'parallel' | 'exclusive' | 'serial-component';
 			taskIds: string[];
 			files: Record<string, string[]>;
 			cochangePairs: EpicCochangePair[];
+			components: EpicWaveComponents;
 	  }
 	| {
 			kind: 'declare-scopes';
@@ -103,17 +111,6 @@ function indexPlan(
 	return index;
 }
 
-function touchesAny(
-	files: readonly string[],
-	targets: readonly string[],
-): boolean {
-	return files.some((file) =>
-		targets.some((target) =>
-			pathsConflict(normalizePath(file), normalizePath(target)),
-		),
-	);
-}
-
 function pathMatches(scopePath: string, cochangePath: string): boolean {
 	return scopePath === cochangePath || scopePath.endsWith(`/${cochangePath}`);
 }
@@ -121,7 +118,7 @@ function pathMatches(scopePath: string, cochangePath: string): boolean {
 /** Threshold-passing pairs whose both files lie within `files`. */
 export function cochangePairsWithin(
 	files: readonly string[],
-	cochange: { pairs: CoChangeEntry[]; threshold: CoChangeThreshold },
+	cochange: EpicCochangeSignal,
 ): EpicCochangePair[] {
 	const normalized = files.map(normalizePath);
 	const within = (file: string) => normalized.some((f) => pathMatches(f, file));
@@ -199,71 +196,19 @@ export function selectNextEpicWave(
 		const live = input.liveScopes[task.id] ?? [];
 		estimated[task.id] = live.length > 0 ? live : (task.files_touched ?? []);
 	}
-	const view: { phases: PlanPhase[] } = {
-		phases: [{ ...phase, tasks: batch } as unknown as PlanPhase],
-	};
-	const planned = planEpicWaves(
-		input.directory,
-		input.phaseId,
-		view,
-		{ ...input.leanConfig, max_parallel_coders: input.maxParallel },
-		estimated,
+	const { partition, choice } = planNextEpicWave({
+		directory: input.directory,
+		tasks: batch as unknown as PartitionTask[],
+		scopes: estimated,
+		leanConfig: input.leanConfig,
+		hotModules: input.hotModules,
+		cochange: input.cochange,
+		maxParallel: input.maxParallel,
+		densityThreshold: input.densityThreshold,
 		satisfiedOutside,
-	);
-
-	const isReady = (taskId: string): boolean => {
-		const task = batch.find((t) => t.id === taskId);
-		if (!task) return false;
-		return (task.depends ?? []).every(
-			(dep) => !batchIds.has(dep) && satisfiedOutside(dep),
-		);
-	};
-	const exclusiveCandidates = [
-		...planned.degradedTasks
-			.filter(
-				(d) =>
-					d.reason === 'global file conflict' || d.reason === 'protected path',
-			)
-			.map((d) => d.taskId),
-		...planned.serializedTasks,
-	]
-		.filter(isReady)
-		.sort((a, b) => a.localeCompare(b));
-
-	let chosen: string[] = [];
-	let waveKind: 'parallel' | 'exclusive' = 'parallel';
-	if (exclusiveCandidates.length > 0) {
-		chosen = [exclusiveCandidates[0]];
-		waveKind = 'exclusive';
-	} else if (planned.waves.length > 0) {
-		const first = planned.waves[0].taskIds;
-		const hot = first.filter((id) =>
-			touchesAny(estimated[id] ?? [], input.hotModules),
-		);
-		if (hot.length > 0 && (first.length === 1 || hot.length === first.length)) {
-			chosen = [hot[0]];
-			waveKind = 'exclusive';
-		} else {
-			const cold = first.filter((id) => !hot.includes(id));
-			for (const id of cold) {
-				if (
-					input.cochange &&
-					chosen.some(
-						(other) =>
-							epicPairConflict(
-								estimated[id] ?? [],
-								estimated[other] ?? [],
-								input.cochange?.pairs ?? [],
-								input.cochange?.threshold ?? { npmi: 1, minCoChanges: 1 },
-							).conflict,
-					)
-				) {
-					continue;
-				}
-				chosen.push(id);
-			}
-		}
-	}
+		history: input.waveHistory,
+	});
+	const chosen = choice?.taskIds ?? [];
 
 	if (chosen.length === 0) {
 		if (blocked.length > 0) return { kind: 'task-blocked', taskIds: blocked };
@@ -300,11 +245,12 @@ export function selectNextEpicWave(
 	for (const id of chosen) files[id] = [...(input.liveScopes[id] ?? [])];
 	return {
 		kind: 'wave',
-		waveKind,
+		waveKind: choice?.kind ?? 'parallel',
 		taskIds: chosen,
 		files,
 		cochangePairs: input.cochange
 			? cochangePairsWithin(Object.values(files).flat(), input.cochange)
 			: [],
+		components: toWaveComponents(partition, chosen),
 	};
 }

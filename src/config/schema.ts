@@ -3174,6 +3174,51 @@ export const LeanTurboConfigSchema = z.object({
 export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
 
 /**
+ * `turbo.epic.mode` keys retired by Epic v2 (C5: `min_commits_for_signal`,
+ * read by nothing since the activation gate was removed). A retired key is
+ * accepted and stripped before the strict `mode` object validates, and never
+ * read. (Without this, the loader's unknown-key recovery would also drop it,
+ * but as an "unrecognized key" with a `stripped_keys` recovery.) Instead the
+ * loader warns once per distinct set with a precise "retired" message,
+ * `/swarm config doctor` reports each one (`retired-config-key`), and the
+ * JSON schema keeps it as `deprecated` so editors do not reject it.
+ */
+export const RETIRED_EPIC_MODE_KEYS: readonly string[] = [
+	'min_commits_for_signal',
+];
+
+function stripRetiredEpicModeKeys(value: unknown): unknown {
+	if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+		return value;
+	}
+	const record = value as Record<string, unknown>;
+	if (!RETIRED_EPIC_MODE_KEYS.some((key) => Object.hasOwn(record, key))) {
+		return value;
+	}
+	const stripped: Record<string, unknown> = { ...record };
+	for (const key of RETIRED_EPIC_MODE_KEYS) delete stripped[key];
+	return stripped;
+}
+
+/**
+ * Dotted paths of retired Epic keys present in a raw (pre-parse) config
+ * object, e.g. `turbo.epic.mode.min_commits_for_signal`.
+ */
+export function findRetiredEpicConfigKeys(raw: unknown): string[] {
+	const at = (node: unknown, key: string): unknown =>
+		node !== null &&
+		typeof node === 'object' &&
+		!Array.isArray(node) &&
+		Object.hasOwn(node, key)
+			? (node as Record<string, unknown>)[key]
+			: undefined;
+	const mode = at(at(at(raw, 'turbo'), 'epic'), 'mode');
+	return RETIRED_EPIC_MODE_KEYS.filter(
+		(key) => at(mode, key) !== undefined,
+	).map((key) => `turbo.epic.mode.${key}`);
+}
+
+/**
  * Epic Mode settings (`turbo.epic`).
  *
  * Epic Mode reuses Lean Turbo's conflict predicates (it never modifies Lean
@@ -3231,25 +3276,36 @@ export const EpicConfigSchema = z
 		 * `epic-disabled-by-config`.
 		 */
 		mode: z
-			.object({
-				/** Master gate for Epic Mode activation. Default off; opt-in. */
-				enabled: z.boolean().default(false),
-				/**
-				 * Static ceiling of the calibration threshold override (reported
-				 * by `/swarm epic calibration`). The plan-wide `p` activation gate
-				 * was removed in Epic v2 C2 — sizing at `/swarm epic start`
-				 * replaced it — so this no longer forces serial execution.
-				 */
-				activation_threshold: z.number().min(0).max(1).default(0.3),
-				/**
-				 * Retired: read by nothing since the activation gate was removed
-				 * (Epic v2 C2). Still accepted so existing configs stay valid;
-				 * predecessor evidence is the plan-scoped `swarm(task <id>):`
-				 * completion marker that `epic_next_wave` checks.
-				 */
-				min_commits_for_signal: z.number().int().min(1).default(20),
-			})
-			.strict()
+			.preprocess(
+				stripRetiredEpicModeKeys,
+				z
+					.object({
+						/** Master gate for Epic Mode activation. Default off; opt-in. */
+						enabled: z.boolean().default(false),
+						/**
+						 * Intra-component density threshold (Epic v2 C5). `epic_next_wave`
+						 * splits a phase's pending tasks into conflict components; a
+						 * component whose density |E_C| / (|C| choose 2) exceeds this value
+						 * is `serial-component` (one of its tasks per wave), otherwise its
+						 * unconflicting tasks share waves. Also the static ceiling of the
+						 * calibration threshold override shown by `/swarm epic calibration`
+						 * (display only). Until C5 it bounded the removed plan-wide `p`
+						 * activation gate.
+						 */
+						activation_threshold: z.number().min(0).max(1).default(0.3),
+						/**
+						 * Retired (Epic v2 C5) — see `RETIRED_EPIC_MODE_KEYS`. Declared
+						 * only so the JSON schema marks it `deprecated`; the preprocess
+						 * strips it before validation, so the parsed config never has it.
+						 */
+						min_commits_for_signal: z.number().optional().meta({
+							deprecated: true,
+							description:
+								'Retired (Epic v2): accepted and ignored with a warning. Remove it.',
+						}),
+					})
+					.strict(),
+			)
 			.optional(),
 		/**
 		 * Epic Mode calibration (Capability D). Outcome-based self-tuning.
@@ -3298,7 +3354,8 @@ export const EpicConfigSchema = z
 		/**
 		 * Epic sizing (Epic v2). `/swarm epic start` refuses a plan that is not
 		 * epic-sized (`--force` overrides and is recorded). With T pending
-		 * tasks, L serial steps in a dry-run of the wave planner, S = T / L and
+		 * tasks, L serial steps in a dry-run of the Epic component planner,
+		 * S = T / L and
 		 * S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), a plan is
 		 * epic-sized when T ≥ `min_tasks`, the share of pending tasks with a
 		 * scope ≥ `min_scope_coverage`, and S_eff ≥ `min_effective_speedup`.

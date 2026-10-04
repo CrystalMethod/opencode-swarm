@@ -24,7 +24,10 @@
  *   5. every current-phase task resolved → `phase-ready-for-review` (then
  *      `epic_phase_review` → `phase_complete`); every phase complete →
  *      `epic-complete`;
- *   6. otherwise selects the next wave (`wave-select.ts`): `declare-scopes`,
+ *   6. otherwise selects the next wave (`wave-select.ts` over the component
+ *      planner `components.ts`, with the planning signals of
+ *      `planning-signals.ts`; past waves of the phase age its components):
+ *      `declare-scopes`,
  *      `blocked` (`predecessor-missing`, `task-blocked`, `git-failed`,
  *      `dirty-baseline`), or `dispatch` — a multi-task wave must pass THE
  *      wave verdict (`gate-policy.ts`, the call the delegation gate repeats
@@ -53,11 +56,9 @@ import { readLedgerEvents as readLedgerEvents_import } from '../../plan/ledger.j
 import { loadPlanJsonOnly as loadPlanJsonOnly_import } from '../../plan/manager.js';
 import * as logger from '../../utils/logger.js';
 import { loadCalibrationState as loadCalibrationState_import } from './calibration.js';
-import { effectiveHotModules } from './calibration-engine.js';
 import { getCoChangeData as getCoChangeData_import } from './cochange-source.js';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
-	isEpicCochangeConfigEnabled,
 	isEpicModeConfigEnabled,
 } from './config-gate.js';
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from './declared-scopes.js';
@@ -89,6 +90,7 @@ import {
 	syncPhaseRecords,
 	toWaveView,
 } from './next-wave-format.js';
+import { loadEpicPlanningSignals } from './planning-signals.js';
 import {
 	classifyDirtyBaseline,
 	commitTaskResidue as commitTaskResidue_import,
@@ -773,34 +775,11 @@ async function issueNextWave(
 		}
 	}
 
-	let hotModules: string[] = [];
-	if (config.turbo?.epic?.calibration?.enabled !== false) {
-		try {
-			hotModules = effectiveHotModules(
-				[],
-				_internals.loadCalibrationState(directory),
-			);
-		} catch {
-			hotModules = [];
-		}
-	}
-	let cochange: Parameters<typeof selectNextEpicWave>[0]['cochange'] = null;
-	if (isEpicCochangeConfigEnabled(config)) {
-		const cfg = config.turbo?.epic?.cochange;
-		try {
-			const data = await _internals.getCoChangeData(directory);
-			cochange = {
-				pairs: data.pairs,
-				threshold: {
-					npmi: cfg?.threshold ?? 0.6,
-					minCoChanges: cfg?.min_co_changes ?? 5,
-				},
-			};
-		} catch {
-			cochange = null;
-		}
-	}
-
+	const signals = await loadEpicPlanningSignals(directory, config, {
+		loadCalibrationState: _internals.loadCalibrationState,
+		getCoChangeData: _internals.getCoChangeData,
+	});
+	const cochange = signals.cochange;
 	const selection = selectNextEpicWave({
 		directory,
 		plan,
@@ -809,8 +788,10 @@ async function issueNextWave(
 		maxParallel: epic.config.maxParallel,
 		leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG, ...(config.turbo?.lean ?? {}) },
 		isCommitted,
-		hotModules,
+		hotModules: signals.hotModules,
 		cochange,
+		densityThreshold: signals.densityThreshold,
+		waveHistory: epic.waves.filter((wave) => wave.phase === phaseId),
 	});
 	switch (selection.kind) {
 		case 'none':
@@ -885,6 +866,7 @@ async function issueNextWave(
 				taskIds: waveTaskIds,
 				files: pickFiles(selection.files, waveTaskIds),
 				cochange: waveCochange,
+				components: selection.components,
 				baseHead,
 				issuedAt: nowIso,
 				status: 'issued',

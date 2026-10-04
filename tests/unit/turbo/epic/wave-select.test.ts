@@ -1,7 +1,8 @@
 /**
- * `selectNextEpicWave` (Epic v2 C2) — the pure next-wave choice over the
- * Epic wave planner: first concurrent wave, exclusive tasks alone, learned
- * hot modules, the width cap, declare-scopes, and every predecessor problem.
+ * `selectNextEpicWave` (Epic v2 C2/C5) — the pure next-wave choice over the
+ * Epic component planner: disjoint ready tasks, exclusive tasks alone (first),
+ * learned hot modules, serial components, the width cap, the recorded
+ * components, declare-scopes, and every predecessor problem.
  */
 import { describe, expect, test } from 'bun:test';
 import { DEFAULT_LEAN_TURBO_CONFIG } from '../../../../src/config/constants';
@@ -31,12 +32,14 @@ function input(
 		isCommitted: () => true,
 		hotModules: [],
 		cochange: null,
+		densityThreshold: 0.3,
+		waveHistory: [],
 		...overrides,
 	};
 }
 
 describe('waves', () => {
-	test('the first planner wave: disjoint ready tasks, frozen live scopes', () => {
+	test('the first wave: disjoint ready tasks, frozen live scopes, recorded components', () => {
 		const result = selectNextEpicWave(
 			input([[{ id: '1.1' }, { id: '1.2' }, { id: '1.3', depends: ['1.1'] }]]),
 		);
@@ -46,6 +49,52 @@ describe('waves', () => {
 			taskIds: ['1.1', '1.2'],
 			files: { '1.1': ['src/t1_1.ts'], '1.2': ['src/t1_2.ts'] },
 			cochangePairs: [],
+			components: {
+				byTask: { '1.1': '1.1', '1.2': '1.2', '1.3': '1.3' },
+				modes: { '1.1': 'parallel', '1.2': 'parallel', '1.3': 'parallel' },
+				density: { '1.1': 0, '1.2': 0, '1.3': 0 },
+				exclusive: {},
+				threshold: 0.3,
+				truncated: false,
+			},
+		});
+	});
+
+	test('a hub cluster is one serial component: one of its tasks per wave', () => {
+		const result = selectNextEpicWave(
+			input([
+				[
+					{ id: '1.1', files: ['src/hub.ts', 'src/a.ts'] },
+					{ id: '1.2', files: ['src/hub.ts', 'src/b.ts'] },
+					{ id: '1.3', files: ['src/hub.ts', 'src/c.ts'] },
+					{ id: '1.4' },
+				],
+			]),
+		);
+		expect(result).toMatchObject({
+			kind: 'wave',
+			waveKind: 'parallel',
+			taskIds: ['1.1', '1.4'],
+			components: {
+				byTask: { '1.1': '1.1', '1.2': '1.1', '1.3': '1.1', '1.4': '1.4' },
+				modes: { '1.1': 'serial-component', '1.4': 'parallel' },
+				density: { '1.1': 1 },
+			},
+		});
+	});
+
+	test('a lone serial-component task is a serial-component wave', () => {
+		const result = selectNextEpicWave(
+			input([
+				[
+					{ id: '1.1', files: ['src/hub.ts'] },
+					{ id: '1.2', files: ['src/hub.ts'] },
+				],
+			]),
+		);
+		expect(result).toMatchObject({
+			waveKind: 'serial-component',
+			taskIds: ['1.1'],
 		});
 	});
 
@@ -77,16 +126,20 @@ describe('waves', () => {
 		});
 	});
 
-	test('learned hot modules: a hot task is deferred while others run, then runs alone', () => {
+	test('learned hot modules make a task exclusive: it runs alone, first', () => {
 		const hot = { hotModules: ['src/t1_2.ts'] };
 		expect(
 			selectNextEpicWave(input([[{ id: '1.1' }, { id: '1.2' }]], hot)),
-		).toMatchObject({ waveKind: 'parallel', taskIds: ['1.1'] });
+		).toMatchObject({
+			waveKind: 'exclusive',
+			taskIds: ['1.2'],
+			components: { exclusive: { '1.2': 'hot-module' } },
+		});
 		expect(
 			selectNextEpicWave(
-				input([[{ id: '1.1', status: 'completed' }, { id: '1.2' }]], hot),
+				input([[{ id: '1.1' }, { id: '1.2', status: 'completed' }]], hot),
 			),
-		).toMatchObject({ waveKind: 'exclusive', taskIds: ['1.2'] });
+		).toMatchObject({ waveKind: 'parallel', taskIds: ['1.1'] });
 	});
 
 	test('nothing left ⇒ none; only blocked tasks ⇒ task-blocked', () => {

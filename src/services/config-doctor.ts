@@ -14,6 +14,7 @@ import { CONFIG_CONSUMERS, type TopLevelConfigKey } from '../config/consumers';
 import type { PluginConfig } from '../config/schema';
 import {
 	FALLBACK_MODELS_MAX,
+	findRetiredEpicConfigKeys,
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	GateConfigSchema,
 	PluginConfigSchema,
@@ -510,6 +511,53 @@ function collectRawStrictSectionFindings(directory: string): ConfigFinding[] {
 		}
 	}
 
+	return findings;
+}
+
+/**
+ * Retired Epic config keys (Epic v2). The schema accepts and strips them
+ * (with a precise "retired" loader warning instead of an unrecognized-key
+ * recovery), so the parsed config the doctor walks no longer has them; read
+ * the raw user + project files instead. Only when the parsed config has a
+ * `turbo.epic.mode` object (a retired key lives there): a non-Epic doctor
+ * run reads no extra file. Report-only: nothing reads the key, and removing
+ * it is the user's edit (no auto-fix writes the config for a no-op key).
+ */
+export function collectRawRetiredEpicKeyFindings(
+	config: PluginConfig,
+	directory: string,
+): ConfigFinding[] {
+	const findings: ConfigFinding[] = [];
+	if (config.turbo?.epic?.mode === undefined) return findings;
+	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
+	const seen = new Set<string>();
+	for (const configPath of [userConfigPath, projectConfigPath]) {
+		if (!fs.existsSync(configPath)) continue;
+		try {
+			const stats = fs.statSync(configPath);
+			if (stats.size > CONFIG_DOCTOR_MAX_CONFIG_FILE_BYTES) continue;
+			const content = fs.readFileSync(configPath, 'utf-8');
+			// Strip a UTF-8 BOM like the config loader does (JSON.parse throws).
+			const raw = JSON.parse(
+				content.charCodeAt(0) === 0xfeff ? content.slice(1) : content,
+			) as unknown;
+			for (const dotted of findRetiredEpicConfigKeys(raw)) {
+				if (seen.has(`${configPath}\u0000${dotted}`)) continue;
+				seen.add(`${configPath}\u0000${dotted}`);
+				findings.push({
+					id: 'retired-config-key',
+					title: 'Retired config key',
+					description: `"${dotted}" in ${configPath} was retired by Epic Mode v2 and is ignored. Remove it.`,
+					severity: 'warn',
+					path: dotted,
+					currentValue: undefined,
+					autoFixable: false,
+				});
+			}
+		} catch {
+			// Best-effort, non-blocking (see collectRawGatesConfigFindings).
+		}
+	}
 	return findings;
 }
 
@@ -2261,6 +2309,7 @@ export function runConfigDoctor(
 	findings.push(...collectRawGatesConfigFindings(directory));
 	findings.push(...collectRawCouncilPolicyFindings(directory));
 	findings.push(...collectRawStrictSectionFindings(directory));
+	findings.push(...collectRawRetiredEpicKeyFindings(config, directory));
 	findings.push(...collectRawValueConstraintFindings(directory));
 	findings.push(...collectRawAutoReviewCompatibilityFindings(directory));
 	findings.push(...collectRawInertKeyFindings(directory));
