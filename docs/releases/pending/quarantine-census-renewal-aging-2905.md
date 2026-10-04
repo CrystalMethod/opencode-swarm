@@ -1,0 +1,55 @@
+---
+note: content below is aggregated by release-please into the release notes.
+---
+
+## What changed
+
+The quarantine system now reports its own trajectory (issue #2905, Workstream
+I slot I8):
+
+- **Quarantine census** — `scripts/ci/quarantine-census.ts` (new) owns the
+  ledger grammar and produces the aggregate: per-ledger and total active
+  entries, an EXPIRY histogram, the first hard-fail wall date
+  (`EXPIRY + 15` days), days-to-first-wall, the owners rollup, entries whose
+  OWNER line lacks an `#<issue>` reference, and a 30-day add/retire trend.
+  `bun run check:invariants` Check 7 prints the census after its per-entry
+  messages and emits a `::warning::` annotation when the first wall is under
+  21 days out; the drift-check PR comment carries the same block on every PR
+  (including zero-finding green runs).
+- **Renewal-requires-issue policy** — an entry whose EXPIRY moved later than
+  the committed baseline (diff-scoped vs `origin/main`) must reference an
+  issue from its OWNER metadata, or Check 7 errors naming the entry.
+  `QUARANTINE_RENEWAL_ENFORCE=0` downgrades to a non-blocking warning. The
+  offline gate verifies the reference; the weekly aging run additionally
+  reports each anchor's live open/closed state.
+- **Weekly aging workflow** — `.github/workflows/quarantine-aging.yml` (new;
+  Monday 12:00 UTC + `workflow_dispatch` with a `dry_run` input) runs
+  `scripts/ci/quarantine-aging.ts` (new), which maintains exactly one
+  deduplicated tracking issue titled `Quarantine aging: <n> entries expire
+  within 21 days` (adopted only when authored by `github-actions[bot]`;
+  duplicates closed) and closes it when the count reaches 0. Routing is
+  fail-open; a local dry run (`--dry-run`) makes no network calls.
+
+Also: TESTING.md and `docs/testing/test-stability.md` now document the
+OWNER/EXPIRY grammar, grace semantics, renewal rule, census, and aging
+workflow; the Check 7 byte-parity oracle gained the census block; three
+fixture-copy test sites copy the new census module so the copied gate
+resolves its import.
+
+## Why
+
+The only aggregate signal was a bare quarantined-file count; generation
+outpaced retirement (70 auto-filed flake issues, 13 entries added vs 0
+retired over the window in the issue), and each expiry wall landed as a
+surprise. The census, warning horizon, renewal gate, and weekly tracker make
+walls visible weeks ahead and make every renewal carry an accountable anchor
+(the #2900/I3 renewal cohort retired 13 entries under #2973; the remaining 3
+all expire 2026-11-18, wall 2026-12-03).
+
+## Notes
+
+- No ledger entries, grace window, or CI quarantine consumption changed —
+  the ledgers are read-only inputs to the new reporting.
+- On the merge tree today the census reports 3 active entries and the first
+  wall 60 days out, so the tracking issue is not created until an entry
+  enters its last 21 days (from 2026-10-28).

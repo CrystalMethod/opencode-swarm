@@ -54,6 +54,12 @@ import {
 	type ToolRegistrationCheckOptions,
 } from './check-tool-registration';
 import { collectEventContractErrors } from './check-event-contract';
+import {
+	buildQuarantineCensus,
+	collectAddRetireTrend,
+	formatQuarantineCensus,
+	readLedgerContents,
+} from './ci/quarantine-census';
 import { collectCoreEventsUsageErrors } from './check-core-events-usage';
 import { collectShellAuditUsageErrors } from './check-shell-audit-usage';
 import { collectTrajectoryStoreUsageErrors } from './check-trajectory-store-usage';
@@ -1746,7 +1752,10 @@ export function annotation(finding: DriftFinding): string {
 	return `::${level}${params}::[drift:${finding.category}] ${escapeAnnotationData(finding.message)}`;
 }
 
-export function buildReport(findings: DriftFinding[]): string {
+export function buildReport(
+	findings: DriftFinding[],
+	extras: string[] = [],
+): string {
 	const MAX_REPORT_BYTES = 64 * 1024;
 	const lines: string[] = ['# Drift check report', ''];
 	if (findings.length === 0) {
@@ -1754,6 +1763,11 @@ export function buildReport(findings: DriftFinding[]): string {
 			'✅ No drift detected across skills, tools, commands, agents, docs claims, and dependency freshness.',
 		);
 		lines.push('');
+		// Quarantine census block (issue #2905): rendered on zero-finding runs
+		// too — the aging view matters most on otherwise-green PRs.
+		if (extras.length > 0) {
+			lines.push('### Quarantine census', '', ...extras, '');
+		}
 		return lines.join('\n');
 	}
 
@@ -1779,6 +1793,9 @@ export function buildReport(findings: DriftFinding[]): string {
 			lines.push(`- ${icon} **${f.severity}**${where}: ${f.message}`);
 		}
 		lines.push('');
+	}
+	if (extras.length > 0) {
+		lines.push('### Quarantine census', '', ...extras, '');
 	}
 	const report = lines.join('\n');
 	if (Buffer.byteLength(report, 'utf8') <= MAX_REPORT_BYTES) return report;
@@ -1855,7 +1872,13 @@ async function main(): Promise<void> {
 		console.log(annotation(finding));
 	}
 
-	const report = buildReport(findings);
+	// Quarantine census block (issue #2905): always part of the report — even
+	// on zero-finding green runs, where expiry pressure matters most.
+	const censusTrend = await collectAddRetireTrend(REPO_ROOT);
+	const census = buildQuarantineCensus(readLedgerContents(REPO_ROOT), new Date());
+	const censusExtras = formatQuarantineCensus(census, censusTrend);
+
+	const report = buildReport(findings, censusExtras);
 	if (reportPath) {
 		fs.writeFileSync(path.join(REPO_ROOT, reportPath), report, 'utf-8');
 	}

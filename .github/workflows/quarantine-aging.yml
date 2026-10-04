@@ -1,0 +1,68 @@
+name: quarantine-aging
+
+# Issue #2905 (Workstream I, slot I8): weekly expiry-aware quarantine aging
+# tracker. Runs the census and maintains exactly ONE deduplicated tracking
+# issue titled "Quarantine aging: <n> entries expire within 21 days"
+# (adopted only when authored by github-actions[bot]); closes it when the
+# count reaches 0. Routing is fail-open: gh failures emit ::warning:: lines
+# and never fail the run — the aging view is advisory, the blocking gates
+# live in check:invariants Check 7.
+
+on:
+  schedule:
+    # Weekly, Monday 12:00 UTC — off the 09:00 stale / 13:00
+    # host-contract-check slots.
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print the routing decision without touching GitHub"
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions:
+  contents: read
+
+jobs:
+  aging:
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.13"
+      - name: Run quarantine aging census
+        # Dispatch input reaches the shell as an ENV VALUE (never inline
+        # ${{ }} in run:) so a hostile input cannot inject commands.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -uo pipefail
+          ARGS=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            ARGS="--dry-run"
+          fi
+          # shellcheck disable=SC2086 — ARGS is repo-controlled text
+          bun scripts/ci/quarantine-aging.ts $ARGS 2>&1 | tee quarantine-aging-output.txt
+          exit "${PIPESTATUS[0]}"
+      - name: Record aging output in job summary
+        if: always()
+        run: |
+          {
+            echo "## Quarantine aging"
+            echo '```text'
+            cat quarantine-aging-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
