@@ -1287,18 +1287,26 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 	}
 
 	/**
-	 * OS-native sandbox wrapper for bash/shell commands.
-	 */
-	/**
-	 * True when the raw command is itself a bubblewrap invocation (bare name or
-	 * absolute path, optionally behind `env`/`exec`), so wrapping it would nest
-	 * two sandboxes.
+	 * True when the command's first word is bwrap (bare name or a /bin,
+	 * /usr/bin or /usr/local/bin path), optionally behind `exec`/`env` (also
+	 * /bin/env, /usr/bin/env) with env options or VAR=value assignments, so
+	 * wrapping it would nest two sandboxes. Wrappers such as sudo, command,
+	 * `env -u VAR`, env values containing whitespace, shells (`sh -c`),
+	 * `cd x && bwrap` and pipelines are NOT detected here; they continue
+	 * through the rest of the pipeline (normally the wrap, where they fail at
+	 * runtime as before).
 	 */
 	function isSandboxWrapperInvocation(raw: string): boolean {
-		const head = raw.replace(/^(?:(?:exec|env)\s+)*/, '');
+		const head = raw.replace(
+			/^\s*(?:(?:exec|(?:\/(?:usr\/)?bin\/)?env)(?:\s+(?:-\S+|[A-Za-z_]\w*=\S*))*\s+)*/,
+			'',
+		);
 		return /^(?:\/(?:usr\/(?:local\/)?)?bin\/)?bwrap(?:\s|$)/.test(head);
 	}
 
+	/**
+	 * OS-native sandbox wrapper for bash/shell commands.
+	 */
 	async function applySandboxExecution(
 		sessionID: string,
 		callID: string,
@@ -1530,8 +1538,10 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 		try {
 			readonlyWorkspaceRoot = fs.realpathSync(workspaceRoot);
 		} catch {
-			// Unresolvable: keep the logical path; bwrap fails closed on a
-			// missing source.
+			// Unresolvable: keep the logical path. bwrap then exits with
+			// `Can't find source path`, so the wrap surfaces as an ordinary
+			// command failure at runtime (not a wrap-time error and not counted
+			// by the sandbox circuit); nothing runs unsandboxed.
 		}
 
 		try {

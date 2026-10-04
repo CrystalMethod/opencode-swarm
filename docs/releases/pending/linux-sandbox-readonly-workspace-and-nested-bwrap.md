@@ -12,8 +12,9 @@
    assessment and its cache key is now `SandboxConfigPolicy`, so the cache
    key is unchanged.
 2. The guardrails hook refuses a bash call whose command is itself a `bwrap`
-   invocation (bare name or `/usr/bin`, `/usr/local/bin`, `/bin` path,
-   optionally behind `exec`/`env`) with `[sandbox] BLOCKED: the command
+   invocation (bare name or `/usr/bin`, `/usr/local/bin`, `/bin` path, also
+   behind `exec`/`env` prefixes, see Known caveats for what is recognised)
+   with `[sandbox] BLOCKED: the command
    already invokes bwrap ...` and the remedy, instead of wrapping it a second
    time. The refusal applies only to the Bubblewrap executor and only when the
    call is about to be wrapped (after the declared-scope and writable-roots
@@ -38,11 +39,13 @@ of 71 wrapped calls in a day.
 
 ## Safety
 
-- Bind order is verified against real bwrap in
-  `tests/unit/sandbox/linux-workspace-readonly.test.ts` (skipped where bwrap is
-  unavailable): a scoped file is writable, a sibling is readable, writing the
-  sibling is denied (EROFS in a manual probe), creating a file in an unscoped
-  directory is denied. The reverse order would have masked the scoped write.
+- Bind order is pinned by `tests/unit/sandbox/linux-workspace-readonly.test.ts`.
+  Its argv-order tests run everywhere. Its real-bwrap test (a scoped file is
+  writable, a sibling is readable, writing the sibling is denied, creating a
+  file in an unscoped directory is denied) runs only where `bwrap` is installed
+  and usable; CI runners do not install it, so it has not run in CI. The
+  author reports EROFS for the sibling write in a manual probe. The reverse
+  order would have masked the scoped write.
 - Only absolute, non-root roots are mounted; relative or `/` entries are
   dropped.
 - The shell-write authority and scope checks that run before the wrap are
@@ -61,7 +64,19 @@ of 71 wrapped calls in a day.
   fail inside a lane sandbox. A lane's `.git` file points into the main
   repository's `.git/worktrees/`, so git commands also fail there. Neither is
   new; before this change nothing outside the scope was visible.
-- The nested-wrapper refusal matches only a command that starts with `bwrap`
-  (optionally behind `exec`/`env`), which is the form agents copy from the
-  wrapped command. Forms such as `cd x && bwrap …` or `sudo bwrap` are still
-  wrapped and fail at runtime with the original namespace error.
+- The nested-wrapper refusal is a best-effort check on the first word of the
+  command, not a security boundary; a command it does not recognise is
+  normally wrapped as before and fails at runtime. It refuses `bwrap` (bare name or `/bin`,
+  `/usr/bin`, `/usr/local/bin` path), also behind `exec`, `env`, `/bin/env` or
+  `/usr/bin/env` with env flags or `NAME=value` assignments, for example
+  `env -i bwrap`, `env VAR=x bwrap`, `/usr/bin/env bwrap` and `exec env bwrap`.
+  Not recognised (wrapped, failing at runtime as before): `env -u VAR bwrap`,
+  `env -C DIR bwrap`, `exec -a NAME bwrap`, `env - bwrap`,
+  `env 'FOO=1' bwrap`, a bare `FOO=1 bwrap`, `/usr/local/bin/env bwrap`,
+  `sudo`, `command`, `sh -c`, `cd x && bwrap …` and pipelines. Because an option's separate argument is not recognised, a
+  command like `env -u bwrap ls` (a variable literally named `bwrap`) is also
+  refused; nothing runs.
+- The read-only mount exposes everything in the workspace to sandboxed
+  commands, including `.env` files, credentials in `.git/config` and `.swarm/`
+  state; with `network_mode: on` that content can leave the sandbox (network
+  defaults to `off`).

@@ -12,23 +12,37 @@ import { describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
-import { BubblewrapSandboxExecutor } from '../../../src/sandbox/linux/bubblewrap-executor';
+import {
+	_internals,
+	BubblewrapSandboxExecutor,
+} from '../../../src/sandbox/linux/bubblewrap-executor';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const isLinux = process.platform === 'linux';
+
+/** POSIX single-quote a value for interpolation into a shell command. */
+function q(s: string): string {
+	return `'${s.replace(/'/g, "'\\''")}'`;
+}
 
 function wrap(
 	readonlyRoots: readonly string[] | undefined,
 	scope: string[] = ['/ws/tests/t.js'],
 ): string {
-	const executor = new BubblewrapSandboxExecutor([]);
-	// wrapCommand only checks the cached availability flag; force it so the
-	// string shape can be asserted on any platform.
-	(executor as unknown as { _available: boolean })._available = true;
-	return executor.wrapCommand('ls', scope, undefined, undefined, {
-		network_mode: 'off',
-		readonly_roots: readonlyRoots,
-	});
+	// wrapCommand only checks the cached availability flag, which the
+	// constructor sets from the probe seam; stub the probe so the string shape
+	// can be asserted on any platform, restoring it before returning.
+	const originalProbe = _internals.probeBwrap;
+	_internals.probeBwrap = () => true;
+	try {
+		const executor = new BubblewrapSandboxExecutor([]);
+		return executor.wrapCommand('ls', scope, undefined, undefined, {
+			network_mode: 'off',
+			readonly_roots: readonlyRoots,
+		});
+	} finally {
+		_internals.probeBwrap = originalProbe;
+	}
 }
 
 describe('BubblewrapSandboxExecutor: read-only workspace roots', () => {
@@ -62,6 +76,13 @@ describe('BubblewrapSandboxExecutor: read-only workspace roots', () => {
 	});
 });
 
+describe('probe shell quoting helper', () => {
+	test('q() single-quotes a path and escapes embedded single quotes', () => {
+		expect(q('/ws/a b')).toBe("'/ws/a b'");
+		expect(q("/ws/it's")).toBe("'/ws/it'\\''s'");
+	});
+});
+
 describe.skipIf(!isLinux)(
 	'BubblewrapSandboxExecutor: real bwrap visibility',
 	() => {
@@ -81,10 +102,10 @@ describe.skipIf(!isLinux)(
 					const scoped = path.join(ws, 'tests', 't.js');
 					writeFileSync(scoped, '// t\n');
 					const probe = [
-						`cat '${ws}/src/lib.js' >/dev/null && echo READ_SIBLING_OK`,
-						`echo w >> '${scoped}' && echo WRITE_SCOPED_OK`,
-						`(echo w >> '${ws}/src/lib.js') 2>/dev/null && echo WRITE_SIBLING_ALLOWED || echo WRITE_SIBLING_DENIED`,
-						`(touch '${ws}/tests/new.js') 2>/dev/null && echo CREATE_UNSCOPED_ALLOWED || echo CREATE_UNSCOPED_DENIED`,
+						`cat ${q(`${ws}/src/lib.js`)} >/dev/null && echo READ_SIBLING_OK`,
+						`echo w >> ${q(scoped)} && echo WRITE_SCOPED_OK`,
+						`(echo w >> ${q(`${ws}/src/lib.js`)}) 2>/dev/null && echo WRITE_SIBLING_ALLOWED || echo WRITE_SIBLING_DENIED`,
+						`(touch ${q(`${ws}/tests/new.js`)}) 2>/dev/null && echo CREATE_UNSCOPED_ALLOWED || echo CREATE_UNSCOPED_DENIED`,
 					].join('; ');
 					// The workspace lives under the OS tmpdir, which the sandbox masks
 					// with its own tmpfs, so point the tmpfs elsewhere for this probe.
