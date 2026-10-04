@@ -519,9 +519,15 @@ export const CONFIG_CONSUMERS: Record<
 	turbo: {
 		consumers: [
 			'src/agents/index.ts:createSwarmAgents',
-			'src/commands/epic.ts:renderCalibration',
+			'src/commands/epic.ts:handleEpicCommand',
 			'src/commands/turbo.ts:handleTurboCommand',
 			'src/config/worktree-isolation-config.ts:resolveWorktreeIsolationConfig',
+			'src/turbo/epic/close.ts:finalizeOpenEpicOnSwarmClose',
+			'src/turbo/epic/config-gate.ts:isEpicModeConfigEnabled',
+			'src/turbo/epic/epic-branch.ts:resolveEpicCommitPolicy',
+			'src/turbo/epic/learning.ts:resolveEpicLearningSettings',
+			'src/turbo/epic/planning-signals.ts:loadEpicPlanningSignals',
+			'src/turbo/epic/shaping-sizing.ts:epicSizingContextFor',
 		],
 	},
 	turbo_mode: {

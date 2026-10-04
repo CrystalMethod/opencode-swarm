@@ -146,7 +146,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `council` | object (strict) | — | Work Complete Council — parallel four-member verification gate, off by default. | src/agents/index.ts:createSwarmAgents (+3) |
 | `parallelization` | object | — | Parallelization (PR 1 dark foundation) — disabled by default; no production code path branches on enabled=true yet. | (inert) |
 | `worktree` | object | — | Worktree isolation policy for parallel coder dispatch lanes (general surface; Lean Turbo keeps its legacy per-mode fields). | src/background/completion-observer.ts:createBackgroundCompletionObserver (+3) |
-| `turbo` | object | — | Turbo execution strategy block (Phase 1). Absent means current behavior unchanged. | src/agents/index.ts:createSwarmAgents (+3) |
+| `turbo` | object | — | Turbo execution strategy block (Phase 1). Absent means current behavior unchanged. | src/agents/index.ts:createSwarmAgents (+9) |
 | `turbo_mode` | boolean | false | Bypass reviewer/test gates for rapid iteration (v6.40). When true, new sessions start with turbo mode on (session default); /swarm turbo still toggles per session. Directory-less constructions default off. | src/state.ts:resolveInitialTurboMode (+1) |
 | `quiet` | boolean | true | Suppress non-critical startup warnings (default true keeps the TUI clean). Set false to restore verbose warnings for debugging. | src/agents/index.ts:createSwarmAgents (+3) |
 | `version_check` | boolean | true | Background staleness check against npm, throttled to once per 24h (issue #675). Set false to fully disable the network call. | src/index.ts:initializeOpenCodeSwarm (+1) |
