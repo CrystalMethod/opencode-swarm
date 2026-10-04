@@ -199,6 +199,18 @@ function setupLeanTurboSession(
 			timestamp: new Date().toISOString(),
 		}),
 	);
+	// Phase-level integrated-diff evidence (issue #2954): the lean default for
+	// integrated_diff_required is now true (projected from
+	// DEFAULT_LEAN_TURBO_CONFIG), so check 7 runs on the no-config path. These
+	// tests target the critic/reviewer gates (checks 8/9), not check 7's
+	// default — satisfying check 7 here preserves every existing expectation.
+	fs.writeFileSync(
+		path.join(laneEvidenceDir, 'lean-turbo-phase.json'),
+		JSON.stringify({
+			phase,
+			integratedDiffSummary: 'fixture integrated diff summary',
+		}),
+	);
 }
 
 // ---------------------------------------------------------------------------
