@@ -2185,7 +2185,9 @@ architecture.
 Disabled by default. `/swarm skill-opt run` requires `enabled: true` AND
 `--confirm`; `approve`/`activate`/`reject`/`rollback` are human-only. The
 config is consulted only inside command handlers — never on the plugin init
-path.
+path. The block reaches the `plan`/`run` handlers via plugin config from
+`opencode-swarm.json` (project or user config); `opencode.json` is not a
+config surface for this family.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -2253,7 +2255,10 @@ task-cost accounting
 the held-out set exactly once, enforced by the substrate. Activation and
 rollback are NOT part of this surface — they stay on the human-only
 `/swarm approve-write` + harness store path. Consulted only inside command
-handlers, never on the plugin init path.
+handlers, never on the plugin init path. The block reaches the
+`run`/`compare` handlers via plugin config from `opencode-swarm.json`
+(project or user config); `opencode.json` is not a config surface for this
+family.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|

@@ -962,6 +962,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt': {
 		handler: (ctx) =>
 			handleSkillOptPlan(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -976,6 +977,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt plan': {
 		handler: (ctx) =>
 			handleSkillOptPlan(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -989,6 +991,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt run': {
 		handler: (ctx) =>
 			handleSkillOptRun(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -1078,6 +1081,7 @@ export const COMMAND_REGISTRY = {
 	'harness-opt run': {
 		handler: (ctx) =>
 			handleHarnessOptRun(ctx.directory, ctx.args, {
+				config: ctx.config?.harness_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -1108,6 +1112,7 @@ export const COMMAND_REGISTRY = {
 	'harness-opt compare': {
 		handler: (ctx) =>
 			handleHarnessOptCompare(ctx.directory, ctx.args, {
+				config: ctx.config?.harness_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
