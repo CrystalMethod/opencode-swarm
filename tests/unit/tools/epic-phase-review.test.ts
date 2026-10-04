@@ -10,7 +10,10 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { AGENT_TOOL_MAP } from '../../../src/config/constants';
+import {
+	AGENT_TOOL_MAP,
+	EPIC_AGENT_TOOL_MAP,
+} from '../../../src/config/constants';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
 import type {
 	ReviewDispatchRequest,
@@ -30,13 +33,14 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir';
 const originalInternals = { ..._internals };
 
 describe('epic_phase_review registration', () => {
-	test('metadata, derived name set, and architect tool map include the tool', () => {
+	test('metadata and derived name set include the tool; the architect gets it only via the Epic opt-in map', () => {
 		expect(TOOL_METADATA.epic_phase_review.description).toContain(
 			'epic-phase-review.json',
 		);
-		expect(TOOL_METADATA.epic_phase_review.agents).toEqual(['architect']);
+		expect(TOOL_METADATA.epic_phase_review.agents).toEqual([]);
 		expect(TOOL_NAME_SET.has('epic_phase_review')).toBe(true);
-		expect(AGENT_TOOL_MAP.architect).toContain('epic_phase_review');
+		expect(AGENT_TOOL_MAP.architect).not.toContain('epic_phase_review');
+		expect(EPIC_AGENT_TOOL_MAP.architect).toContain('epic_phase_review');
 	});
 
 	test('manifest thunk and barrel export resolve to executable tools', () => {
@@ -89,7 +93,7 @@ describe('executeEpicPhaseReview', () => {
 	});
 
 	test('refuses when Epic Mode is not active for the project', async () => {
-		_internals.isEpicModeActiveForProject = () => false;
+		_internals.isEpicOpenForProject = () => false;
 		let dispatched = false;
 		_internals.runEpicPhaseReview = async () => {
 			dispatched = true;
@@ -103,7 +107,7 @@ describe('executeEpicPhaseReview', () => {
 	});
 
 	test('refuses without a session or with an invalid phase', async () => {
-		_internals.isEpicModeActiveForProject = () => true;
+		_internals.isEpicOpenForProject = () => true;
 		expect(
 			await executeEpicPhaseReview({ phase: 1 }, dir, undefined),
 		).toMatchObject({ success: false, reason: 'no-session' });
@@ -114,7 +118,7 @@ describe('executeEpicPhaseReview', () => {
 	});
 
 	test('plugin tool object injects the review dispatcher end to end', async () => {
-		_internals.isEpicModeActiveForProject = () => true;
+		_internals.isEpicOpenForProject = () => true;
 		const calls: ReviewDispatchRequest[] = [];
 		const dispatcher: ReviewModelDispatcher = {
 			dispatch: async (request) => {
@@ -152,7 +156,7 @@ describe('executeEpicPhaseReview', () => {
 	});
 
 	test('the static (non-injected) tool reports the dispatcher as unavailable', async () => {
-		_internals.isEpicModeActiveForProject = () => true;
+		_internals.isEpicOpenForProject = () => true;
 		const raw = await epic_phase_review.execute({ phase: 1 }, {
 			directory: dir,
 			sessionID: 'arch-1',

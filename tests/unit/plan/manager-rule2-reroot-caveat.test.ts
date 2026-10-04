@@ -80,7 +80,7 @@ beforeEach(() => {
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	commits = [];
 	_internals.isGitRepo = () => true;
-	_internals.isEpicModeActiveForProject = () => true;
+	_internals.isEpicOpenForProject = () => true;
 	_internals.maybeSaveAutoCheckpoint = async () => ({
 		shouldSave: false,
 		completedCount: 0,

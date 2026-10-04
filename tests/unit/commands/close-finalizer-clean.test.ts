@@ -11,7 +11,8 @@ import { listCoordinationStates } from '../../../src/db/coordination-store.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { loadDatabaseCtor } from '../../../src/db/sqlite-loader.js';
 import { derivePlanId } from '../../../src/plan/utils.js';
-import { enableEpicMode } from '../../../src/turbo/epic/state.js';
+import { EPIC_LIFECYCLE_NAMESPACE } from '../../../src/turbo/epic/lifecycle.js';
+import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { initializeCloseFinalizerHarness } from './close-finalizer.shared.ts';
 
 const h = await initializeCloseFinalizerHarness();
@@ -159,53 +160,51 @@ function writeEpicConfig(dir: string): void {
 	);
 }
 
-describe('handleCloseCommand — Epic Mode session rows (F-Liveness)', () => {
-	it('regression: clears durable Epic rows even when swarm.db is preserved', async () => {
-		// Previously close never touched Epic rows; with swarm.db preserved,
-		// an Epic row survived close and kept the project-scoped Epic probe
-		// (Rule 2 auto-commit, lean readiness) on for the next session.
+describe('handleCloseCommand — open epic finalization (Epic v2)', () => {
+	it('an open epic is closed as abandoned-by-swarm-close before archiving (report kept in epic-prior)', async () => {
 		await h.writePlan(testDir);
 		writeEpicConfig(testDir);
-		enableEpicMode(testDir, 'epic-architect');
-		enableEpicMode(testDir, 'epic-other');
-		expect(listCoordinationStates(testDir, 'turbo.epic.session')).toHaveLength(
-			2,
-		);
+		const epic = openEpicForTest(testDir);
 		const originalClose =
 			h.closeInternals.closeSnapshotCoordinationInitialization;
+		// Keep swarm.db so the lifecycle row deletion is observable.
 		h.closeInternals.closeSnapshotCoordinationInitialization = async () => {
 			throw new Error('coordination still running');
 		};
 		try {
-			await h.handleCloseCommand(testDir, []);
+			const output = await h.handleCloseCommand(testDir, []);
+			expect(output).toContain(
+				`Open epic ${epic.epicKey} was closed as abandoned-by-swarm-close`,
+			);
 			expect(existsSync(path.join(h.swarmDir(testDir), 'swarm.db'))).toBe(true);
 			expect(
-				listCoordinationStates(testDir, 'turbo.epic.session'),
+				listCoordinationStates(testDir, EPIC_LIFECYCLE_NAMESPACE),
 			).toHaveLength(0);
+			const priorDir = path.join(h.swarmDir(testDir), 'epic-prior', 'reports');
+			const reports = readdirSync(priorDir);
+			expect(reports).toHaveLength(1);
+			const report = JSON.parse(
+				readFileSync(path.join(priorDir, reports[0]), 'utf-8'),
+			);
+			expect(report.outcome).toBe('abandoned-by-swarm-close');
+			expect(report.epicKey).toBe(epic.epicKey);
+			expect(
+				existsSync(path.join(h.swarmDir(testDir), 'epic', 'epic.json')),
+			).toBe(false);
 		} finally {
 			h.closeInternals.closeSnapshotCoordinationInitialization = originalClose;
 			closeAllProjectDbs();
 		}
 	});
 
-	it('non-Epic project (config off, no Epic flag): rows untouched, no Epic warning', async () => {
+	it('non-Epic project: no Epic text in the close output and no epic-prior directory', async () => {
 		await h.writePlan(testDir);
-		enableEpicMode(testDir, 'stray-row');
-		const originalClose =
-			h.closeInternals.closeSnapshotCoordinationInitialization;
-		h.closeInternals.closeSnapshotCoordinationInitialization = async () => {
-			throw new Error('coordination still running');
-		};
-		try {
-			const output = await h.handleCloseCommand(testDir, []);
-			expect(output).not.toContain('Epic Mode');
-			expect(
-				listCoordinationStates(testDir, 'turbo.epic.session'),
-			).toHaveLength(1);
-		} finally {
-			h.closeInternals.closeSnapshotCoordinationInitialization = originalClose;
-			closeAllProjectDbs();
-		}
+		writeEpicConfig(testDir);
+		const output = await h.handleCloseCommand(testDir, []);
+		expect(output.toLowerCase()).not.toContain('epic');
+		expect(existsSync(path.join(h.swarmDir(testDir), 'epic-prior'))).toBe(
+			false,
+		);
 	});
 });
 

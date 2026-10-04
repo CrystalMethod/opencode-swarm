@@ -10,8 +10,9 @@
  *   - plan B's 1.1 gets its OWN marker commit (no idempotent skip on A's);
  *   - afterwards plan B's Rule 3 sees its own 1.1.
  *
- * Epic is enabled through the sanctioned path (project config + session
- * state), not a seam. Later v2 commits extend the lifecycle contract in
+ * Epic runs through the sanctioned path (project config + `/swarm epic
+ * start` / `close` lifecycle, forced past sizing for a one-task plan), not a
+ * seam: an epic is plan-scoped, so plan B needs its own epic. Later v2 commits extend the lifecycle contract in
  * sibling `epic-lifecycle-contract*.test.ts` files.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -25,7 +26,8 @@ import {
 	savePlan,
 	updateTaskStatus,
 } from '../../src/plan/manager';
-import { enableEpicMode } from '../../src/turbo/epic/state.js';
+import { closeEpic } from '../../src/turbo/epic/close.js';
+import { startEpic } from '../../src/turbo/epic/start.js';
 import { buildIsUpstreamCommittedWithStatus } from '../../src/turbo/epic/upstream-commits';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -69,6 +71,17 @@ function plan(title: string): Plan {
 						depends: [],
 						files_touched: [],
 					},
+					{
+						// Keeps the epic non-empty across plan B's save (savePlan
+						// carries 1.1's completed status forward by task id).
+						id: '1.2',
+						phase: 1,
+						status: 'pending',
+						size: 'small',
+						description: `${title} follow-up`,
+						depends: [],
+						files_touched: [],
+					},
 				],
 			},
 		],
@@ -83,6 +96,14 @@ function markers(): Array<{ subject: string; trailer: string | null }> {
 			const trailer = /^Swarm-Plan: (\S+)$/m.exec(r);
 			return { subject: r.split('\n')[0], trailer: trailer?.[1] ?? null };
 		});
+}
+
+async function openEpic() {
+	return startEpic({
+		directory: dir,
+		sessionID: 'ses_contractC0',
+		force: true,
+	});
 }
 
 async function rule3(taskId: string): Promise<boolean> {
@@ -114,7 +135,6 @@ beforeEach(() => {
 	git(['add', '.']);
 	git(['commit', '-q', '-m', 'seed']);
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
-	enableEpicMode(dir, 'contract-c0-session');
 });
 
 afterEach(() => {
@@ -131,6 +151,7 @@ describe('Epic lifecycle contract v0 — plan-scoped markers across consecutive 
 	test("plan B's 1.1 gets its own commit and B's Rule 3 never sees plan A's marker", async () => {
 		// Plan A: 1.1 completes → Rule 2 marker bound to plan A.
 		await savePlan(dir, plan('Contract Plan A'));
+		expect((await openEpic()).status).toBe('started');
 		expect(await rule3('1.1')).toBe(false);
 		await updateTaskStatus(dir, '1.1', 'completed');
 		const afterA = markers();
@@ -140,8 +161,13 @@ describe('Epic lifecycle contract v0 — plan-scoped markers across consecutive 
 		expect(keyA).toMatch(/^[0-9a-f]{16}$/);
 		expect(await rule3('1.1')).toBe(true);
 
+		expect((await closeEpic({ directory: dir, abandon: true })).status).toBe(
+			'closed',
+		);
+
 		// Plan B (consecutive, same repo, same task id 1.1).
 		await savePlan(dir, plan('Contract Plan B'));
+		expect((await openEpic()).status).toBe('started');
 		expect(await rule3('1.1')).toBe(false);
 
 		await updateTaskStatus(dir, '1.1', 'completed');

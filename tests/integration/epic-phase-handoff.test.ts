@@ -34,7 +34,7 @@ import { savePlan, updateTaskStatus } from '../../src/plan/manager';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeEpicPlanWaves } from '../../src/tools/epic-plan-waves';
 import { executeEpicDecidePhase } from '../../src/tools/epic-run-phase';
-import { enableEpicMode } from '../../src/turbo/epic/state';
+import { openEpicForTest } from '../helpers/epic-lifecycle';
 
 function git(args: string[], cwd: string): { status: number; stdout: string } {
 	const result = spawnSync('git', args, {
@@ -150,10 +150,9 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		initGitRepo(dir);
 		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 		await savePlan(dir, makePlanWithCrossBatchDep());
-		// Toggle Epic Mode for the project. The session id is irrelevant
-		// because `isEpicModeActiveForProject` (the gate inside
-		// plan/manager) only checks "any session active in this project".
-		enableEpicMode(dir, 'test-session');
+		// Open an epic for this plan (real lifecycle row + sentinel). The
+		// gate inside plan/manager (`isEpicOpenForProject`) is project-scoped.
+		openEpicForTest(dir);
 	});
 
 	afterEach(() => {
@@ -312,7 +311,7 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 	});
 
 	test('Phase 8 no-side-effect: non-Epic projects do NOT have .swarm/epic-state.json seeded by update_task_status', async () => {
-		// Fresh dir, fresh git repo, NO enableEpicMode call.
+		// Fresh dir, fresh git repo, NO epic opened.
 		const freshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'epic-no-seed-'));
 		try {
 			initGitRepo(freshDir);
@@ -331,6 +330,8 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 			expect(
 				fs.existsSync(path.join(freshDir, '.swarm', 'epic-state.json')),
 			).toBe(false);
+			// Nor any v2 lifecycle artifact (sentinel / reports).
+			expect(fs.existsSync(path.join(freshDir, '.swarm', 'epic'))).toBe(false);
 			// And no commit was produced, because Epic isn't on for this
 			// project — Rule 2 must be skipped entirely.
 			const swarmSubjects = git(['log', '--pretty=%s'], freshDir)

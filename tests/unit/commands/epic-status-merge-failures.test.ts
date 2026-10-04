@@ -20,9 +20,6 @@ let dir: string;
 beforeEach(() => {
 	dir = canonicalMkdtemp('c0-epic-status-');
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
-	_internals.ensureAgentSession = (() => ({ id: 's' })) as never;
-	_internals.isStateUnreadable = (() => false) as never;
-	_internals.loadEpicSessionState = (() => null) as never;
 	_internals.loadPlanJsonOnly = (async () => ({})) as never;
 	_internals.resolvePlanMarkerScope = async () => ({
 		planKey: 'aaaaaaaaaaaaaaaa',

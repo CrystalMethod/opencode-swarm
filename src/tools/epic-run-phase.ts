@@ -17,7 +17,7 @@
  *   3. Runs `decideEpicActivation` over the WHOLE PLAN (per-plan
  *      activation per Q1) to get a `promote | demote` verdict.
  *   4. Appends one record to `.swarm/evidence/epic-promotions.jsonl` and
- *      mirrors the verdict into the Epic session state (`recordEpicDecision`).
+ *      mirrors the verdict into the open epic's record (`recordEpicLastDecision`).
  *
  * The tool never dispatches coders. The former opaque decide-and-dispatch
  * path (`executeEpicRunPhase`, which drove `LeanTurboRunner` and had no
@@ -51,11 +51,12 @@ import {
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory as readDivergenceHistory_import } from '../turbo/epic/divergence-recorder.js';
-import { appendPromotionEvidence as appendPromotionEvidence_import } from '../turbo/epic/promotion-evidence.js';
 import {
-	isEpicModeActive as isEpicModeActive_import,
-	recordEpicDecision as recordEpicDecision_import,
-} from '../turbo/epic/state.js';
+	type EpicRecordV1,
+	getOpenEpic as getOpenEpic_import,
+	recordEpicLastDecision as recordEpicLastDecision_import,
+} from '../turbo/epic/lifecycle.js';
+import { appendPromotionEvidence as appendPromotionEvidence_import } from '../turbo/epic/promotion-evidence.js';
 import { buildIsUpstreamCommittedWithStatus as buildIsUpstreamCommittedWithStatus_import } from '../turbo/epic/upstream-commits.js';
 import * as logger from '../utils/logger.js';
 import { createSwarmTool } from './create-tool.js';
@@ -76,7 +77,7 @@ export interface EpicRunPhaseResult {
 	 *    it with `epic_plan_waves` and dispatches each wave via `Task`.
 	 *  - `'demoted'` — epic chose serial; the caller should fall back.
 	 *  - `'epic-disabled-by-config'` — `turbo.epic.mode.enabled !== true`.
-	 *  - `'epic-mode-not-active'` — the session has not toggled Epic Mode.
+	 *  - `'epic-mode-not-active'` — no epic is open for the current plan.
 	 *  - `'no-plan'` — `.swarm/plan.json` is missing.
 	 *  - `'no-phase'` — the requested phase number isn't present in the
 	 *    plan. Phase 12 (B11): without this, an unknown phase silently
@@ -100,8 +101,8 @@ export interface EpicRunPhaseResult {
 	 *    compute disjoint waves; without it the dispatch is silently
 	 *    serial. The architect must re-run `declare_scope` for each missing
 	 *    task and then re-invoke `epic_decide_phase`.
-	 *  - `'epic-state-unreadable'` — `recordEpicDecision` failed (Epic
-	 *    session state store unreadable / fail-closed).
+	 *  - `'epic-state-unreadable'` — the Epic lifecycle row is unreadable,
+	 *    or `recordEpicLastDecision` failed (fail closed).
 	 */
 	reason: string;
 	/** Set when `reason === 'epic-state-unreadable'`. */
@@ -128,8 +129,8 @@ export const _internals = {
 	decideEpicActivation: decideEpicActivation_import,
 	isGitRepo: isGitRepo_import,
 	appendPromotionEvidence: appendPromotionEvidence_import,
-	recordEpicDecision: recordEpicDecision_import,
-	isEpicModeActive: isEpicModeActive_import,
+	recordEpicLastDecision: recordEpicLastDecision_import,
+	getOpenEpic: getOpenEpic_import,
 	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	loadCalibrationState: loadCalibrationState_import,
 	saveCalibrationState: saveCalibrationState_import,
@@ -153,14 +154,14 @@ export const _internals = {
  *
  * Error / non-decision reasons (all set success: false):
  *  - 'epic-disabled-by-config' — `turbo.epic.mode.enabled !== true`.
- *  - 'epic-mode-not-active' — the session has not toggled Epic Mode.
+ *  - 'epic-mode-not-active' — no epic is open for the current plan.
  *  - 'no-plan' — `.swarm/plan.json` is missing.
  *  - 'no-phase' (Phase 12 B11) — the requested phase number isn't in the plan.
  *  - 'phase-empty' (Phase 17 E.1) — phase exists but has zero tasks.
  *  - 'phase-already-complete' (Phase 15 B35) — every task already completed.
  *  - 'scopes-missing' — one or more pending tasks lack a live declared scope.
- *  - 'epic-state-unreadable' — `recordEpicDecision` failed (Epic session
- *    state store unreadable / fail-closed).
+ *  - 'epic-state-unreadable' — the Epic lifecycle row is unreadable, or
+ *    `recordEpicLastDecision` failed (fail closed).
  */
 export async function executeEpicDecidePhase(
 	args: EpicRunPhaseArgs,
@@ -188,12 +189,24 @@ export async function executeEpicDecidePhase(
 		};
 	}
 
-	if (!_internals.isEpicModeActive(directory, sessionID)) {
+	let epic: EpicRecordV1 | null;
+	try {
+		epic = _internals.getOpenEpic(directory);
+	} catch (err) {
+		return {
+			success: false,
+			reason: 'epic-state-unreadable',
+			errors: [err instanceof Error ? err.message : String(err)],
+			message:
+				'The Epic lifecycle state is unreadable (fail closed). Ask the user to run `/swarm epic status` (diagnose) or `/swarm epic close --abandon` (repair); until then execute the phase per-task serially.',
+		};
+	}
+	if (!epic) {
 		return {
 			success: false,
 			reason: 'epic-mode-not-active',
 			message:
-				'Epic Mode is not active for this session. Ask the user to run `/swarm epic on` (or `/swarm turbo epic on`) in this session, then retry; until then execute the phase per-task serially.',
+				'No epic is open for the current plan. Ask the user to run `/swarm epic start`, then retry; until then execute the phase per-task serially.',
 		};
 	}
 
@@ -544,23 +557,27 @@ export async function executeEpicDecidePhase(
 		);
 	}
 
-	// Mirror the decision into the session state so `/swarm epic status` can
-	// show the most recent rationale. Unlike the evidence write above, a
-	// failure here means the durable state subsystem is broken (corrupt
-	// file / fail-closed marker set) — fail closed and refuse to dispatch
-	// rather than executing without reliable state.
+	// Mirror the decision into the open epic's record so `/swarm epic status`
+	// can show the most recent rationale. Unlike the evidence write above, a
+	// failure here means the durable lifecycle state is broken — fail closed
+	// and refuse to dispatch rather than executing without reliable state.
 	try {
-		_internals.recordEpicDecision(directory, sessionID, {
-			decidedAt: new Date().toISOString(),
-			phase,
-			decision: verdict.decision,
-			p: verdict.p,
-			blockingReasons: verdict.blockingReasons,
-		});
+		_internals.recordEpicLastDecision(
+			directory,
+			epic.epicKey,
+			{
+				decidedAt: new Date().toISOString(),
+				phase,
+				decision: verdict.decision,
+				p: verdict.p,
+				blockingReasons: verdict.blockingReasons,
+			},
+			epic.token,
+		);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		logger.error(
-			`[epic_decide_phase] recordEpicDecision failed, refusing to dispatch: ${msg}`,
+			`[epic_decide_phase] recordEpicLastDecision failed, refusing to dispatch: ${msg}`,
 		);
 		return {
 			success: false,
@@ -599,7 +616,7 @@ export async function executeEpicDecidePhase(
 export const epic_decide_phase: ToolDefinition = createSwarmTool({
 	allowWorkingDirectoryOverride: true,
 	description:
-		"Compute the Epic Mode verdict for a phase. Runs a scope-graph preflight, rolls the calibration loop forward over any new divergence records, computes the plan-wide coupling coefficient `p`, gates on three checks (p-threshold, hot-module, greenfield), persists the decision to .swarm/evidence/epic-promotions.jsonl, and returns the verdict (promote/demote/error). This tool does NOT dispatch coders; on a `promote` verdict the architect pairs it with `epic_plan_waves` to obtain the wave plan, then for each wave issues one `Task(subagent_type='coder', ...)` per taskId — all in one assistant message — so each concurrent coder appears as a visible subagent. On a `demote` verdict the architect falls back to per-task serial. Requires `turbo.epic.mode.enabled: true` in config (else reason `epic-disabled-by-config`) and /swarm epic on for the session. A `scopes-missing` reason means a pending task's declared scope is undeclared, expired (bindings live 1h), or was declared against an older plan revision — re-run `declare_scope` for each listed task.",
+		"Compute the Epic Mode verdict for a phase. Runs a scope-graph preflight, rolls the calibration loop forward over any new divergence records, computes the plan-wide coupling coefficient `p`, gates on three checks (p-threshold, hot-module, greenfield), persists the decision to .swarm/evidence/epic-promotions.jsonl, and returns the verdict (promote/demote/error). This tool does NOT dispatch coders; on a `promote` verdict the architect pairs it with `epic_plan_waves` to obtain the wave plan, then for each wave issues one `Task(subagent_type='coder', ...)` per taskId — all in one assistant message — so each concurrent coder appears as a visible subagent. On a `demote` verdict the architect falls back to per-task serial. Requires `turbo.epic.mode.enabled: true` in config (else reason `epic-disabled-by-config`) and an epic open for the current plan via `/swarm epic start` (else `epic-mode-not-active`). A `scopes-missing` reason means a pending task's declared scope is undeclared, expired (bindings live 1h), or was declared against an older plan revision — re-run `declare_scope` for each listed task.",
 	args: {
 		directory: z.string().describe('Project root directory'),
 		phase: z.number().int().positive().describe('Phase number to decide on'),
@@ -613,16 +630,12 @@ export const epic_decide_phase: ToolDefinition = createSwarmTool({
 		// fall back to the model-supplied argument, which is `z.string()`.
 		//
 		// What this guard does NOT do: protect lane provisioning.
-		// `executeEpicDecidePhase` uses `sessionID` only as a lookup key —
-		// `isEpicModeActive` and `recordEpicDecision` — and never
-		// reaches `provisionWorktree`. The lane-provisioning guard lives in
-		// `provisionWorktree` itself.
+		// `executeEpicDecidePhase` uses `sessionID` only as the evidence
+		// record's session field and never reaches `provisionWorktree`. The
+		// lane-provisioning guard lives in `provisionWorktree` itself.
 		//
 		// What it DOES do: turn an unencodable session id into a precise error
-		// instead of a misleading one. Without it, `isEpicModeActive` simply
-		// returns false for the bogus key and the tool reports "epic mode is not
-		// active for this session" — which is wrong-sounding when epic mode IS
-		// active, just under the real id.
+		// instead of recording a bogus session id in the evidence log.
 		if (!isSwarmSessionId(sessionID)) {
 			return JSON.stringify(
 				{

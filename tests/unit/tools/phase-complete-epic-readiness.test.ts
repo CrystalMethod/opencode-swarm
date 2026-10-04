@@ -8,10 +8,12 @@
  *   naming epic_phase_review
  * - Epic active + reviewer/critic APPROVED evidence → completes
  * - Epic active + rejected / stale evidence → blocked
- * - `/swarm turbo epic on` combo (turbo + Lean + Epic) → Lean readiness is
- *   not applicable (Epic owns readiness) and the Epic gate still enforces
+ * - Lean session flags set while an epic is open (defense in depth — v2
+ *   start refuses while Turbo is active) → Lean readiness is not applicable
+ *   (Epic owns readiness) and the Epic gate still enforces
  *
- * Epic activation uses the real durable state (enableEpicMode). Evidence is
+ * An epic is opened through the real lifecycle row + sentinel
+ * (`openEpicForTest`, bound to the plan on disk). Evidence is
  * produced by the real runEpicPhaseReview with an injected fake dispatcher —
  * never hand-written — so the binding matches production.
  */
@@ -27,16 +29,13 @@ import {
 	resetSwarmState,
 	swarmState,
 } from '../../../src/state';
+import { deleteEpicState } from '../../../src/turbo/epic/lifecycle';
 import { runEpicPhaseReview } from '../../../src/turbo/epic/phase-readiness';
-import {
-	disableEpicMode,
-	enableEpicMode,
-	repairStateUnreadable,
-} from '../../../src/turbo/epic/state';
 import {
 	_internals as phaseReadyInternals,
 	type verifyLeanTurboPhaseReady,
 } from '../../../src/turbo/lean/phase-ready';
+import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { freezeClock, type Restore } from '../../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -206,7 +205,6 @@ describe('phase_complete — Epic phase readiness gate', () => {
 		restoreClock?.();
 		restoreClock = null;
 		process.chdir(originalCwd);
-		repairStateUnreadable(tempDir);
 		closeAllProjectDbs();
 		try {
 			fs.rmSync(tempDir, { recursive: true, force: true });
@@ -240,9 +238,9 @@ describe('phase_complete — Epic phase readiness gate', () => {
 		});
 	});
 
-	test('Epic config on but no live Epic session → still no epic_phase_readiness entry', async () => {
-		enableEpicMode(tempDir, 'sess1');
-		disableEpicMode(tempDir, 'sess1');
+	test('Epic config on but the epic was closed → still no epic_phase_readiness entry', async () => {
+		const epic = openEpicForTest(tempDir);
+		deleteEpicState(tempDir, epic.epicKey, epic.token);
 		fs.rmSync(path.join(tempDir, '.swarm', 'evidence', 'retro-1'), {
 			recursive: true,
 			force: true,
@@ -255,7 +253,7 @@ describe('phase_complete — Epic phase readiness gate', () => {
 	});
 
 	test('Epic active (turbo off) + missing evidence → blocked with epic_phase_review recovery', async () => {
-		enableEpicMode(tempDir, 'sess1');
+		openEpicForTest(tempDir);
 		const result = await complete();
 		expect(result.success).toBe(false);
 		expect(result.status).toBe('blocked');
@@ -273,7 +271,7 @@ describe('phase_complete — Epic phase readiness gate', () => {
 	});
 
 	test('Epic active + reviewer and critic APPROVED → phase completes', async () => {
-		enableEpicMode(tempDir, 'sess1');
+		openEpicForTest(tempDir);
 		await recordReview(tempDir);
 		const result = await complete();
 		expect(result.success).toBe(true);
@@ -281,7 +279,7 @@ describe('phase_complete — Epic phase readiness gate', () => {
 	});
 
 	test('Epic active + critic REJECTED → blocked', async () => {
-		enableEpicMode(tempDir, 'sess1');
+		openEpicForTest(tempDir);
 		await recordReview(
 			tempDir,
 			APPROVED,
@@ -294,7 +292,7 @@ describe('phase_complete — Epic phase readiness gate', () => {
 	});
 
 	test('Epic active + rework after approval (task evidence changed) → blocked as stale', async () => {
-		enableEpicMode(tempDir, 'sess1');
+		openEpicForTest(tempDir);
 		await recordReview(tempDir);
 		fs.writeFileSync(
 			path.join(tempDir, '.swarm', 'evidence', '1.1.json'),
@@ -305,13 +303,13 @@ describe('phase_complete — Epic phase readiness gate', () => {
 		expect(result.reason).toBe('EPIC_PHASE_REVIEW_STALE');
 	});
 
-	describe('`/swarm turbo epic on` combo (turbo + Lean + Epic)', () => {
+	describe('Lean session flags while an epic is open (defense in depth)', () => {
 		beforeEach(() => {
 			const session = swarmState.agentSessions.get('sess1')!;
 			session.turboMode = true;
 			session.turboStrategy = 'lean';
 			session.leanTurboActive = true;
-			enableEpicMode(tempDir, 'sess1');
+			openEpicForTest(tempDir);
 			// Lean readiness would block if it ran — proves Epic replaces it.
 			phaseReadyInternals.verifyLeanTurboPhaseReady = mock(() => ({
 				ok: false,

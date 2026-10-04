@@ -29,6 +29,7 @@ import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
 } from '../../helpers/declared-scope-bindings';
+import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 const realInternals = { ..._internals };
@@ -89,9 +90,9 @@ beforeEach(() => {
 	cochangeFetches = 0;
 	isEpicActiveCalls = 0;
 	_internals.loadPluginConfigWithMeta = (() => ({ config })) as never;
-	_internals.isEpicModeActive = (() => {
+	_internals.getOpenEpic = (() => {
 		isEpicActiveCalls += 1;
-		return true;
+		return stubEpicRecord();
 	}) as never;
 	_internals.getCoChangeData = (async () => {
 		cochangeFetches += 1;
@@ -99,7 +100,7 @@ beforeEach(() => {
 	}) as never;
 	_internals.isGitRepo = (() => false) as never;
 	_internals.appendPromotionEvidence = (() => '/fake') as never;
-	_internals.recordEpicDecision = (() => {}) as never;
+	_internals.recordEpicLastDecision = (() => {}) as never;
 	_internals.loadCalibrationState = (() => null) as never;
 });
 

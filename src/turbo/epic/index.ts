@@ -44,33 +44,24 @@ export {
 	computeCouplingReport,
 	formatCouplingReportMarkdown,
 } from './coupling-report.js';
+export type {
+	EpicCloseOutcome,
+	EpicInspection,
+	EpicLastDecision,
+	EpicRecordV1,
+	EpicSentinel,
+} from './lifecycle.js';
+export {
+	EPIC_LIFECYCLE_NAMESPACE,
+	EPIC_SENTINEL_RELATIVE_PATH,
+	EpicStateUnreadableError,
+	epicSentinelExists,
+	getOpenEpic,
+	inspectEpic,
+	isEpicOpenForProject,
+} from './lifecycle.js';
 export type { PromotionEvidenceRecord } from './promotion-evidence.js';
 export {
 	appendPromotionEvidence,
 	readPromotionEvidence,
 } from './promotion-evidence.js';
-export type {
-	EnableEpicModeOptions,
-	EpicEnabledVia,
-	EpicLastDecision,
-	EpicPersistedState,
-	EpicSessionState,
-} from './state.js';
-export {
-	clearAllEpicSessionRows,
-	clearEpicSessionRow,
-	disableEpicMode,
-	EPIC_SESSION_HEARTBEAT_INTERVAL_MS,
-	EPIC_SESSION_STALE_TTL_MS,
-	emptyPersisted as emptyEpicPersisted,
-	emptySessionState as emptyEpicSessionState,
-	enableEpicMode,
-	isEpicModeActive,
-	isEpicModeActiveForProject,
-	isStateUnreadable as isEpicStateUnreadable,
-	loadEpicSessionState,
-	peekEpicSessionState,
-	recordEpicDecision,
-	refreshEpicSessionHeartbeat,
-	repairStateUnreadable as repairEpicStateUnreadable,
-} from './state.js';

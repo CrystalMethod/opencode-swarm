@@ -87,7 +87,7 @@ beforeEach(() => {
 	};
 
 	_internals.isEpicModeConfigEnabledForDirectory = () => true;
-	_internals.hasActiveEpicMode = (() => stub.epicActive) as never;
+	_internals.isEpicOpenForProject = (() => stub.epicActive) as never;
 	_internals.getAgentSession = (() => stub.session) as never;
 	_internals.readLatestEpicDeclaredScopeForCalibration = ((input: {
 		plan: { title: string };
@@ -108,7 +108,7 @@ beforeEach(() => {
 afterEach(() => {
 	_internals.isEpicModeConfigEnabledForDirectory =
 		realInternals.isEpicModeConfigEnabledForDirectory;
-	_internals.hasActiveEpicMode = realInternals.hasActiveEpicMode;
+	_internals.isEpicOpenForProject = realInternals.isEpicOpenForProject;
 	_internals.getAgentSession = realInternals.getAgentSession;
 	_internals.readLatestEpicDeclaredScopeForCalibration =
 		realInternals.readLatestEpicDeclaredScopeForCalibration;

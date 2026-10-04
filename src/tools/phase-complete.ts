@@ -87,11 +87,11 @@ import {
 	swarmState,
 } from '../state';
 import { telemetry } from '../telemetry';
+import { isEpicOpenForProject } from '../turbo/epic/lifecycle';
 import {
 	EPIC_PHASE_REVIEW_TOOL,
 	verifyEpicPhaseReadiness,
 } from '../turbo/epic/phase-readiness';
-import { isEpicModeActiveForProject } from '../turbo/epic/state';
 import { _internals as leanPhaseInternals } from '../turbo/lean/phase-ready';
 import { pushAdvisory } from '../utils/advisory-queue';
 import * as logger from '../utils/logger';
@@ -143,7 +143,7 @@ export const phaseCompletePreflightInternals = {
 	runFinalCouncilGate,
 	runTodoGateGate,
 	verifyEpicPhaseReadiness,
-	isEpicModeActiveForProject,
+	isEpicOpenForProject,
 };
 
 /**
@@ -956,7 +956,7 @@ export async function executePhaseComplete(
 		},
 	});
 	const epicActiveForProject =
-		phaseCompletePreflightInternals.isEpicModeActiveForProject(dir);
+		phaseCompletePreflightInternals.isEpicOpenForProject(dir);
 	preflightChecks.push({
 		id: 'lean_turbo_readiness',
 		responsibleActor: 'architect',
@@ -997,12 +997,12 @@ export async function executePhaseComplete(
 	});
 	// Epic Mode phase readiness: an APPROVED phase reviewer AND phase critic,
 	// dispatched and recorded by epic_phase_review and bound to the current
-	// plan / phase task evidence. Applies whenever Epic Mode is active for the
-	// project, independent of Turbo: with Turbo on it is the only phase-level
-	// review left (Gates 1-5 are bypassed); with Turbo off it adds the
-	// cross-task integration review that per-task Stage B cannot provide for
-	// concurrently executed waves. Pushed ONLY when Epic is active so the
-	// non-Epic gate report stays byte-identical to the pre-Epic report.
+	// plan / phase task evidence. Applies whenever an epic is open for the
+	// current plan (`/swarm epic start`, which keeps Turbo off): it adds
+	// the cross-task integration review that per-task Stage B cannot provide
+	// for concurrently executed waves. Pushed ONLY when an epic is open (the
+	// sentinel-first probe costs one existsSync otherwise) so the non-Epic
+	// gate report stays byte-identical to the pre-Epic report.
 	if (epicActiveForProject)
 		preflightChecks.push({
 			id: 'epic_phase_readiness',

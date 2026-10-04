@@ -51,7 +51,6 @@ import {
 	type AgentSessionState,
 	getAgentSession as getAgentSession_import,
 	getModifiedFilesForTask as getModifiedFilesForTask_import,
-	hasActiveEpicMode as hasActiveEpicMode_import,
 	resetModifiedFilesForTask as resetModifiedFilesForTask_import,
 	swarmState,
 } from '../state.js';
@@ -61,6 +60,7 @@ import {
 } from '../turbo/epic/config-gate.js';
 import { readLatestEpicDeclaredScopeForCalibration as readLatestEpicDeclaredScopeForCalibration_import } from '../turbo/epic/declared-scopes.js';
 import { recordTaskDivergence as recordTaskDivergence_import } from '../turbo/epic/divergence-recorder.js';
+import { isEpicOpenForProject as isEpicOpenForProject_import } from '../turbo/epic/lifecycle.js';
 import * as logger from '../utils/logger.js';
 import { canonicalAttributionPath } from '../utils/path.js';
 import { createSwarmTool } from './create-tool.js';
@@ -81,7 +81,7 @@ export interface EpicRecordDivergenceResult {
 	 *    appended (idempotent). `summary` describes the existing record.
 	 *  - `'epic-disabled-by-config'` — `turbo.epic.mode.enabled !== true`;
 	 *    no-op (`message` carries the remediation).
-	 *  - `'epic-mode-not-active'` — session has not toggled Epic Mode; no-op.
+	 *  - `'epic-mode-not-active'` — no epic is open for the current plan; no-op.
 	 *  - `'no-scope'` — no `declare_scope` declaration recorded for this task
 	 *    under the current plan id (could be a pure verification task that
 	 *    bypassed `declare_scope`), or the plan could not be loaded. Skipped.
@@ -115,7 +115,7 @@ export interface EpicRecordDivergenceResult {
 export const _internals = {
 	isEpicModeConfigEnabledForDirectory:
 		isEpicModeConfigEnabledForDirectory_import,
-	hasActiveEpicMode: hasActiveEpicMode_import,
+	isEpicOpenForProject: isEpicOpenForProject_import,
 	getAgentSession: getAgentSession_import,
 	getModifiedFilesForTask: getModifiedFilesForTask_import,
 	resetModifiedFilesForTask: resetModifiedFilesForTask_import,
@@ -205,7 +205,7 @@ export async function executeEpicRecordDivergence(
 		};
 	}
 
-	if (!_internals.hasActiveEpicMode(sessionID)) {
+	if (!_internals.isEpicOpenForProject(directory)) {
 		return { success: true, reason: 'epic-mode-not-active' };
 	}
 
@@ -298,7 +298,7 @@ export async function executeEpicRecordDivergence(
 export const epic_record_divergence: ToolDefinition = createSwarmTool({
 	allowWorkingDirectoryOverride: true,
 	description:
-		'Record divergence between a completed task\'s declared scope and the files actually modified, for Epic Mode calibration (Capability D). Call this immediately after update_task_status sets status="completed". Appends one line to .swarm/epic/divergence.jsonl (idempotent per task: an identical retry returns `already-recorded`; a rework supersedes the earlier record). Best-effort — never fails the calling agent. Use only when /swarm epic is on for the session.',
+		'Record divergence between a completed task\'s declared scope and the files actually modified, for Epic Mode calibration (Capability D). Call this immediately after update_task_status sets status="completed". Appends one line to .swarm/epic/divergence.jsonl (idempotent per task: an identical retry returns `already-recorded`; a rework supersedes the earlier record). Best-effort — never fails the calling agent. Use only while an epic is open for the current plan (`/swarm epic start`).',
 	args: {
 		directory: z.string().describe('Project root directory'),
 		taskId: z.string().describe('Task id whose divergence should be recorded'),
@@ -308,8 +308,8 @@ export const epic_record_divergence: ToolDefinition = createSwarmTool({
 		const { taskId, sessionID: argSessionID } =
 			args as EpicRecordDivergenceArgs;
 		// Same rationale as epic_decide_phase: prefer the framework-supplied
-		// session over a model-hallucinated value, since `hasActiveEpicMode`
-		// is strictly per-session.
+		// session over a model-hallucinated value (the session keys the
+		// architect's file attribution).
 		const sessionID =
 			ctx?.sessionID && ctx.sessionID.length > 0 ? ctx.sessionID : argSessionID;
 		return JSON.stringify(

@@ -3181,10 +3181,11 @@ export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
  *
  * Two independent opt-in master gates, both default `false` and both read
  * through `src/turbo/epic/config-gate.ts`:
- *   - `mode.enabled` gates Epic Mode itself: `/swarm epic on`,
- *     `/swarm turbo epic on`, `epic_decide_phase`, `epic_plan_waves`, and the
- *     project-scoped Epic probe (Rule 2 auto-commit, the Epic phase-readiness
- *     gate in `phase_complete`). With it off, none of those run.
+ *   - `mode.enabled` gates Epic Mode itself: `/swarm epic start`, the Epic
+ *     tools (`epic_decide_phase`, `epic_plan_waves`, …), and the
+ *     project-scoped open-epic probe (Rule 2 auto-commit, the Epic
+ *     phase-readiness gate in `phase_complete`). With it off, none of those
+ *     run (an already-open epic is inert until re-enabled or closed).
  *   - `cochange.enabled` gates only Capability A's git co-change conflict
  *     signal. With it off, `p` is computed from declared-path conflicts only
  *     and the decision rationale records `cochangeSignal: 'disabled-by-config'`
@@ -3221,10 +3222,10 @@ export const EpicConfigSchema = z
 			.strict()
 			.optional(),
 		/**
-		 * Epic mode activation settings (Capability C). When `enabled`, the
-		 * `/swarm epic on` / `/swarm turbo epic on` toggles and the
+		 * Epic mode activation settings (Capability C). When `enabled`,
+		 * `/swarm epic start` can open an epic for the current plan and the
 		 * architect-facing flow (`epic_decide_phase` → `epic_plan_waves` →
-		 * `Task` per wave → `epic_phase_review`) become usable; they compute
+		 * `Task` per wave → `epic_phase_review`) becomes usable; it computes
 		 * `p` over the plan, gate on the activation threshold + hot modules +
 		 * greenfield (predecessor-evidence) rule, and either dispatch waves
 		 * (when promoted) or fall back to the standard serial path (when
@@ -3295,6 +3296,27 @@ export const EpicConfigSchema = z
 				 * so a full window must elapse again before the next loosening.
 				 */
 				loosen_window: z.number().int().min(1).default(10),
+			})
+			.strict()
+			.optional(),
+		/**
+		 * Epic sizing (Epic v2). `/swarm epic start` refuses a plan that is not
+		 * epic-sized (`--force` overrides and is recorded). With T pending
+		 * tasks, L serial steps in a dry-run of the wave planner, S = T / L and
+		 * S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), a plan is
+		 * epic-sized when T ≥ `min_tasks`, the share of pending tasks with a
+		 * scope ≥ `min_scope_coverage`, and S_eff ≥ `min_effective_speedup`.
+		 */
+		sizing: z
+			.object({
+				/** Minimum pending tasks across the plan. */
+				min_tasks: z.number().int().min(1).default(6),
+				/** Minimum share of pending tasks with a declared scope / files_touched. */
+				min_scope_coverage: z.number().min(0).max(1).default(0.8),
+				/** Minimum Amdahl-adjusted speedup S_eff. */
+				min_effective_speedup: z.number().min(1).default(1.25),
+				/** Share of a task's wall-clock that parallel coders overlap. */
+				coder_fraction: z.number().min(0).max(1).default(0.6),
 			})
 			.strict()
 			.optional(),

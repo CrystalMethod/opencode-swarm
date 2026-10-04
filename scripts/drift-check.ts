@@ -74,6 +74,7 @@ import { ALL_AGENT_NAMES } from '../src/config/agent-names';
 import {
 	AGENT_TOOL_MAP,
 	COUNCIL_AGENT_TOOL_MAP,
+	EPIC_AGENT_TOOL_MAP,
 	EXTERNAL_SKILL_AGENT_TOOL_MAP,
 	GENERAL_COUNCIL_AGENT_TOOL_MAP,
 	MEMORY_AGENT_TOOL_MAP,
@@ -981,6 +982,7 @@ export function detectAgentDrift(): DriftFinding[] {
 		['COUNCIL_AGENT_TOOL_MAP', COUNCIL_AGENT_TOOL_MAP],
 		['GENERAL_COUNCIL_AGENT_TOOL_MAP', GENERAL_COUNCIL_AGENT_TOOL_MAP],
 		['TURBO_AGENT_TOOL_MAP', TURBO_AGENT_TOOL_MAP],
+		['EPIC_AGENT_TOOL_MAP', EPIC_AGENT_TOOL_MAP],
 	];
 	for (const [mapName, map] of optInMaps) {
 		for (const agent of Object.keys(map)) {

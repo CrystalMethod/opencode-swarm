@@ -4,57 +4,59 @@
  *
  * Covers:
  *  - Missing session context → friendly error.
- *  - on / off / toggle round-trip via the durable state seam.
- *  - status renders the last decision when one exists.
+ *  - Removed v1 `on` / `off` toggles fall to the usage text; bare form is
+ *    status and never mutates the epic.
+ *  - status renders the lifecycle record (last decision, orphan, config).
  *  - decide computes a fresh verdict from the plan without writing evidence.
- *  - Unknown subcommand → usage.
+ * Lifecycle collaborators are replaced through `_internals` (AGENTS.md #7).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { _internals, handleEpicCommand } from '../../../src/commands/epic';
+import type { EpicInspection } from '../../../src/turbo/epic/lifecycle';
+import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 
 const realInternals = { ..._internals };
 
-let active = false;
-let sessionStateStored: ReturnType<typeof realInternals.loadEpicSessionState> =
-	null;
 let decideCalls = 0;
-let enableCalls = 0;
-let disableCalls = 0;
-let sessionFlag: { epicModeActive?: boolean; id: string; turboMode: boolean };
+let startCalls = 0;
+let closeCalls = 0;
+let inspection: EpicInspection;
+
+function emptyInspection(): EpicInspection {
+	return {
+		sentinelPresent: false,
+		sentinel: null,
+		record: null,
+		rowKeys: [],
+		unreadable: null,
+		orphanReason: null,
+		configEnabled: true,
+	};
+}
 
 beforeEach(() => {
-	active = false;
-	sessionStateStored = null;
 	decideCalls = 0;
-	enableCalls = 0;
-	disableCalls = 0;
-	sessionFlag = { id: 'sess-1', turboMode: false, epicModeActive: false };
-
-	// `/swarm epic` bootstraps the agent session via `ensureAgentSession`,
-	// so the stub always returns the session flag regardless of id.
-	_internals.ensureAgentSession = (() => sessionFlag as never) as never;
-	_internals.isEpicModeActive = (() => active) as never;
-	_internals.isStateUnreadable = (() => false) as never;
-	_internals.loadEpicSessionState = (() => sessionStateStored) as never;
+	startCalls = 0;
+	closeCalls = 0;
+	inspection = emptyInspection();
+	_internals.inspectEpic = (() => inspection) as never;
+	_internals.repairEpicSentinel = (() => 'none') as never;
+	_internals.retireLegacyEpicSessionState = (() => ({
+		rowsRemoved: 0,
+		activeSessions: 0,
+		fileArchivedTo: null,
+		errors: [],
+	})) as never;
+	_internals.describeMergeFailuresForStatus = (() => []) as never;
+	_internals.startEpic = (async () => {
+		startCalls += 1;
+		throw new Error('unexpected start');
+	}) as never;
+	_internals.closeEpic = (async () => {
+		closeCalls += 1;
+		throw new Error('unexpected close');
+	}) as never;
 	_internals.resolveEpicDeclaredScopes = () => ({}); // no live v2 bindings
-	_internals.enableEpicMode = (() => {
-		active = true;
-		enableCalls += 1;
-		sessionStateStored = {
-			sessionID: 'sess-1',
-			active: true,
-			enabledAt: '2025-01-01T00:00:00Z',
-		} as never;
-	}) as never;
-	_internals.disableEpicMode = (() => {
-		active = false;
-		disableCalls += 1;
-		sessionStateStored = {
-			sessionID: 'sess-1',
-			active: false,
-			disabledAt: '2025-01-02T00:00:00Z',
-		} as never;
-	}) as never;
 
 	_internals.loadPluginConfigWithMeta = (() => ({
 		config: { turbo: { epic: { mode: { enabled: true } } } },
@@ -75,6 +77,10 @@ beforeEach(() => {
 				],
 			},
 		],
+	})) as never;
+	_internals.resolvePlanMarkerScope = (async () => ({
+		planKey: 'aaaaaaaaaaaaaaaa',
+		rootTimestampMs: null,
 	})) as never;
 	_internals.getCoChangeData = (async () => ({
 		pairs: [],
@@ -108,96 +114,55 @@ describe('handleEpicCommand — session validation', () => {
 		const out = await handleEpicCommand('/fake', [], '');
 		expect(out).toContain('No active session context');
 	});
-
-	test('bootstraps the agent session when no architect has spoken yet', async () => {
-		// Previously rejected with "No active session" when the architect
-		// hadn't initialized a session yet — that error was a chicken-and-egg
-		// UX bug since `/swarm epic` is a session-state command. The new
-		// behavior creates the session lazily via `ensureAgentSession` and
-		// proceeds with the toggle. Bare `/swarm epic` (no arg) renders the
-		// status string, not an error.
-		const out = await handleEpicCommand('/fake', [], 'fresh-session');
-		expect(out).not.toContain('No active session');
-	});
 });
 
-describe('handleEpicCommand — on / off / toggle', () => {
-	test('`on` enables the mode and acks', async () => {
-		const out = await handleEpicCommand('/fake', ['on'], 'sess-1');
-		expect(out).toContain('Epic Mode enabled');
-		expect(enableCalls).toBe(1);
-		expect(active).toBe(true);
-		// In-memory session flag is also mirrored so hasActiveEpicMode picks it up.
-		expect(sessionFlag.epicModeActive).toBe(true);
+describe('handleEpicCommand — subcommand routing', () => {
+	test.each([
+		['on'],
+		['off'],
+	])('removed v1 toggle `%s` gets a migration hint and mutates nothing', async (arg) => {
+		const out = await handleEpicCommand('/fake', [arg], 'sess-1');
+		expect(out).toContain(`\`/swarm epic ${arg}\` was removed in Epic v2`);
+		expect(out).toContain('Use `/swarm epic start`');
+		expect(out).toContain(
+			'/swarm epic start [--force] | close [--abandon] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]',
+		);
+		expect(out).not.toMatch(/\bon \| off\b/);
+		expect(startCalls).toBe(0);
+		expect(closeCalls).toBe(0);
 	});
 
-	test('`off` disables the mode and acks', async () => {
-		active = true;
-		sessionFlag.epicModeActive = true;
-		const out = await handleEpicCommand('/fake', ['off'], 'sess-1');
-		expect(out).toContain('Epic Mode disabled');
-		expect(disableCalls).toBe(1);
-		expect(active).toBe(false);
-		expect(sessionFlag.epicModeActive).toBe(false);
-	});
-
-	test('bare `/swarm epic` shows status and does NOT toggle (anti-loop)', async () => {
-		// Toggle-by-default created an architect-loop with weaker models:
-		// the model called `swarm_command [command=epic]` without args to
-		// "check state", which flipped the flag, then it tried again →
-		// flip back → loop. Status-by-default is idempotent and safe.
-		const beforeEnable = enableCalls;
-		const beforeDisable = disableCalls;
+	test('bare `/swarm epic` shows status and never starts or closes (anti-loop)', async () => {
 		const out = await handleEpicCommand('/fake', [], 'sess-1');
 		expect(out).toContain('Epic Mode — Status');
-		expect(enableCalls).toBe(beforeEnable);
-		expect(disableCalls).toBe(beforeDisable);
-
-		// Calling it again is also idempotent — same observation.
 		await handleEpicCommand('/fake', [], 'sess-1');
-		expect(enableCalls).toBe(beforeEnable);
-		expect(disableCalls).toBe(beforeDisable);
+		expect(startCalls).toBe(0);
+		expect(closeCalls).toBe(0);
 	});
 
-	test('unknown subcommand returns usage', async () => {
-		const out = await handleEpicCommand('/fake', ['nope'], 'sess-1');
-		expect(out).toContain("Unknown subcommand 'nope'");
-		expect(out).toContain('Usage:');
-	});
-
-	test('empty-string subcommand is treated as unknown (not toggle)', async () => {
-		// `['']` is different from `[]`: arg0 is '' not undefined.
+	test('empty-string subcommand is treated as unknown', async () => {
 		const out = await handleEpicCommand('/fake', [''], 'sess-1');
 		expect(out).toContain("Unknown subcommand ''");
-		// And NO toggle happened.
-		expect(enableCalls).toBe(0);
-		expect(disableCalls).toBe(0);
+		expect(startCalls).toBe(0);
 	});
 });
 
 describe('handleEpicCommand — status', () => {
-	test('renders "not toggled" when no session state exists', async () => {
-		sessionStateStored = null;
+	test('no epic → says so and points at `/swarm epic start`', async () => {
 		const out = await handleEpicCommand('/fake', ['status'], 'sess-1');
-		expect(out).toContain('Epic Mode — Status');
-		expect(out).toContain('has not been toggled');
+		expect(out).toContain('No epic is open. Run `/swarm epic start`');
 	});
 
-	test('distinguishes "state unreadable" from "not toggled"', async () => {
-		_internals.isStateUnreadable = (() => true) as never;
+	test('unreadable lifecycle state is reported with the --abandon repair', async () => {
+		inspection.unreadable = 'Epic lifecycle row is not valid JSON';
 		const out = await handleEpicCommand('/fake', ['status'], 'sess-1');
-		expect(out).toContain('Epic Mode — Status');
-		expect(out).toContain('unreadable');
-		expect(out).toContain('fail-closed');
-		// And it does NOT mislead with "not toggled".
-		expect(out).not.toContain('has not been toggled');
+		expect(out).toContain('**Epic lifecycle state is unreadable**');
+		expect(out).toContain('`/swarm epic close --abandon`');
+		expect(out).not.toContain('No epic is open');
 	});
 
-	test('renders the last decision when state has one', async () => {
-		sessionStateStored = {
-			sessionID: 'sess-1',
-			active: true,
-			enabledAt: '2025-01-01T00:00:00Z',
+	test('renders the open epic and its last decision', async () => {
+		inspection.record = stubEpicRecord({
 			lastDecision: {
 				decidedAt: '2025-01-02T00:00:00Z',
 				phase: 2,
@@ -205,12 +170,39 @@ describe('handleEpicCommand — status', () => {
 				p: 0.75,
 				blockingReasons: ['p exceeds threshold'],
 			},
-		} as never;
+		});
 		const out = await handleEpicCommand('/fake', ['status'], 'sess-1');
+		expect(out).toContain(`Epic: \`${inspection.record.epicKey}\` — **open**`);
 		expect(out).toContain('Last activation decision');
 		expect(out).toContain('demote');
 		expect(out).toContain('0.750');
 		expect(out).toContain('p exceeds threshold');
+	});
+
+	test('orphaned epic and closed config gate are both explained', async () => {
+		inspection.record = stubEpicRecord();
+		inspection.orphanReason = 'plan-renamed-or-replaced';
+		inspection.configEnabled = false;
+		const out = await handleEpicCommand('/fake', ['status'], 'sess-1');
+		expect(out).toContain('— **orphaned**');
+		expect(out).toContain('the plan was renamed or replaced');
+		expect(out).toContain('`/swarm epic close --abandon`');
+		expect(out).toContain('`turbo.epic.mode.enabled` is not true');
+	});
+
+	test('reports a sentinel repair and the legacy v1 retirement', async () => {
+		_internals.repairEpicSentinel = (() => 'removed-stale-sentinel') as never;
+		_internals.retireLegacyEpicSessionState = (() => ({
+			rowsRemoved: 2,
+			activeSessions: 1,
+			fileArchivedTo: '.swarm/epic-state.json.imported',
+			errors: [],
+		})) as never;
+		const out = await handleEpicCommand('/fake', ['status'], 'sess-1');
+		expect(out).toContain('Repaired: removed a stale sentinel');
+		expect(out).toContain('Retired Epic v1 per-session state (2 row(s)');
+		expect(out).toContain('1 session(s) had Epic v1 switched on');
+		expect(out).toContain('run `/swarm epic start`');
 	});
 });
 

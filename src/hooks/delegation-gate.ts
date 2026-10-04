@@ -123,6 +123,7 @@ import {
 	updateTaskWorkflowCache,
 } from '../state';
 import { telemetry } from '../telemetry.js';
+import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import type {
 	DelegationEnvelope,
 	EnvelopeValidationResult,
@@ -2964,6 +2965,11 @@ async function buildParallelExecutionGuidance(
 
 	if (!enabled || effectiveMaxConcurrent <= 1) return null;
 
+	// Epic v2: while an epic is open its banner + epic_plan_waves own the
+	// dispatch guidance; the whole-phase SERIAL/Lean advisory below would
+	// contradict them. Sentinel-first probe: one existsSync when off.
+	if (_internals.isEpicOpenForProject(directory)) return null;
+
 	if (hasActiveLeanTurbo(sessionID)) {
 		return '[NEXT] Lean Turbo is active; use lean_turbo_run_phase and Lean Turbo lane guidance instead of standard execution-profile slot filling.';
 	}
@@ -3399,6 +3405,7 @@ const maintainBackgroundDelegationsForDispatch: typeof import('../background/pen
  * that test mutations on this object propagate to the extracted module.
  */
 export const _internals = {
+	isEpicOpenForProject,
 	recordStageBDispatchBindings,
 	readStageBDispatchBindings,
 	deleteStageBDispatchBindings,

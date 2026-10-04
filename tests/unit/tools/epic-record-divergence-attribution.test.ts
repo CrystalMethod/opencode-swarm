@@ -64,7 +64,7 @@ beforeEach(() => {
 	sessionOrThrow(FOREIGN).owningProjectKey = 'project-b';
 
 	_internals.isEpicModeConfigEnabledForDirectory = () => true;
-	_internals.hasActiveEpicMode = (() => true) as never;
+	_internals.isEpicOpenForProject = (() => true) as never;
 	_internals.loadPlanJsonOnly = (async () => ({
 		swarm: 'sw',
 		title: 'Attribution plan',

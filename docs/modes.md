@@ -665,7 +665,7 @@ The same fields are also available under `worktree.runtime_isolation` with ident
 
 ## Epic Mode (preview)
 
-> **Status: opt-in, off by default.** Epic Mode needs **both** a config opt-in (`turbo.epic.mode.enabled: true`, inside a `turbo` block that declares a valid `strategy`) **and** a session toggle (`/swarm epic on` or `/swarm turbo epic on`). Without the config opt-in, `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config`, and no Epic behaviour runs anywhere else (Rule 2 auto-commit, the Epic phase-readiness gate). The four capabilities (A — co-change conflict, B — coupling report, C — activation gate, D — self-calibration) are wired through the `/swarm epic` and `/swarm coupling` commands, the `epic_decide_phase` / `epic_plan_waves` / `epic_record_divergence` / `epic_phase_review` tools, and the `EPIC_MODE_BANNER`.
+> **Status: opt-in, off by default.** Epic Mode needs **both** a config opt-in (`turbo.epic.mode.enabled: true`, inside a `turbo` block that declares a valid `strategy`) **and** an epic opened for the current plan with `/swarm epic start`. Without the config opt-in, `/swarm epic start`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config`; without an open epic the Epic tools refuse with `epic-mode-not-active`, and no Epic behaviour runs anywhere else (Rule 2 auto-commit, the Epic phase-readiness gate, the Epic banner). The four capabilities (A — co-change conflict, B — coupling report, C — activation gate, D — self-calibration) are wired through the `/swarm epic` and `/swarm coupling` commands, the `epic_decide_phase` / `epic_plan_waves` / `epic_record_divergence` / `epic_phase_review` tools, and the `EPIC_MODE_BANNER`.
 >
 > **Worktree-isolation interaction:** when Epic dispatches coders into isolated git worktrees, a coder whose merge-back fails leaves its work stranded outside the main tree. Epic's Rule 2 auto-commit detects this and skips the `swarm(task <id>):` completion marker so Rule 3 never treats an unmerged task as satisfied; the plan status still advances (the ledger is authoritative) and the failure is surfaced for recovery. The merge-status registry (`.swarm/worktree-merge-status.json`) is keyed by bare task id and shared with `/swarm lanes`, so Epic filters it by plan epoch: a failure recorded before the current plan's root (its first plan-ledger event) belongs to an earlier plan and no longer suppresses Rule 2; a failure with no timestamp cannot be dated and keeps suppressing Rule 2 (fail closed). `/swarm epic status` lists recorded failures as blocking, undated, or stale, with the remedy. Not every writer stamps a time (a cancelled/denied task's `task-result` record has none); once the task's work is actually in the main tree, or the record belongs to an earlier plan, clear it with `/swarm epic clear-merge-failure <taskId> --confirm` (without `--confirm` it only previews).
 
@@ -679,16 +679,16 @@ Epic Mode reuses Lean Turbo's conflict predicates, risk lists, and partition pre
 
 | | Standard Turbo | Lean Turbo | Epic Mode |
 |---|---|---|---|
-| Enable | `/swarm turbo on` | `/swarm turbo lean on` | `turbo.epic.mode.enabled: true` + `/swarm epic on` (or `/swarm turbo epic on`, which also enables Lean Turbo) |
+| Enable | `/swarm turbo on` | `/swarm turbo lean on` | `turbo.epic.mode.enabled: true` + `/swarm epic start` (opens an epic for the current plan; enables neither Turbo nor Lean) |
 | Parallelism | None | Lanes (serial chains) dispatched by `lean_turbo_run_phase` | Waves dispatched by the architect as one `Task` per task, all in one message |
 | Decides whether to parallelize | No | No (always lane-plans) | Yes — `epic_decide_phase` promotes or demotes on `p` + three gates |
-| Phase-level gate | See [Turbo](#turbo) | See [Lean Turbo](#lean-turbo-lane-planning-engine) | `epic_phase_readiness` (replaces Lean readiness); Gates 1–5 + todo gate bypassed only if Turbo is also on |
+| Phase-level gate | See [Turbo](#turbo) | See [Lean Turbo](#lean-turbo-lane-planning-engine) | Gates 1–5 as usual, plus `epic_phase_readiness` (Epic keeps Turbo off — see below) |
 
-Under Epic Mode, per-task Stage A (`pre_check_batch`) and Stage B (reviewer + test_engineer, per the task's tier) are **always** required before `update_task_status(completed)` — for wave, serialized, and degraded tasks alike, whether or not Turbo is also on.
+Under Epic Mode, per-task Stage A (`pre_check_batch`) and Stage B (reviewer + test_engineer, per the task's tier) are **always** required before `update_task_status(completed)` — for wave, serialized, and degraded tasks alike. Epic keeps Turbo off where it can: `/swarm epic start` refuses while config `turbo_mode` is true, while any session in this process has Turbo on, or while a durable Lean run is running; while an epic is open, config `turbo_mode` no longer seeds Turbo into new sessions, a session restored from its snapshot comes back with Turbo off, and `/swarm turbo` refuses to turn Turbo on. Turbo switched on in a *different* OpenCode process is not detectable — do not run Turbo elsewhere on a project with an open epic.
 
 ### The seven-step flow
 
-The architect follows this flow only when the user asks it to run a phase (`EPIC_MODE_BANNER`, injected every architect turn while Epic is on, carries the details):
+The architect follows this flow only when the user asks it to run a phase (`EPIC_MODE_BANNER`, injected every architect turn while an epic is open for the current plan, carries the details):
 
 1. **`declare_scope` for every pending task of the phase, up front — at the start of every phase** — one call per task id, tight and disjoint. Declarations live **1 hour** and are voided by any plan revision (they are bound to the exact plan id and structure hash). Completing a phase's last task advances `current_phase`, which changes the structure hash — so the next phase always starts by re-declaring its tasks. To widen an existing task's scope, re-declare it with `replace_existing: true`.
 2. **`epic_decide_phase(phase)`** — runs the scope preflight, rolls calibration forward, computes `p`, applies the three gates, appends the verdict to `.swarm/evidence/epic-promotions.jsonl`, and returns `decided` (promote) or `demoted`. Error reasons include `epic-disabled-by-config`, `epic-mode-not-active`, `scopes-missing` (re-declare each listed task — undeclared, expired, or declared against an older plan revision), `no-phase`, `phase-empty`, `phase-already-complete`, and `epic-state-unreadable`.
@@ -701,7 +701,7 @@ The architect follows this flow only when the user asks it to run a phase (`EPIC
 ### Waves vs. lanes
 
 - A **lane** (Lean Turbo) is a serial chain; lanes run concurrently inside `lean_turbo_run_phase`'s runner.
-- A **wave** (Epic) is a set of tasks with mutually disjoint declared scopes whose dependencies are all satisfied by earlier waves (or, for cross-phase upstreams, by a `swarm(task <id>):` commit marker). Waves run one after another; tasks within a wave run concurrently, capped by `turbo.lean.max_parallel_coders`.
+- A **wave** (Epic) is a set of tasks with mutually disjoint declared scopes whose dependencies are all satisfied by earlier waves (or, for cross-phase upstreams, by a `swarm(task <id>):` commit marker). Waves run one after another; tasks within a wave run concurrently, capped by the epic's wave width — `turbo.lean.max_parallel_coders` in a git project, **1** in a non-git project (non-git epics run serially).
 - Both planners share `src/turbo/lean/partition-common.ts` for risk classification and cycle-safe topological sort, so they classify the same inputs identically; Epic supplies its own v2-resolved scopes to it explicitly (see [Declared scopes](#declared-scopes)).
 
 **Serialized tasks** (`serializedTasks`) could not be placed in a wave: dependency cycle, `no-scope` (no live declaration — re-declare), `invalid-scope`, or concurrency-cap exhaustion. **Degraded tasks** (`degradedTasks[].reason`) run per task after the waves: `global file conflict` / `protected path` (Lean Turbo hot modules), `cross-batch upstream not committed (greenfield-smart Rule 3)`, `unresolved in-batch dependency`, or `planning leftover (no identifiable blocker)` (a planner bug).
@@ -721,47 +721,54 @@ Default-serial, promote-on-proof: any failing gate forces `demote`.
 ### Greenfield-smart rules
 
 - **Rule 1 — no git, no ceremony.** In a non-git project the greenfield gate is bypassed and Rule 2 never commits.
-- **Rule 2 — per-task commit marker.** While Epic Mode is active for the project, `update_task_status(completed)` triggers a best-effort `swarm(task <id>): …` commit. Only the task's resolvable declared-scope files are staged — scope entries are matched as **literal** pathspecs (`app/[id].tsx` or `src/*.ts` name exactly that path, never a glob; a directory entry still covers everything beneath it) — and the commit is pathspec-restricted (`--only`), so anything else already in the index — your WIP, a sibling task's files — stays staged and out of the commit; `.swarm/` is never committed. A staged rename (`git mv`) whose destination is in scope carries its source-path deletion into the same commit. With **no** resolvable scope (binding missing, expired, or declared against an older plan revision): if the working tree has no non-`.swarm` change, an empty marker is written (pure verification tasks); if it is dirty (or its status cannot be read), **no marker is written** and a critical warning names the remediation — re-run `declare_scope` and re-run the completion, or commit the task's changes manually with a `swarm(task <id>):` subject and a final `Swarm-Plan: <planKey>` trailer line (the warning prints the exact trailer). The plan ledger stays authoritative; a failed commit never blocks the status update.
+- **Rule 2 — per-task commit marker.** While an epic is open for the current plan, `update_task_status(completed)` triggers a best-effort `swarm(task <id>): …` commit. Only the task's resolvable declared-scope files are staged — scope entries are matched as **literal** pathspecs (`app/[id].tsx` or `src/*.ts` name exactly that path, never a glob; a directory entry still covers everything beneath it) — and the commit is pathspec-restricted (`--only`), so anything else already in the index — your WIP, a sibling task's files — stays staged and out of the commit; `.swarm/` is never committed. A staged rename (`git mv`) whose destination is in scope carries its source-path deletion into the same commit. With **no** resolvable scope (binding missing, expired, or declared against an older plan revision): if the working tree has no non-`.swarm` change, an empty marker is written (pure verification tasks); if it is dirty (or its status cannot be read), **no marker is written** and a critical warning names the remediation — re-run `declare_scope` and re-run the completion, or commit the task's changes manually with a `swarm(task <id>):` subject and a final `Swarm-Plan: <planKey>` trailer line (the warning prints the exact trailer). The plan ledger stays authoritative; a failed commit never blocks the status update.
 - **Markers are plan-scoped.** Task ids repeat across plans, so every Rule 2 marker carries a `Swarm-Plan: <planKey>` trailer, where `planKey = sha256(planIdentityHash + '|' + planEpoch).slice(0, 16)` — the plan epoch is minted per ledger root, so consecutive plans with the same title still differ. Rule 2's idempotency check ("this task already has a marker") and Rule 3's predecessor evidence honor a marker only when it belongs to the current plan: its trailer equals the current plan key, or it is a legacy marker without a trailer committed at/after the plan root (the earliest plan-ledger event). Both reads are one bounded `git log` (marker `--grep`, `--max-count`; the plan-root check runs per commit, not via `git log --since`, whose walk would stop at an older-dated commit and hide newer markers), so a previous plan's `swarm(task 1.1):` never makes the current plan's 1.1 an idempotent skip or satisfies Rule 3. When the plan identity cannot be resolved, Rule 2 writes no marker and Rule 3 fails closed. A `git log` failure keeps the old polarity: Rule 2 proceeds with the commit (a possible duplicate beats a silent skip); Rule 3 fails closed. **Caveat:** re-rooting the plan ledger — a `save_plan` that renames the plan's title or swarm, `/swarm rollback`, or a truncated-ledger recovery — mints a new plan root and plan key. Markers committed before the re-root are orphaned (Rule 3 no longer counts them, so dependants serialize until re-completed: fail closed), and a worktree merge failure recorded before the re-root is treated as stale, so Rule 2 writes the marker even though that merge never landed (fail open). Check `/swarm epic status` and `/swarm lanes` after such a re-root. Later Epic v2 commits replace the plan root with Epic-owned identity and wave timestamps.
 - **Rule 3 — cross-batch dependencies must be committed.** The wave/lane planners degrade a task whose cross-batch upstream lacks a current-plan `swarm(task <id>):` marker (`cross-batch upstream not committed (greenfield-smart Rule 3)`); commit the named upstreams and re-plan.
 
 ### Phase readiness (phase reviewer + phase critic)
 
-While Epic Mode is active for the project, `phase_complete` runs the `epic_phase_readiness` gate — with or without Turbo. It replaces Lean Turbo's `lean_turbo_readiness` gate, which is marked not-applicable under Epic (do not call `lean_turbo_review` / `lean_turbo_critic`).
+While an epic is open for the current plan, `phase_complete` runs the `epic_phase_readiness` gate. It replaces Lean Turbo's `lean_turbo_readiness` gate, which is marked not-applicable under Epic (do not call `lean_turbo_review` / `lean_turbo_critic`).
 
 - **Producer:** `epic_phase_review(phase)` (architect-only). The tool itself dispatches a read-only phase reviewer and, only when it APPROVES, a read-only phase critic through the plugin's review dispatcher (300 s per-role timeout), parses each verdict from the agent's response (missing/ambiguous/failed ⇒ REJECTED), and writes `.swarm/evidence/{phase}/epic-phase-review.json`. Verdicts are never accepted as arguments. It refuses while any phase task is not completed.
 - **Freshness:** the evidence binds to the plan id, the status-free plan structure hash, the phase's task ids and statuses, and the content of every phase task's `.swarm/evidence/{taskId}.json`; any change (e.g. rework after review), age over 24 h, or a future-dated timestamp makes it stale — re-run `epic_phase_review`.
 - **Block codes:** `EPIC_PHASE_REVIEW_MISSING`, `EPIC_PHASE_REVIEW_INVALID`, `EPIC_PHASE_REVIEWER_NOT_APPROVED`, `EPIC_PHASE_CRITIC_MISSING`, `EPIC_PHASE_CRITIC_NOT_APPROVED`, `EPIC_PHASE_REVIEW_STALE`, `EPIC_PHASE_PLAN_UNREADABLE`; each carries recovery `epic_phase_review({ phase })`.
-- **Turbo interaction:** with `/swarm turbo epic on`, Gates 1–5 are bypassed by Turbo and this gate is the phase-level quality gate. With `/swarm epic on` alone, Gates 1–5 run as usual and this gate adds one cross-task integration review of the concurrently executed waves.
+- **Turbo interaction:** Epic keeps Turbo off (see [Mode comparison](#mode-comparison)), so Gates 1–5 run as usual and this gate adds one cross-task integration review of the concurrently executed waves.
 
-### Liveness and toggles
+### Lifecycle: start, status, close
 
-Epic state is one row per session in the project SQLite coordination store (`.swarm/epic-state.json` is a compatibility projection and one-time import source). The **project-scoped** probe (`isEpicModeActiveForProject`, used by Rule 2 and phase readiness, because coder sub-sessions never carry the architect's flag) answers "Epic is on" only when the config gate is on **and** some active row either was updated in the last **24 h** or belongs to a session that is live in this process with Epic on (including one restored from its snapshot after a restart) — so a long idle stretch never silently turns Rule 2 and phase readiness off while the Epic banner still shows. Live Epic sessions refresh their row's heartbeat at most every **6 h** on `session.idle`, `session.error`, and `session.status` (idle/error) events, so only crashed or abandoned sessions age out. Rows are cleared on `session.deleted`, by `/swarm close`, and by `/swarm reset-session`. All of this session-lifecycle and teardown work runs only when Epic is enabled by config or the session carries the Epic flag — non-Epic projects see no extra I/O or output.
+An epic is **plan-scoped**: one open epic per project, bound to the current plan's identity (swarm/title) and plan-ledger root. The authority is one row in the project SQLite coordination store (namespace `turbo.epic.lifecycle`); `.swarm/epic/epic.json` is a small **sentinel** projection of it. Every Epic hot-path check (Rule 2, the phase-readiness gate, the Epic banner, the delegation-gate guidance, attribution retention) first asks "does the sentinel exist?" — so a project that never opened an epic pays exactly one `existsSync` and nothing else (no database open, no config read, no write). With the sentinel present the probe reads the row, then the config gate, then the plan identity; it never writes and never caches.
 
-`/swarm turbo off` (and the other Turbo-off paths) also disables Epic Mode **only** if Epic was enabled via `/swarm turbo epic on`, and says so in its reply; Epic enabled standalone with `/swarm epic on` is left alone. While Epic is on, the first enabler is kept: `/swarm turbo epic on` after `/swarm epic on` does not re-tag it as Turbo-enabled. `/swarm turbo epic off` always disables both. If the durable Epic write fails during a Turbo-off cross-clear, Epic stays on (in memory and on disk) and the reply says so instead of claiming it was disabled.
+- **`/swarm epic start [--force]`** opens an epic for the current plan. Refusals, in order: `epic-disabled-by-config`; `no-plan` / `plan-ledger-unreadable` (including a plan with no ledger or no plan epoch yet — save it with `save_plan` first, so a later save cannot re-root it out from under the epic); `epic-already-open` (the same plan — idempotent, nothing changes) / `epic-open-for-other-plan`; `turbo-active` (config `turbo_mode: true`, any session in the process with Turbo on, or a running durable Lean run — Epic enables neither Turbo nor Lean and never waives per-task QA); `dirty-baseline` (git only: uncommitted changes outside `.swarm/`); `in-flight-coders` (project-wide: tracked worktree coder dispatches, non-terminal background delegations, unsettled coder settlements, preserved/claimed recovery lanes, lanes being provisioned — uncertain stores count as in flight); `not-epic-sized` (see [Sizing](#sizing)). Non-git projects may open an epic, but it runs serially (one task per wave). In this release commits stay on the **current branch** (policy `current-branch`).
+- **`/swarm epic status`** (and bare `/swarm epic`) shows the epic, its sizing at start and last decision; reports an **orphaned** epic — the plan was renamed or replaced (a new ledger root) since start, so Epic behaviour is off for the current plan — with the remedy `/swarm epic close --abandon`; repairs a sentinel that disagrees with the row (stale sentinel removed, missing sentinel restored); lists recorded worktree merge failures; and retires legacy Epic v1 per-session state once (v1 rows deleted, `.swarm/epic-state.json` archived to `.imported`; a session that was still "on" gets an advisory to run `/swarm epic start` — nothing is opened automatically).
+- **`/swarm epic close [--abandon]`** refuses `epic-incomplete` while any task is neither completed nor closed, and refuses an orphaned or unreadable epic, unless `--abandon`. It then marks the row `closing`, writes a close report to `.swarm/epic/reports/<epicKey>-<start>.json` and `.swarm/epic-prior/reports/` (the newest 50 kept; `epic-prior/` survives `/swarm close`), deletes the row, and finally removes the sentinel only if it still names this epic. An interrupted close resumes on the next `/swarm epic close`. On unreadable lifecycle state, `--abandon` deletes the rows without parsing them.
+- **`/swarm close`** closes an open epic as `abandoned-by-swarm-close` before archiving, so its report is archived with `.swarm/epic/` and kept in `.swarm/epic-prior/`. **`/swarm reset-session`** leaves the epic alone (it is plan-scoped, not session-scoped).
+
+All lifecycle writes run inside the coordination store's `BEGIN IMMEDIATE` transaction, which serializes concurrent starts and closes across processes: only the start that creates the row writes the sentinel.
+
+The Epic v1 `/swarm epic on` / `off` toggles were removed. `/swarm turbo epic …` no longer enables anything: it replies with a redirect to `/swarm epic start`, and Turbo-enabling subcommands are refused while an epic is open.
+
+### Sizing
+
+`/swarm epic start` refuses a plan that is not worth running as an epic (reason `not-epic-sized`, with the measured values and "run it in Balanced"). With *T* pending tasks (status not `completed`/`closed`), *coverage* the share of them with a scope (live declared scope, else `files_touched`), and *L* the serial steps of a dry run of the wave planner over every phase under the epic's wave width (waves + serialized + degraded tasks):
+
+*S* = *T* / *L*, *S*<sub>eff</sub> = 1 / ((1 − *c*) + *c* / *S*), where *c* = `coder_fraction` (the share of a task's time parallel coders overlap; QA and architect turns stay serial).
+
+A plan is epic-sized when *T* ≥ `min_tasks` (6), coverage ≥ `min_scope_coverage` (0.8), and *S*<sub>eff</sub> ≥ `min_effective_speedup` (1.25); otherwise the reasons are `too-few-tasks`, `insufficient-scope-coverage`, `insufficient-parallelism`. `--force` opens the epic anyway and records `forced: true` in the epic record and its report. A non-git epic (wave width 1) is never epic-sized, so it needs `--force`.
 
 ### Slash command
 
 ```
-/swarm epic on            # enable for this session (refused without turbo.epic.mode.enabled: true)
-/swarm epic off           # disable (always allowed)
-/swarm epic               # same as status — the bare form never toggles
-/swarm epic status        # current state + last decision rationale + recorded worktree merge failures
-/swarm epic decide        # read-only what-if: compute the verdict without dispatching or writing evidence
-/swarm epic last          # most recent decision from .swarm/evidence/epic-promotions.jsonl
-/swarm epic calibration   # Capability D state: learned threshold, hot modules, recent divergent tasks
+/swarm epic start [--force]   # open an epic for the current plan (see refusals above)
+/swarm epic close [--abandon] # close it and write the close report
+/swarm epic                   # same as status — the bare form never mutates the epic
+/swarm epic status            # epic, orphan/sentinel repair, last decision, merge failures
+/swarm epic decide            # read-only what-if: compute the verdict without dispatching or writing evidence
+/swarm epic last              # most recent decision from .swarm/evidence/epic-promotions.jsonl
+/swarm epic calibration       # Capability D state: learned threshold, hot modules, recent divergent tasks
 /swarm epic clear-merge-failure <taskId> [--confirm]  # clear a recorded worktree merge failure blocking Rule 2 (preview without --confirm)
 ```
 
-`off`, `status`, `decide`, `last`, and `calibration` work regardless of the config gate. If the durable Epic state is unreadable, `status` says so (fail-closed); fix or remove `.swarm/epic-state.json`, or run `/swarm reset-session` to clear corrupt Epic rows, and the next `/swarm epic` command re-validates it.
-
-You can also enable Epic Mode together with Lean Turbo:
-
-```
-/swarm turbo epic on      # enables Lean Turbo + Epic Mode together (same config gate)
-/swarm turbo epic off     # disables both
-/swarm turbo epic         # toggles both
-```
+`close`, `status`, `decide`, `last`, and `calibration` work regardless of the config gate. If the lifecycle state is unreadable, `status` says so (Epic behaviour is off, fail closed) and `/swarm epic close --abandon` repairs it.
 
 ### Configuration
 
@@ -781,13 +788,17 @@ The `turbo` config block is a discriminated union on `strategy`: a `turbo` block
 
 | Key | Default | Effect |
 |---|---|---|
-| `turbo.epic.mode.enabled` | `false` | **Master gate for Epic Mode.** Required for `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, `epic_plan_waves`, Rule 2, and the Epic phase-readiness gate. |
+| `turbo.epic.mode.enabled` | `false` | **Master gate for Epic Mode.** Required for `/swarm epic start`, `epic_decide_phase`, `epic_plan_waves`, Rule 2, the Epic phase-readiness gate, and the Epic banner. Turning it off makes an open epic inert until it is re-enabled or closed. |
 | `turbo.epic.mode.activation_threshold` | `0.3` | Plan-wide `p` ceiling for promotion. |
 | `turbo.epic.mode.min_commits_for_signal` | `20` | Legacy greenfield floor — recorded in the rationale for telemetry only; no longer affects the decision. |
 | `turbo.epic.cochange.enabled` | `false` | **Master gate for the co-change signal** (Capability A). Off ⇒ `p` uses declared-path conflicts only and the rationale records `cochangeSignal: 'disabled-by-config'` (also in `/swarm coupling`). |
 | `turbo.epic.cochange.threshold` | `0.6` | NPMI floor (range `[-1, 1]`) for a pair to contribute a co-change conflict. |
 | `turbo.epic.cochange.min_co_changes` | `5` | Minimum raw co-change count before NPMI is considered. |
 | `turbo.epic.calibration.*` | see below | Capability D knobs; only consulted inside `epic_decide_phase`. |
+| `turbo.epic.sizing.min_tasks` | `6` | Minimum pending tasks for `/swarm epic start` (see [Sizing](#sizing)). |
+| `turbo.epic.sizing.min_scope_coverage` | `0.8` | Minimum share of pending tasks with a declared scope or `files_touched`. |
+| `turbo.epic.sizing.min_effective_speedup` | `1.25` | Minimum Amdahl-adjusted speedup *S*<sub>eff</sub>. |
+| `turbo.epic.sizing.coder_fraction` | `0.6` | Share of a task's time that parallel coders overlap (*c* in *S*<sub>eff</sub>). |
 
 ### Capability A — Co-change-aware Pair Conflict
 

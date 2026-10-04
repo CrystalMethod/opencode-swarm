@@ -1,7 +1,7 @@
 /**
  * Auto-commit on task completion — Rule 2 of the greenfield-smart redesign.
  *
- * When Epic Mode is active for the session and the project is a git repo,
+ * When an epic is open for the project's current plan and it is a git repo,
  * `update_task_status` calls `commitTaskCompletion` after a task transitions
  * to `completed` and the durable plan write has succeeded. The resulting
  * commit serves two purposes:

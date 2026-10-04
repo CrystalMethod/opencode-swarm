@@ -13,11 +13,11 @@ import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
 import type { ReviewModelDispatcher } from '../review/contracts.js';
 import type { ReviewAgentModelRegistry } from '../review/runtime.js';
+import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import {
 	type EpicPhaseReviewRunResult,
 	runEpicPhaseReview,
 } from '../turbo/epic/phase-readiness.js';
-import { isEpicModeActiveForProject } from '../turbo/epic/state.js';
 import { createSwarmTool } from './create-tool.js';
 
 export type EpicPhaseReviewToolResult =
@@ -35,7 +35,7 @@ export type EpicPhaseReviewToolResult =
  */
 export const _internals = {
 	runEpicPhaseReview,
-	isEpicModeActiveForProject,
+	isEpicOpenForProject,
 };
 
 export async function executeEpicPhaseReview(
@@ -67,13 +67,13 @@ export async function executeEpicPhaseReview(
 				'epic_phase_review must be called from an architect session (no sessionID in tool context).',
 		};
 	}
-	if (!_internals.isEpicModeActiveForProject(directory)) {
+	if (!_internals.isEpicOpenForProject(directory)) {
 		return {
 			success: false,
 			phase,
 			reason: 'epic-mode-not-active',
 			message:
-				'Epic Mode is not active for this project; the Epic phase review is only required (and only recorded) while Epic Mode is on.',
+				'No epic is open for the current plan; the Epic phase review is only required (and only recorded) while an epic is open (`/swarm epic start`).',
 		};
 	}
 	return _internals.runEpicPhaseReview(directory, phase, sessionID, options);
@@ -88,7 +88,7 @@ export function createEpicPhaseReviewTool(
 	return createSwarmTool({
 		description:
 			'Epic Mode phase readiness: dispatch a read-only phase reviewer and then (only if it APPROVES) a read-only phase critic over the completed phase, parse their verdicts, and record them to .swarm/evidence/{phase}/epic-phase-review.json. ' +
-			'Required by phase_complete while Epic Mode is active. Call after every task in the phase is completed; re-run after any fix (evidence goes stale when task gate evidence or the plan changes). ' +
+			'Required by phase_complete while an epic is open for the current plan. Call after every task in the phase is completed; re-run after any fix (evidence goes stale when task gate evidence or the plan changes). ' +
 			'Takes only the phase number — verdicts come from the dispatched agents, never from arguments.',
 		args: {
 			phase: z

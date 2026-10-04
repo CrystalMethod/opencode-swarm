@@ -77,7 +77,7 @@ beforeEach(async () => {
 	commits = [];
 	failure = undefined;
 	_internals.isGitRepo = () => true;
-	_internals.isEpicModeActiveForProject = () => true;
+	_internals.isEpicOpenForProject = () => true;
 	_internals.maybeSaveAutoCheckpoint = async () => ({
 		shouldSave: false,
 		completedCount: 0,

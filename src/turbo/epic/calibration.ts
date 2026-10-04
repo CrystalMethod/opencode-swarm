@@ -6,9 +6,9 @@
  * config when divergence has been observed) and the auto-added hot-module
  * list (monotonically grows; never auto-shrinks per design).
  *
- * Lives at `<projectRoot>/.swarm/epic/calibration.json`. Pattern mirrors
- * `src/turbo/epic/state.ts` exactly — atomic `tmp + rename`, per-directory
- * fail-closed marker on malformed file, repair seam.
+ * Lives at `<projectRoot>/.swarm/epic/calibration.json`. Atomic
+ * `tmp + rename`, per-directory fail-closed marker on malformed file,
+ * repair seam.
  *
  * No imports from `src/turbo/lean/` — purely additive to the Epic namespace.
  */
@@ -97,7 +97,7 @@ export function emptyCalibrationState(): CalibrationState {
  * Per-directory fail-closed marker. When the canonical file is unreadable
  * (corrupt JSON / unknown shape / version mismatch), this flag is set and
  * subsequent reads return null until `repairCalibrationUnreadable` clears
- * it. Mirrors the pattern in `src/turbo/epic/state.ts`.
+ * it.
  */
 const stateUnreadableMap = new Map<string, boolean>();
 

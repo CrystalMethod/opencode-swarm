@@ -20,7 +20,7 @@ import {
 } from '../../../src/plan/auto-checkpoint.js';
 import { _internals as managerInternals } from '../../../src/plan/manager.js';
 import { executeSavePlan } from '../../../src/tools/save-plan.js';
-import { enableEpicMode } from '../../../src/turbo/epic/state.js';
+import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -346,10 +346,6 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 
 	test('Epic-mode completion records the post-Rule-2 HEAD', async () => {
 		gitInit(tempDir);
-		// Enable Epic mode through the sanctioned API (the hand-written legacy
-		// state file is migrated/validated and a bare session object does not
-		// survive it).
-		enableEpicMode(tempDir, 'test-session');
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
 			// Epic Mode is opt-in: the Rule 2 project probe is false without it.
@@ -360,6 +356,8 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		gitRun(tempDir, ['add', '.opencode/opencode-swarm.json']);
 		gitRun(tempDir, ['commit', '-m', 'config']);
 		await savePlanWithTasks(['1.1']);
+		// An epic is open for this plan (real lifecycle row + sentinel).
+		openEpicForTest(tempDir);
 
 		await completeTasks(['1.1']);
 		const entries = readCheckpointEntries();
@@ -388,12 +386,12 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 
 	test('worktree-merge failure skips the auto-checkpoint via Rule 2 early return (PRR-008)', async () => {
 		gitInit(tempDir);
-		enableEpicMode(tempDir, 'test-session');
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
 			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 		});
 		await savePlanWithTasks(['1.1']);
+		openEpicForTest(tempDir);
 		managerInternals.relevantMergeFailure = () => ({
 			outcome: 'failed' as const,
 			stage: 'merge',

@@ -24,6 +24,7 @@ import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
 } from '../../helpers/declared-scope-bindings';
+import { wideOpenEpic } from '../../helpers/epic-lifecycle';
 import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 
 // Capture original internals so each test restores after override.
@@ -36,6 +37,7 @@ const enableEpicConfig = () =>
 
 beforeEach(() => {
 	_internals.loadPluginConfigWithMeta = enableEpicConfig;
+	_internals.getOpenEpic = wideOpenEpic; // an epic must be open
 });
 
 afterEach(async () => {

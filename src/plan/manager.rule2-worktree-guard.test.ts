@@ -53,7 +53,7 @@ describe('updateTaskStatus — Rule 2 worktree merge-back guard', () => {
 	// Save originals to restore the module seam after each test.
 	const orig = {
 		isGitRepo: _internals.isGitRepo,
-		isEpicModeActiveForProject: _internals.isEpicModeActiveForProject,
+		isEpicOpenForProject: _internals.isEpicOpenForProject,
 		readTaskScopes: _internals.readTaskScopes,
 		commitTaskCompletion: _internals.commitTaskCompletion,
 	};
@@ -68,7 +68,7 @@ describe('updateTaskStatus — Rule 2 worktree merge-back guard', () => {
 		// Force the Rule 2 preconditions on (git repo + Epic active) and stub
 		// the commit so we can observe whether it fires.
 		_internals.isGitRepo = () => true;
-		_internals.isEpicModeActiveForProject = () => true;
+		_internals.isEpicOpenForProject = () => true;
 		_internals.readTaskScopes = () => undefined;
 		_internals.commitTaskCompletion = async (_dir, taskId) => {
 			commitCalls.push(taskId);
@@ -78,7 +78,7 @@ describe('updateTaskStatus — Rule 2 worktree merge-back guard', () => {
 
 	afterEach(() => {
 		_internals.isGitRepo = orig.isGitRepo;
-		_internals.isEpicModeActiveForProject = orig.isEpicModeActiveForProject;
+		_internals.isEpicOpenForProject = orig.isEpicOpenForProject;
 		_internals.readTaskScopes = orig.readTaskScopes;
 		_internals.commitTaskCompletion = orig.commitTaskCompletion;
 		mergeStatus.failuresByTask.clear();

@@ -1,0 +1,103 @@
+/**
+ * Test helpers for the Epic v2 lifecycle (`src/turbo/epic/lifecycle.ts`).
+ *
+ * `openEpicForTest` writes a REAL lifecycle row + sentinel through the
+ * production `createEpicRecord` (CAS + lifecycle lock), bound to the plan
+ * currently on disk (`.swarm/plan.json` identity + ledger root digest), so
+ * every production probe (`isEpicOpenForProject`, `getOpenEpic`) sees an
+ * open epic exactly as after `/swarm epic start`. It skips start's
+ * preconditions on purpose — tests of those use `startEpic` itself.
+ *
+ * `stubEpicRecord` builds a record for `_internals` DI doubles.
+ */
+
+import {
+	computeEpicKey,
+	createEpicRecord,
+	type EpicRecordV1,
+	readCurrentPlanIdentity,
+	readLedgerRootDigest,
+} from '../../src/turbo/epic/lifecycle.js';
+import { evaluateEpicSizing } from '../../src/turbo/epic/sizing.js';
+
+export function stubEpicRecord(
+	overrides: Partial<EpicRecordV1> = {},
+): EpicRecordV1 {
+	const planId = overrides.planId ?? 'test-swarm-Test_Plan';
+	const planKey = overrides.planKey ?? '0123456789abcdef';
+	return {
+		schema: 'epic-record-v1',
+		epicKey: computeEpicKey(planId, planKey),
+		token: 'test-token',
+		planId,
+		planIdentityHash: 'identity-hash',
+		planEpoch: null,
+		planKey,
+		ledgerRootDigest: null,
+		status: 'open',
+		startedAt: '2026-01-01T00:00:00.000Z',
+		startedBySession: 'ses_test',
+		forced: false,
+		structureHashAtStart: 'structure-hash',
+		config: {
+			commitPolicy: 'current-branch',
+			isolation: 'worktree',
+			maxParallel: 4,
+		},
+		git: { isRepo: true, baseCommit: null, originalBranch: 'main' },
+		sizing: evaluateEpicSizing({
+			pendingTasks: 6,
+			scopedTasks: 6,
+			serialSteps: 2,
+		}),
+		lastDecision: null,
+		closing: null,
+		...overrides,
+	};
+}
+
+/**
+ * Open an epic bound to the plan on disk. Throws when no plan is on disk or
+ * an epic row already exists.
+ */
+export function openEpicForTest(
+	directory: string,
+	overrides: Partial<EpicRecordV1> = {},
+): EpicRecordV1 {
+	const identity = readCurrentPlanIdentity(directory);
+	if (!identity) {
+		throw new Error(
+			`openEpicForTest: no readable .swarm/plan.json in ${directory}`,
+		);
+	}
+	const record = stubEpicRecord({
+		planId: identity.planId,
+		planIdentityHash: identity.planIdentityHash,
+		ledgerRootDigest: readLedgerRootDigest(directory),
+		...overrides,
+	});
+	if (!overrides.epicKey) {
+		record.epicKey = computeEpicKey(record.planId, record.planKey);
+	}
+	const created = createEpicRecord(directory, record);
+	if (created.outcome !== 'created') {
+		throw new Error(
+			`openEpicForTest: epic row already exists (${created.existingKeys.join(', ')})`,
+		);
+	}
+	return created.record;
+}
+
+/**
+ * A `getOpenEpic` double for planner tests: an open epic whose wave width
+ * (64) never caps the planner's own `max_parallel_coders`.
+ */
+export function wideOpenEpic(): EpicRecordV1 {
+	return stubEpicRecord({
+		config: {
+			commitPolicy: 'current-branch',
+			isolation: 'worktree',
+			maxParallel: 64,
+		},
+	});
+}

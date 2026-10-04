@@ -2586,7 +2586,7 @@ Epic Mode is an optional, coupling-aware execution mode: per phase it decides wh
 
 **Two independent opt-in master gates:**
 
-- `turbo.epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config` (`epic_record_divergence` returns the same reason as a no-op), and the project-scoped Epic behaviours (Rule 2 per-task commit markers, the `epic_phase_readiness` gate in `phase_complete`) never run. `/swarm epic off|status|decide|last|calibration` keep working.
+- `turbo.epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic start`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config` (`epic_record_divergence` returns the same reason as a no-op), and the project-scoped Epic behaviours of an open epic (Rule 2 per-task commit markers, the `epic_phase_readiness` gate in `phase_complete`, the Epic banner) never run. `/swarm epic close|status|decide|last|calibration` keep working. Epic itself is opened per plan with `/swarm epic start` (the former `/swarm epic on|off` toggles were removed).
 - `turbo.epic.cochange.enabled` gates only the git co-change conflict signal. Without it, `p` is computed from declared-path conflicts alone and the decision rationale (and `/swarm coupling`) records `cochangeSignal: 'disabled-by-config'`.
 
 **`strategy` is required.** `turbo` is a discriminated union on `strategy`. A `turbo` block without `"strategy": "standard"` — or `"strategy": "lean"` together with a `"lean"` object — fails validation and is **dropped whole**, silently taking `turbo.epic` with it (other top-level keys are unaffected). The `epic` block is accepted under either strategy.
@@ -2604,6 +2604,12 @@ Epic Mode is an optional, coupling-aware execution mode: per phase it decides wh
 | `calibration.tighten_step` | number | `0.02` | Per-divergent-task tightening step. |
 | `calibration.loosen_step` | number | `0.01` | Per-loosening-event step toward the static threshold. |
 | `calibration.loosen_window` | number | `10` | Consecutive clean tasks required before one loosening step. |
+| `sizing.min_tasks` | integer | `6` | `/swarm epic start` refuses (`not-epic-sized`, reason `too-few-tasks`) a plan with fewer pending tasks. |
+| `sizing.min_scope_coverage` | number | `0.8` | Minimum share (0–1) of pending tasks with a live declared scope or `files_touched` (`insufficient-scope-coverage`). |
+| `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a wave-planner dry run (`insufficient-parallelism`). Must be ≥ 1. |
+| `sizing.coder_fraction` | number | `0.6` | Share (0–1) of a task's time that parallel coders overlap; QA and architect turns stay serial. |
+
+`/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced. The `sizing` block is `.strict()` like the rest of `turbo.epic`: an unknown key fails validation.
 
 **Example** — Enable Epic Mode with the co-change signal:
 

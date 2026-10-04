@@ -35,8 +35,6 @@ beforeEach(() => {
 	dir = canonicalMkdtemp('c0-epic-clear-');
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 	statusFile = path.join(dir, '.swarm', 'worktree-merge-status.json');
-	_internals.ensureAgentSession = (() => ({ id: 's' })) as never;
-	_internals.isStateUnreadable = (() => false) as never;
 	mergeStatus.resetForTest();
 	initDurableStatusPath(dir);
 	// Undated, exactly as the delegation-gate 'task-result' writer records it.
@@ -97,7 +95,6 @@ describe('/swarm epic clear-merge-failure', () => {
 
 	test('status remedy points at the escape hatch for blocking records', async () => {
 		_internals.loadPlanJsonOnly = (async () => null) as never;
-		_internals.loadEpicSessionState = (() => null) as never;
 		const out = await handleEpicCommand(dir, ['status'], 's');
 		expect(out).toMatch(/1\.3: .*NO timestamp/);
 		expect(out).toContain('/swarm epic clear-merge-failure <taskId> --confirm');

@@ -1,10 +1,11 @@
 /**
  * `/swarm epic` — config master gates and v2 declared-scope resolution.
  *
- *  - `on` refuses with EPIC_MODE_CONFIG_DISABLED_MESSAGE unless
- *    `turbo.epic.mode.enabled === true` (config load failure fails closed).
- *  - `off`, `status`, `last`, `calibration`, `decide` keep working with the
- *    mode gate off — a user can always inspect or turn Epic Mode off.
+ *  - `start` renders the start refusal `epic-disabled-by-config` as
+ *    EPIC_MODE_CONFIG_DISABLED_MESSAGE (the gate itself is tested in
+ *    tests/unit/turbo/epic/start-refusals.test.ts).
+ *  - `close`, `status`, `last`, `calibration`, `decide` keep working with the
+ *    mode gate off — a user can always inspect or close an epic.
  *  - `decide` fetches co-change data only when
  *    `turbo.epic.cochange.enabled === true` and renders the signal state.
  *  - `decide` resolves declared scopes from real `declare_scope` bindings.
@@ -25,27 +26,18 @@ import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 const realInternals = { ..._internals };
 let config: Record<string, unknown>;
-let enableCalls: number;
-let disableCalls: number;
 let cochangeFetches: number;
-let sessionFlag: { id: string; epicModeActive?: boolean };
 
 beforeEach(() => {
 	config = {};
-	enableCalls = 0;
-	disableCalls = 0;
 	cochangeFetches = 0;
-	sessionFlag = { id: 'sess-1', epicModeActive: true };
-	_internals.ensureAgentSession = (() => sessionFlag) as never;
 	_internals.loadPluginConfigWithMeta = (() => ({ config })) as never;
-	_internals.isStateUnreadable = (() => false) as never;
-	_internals.loadEpicSessionState = (() => null) as never;
-	_internals.enableEpicMode = (() => {
-		enableCalls += 1;
-	}) as never;
-	_internals.disableEpicMode = (() => {
-		disableCalls += 1;
-	}) as never;
+	_internals.retireLegacyEpicSessionState = (() => ({
+		rowsRemoved: 0,
+		activeSessions: 0,
+		fileArchivedTo: null,
+		errors: [],
+	})) as never;
 	_internals.getCoChangeData = (async () => {
 		cochangeFetches += 1;
 		return { pairs: [], commitsObserved: 7 };
@@ -61,43 +53,28 @@ afterEach(async () => {
 	await resetDeclaredScopesForTest();
 });
 
-describe('/swarm epic on — turbo.epic.mode.enabled gate', () => {
-	test('refuses when mode.enabled is absent', async () => {
-		const out = await handleEpicCommand('/fake', ['on'], 'sess-1');
-		expect(out).toBe(EPIC_MODE_CONFIG_DISABLED_MESSAGE);
-		expect(enableCalls).toBe(0);
-	});
-
-	test('refuses when mode.enabled is false', async () => {
-		config = { turbo: { epic: { mode: { enabled: false } } } };
-		const out = await handleEpicCommand('/fake', ['on'], 'sess-1');
-		expect(out).toBe(EPIC_MODE_CONFIG_DISABLED_MESSAGE);
-		expect(enableCalls).toBe(0);
-	});
-
-	test('refuses (fails closed) when config cannot be loaded', async () => {
-		_internals.loadPluginConfigWithMeta = (() => {
-			throw new Error('bad config');
-		}) as never;
-		const out = await handleEpicCommand('/fake', ['on'], 'sess-1');
-		expect(out).toBe(EPIC_MODE_CONFIG_DISABLED_MESSAGE);
-		expect(enableCalls).toBe(0);
-	});
-
-	test('enables when mode.enabled is true', async () => {
-		config = { turbo: { epic: { mode: { enabled: true } } } };
-		const out = await handleEpicCommand('/fake', ['on'], 'sess-1');
-		expect(out).toContain('Epic Mode enabled');
-		expect(enableCalls).toBe(1);
+describe('/swarm epic start — config gate refusal rendering', () => {
+	test('epic-disabled-by-config renders the remediation message', async () => {
+		_internals.startEpic = (async () => ({
+			status: 'refused',
+			reason: 'epic-disabled-by-config',
+			details: [EPIC_MODE_CONFIG_DISABLED_MESSAGE],
+		})) as never;
+		const out = await handleEpicCommand('/fake', ['start'], 'sess-1');
+		expect(out).toBe(
+			`Epic not started — **epic-disabled-by-config**.\n\n${EPIC_MODE_CONFIG_DISABLED_MESSAGE}`,
+		);
 	});
 });
 
 describe('/swarm epic — other subcommands work with the mode gate off', () => {
-	test('`off` always works', async () => {
-		const out = await handleEpicCommand('/fake', ['off'], 'sess-1');
-		expect(out).toBe('Epic Mode disabled for this session.');
-		expect(disableCalls).toBe(1);
-		expect(sessionFlag.epicModeActive).toBe(false);
+	test('`close` always works (no epic open)', async () => {
+		_internals.closeEpic = (async () => ({
+			status: 'no-epic',
+			repairedSentinel: false,
+		})) as never;
+		const out = await handleEpicCommand('/fake', ['close'], 'sess-1');
+		expect(out).toBe('No epic is open.');
 	});
 
 	test('status / last / calibration render without the opt-in', async () => {

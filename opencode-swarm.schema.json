@@ -4626,6 +4626,35 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "sizing": {
+                  "type": "object",
+                  "properties": {
+                    "min_tasks": {
+                      "default": 6,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "min_scope_coverage": {
+                      "default": 0.8,
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "min_effective_speedup": {
+                      "default": 1.25,
+                      "type": "number",
+                      "minimum": 1
+                    },
+                    "coder_fraction": {
+                      "default": 0.6,
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -4824,6 +4853,35 @@
                       "type": "integer",
                       "minimum": 1,
                       "maximum": 9007199254740991
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "sizing": {
+                  "type": "object",
+                  "properties": {
+                    "min_tasks": {
+                      "default": 6,
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "min_scope_coverage": {
+                      "default": 0.8,
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
+                    },
+                    "min_effective_speedup": {
+                      "default": 1.25,
+                      "type": "number",
+                      "minimum": 1
+                    },
+                    "coder_fraction": {
+                      "default": 0.6,
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 1
                     }
                   },
                   "additionalProperties": false

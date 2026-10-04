@@ -1,13 +1,16 @@
 /**
- * `/swarm epic` — Epic Mode activation toggle and diagnostics (Capability C).
+ * `/swarm epic` — plan-scoped Epic lifecycle and diagnostics (Epic v2 C1a).
  *
  * Subcommands:
- *   /swarm epic on        — enable Epic Mode for this session (refused
- *                            unless `turbo.epic.mode.enabled: true`)
- *   /swarm epic off       — disable Epic Mode for this session
- *   /swarm epic           — same as `status` (bare form never toggles)
- *   /swarm epic status    — show current state + last decision rationale +
- *                            recorded worktree merge failures (Epic v2 C0)
+ *   /swarm epic start [--force] — open an epic for the current plan (see
+ *                            `src/turbo/epic/start.ts` for the refusals)
+ *   /swarm epic close [--abandon] — close the open epic (C1a: no landing)
+ *                            and write its close report
+ *   /swarm epic           — same as `status` (the bare form never mutates
+ *                            the epic)
+ *   /swarm epic status    — lifecycle state, orphan detection, sentinel/row
+ *                            repair, recorded worktree merge failures, and
+ *                            the one-time retirement of Epic v1 session state
  *   /swarm epic last      — most recent decision from the durable evidence log
  *   /swarm epic calibration — Capability D calibration state
  *   /swarm epic clear-merge-failure <taskId> [--confirm]
@@ -18,18 +21,15 @@
  *                            (read-only what-if; does NOT write to
  *                             `.swarm/evidence/epic-promotions.jsonl`)
  *
- * Toggling only mutates session state (and the durable Epic session state
- * store); it does not start or stop any execution. `off`, `status`, `last`,
- * `decide`, and `calibration` work regardless of the config gate so a user
- * can always inspect or turn Epic Mode off. The
- * `epic_decide_phase` + `epic_plan_waves` tools (plus per-wave Task dispatch
- * by the architect) are the architect-facing entries that gate execution.
+ * The Epic v1 `on` / `off` per-session toggles were removed: an epic is
+ * bound to one plan and every Epic behaviour is driven by the sentinel-first
+ * project probe (`isEpicOpenForProject`). `close`, `status`, `last`,
+ * `decide`, and `calibration` work regardless of the config gate.
  */
 
 import { loadPluginConfigWithMeta } from '../config/index.js';
 import { isGitRepo } from '../git/branch.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import { ensureAgentSession } from '../state.js';
 import {
 	decideEpicActivation,
 	type EpicActivationVerdict,
@@ -38,15 +38,25 @@ import {
 	isCalibrationStateUnreadable,
 	loadCalibrationState,
 } from '../turbo/epic/calibration.js';
+import { closeEpic } from '../turbo/epic/close.js';
 import { getCoChangeData } from '../turbo/epic/cochange-source.js';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
 	isEpicCochangeConfigEnabled,
-	isEpicModeConfigEnabled,
 } from '../turbo/epic/config-gate.js';
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory } from '../turbo/epic/divergence-recorder.js';
+import {
+	describeLegacyEpicMigration,
+	retireLegacyEpicSessionState,
+} from '../turbo/epic/legacy-migration.js';
+import {
+	type EpicInspection,
+	type EpicRecordV1,
+	inspectEpic,
+	repairEpicSentinel,
+} from '../turbo/epic/lifecycle.js';
 import {
 	clearMergeFailureCommand,
 	describeMergeFailuresForStatus,
@@ -54,13 +64,11 @@ import {
 import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
 import { readPromotionEvidence } from '../turbo/epic/promotion-evidence.js';
 import {
-	disableEpicMode,
-	enableEpicMode,
-	isEpicModeActive,
-	isStateUnreadable,
-	loadEpicSessionState,
-	repairStateUnreadable,
-} from '../turbo/epic/state.js';
+	describeEpicSizingReason,
+	type EpicSizingVerdict,
+	summarizeEpicSizing,
+} from '../turbo/epic/sizing.js';
+import { startEpic } from '../turbo/epic/start.js';
 
 /**
  * Test-only DI seam. Production code calls `_internals.fn(...)` so tests can
@@ -71,13 +79,6 @@ export const _internals = {
 	loadPlanJsonOnly,
 	getCoChangeData,
 	decideEpicActivation,
-	ensureAgentSession,
-	isEpicModeActive,
-	isStateUnreadable,
-	repairStateUnreadable,
-	loadEpicSessionState,
-	enableEpicMode,
-	disableEpicMode,
 	resolveEpicDeclaredScopes,
 	readPromotionEvidence,
 	loadCalibrationState,
@@ -87,7 +88,15 @@ export const _internals = {
 	resolvePlanMarkerScope,
 	describeMergeFailuresForStatus,
 	clearMergeFailureCommand,
+	startEpic,
+	closeEpic,
+	inspectEpic,
+	repairEpicSentinel,
+	retireLegacyEpicSessionState,
 };
+
+const USAGE =
+	'Usage:\n  /swarm epic start [--force] | close [--abandon] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
 
 export async function handleEpicCommand(
 	directory: string,
@@ -97,28 +106,21 @@ export async function handleEpicCommand(
 	if (!sessionID || sessionID.trim() === '') {
 		return 'Error: No active session context. Epic Mode requires an active session. Use /swarm epic from within an OpenCode session.';
 	}
-	// Bootstrap the agent session if needed. `/swarm epic` is a session-state
-	// command — it should not fail because the architect hasn't spoken yet
-	// (the toggle directly affects the architect's next prompt). Idempotent.
-	const session = _internals.ensureAgentSession(
-		sessionID,
-		undefined,
-		directory,
-	);
-
 	const arg0 = args[0]?.toLowerCase();
-
-	// The fail-closed "state unreadable" marker is process-local and is only
-	// lifted by a successful re-validation. Re-check it on every command so a
-	// user who fixed or removed the bad state sees recovery without a restart.
-	// Only when flagged: a healthy project must not open or create the DB here.
-	if (_internals.isStateUnreadable(directory)) {
-		_internals.repairStateUnreadable(directory);
-	}
+	const flags = new Set(args.slice(1).map((arg) => arg.toLowerCase()));
 
 	switch (arg0) {
+		case 'start':
+			return renderStart(directory, sessionID, flags);
+		case 'close':
+			return renderClose(directory, flags);
 		case 'status':
-			return await renderStatus(directory, sessionID);
+		case undefined:
+			// No argument → status (NOT a mutation of the epic). Toggle-by-
+			// default created an infinite loop with weaker models (Kimi K2.6
+			// observed) when the architect called `swarm_command
+			// [command=epic]` without args to "check state".
+			return await renderStatus(directory);
 		case 'decide':
 			return renderDecide(directory);
 		case 'last':
@@ -128,73 +130,123 @@ export async function handleEpicCommand(
 		case 'clear-merge-failure':
 			return _internals.clearMergeFailureCommand(directory, args.slice(1));
 		case 'on':
-			return enableAndAck(directory, sessionID, session);
 		case 'off':
-			return disableAndAck(directory, sessionID, session);
-		case undefined:
-			// No argument → status (NOT toggle). Toggle-by-default created
-			// an infinite loop with weaker models (Kimi K2.6 observed):
-			// when the architect called `swarm_command [command=epic]`
-			// without args to "check state", the flag flipped; the next
-			// call flipped it back; loop. Status is idempotent and matches
-			// the user's intent on a bare `/swarm epic` — see what's on,
-			// don't change anything. Explicit `on/off` are the mutators.
-			return await renderStatus(directory, sessionID);
+			return `\`/swarm epic ${arg0}\` was removed in Epic v2: an epic is now bound to one plan. Use \`/swarm epic start\` to open an epic for the current plan and \`/swarm epic close\` to close it.\n\n${USAGE}`;
 		default:
-			return `Unknown subcommand '${arg0}'.\n\nUsage:\n  /swarm epic on | off | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)`;
+			return `Unknown subcommand '${arg0}'.\n\n${USAGE}`;
 	}
 }
 
-function enableAndAck(
-	directory: string,
-	sessionID: string,
-	session: ReturnType<typeof _internals.ensureAgentSession>,
-): string {
-	// Config master gate (`turbo.epic.mode.enabled`, default false). Refuse
-	// to turn Epic Mode on without the opt-in; a config load failure fails
-	// closed. `off` is deliberately NOT gated so it always works.
-	let modeEnabled = false;
-	try {
-		modeEnabled = isEpicModeConfigEnabled(
-			_internals.loadPluginConfigWithMeta(directory).config,
-		);
-	} catch {
-		modeEnabled = false;
-	}
-	if (!modeEnabled) {
-		return EPIC_MODE_CONFIG_DISABLED_MESSAGE;
-	}
-	try {
-		_internals.enableEpicMode(directory, sessionID);
-	} catch (err) {
-		return `Error enabling Epic Mode: ${err instanceof Error ? err.message : String(err)}`;
-	}
-	// Mirror the in-memory flag so `hasActiveEpicMode(sessionID)` picks up
-	// the new state. This is what makes the system-enhancer auto-inject the
-	// EPIC_MODE_BANNER on the next architect turn — without it, the durable
-	// state would say "active" but the architect prompt would not know.
-	session.epicModeActive = true;
-	return [
-		'Epic Mode enabled for this session.',
-		'',
-		"The architect will now use the transparent decide-then-dispatch wave flow for phase execution: `declare_scope` (×N pending tasks) → `epic_decide_phase` → `epic_plan_waves` → for each wave in order, dispatch `Task` (×taskIds in the wave, ALL in one assistant message) → per task: `pre_check_batch` → `reviewer` + `test_engineer` → `update_task_status(completed)` → `epic_record_divergence` → `epic_phase_review` → `phase_complete`. Each phase decision computes the plan-wide coupling coefficient `p` and chooses promote/demote per the configured thresholds. Promoted phases dispatch coders via opencode's `Task` tool so you can click into each concurrent coder and watch progress live.",
-		'',
-		'Run `/swarm epic decide` to see the current verdict without executing.',
-	].join('\n');
+function unknownFlags(flags: Set<string>, allowed: string): string[] {
+	return [...flags].filter((flag) => flag !== allowed);
 }
 
-function disableAndAck(
+function renderSizingLines(sizing: EpicSizingVerdict): string[] {
+	const lines = [`Sizing: ${summarizeEpicSizing(sizing)}.`];
+	for (const reason of sizing.reasons) {
+		lines.push(`- ${describeEpicSizingReason(reason, sizing)}`);
+	}
+	return lines;
+}
+
+async function renderStart(
 	directory: string,
 	sessionID: string,
-	session: ReturnType<typeof _internals.ensureAgentSession>,
-): string {
-	try {
-		_internals.disableEpicMode(directory, sessionID);
-	} catch (err) {
-		return `Error disabling Epic Mode: ${err instanceof Error ? err.message : String(err)}`;
+	flags: Set<string>,
+): Promise<string> {
+	const unknown = unknownFlags(flags, '--force');
+	if (unknown.length > 0) {
+		return `Unknown option(s) for \`/swarm epic start\`: ${unknown.join(', ')}.\n\n${USAGE}`;
 	}
-	session.epicModeActive = false;
-	return 'Epic Mode disabled for this session.';
+	let result: Awaited<ReturnType<typeof startEpic>>;
+	try {
+		result = await _internals.startEpic({
+			directory,
+			sessionID,
+			force: flags.has('--force'),
+		});
+	} catch (error) {
+		return `Error starting the epic: ${error instanceof Error ? error.message : String(error)}`;
+	}
+	if (result.status === 'already-open') {
+		return [
+			`Epic \`${result.record.epicKey}\` is already open for this plan — nothing changed.`,
+			'',
+			'Run `/swarm epic status` for details.',
+		].join('\n');
+	}
+	if (result.status === 'refused') {
+		const lines = [`Epic not started — **${result.reason}**.`, ''];
+		if (result.reason === 'epic-disabled-by-config') {
+			lines.push(EPIC_MODE_CONFIG_DISABLED_MESSAGE);
+			return lines.join('\n');
+		}
+		for (const detail of result.details) lines.push(`- ${detail}`);
+		if (result.sizing && result.sizing.pendingTasks > 0) {
+			lines.push(...renderSizingLines(result.sizing));
+			lines.push(
+				'',
+				'This plan is not epic-sized — run it in Balanced (the standard serial flow). To open an epic anyway, rerun `/swarm epic start --force` (recorded as forced).',
+			);
+		}
+		return lines.join('\n');
+	}
+	const record = result.record;
+	const lines = [
+		`Epic \`${record.epicKey}\` opened for plan \`${record.planId}\`${record.forced ? ' (**forced** — the plan is not epic-sized)' : ''}.`,
+		'',
+		...renderSizingLines(record.sizing),
+		record.git.isRepo
+			? `Execution: git, up to ${record.config.maxParallel} task(s) per wave; commits stay on the current branch${record.git.originalBranch ? ` (\`${record.git.originalBranch}\`)` : ''}.`
+			: 'Execution: non-git project — serial, one task per wave.',
+		'',
+		'The architect now follows the Epic wave flow (Epic enables neither Lean nor Turbo; per-task QA is never waived). Close with `/swarm epic close` once every task is completed or closed.',
+	];
+	return lines.join('\n');
+}
+
+async function renderClose(
+	directory: string,
+	flags: Set<string>,
+): Promise<string> {
+	const unknown = unknownFlags(flags, '--abandon');
+	if (unknown.length > 0) {
+		return `Unknown option(s) for \`/swarm epic close\`: ${unknown.join(', ')}.\n\n${USAGE}`;
+	}
+	let result: Awaited<ReturnType<typeof closeEpic>>;
+	try {
+		result = await _internals.closeEpic({
+			directory,
+			abandon: flags.has('--abandon'),
+		});
+	} catch (error) {
+		return `Error closing the epic: ${error instanceof Error ? error.message : String(error)}`;
+	}
+	switch (result.status) {
+		case 'no-epic':
+			return result.repairedSentinel
+				? 'No epic is open. A stale Epic sentinel was removed.'
+				: 'No epic is open.';
+		case 'refused':
+			return [
+				`Epic not closed — **${result.reason}**.`,
+				'',
+				...result.details.map((detail) => `- ${detail}`),
+			].join('\n');
+		case 'repaired-unreadable':
+			return `Unreadable Epic lifecycle state removed (${result.rowsDeleted.length} row(s)${result.sentinelDeleted ? ' and the sentinel' : ''}). No epic is open.`;
+		case 'closed': {
+			const tasks = result.report.tasks;
+			return [
+				`Epic \`${result.report.epicKey}\` closed (**${result.report.outcome}**).`,
+				'',
+				tasks
+					? `Tasks: ${tasks.completed} completed, ${tasks.closed} closed, ${tasks.pending.length} pending (of ${tasks.total}).`
+					: 'Tasks: not summarized (the plan no longer matches the epic).',
+				`Report: \`.swarm/epic/reports/${result.report.reportKey}.json\` (kept across /swarm close at \`.swarm/epic-prior/reports/${result.report.reportKey}.json\`).`,
+			].join('\n');
+		}
+	}
 }
 
 /**
@@ -224,33 +276,51 @@ async function renderMergeFailureLines(directory: string): Promise<string[]> {
 	}
 }
 
-async function renderStatus(
-	directory: string,
-	sessionID: string,
-): Promise<string> {
-	const lines: string[] = ['## Epic Mode — Status', ''];
-	// Distinguish "state is corrupt / fail-closed" from "never toggled" —
-	// the underlying loader returns null for both, but the actionable advice
-	// differs (the first one needs repair; the second one just needs `on`).
-	if (_internals.isStateUnreadable(directory)) {
+const ORPHAN_TEXT: Record<
+	NonNullable<EpicInspection['orphanReason']>,
+	string
+> = {
+	'plan-missing': 'the plan is missing',
+	'plan-renamed-or-replaced':
+		'the plan was renamed or replaced (its swarm/title identity changed)',
+	'plan-ledger-replaced': 'the plan ledger was re-rooted (a new plan epoch)',
+};
+
+function renderRecordLines(
+	record: EpicRecordV1,
+	inspection: EpicInspection,
+): string[] {
+	const lines: string[] = [];
+	const orphaned = inspection.orphanReason !== null;
+	const state = orphaned
+		? 'orphaned'
+		: record.status === 'closing'
+			? 'closing (interrupted — rerun `/swarm epic close`)'
+			: 'open';
+	lines.push(`Epic: \`${record.epicKey}\` — **${state}**`);
+	lines.push(`- Plan: ${record.planId} (plan key ${record.planKey})`);
+	lines.push(
+		`- Started: ${record.startedAt}${record.forced ? ' (forced — not epic-sized)' : ''}`,
+	);
+	lines.push(
+		`- Execution: ${record.git.isRepo ? `git (${record.config.isolation}), up to ${record.config.maxParallel} task(s) per wave` : 'non-git, serial (one task per wave)'}; commit policy ${record.config.commitPolicy}`,
+	);
+	lines.push(`- Sizing at start: ${summarizeEpicSizing(record.sizing)}`);
+	if (orphaned && inspection.orphanReason) {
 		lines.push(
-			'**Epic Mode state is unreadable** (the durable Epic session state is corrupt or has an unexpected shape). Status cannot be reported until it is repaired. The fail-closed marker means `epic_decide_phase` will refuse to compute a verdict in this state. Fix or remove `.swarm/epic-state.json` (the legacy import / projection file) and re-run; if the corruption is in the SQLite Epic session rows, run `/swarm reset-session` to clear them.',
+			'',
+			`⚠️ Orphaned: ${ORPHAN_TEXT[inspection.orphanReason]} since the epic started, so Epic behaviour is OFF for the current plan. Run \`/swarm epic close --abandon\` to close it.`,
 		);
-		return lines.join('\n');
 	}
-	const state = _internals.loadEpicSessionState(directory, sessionID);
-	if (!state) {
-		lines.push('Epic Mode has not been toggled for this session.');
-		lines.push(...(await renderMergeFailureLines(directory)));
-		return lines.join('\n');
+	if (!inspection.configEnabled) {
+		lines.push(
+			'',
+			'⚠️ `turbo.epic.mode.enabled` is not true: Epic behaviour is OFF while the config gate is closed. Re-enable it, or close the epic.',
+		);
 	}
-	lines.push(`Active: **${state.active ? 'yes' : 'no'}**`);
-	if (state.enabledAt) lines.push(`Last enabled: ${state.enabledAt}`);
-	if (state.disabledAt) lines.push(`Last disabled: ${state.disabledAt}`);
-	if (state.lastDecision) {
-		const ld = state.lastDecision;
-		lines.push('');
-		lines.push('### Last activation decision');
+	if (record.lastDecision) {
+		const ld = record.lastDecision;
+		lines.push('', '### Last activation decision');
 		lines.push(`- **Decision:** ${ld.decision}`);
 		lines.push(`- **p:** ${ld.p.toFixed(3)}`);
 		if (ld.phase !== undefined) lines.push(`- Phase: ${ld.phase}`);
@@ -260,6 +330,51 @@ async function renderStatus(
 			for (const r of ld.blockingReasons) lines.push(`  - ${r}`);
 		}
 	}
+	return lines;
+}
+
+async function renderStatus(directory: string): Promise<string> {
+	const lines: string[] = ['## Epic Mode — Status', ''];
+	const legacy = _internals.retireLegacyEpicSessionState(directory);
+	let repair: ReturnType<typeof repairEpicSentinel> = 'none';
+	try {
+		repair = _internals.repairEpicSentinel(directory);
+	} catch (error) {
+		lines.push(
+			`⚠️ Sentinel repair failed: ${error instanceof Error ? error.message : String(error)}`,
+			'',
+		);
+	}
+	let plan: Awaited<ReturnType<typeof loadPlanJsonOnly>> = null;
+	try {
+		plan = await _internals.loadPlanJsonOnly(directory);
+	} catch {
+		plan = null;
+	}
+	const inspection = _internals.inspectEpic(directory, plan);
+	if (inspection.unreadable) {
+		lines.push(
+			`**Epic lifecycle state is unreadable** (${inspection.unreadable}). Epic behaviour is OFF (fail closed). Run \`/swarm epic close --abandon\` to delete the unreadable state, then \`/swarm epic start\` again.`,
+		);
+	} else if (inspection.record) {
+		lines.push(...renderRecordLines(inspection.record, inspection));
+	} else {
+		lines.push(
+			'No epic is open. Run `/swarm epic start` to open one for the current plan.',
+		);
+	}
+	if (repair !== 'none') {
+		const text: Record<Exclude<typeof repair, 'none'>, string> = {
+			'removed-stale-sentinel':
+				'Repaired: removed a stale sentinel (`.swarm/epic/epic.json`) with no lifecycle row.',
+			'restored-sentinel':
+				'Repaired: restored the missing sentinel (`.swarm/epic/epic.json`) from the open lifecycle row.',
+			'rewrote-mismatched-sentinel':
+				'Repaired: rewrote a sentinel that named a different epic than the lifecycle row.',
+		};
+		lines.push('', text[repair]);
+	}
+	lines.push(...describeLegacyEpicMigration(legacy));
 	lines.push(...(await renderMergeFailureLines(directory)));
 	return lines.join('\n');
 }

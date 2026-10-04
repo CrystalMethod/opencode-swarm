@@ -1,36 +1,15 @@
 /**
- * Tests for Epic Mode banner constants + hasActiveEpicMode wiring.
+ * Tests for the Epic Mode banner constant.
  * File: tests/unit/hooks/system-enhancer-epic-banner.test.ts
  *
- * The full system-enhancer prompt-injection flow is heavy integration
- * machinery; this test covers the leaf-level invariants the
- * `if (hasActiveEpicMode(...)) inject(EPIC_MODE_BANNER)` block relies
- * on:
- *
- *   - `EPIC_MODE_BANNER` exists and instructs the architect to use the
- *     visible decide → plan-waves → Task flow instead of
- *     `lean_turbo_run_phase`, with per-task Stage A/B and the
- *     `epic_phase_review` phase gate.
- *   - `hasActiveEpicMode(sessionID)` reads `session.epicModeActive`
- *     and returns the expected booleans (per-session and any-session).
+ * `EPIC_MODE_BANNER` instructs the architect to use the visible decide →
+ * plan-waves → Task flow instead of `lean_turbo_run_phase`, with per-task
+ * Stage A/B and the `epic_phase_review` phase gate. Delivery (driven by the
+ * project's open epic) is covered by system-enhancer-epic-open-banner.test.ts.
  */
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import { EPIC_MODE_BANNER } from '../../../src/config/constants';
 import { estimateTokens } from '../../../src/hooks/utils';
-import {
-	hasActiveEpicMode,
-	resetSwarmState,
-	startAgentSession,
-	swarmState,
-} from '../../../src/state';
-
-beforeEach(() => {
-	resetSwarmState();
-});
-
-afterEach(() => {
-	resetSwarmState();
-});
 
 describe('EPIC_MODE_BANNER content', () => {
 	test('describes the SINGLE sanctioned phase-execution flow', () => {
@@ -118,10 +97,34 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(step1).toContain('phase advance');
 	});
 
-	test('stays within the pre-catch-up injection budget (≤ 1994 tokens)', () => {
+	test('stays within the pre-v2 injection budget (≤ 1976 tokens)', () => {
 		// The banner competes for the system-enhancer injection budget; the
-		// catch-up additions (steps 6/7) were paid for by tightening prose.
-		expect(estimateTokens(EPIC_MODE_BANNER)).toBeLessThanOrEqual(1994);
+		// Epic v2 lifecycle text (start/close, no-open-epic outcome) was paid
+		// for by tightening prose — it may not grow past the catch-up size.
+		expect(estimateTokens(EPIC_MODE_BANNER)).toBeLessThanOrEqual(1976);
+	});
+
+	test('v2 lifecycle: the user opens/closes the epic; no Turbo; no stale toggles', () => {
+		const intro = EPIC_MODE_BANNER.slice(
+			0,
+			EPIC_MODE_BANNER.indexOf('Seven-step flow'),
+		);
+		expect(intro).toContain('`/swarm epic start`');
+		expect(intro).toContain('Only the user opens or closes an epic');
+		expect(intro).toContain('Epic enables neither Turbo nor Lean');
+		expect(EPIC_MODE_BANNER).not.toContain('/swarm turbo epic');
+		expect(EPIC_MODE_BANNER).not.toContain('/swarm epic on');
+		expect(EPIC_MODE_BANNER).toContain('`/swarm epic close`');
+	});
+
+	test('step 2 handles a missing / unreadable epic by falling back to serial', () => {
+		const step2 = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('**2. '),
+			EPIC_MODE_BANNER.indexOf('**3. '),
+		);
+		expect(step2).toContain('`epic-mode-not-active`');
+		expect(step2).toContain('`epic-state-unreadable`');
+		expect(step2).toContain('per-task serially');
 	});
 
 	test('explains both promote and demote outcomes', () => {
@@ -222,54 +225,5 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(EPIC_MODE_BANNER).toContain('Bundling');
 		expect(EPIC_MODE_BANNER).toContain('Splitting across messages');
 		expect(EPIC_MODE_BANNER).toContain('Skipping single-task waves');
-	});
-});
-
-describe('hasActiveEpicMode — per-session lookup', () => {
-	test('returns false when no session exists', () => {
-		expect(hasActiveEpicMode('non-existent')).toBe(false);
-	});
-
-	test('returns false for a session without epicModeActive set', () => {
-		startAgentSession('sess-a', 'architect');
-		expect(hasActiveEpicMode('sess-a')).toBe(false);
-	});
-
-	test('returns true when epicModeActive is explicitly set', () => {
-		startAgentSession('sess-a', 'architect');
-		const session = swarmState.agentSessions.get('sess-a');
-		if (!session) throw new Error('session not found');
-		session.epicModeActive = true;
-		expect(hasActiveEpicMode('sess-a')).toBe(true);
-	});
-
-	test('returns false after the flag is cleared', () => {
-		startAgentSession('sess-a', 'architect');
-		const session = swarmState.agentSessions.get('sess-a');
-		if (!session) throw new Error('session not found');
-		session.epicModeActive = true;
-		session.epicModeActive = false;
-		expect(hasActiveEpicMode('sess-a')).toBe(false);
-	});
-});
-
-describe('hasActiveEpicMode — global (any-session) lookup', () => {
-	test('returns false when no sessions exist', () => {
-		expect(hasActiveEpicMode()).toBe(false);
-	});
-
-	test('returns true if ANY session has it active', () => {
-		startAgentSession('sess-a', 'architect');
-		startAgentSession('sess-b', 'architect');
-		const sb = swarmState.agentSessions.get('sess-b');
-		if (!sb) throw new Error('session not found');
-		sb.epicModeActive = true;
-		expect(hasActiveEpicMode()).toBe(true);
-	});
-
-	test('returns false when no session has it active', () => {
-		startAgentSession('sess-a', 'architect');
-		startAgentSession('sess-b', 'architect');
-		expect(hasActiveEpicMode()).toBe(false);
 	});
 });

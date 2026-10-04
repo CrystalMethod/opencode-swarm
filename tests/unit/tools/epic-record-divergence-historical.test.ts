@@ -69,7 +69,7 @@ beforeEach(async () => {
 	// Session-level Epic state is out of scope here; the declared-scope read
 	// and the JSONL write are real.
 	_internals.isEpicModeConfigEnabledForDirectory = () => true;
-	_internals.hasActiveEpicMode = (() => true) as never;
+	_internals.isEpicOpenForProject = (() => true) as never;
 	_internals.getAgentSession = (() => ({})) as never;
 	_internals.getModifiedFilesForTask = (() => [
 		'src/a.ts',

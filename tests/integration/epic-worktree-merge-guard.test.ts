@@ -80,7 +80,7 @@ describe('Epic Mode × worktree isolation — merge-back guard (e2e)', () => {
 	};
 	const origMgr = {
 		isGitRepo: managerInternals.isGitRepo,
-		isEpicModeActiveForProject: managerInternals.isEpicModeActiveForProject,
+		isEpicOpenForProject: managerInternals.isEpicOpenForProject,
 		readTaskScopes: managerInternals.readTaskScopes,
 		commitTaskCompletion: managerInternals.commitTaskCompletion,
 	};
@@ -96,7 +96,7 @@ describe('Epic Mode × worktree isolation — merge-back guard (e2e)', () => {
 		wtiInternals.removeWorktree = async () => {};
 		wtiInternals.postMergeCleanup = async () => {};
 		managerInternals.isGitRepo = () => true;
-		managerInternals.isEpicModeActiveForProject = () => true;
+		managerInternals.isEpicOpenForProject = () => true;
 		managerInternals.readTaskScopes = () => undefined;
 		managerInternals.commitTaskCompletion = async (_dir, taskId) => {
 			commitCalls.push(taskId);
@@ -109,8 +109,7 @@ describe('Epic Mode × worktree isolation — merge-back guard (e2e)', () => {
 		wtiInternals.removeWorktree = origWti.removeWorktree;
 		wtiInternals.postMergeCleanup = origWti.postMergeCleanup;
 		managerInternals.isGitRepo = origMgr.isGitRepo;
-		managerInternals.isEpicModeActiveForProject =
-			origMgr.isEpicModeActiveForProject;
+		managerInternals.isEpicOpenForProject = origMgr.isEpicOpenForProject;
 		managerInternals.readTaskScopes = origMgr.readTaskScopes;
 		managerInternals.commitTaskCompletion = origMgr.commitTaskCompletion;
 		mergeStatus.failuresByTask.clear();

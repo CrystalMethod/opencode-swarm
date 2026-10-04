@@ -29,6 +29,10 @@ import {
 	resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import,
 	toEpicPlanIdentity,
 } from '../turbo/epic/declared-scopes';
+import {
+	type EpicRecordV1,
+	getOpenEpic as getOpenEpic_import,
+} from '../turbo/epic/lifecycle';
 import { buildIsUpstreamCommittedWithStatus as buildIsUpstreamCommittedWithStatus_import } from '../turbo/epic/upstream-commits';
 import { type EpicWavePlan, planEpicWaves } from '../turbo/epic/wave-planner';
 import type { PlanPhase } from '../turbo/lean/partition-common';
@@ -64,6 +68,8 @@ export interface EpicPlanWavesResult {
 	/** Set on failure — categorical short code (machine-readable). */
 	reason?:
 		| 'epic-disabled-by-config'
+		| 'epic-mode-not-active'
+		| 'epic-state-unreadable'
 		| 'no-plan'
 		| 'no-phase'
 		| 'phase-empty'
@@ -90,6 +96,8 @@ function readPlanJson(directory: string): { phases: PlanPhase[] } | null {
  *
  * Possible outcomes:
  *   0. `epic-disabled-by-config` — `turbo.epic.mode.enabled !== true`
+ *      `epic-mode-not-active` — no epic open for the current plan
+ *      `epic-state-unreadable` — the Epic lifecycle row is unreadable
  *   1. `no-plan` — `.swarm/plan.json` missing / unparseable
  *   2. `no-phase` — phase number not in `plan.json`
  *   3. `phase-empty` — phase exists but has zero tasks
@@ -122,6 +130,30 @@ export async function executeEpicPlanWaves(
 			success: false,
 			reason: 'epic-disabled-by-config',
 			errors: [EPIC_MODE_CONFIG_DISABLED_MESSAGE],
+		};
+	}
+
+	// An epic must be open for the current plan (`/swarm epic start`). Its
+	// record carries the wave-width cap (1 for non-git projects, M-i).
+	let epic: EpicRecordV1 | null;
+	try {
+		epic = _internals.getOpenEpic(directory);
+	} catch (error) {
+		return {
+			success: false,
+			reason: 'epic-state-unreadable',
+			errors: [
+				`${error instanceof Error ? error.message : String(error)}. Ask the user to run \`/swarm epic status\` (diagnose) or \`/swarm epic close --abandon\` (repair).`,
+			],
+		};
+	}
+	if (!epic) {
+		return {
+			success: false,
+			reason: 'epic-mode-not-active',
+			errors: [
+				'No epic is open for the current plan. Ask the user to run `/swarm epic start`; until then execute the phase per-task serially.',
+			],
 		};
 	}
 
@@ -299,6 +331,14 @@ export async function executeEpicPlanWaves(
 		if (userLean) {
 			leanConfig = { ...leanConfig, ...userLean };
 		}
+		// The open epic's wave-width cap wins (non-git epics run serially).
+		leanConfig = {
+			...leanConfig,
+			max_parallel_coders: Math.min(
+				leanConfig.max_parallel_coders,
+				epic.config.maxParallel,
+			),
+		};
 
 		const wavePlan = planEpicWaves(
 			directory,
@@ -343,6 +383,7 @@ export const _internals = {
 	buildIsUpstreamCommittedWithStatus: buildIsUpstreamCommittedWithStatus_import,
 	loadPlanJsonOnly: loadPlanJsonOnly_import,
 	loadPluginConfigWithMeta: loadPluginConfigWithMeta_import,
+	getOpenEpic: getOpenEpic_import,
 };
 
 /** Tool definition for `epic_plan_waves`. */
@@ -354,7 +395,7 @@ export const epic_plan_waves: ToolDefinition = createSwarmTool({
 		'For each wave in order, the architect dispatches one `Task(subagent_type="coder", ...)` per `taskId` — all in one assistant message — so the wave runs concurrently and each coder appears as a visible subagent. ' +
 		'Wait for the wave to finish before dispatching the next. ' +
 		'Pair with `epic_decide_phase` (called first; this tool is only relevant on a `promote` verdict). ' +
-		'Preflight reject reasons: `epic-disabled-by-config` (set `turbo.epic.mode.enabled: true`), `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (declared scope undeclared, expired after 1h, or declared against an older plan revision — re-run `declare_scope` for each of `missingScopes`, or pass them in `scopes`), `git-failed` (transient — retry), `planner-error`.',
+		'Preflight reject reasons: `epic-disabled-by-config` (set `turbo.epic.mode.enabled: true`), `epic-mode-not-active` (no epic open — `/swarm epic start`), `epic-state-unreadable`, `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (declared scope undeclared, expired after 1h, or declared against an older plan revision — re-run `declare_scope` for each of `missingScopes`, or pass them in `scopes`), `git-failed` (transient — retry), `planner-error`.',
 	args: {
 		directory: z
 			.string()

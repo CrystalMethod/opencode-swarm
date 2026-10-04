@@ -28,11 +28,11 @@ import type { Plan } from '../../src/config/plan-schema';
 import { savePlan } from '../../src/plan/manager';
 import { executeEpicPlanWaves } from '../../src/tools/epic-plan-waves';
 import { executeEpicDecidePhase } from '../../src/tools/epic-run-phase';
-import { enableEpicMode } from '../../src/turbo/epic/state';
 import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
 } from '../helpers/declared-scope-bindings';
+import { openEpicForTest } from '../helpers/epic-lifecycle';
 
 function makePhase2Plan(): Plan {
 	return {
@@ -158,8 +158,11 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 			}),
 		);
 		await savePlan(dir, makePhase2Plan());
-		// No git init — this is the no-git Rule-1 scenario.
-		enableEpicMode(dir, 'wave-integration-session');
+		// No git init — this is the no-git Rule-1 scenario. The epic record
+		// keeps the default wave width (the non-git width-1 cap that
+		// `/swarm epic start` records is covered by the start/plan-waves
+		// tests) so this suite exercises the planner's partition.
+		openEpicForTest(dir);
 	});
 
 	afterEach(async () => {

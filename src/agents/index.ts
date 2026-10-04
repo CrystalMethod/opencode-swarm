@@ -12,6 +12,7 @@ import {
 	ALL_AGENT_NAMES,
 	COUNCIL_AGENT_TOOL_MAP,
 	DEFAULT_MODELS,
+	EPIC_AGENT_TOOL_MAP,
 	EXTERNAL_SKILL_AGENT_TOOL_MAP,
 	GENERAL_COUNCIL_AGENT_TOOL_MAP,
 	MEMORY_AGENT_TOOL_MAP,
@@ -507,6 +508,7 @@ function createSwarmAgents(
 					execution_mode: pluginConfig?.execution_mode ?? 'balanced',
 				},
 			}),
+			pluginConfig?.turbo?.epic?.mode?.enabled === true,
 		);
 		architect.name = prefixName('architect');
 
@@ -1436,6 +1438,20 @@ export function getAgentConfigs(
 				if (turboTools.length > 0) {
 					allowedTools = Array.from(
 						new Set([...(allowedTools ?? []), ...turboTools]),
+					);
+				}
+			}
+
+			// Feature-gate: Epic Mode tools — only when turbo.epic.mode.enabled
+			// is explicitly true (a bare `turbo` block is not enough).
+			if (config?.turbo?.epic?.mode?.enabled === true) {
+				const epicTools =
+					EPIC_AGENT_TOOL_MAP[
+						baseAgentName as keyof typeof EPIC_AGENT_TOOL_MAP
+					] ?? [];
+				if (epicTools.length > 0) {
+					allowedTools = Array.from(
+						new Set([...(allowedTools ?? []), ...epicTools]),
 					);
 				}
 			}

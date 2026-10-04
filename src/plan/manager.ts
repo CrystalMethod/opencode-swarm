@@ -94,12 +94,12 @@ import { readSwarmFileAsync } from '../hooks/utils';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { recordTaskAttempt } from '../services/run-memory.js';
 import { emit } from '../telemetry.js';
+import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import { relevantMergeFailure } from '../turbo/epic/merge-epoch.js';
 import {
 	type PlanMarkerScope,
 	resolvePlanMarkerScope,
 } from '../turbo/epic/plan-key.js';
-import { isEpicModeActiveForProject } from '../turbo/epic/state.js';
 import { commitTaskCompletion } from '../turbo/epic/task-commit.js';
 import type { SpecStaleDetectedEvent } from '../types/events';
 import { criticalWarn, warn } from '../utils';
@@ -200,7 +200,7 @@ export const _internals: {
 	readLedgerEventsWithIntegrity: typeof readLedgerEventsWithIntegrity;
 	regeneratePlanMarkdown: typeof regeneratePlanMarkdown;
 	isGitRepo: typeof isGitRepo;
-	isEpicModeActiveForProject: typeof isEpicModeActiveForProject;
+	isEpicOpenForProject: typeof isEpicOpenForProject;
 	commitTaskCompletion: typeof commitTaskCompletion;
 	relevantMergeFailure: typeof relevantMergeFailure;
 	resolvePlanMarkerScope: typeof resolvePlanMarkerScope;
@@ -228,7 +228,7 @@ export const _internals: {
 	readLedgerEventsWithIntegrity,
 	regeneratePlanMarkdown,
 	isGitRepo,
-	isEpicModeActiveForProject,
+	isEpicOpenForProject,
 	// (#2532) readTaskScopes seam removed: the Rule 2 scope lookup now resolves
 	// from the authoritative v2 binding store (see readDeclaredScopeFilesFromBindings).
 	commitTaskCompletion,
@@ -2959,11 +2959,12 @@ export async function updateTaskStatus(
 			// closing the silent-bypass holes (sessionless callers, sub-agent
 			// sessions, delegation-gate paths).
 			//
-			// Project-scoped Epic check: the architect's session toggles Epic
-			// via `/swarm epic on`, but sub-agents dispatched via `Task` run
-			// in their own sessions and don't see that flag. The project-scoped
-			// `isEpicModeActiveForProject` answers the only question that
-			// matters here: "is the project running under Epic right now?".
+			// Project-scoped Epic check: an epic is opened for the current
+			// plan by `/swarm epic start`; sub-agents dispatched via `Task` run
+			// in their own sessions, so the question is project-scoped: "is an
+			// epic open for this plan right now?". The sentinel-first probe
+			// runs BEFORE the git check so a non-Epic completion costs one
+			// `existsSync` and no git subprocess.
 			//
 			// Non-fatal contract: the plan ledger is authoritative per
 			// AGENTS.md #5. A failing commit must never block the durable
@@ -2971,8 +2972,8 @@ export async function updateTaskStatus(
 			// try/catch separate from the savePlan retry loop.
 			if (
 				status === 'completed' &&
-				_internals.isGitRepo(directory) &&
-				_internals.isEpicModeActiveForProject(directory)
+				_internals.isEpicOpenForProject(directory) &&
+				_internals.isGitRepo(directory)
 			) {
 				// Worktree-isolation guard: when a Task-dispatched coder ran in
 				// an isolated git worktree and its merge-back FAILED (or only

@@ -3,12 +3,13 @@
  * File: tests/unit/tools/epic-run-phase.test.ts
  *
  * Covers:
- *  - Fails closed when Epic Mode is not active for the session.
+ *  - Fails closed when no epic is open for the current plan (and when the
+ *    lifecycle row is unreadable).
  *  - Fails gracefully when .swarm/plan.json is missing.
  *  - Promote ⇒ reason='decided'; demote ⇒ reason='demoted' (decide-only,
  *    never dispatches coders).
  *  - Promotion-evidence is appended exactly once per call.
- *  - Records the decision into the session state (`recordEpicDecision`) and
+ *  - Records the decision into the open epic (`recordEpicLastDecision`) and
  *    fails closed (reason='epic-state-unreadable') when that write throws.
  *
  * Uses the _internals DI seam — no mock.module (AGENTS.md invariant 7).
@@ -19,6 +20,7 @@ import {
 	epic_decide_phase,
 	executeEpicDecidePhase,
 } from '../../../src/tools/epic-run-phase';
+import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 
 const realInternals = { ..._internals };
 
@@ -108,7 +110,8 @@ beforeEach(() => {
 		decisionRecordings: 0,
 	};
 
-	_internals.isEpicModeActive = (() => stub.epicActive) as never;
+	_internals.getOpenEpic = (() =>
+		stub.epicActive ? stubEpicRecord() : null) as never;
 	_internals.loadPlanJsonOnly = (async () => stub.plan) as never;
 	_internals.loadPluginConfigWithMeta = (() => ({
 		config: stub.pluginConfig,
@@ -121,13 +124,13 @@ beforeEach(() => {
 		stub.evidenceAppends += 1;
 		return '/fake/evidence/path';
 	}) as never;
-	_internals.recordEpicDecision = (() => {
+	_internals.recordEpicLastDecision = (() => {
 		stub.decisionRecordings += 1;
 	}) as never;
 });
 
 afterEach(() => {
-	_internals.isEpicModeActive = realInternals.isEpicModeActive;
+	_internals.getOpenEpic = realInternals.getOpenEpic;
 	_internals.loadPlanJsonOnly = realInternals.loadPlanJsonOnly;
 	_internals.loadPluginConfigWithMeta = realInternals.loadPluginConfigWithMeta;
 	_internals.resolveEpicDeclaredScopes =
@@ -135,7 +138,7 @@ afterEach(() => {
 	_internals.getCoChangeData = realInternals.getCoChangeData;
 	_internals.decideEpicActivation = realInternals.decideEpicActivation;
 	_internals.appendPromotionEvidence = realInternals.appendPromotionEvidence;
-	_internals.recordEpicDecision = realInternals.recordEpicDecision;
+	_internals.recordEpicLastDecision = realInternals.recordEpicLastDecision;
 	_internals.loadCalibrationState = realInternals.loadCalibrationState;
 	_internals.saveCalibrationState = realInternals.saveCalibrationState;
 	_internals.applyCalibration = realInternals.applyCalibration;
@@ -154,7 +157,7 @@ afterEach(() => {
 });
 
 describe('executeEpicDecidePhase — failure modes', () => {
-	test('returns epic-mode-not-active when the session has not toggled on', async () => {
+	test('returns epic-mode-not-active when no epic is open', async () => {
 		stub.epicActive = false;
 		const result = await executeEpicDecidePhase({
 			directory: '/fake',
@@ -164,7 +167,8 @@ describe('executeEpicDecidePhase — failure modes', () => {
 		expect(result.success).toBe(false);
 		expect(result.reason).toBe('epic-mode-not-active');
 		// F7e: the refusal carries remediation instead of a bare code.
-		expect(result.message).toContain('/swarm epic on');
+		expect(result.message).toContain('/swarm epic start');
+		expect(result.message).not.toContain('/swarm epic on');
 		expect(stub.evidenceAppends).toBe(0);
 	});
 
@@ -200,8 +204,8 @@ describe('executeEpicDecidePhase — demotion path', () => {
 });
 
 describe('executeEpicDecidePhase — fail-closed on state-unreadable', () => {
-	test('recordEpicDecision throw causes fail-closed (no decided verdict)', async () => {
-		_internals.recordEpicDecision = (() => {
+	test('recordEpicLastDecision throw causes fail-closed (no decided verdict)', async () => {
+		_internals.recordEpicLastDecision = (() => {
 			throw new Error('Epic state is unreadable for /fake');
 		}) as never;
 
@@ -501,52 +505,6 @@ describe('executeEpicDecidePhase — Capability D calibration wiring', () => {
 			sessionID: 's1',
 		});
 		expect(loadCalls).toBe(0);
-	});
-});
-
-describe('epic_decide_phase tool — ctx.sessionID precedence (Fix B)', () => {
-	test('uses ctx.sessionID over args.sessionID when the framework supplies it', async () => {
-		// Reproduce the live failure: weaker models hallucinate
-		// sessionID="default" in args, while the framework supplies the
-		// real session via ctx. The tool must prefer ctx.
-		let observedSessionID: string | undefined;
-		_internals.isEpicModeActive = ((_dir: string, sid: string) => {
-			observedSessionID = sid;
-			return true;
-		}) as never;
-
-		const def = epic_decide_phase as unknown as {
-			execute: (
-				args: unknown,
-				ctx?: { sessionID?: string; directory?: string },
-			) => Promise<unknown>;
-		};
-		await def.execute(
-			{ phase: 1, sessionID: 'ses_defaultArg' },
-			{ sessionID: 'ses_realCtxAbc123', directory: '/fake' },
-		);
-		expect(observedSessionID).toBe('ses_realCtxAbc123');
-	});
-
-	test('falls back to args.sessionID when ctx is missing', async () => {
-		let observedSessionID: string | undefined;
-		_internals.isEpicModeActive = ((_dir: string, sid: string) => {
-			observedSessionID = sid;
-			return true;
-		}) as never;
-
-		const def = epic_decide_phase as unknown as {
-			execute: (
-				args: unknown,
-				ctx?: { sessionID?: string; directory?: string },
-			) => Promise<unknown>;
-		};
-		// ctx with no sessionID — must use args.sessionID.
-		await def.execute(
-			{ phase: 1, sessionID: 'ses_fromArgs' },
-			{ directory: '/fake' },
-		);
-		expect(observedSessionID).toBe('ses_fromArgs');
 	});
 });
 

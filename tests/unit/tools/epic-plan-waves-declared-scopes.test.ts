@@ -19,6 +19,7 @@ import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
 } from '../../helpers/declared-scope-bindings';
+import { wideOpenEpic } from '../../helpers/epic-lifecycle';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 
@@ -85,6 +86,7 @@ function useLeanConfig(lean: Record<string, unknown>): void {
 }
 
 beforeEach(() => {
+	_internals.getOpenEpic = wideOpenEpic; // an epic must be open
 	const created = createSafeTestDir('epic-plan-waves-v2-');
 	dir = created.dir;
 	cleanup = created.cleanup;

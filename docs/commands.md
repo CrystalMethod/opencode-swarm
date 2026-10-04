@@ -379,11 +379,11 @@ Computes the coupling coefficient p = (conflicting task pairs) / (total task pai
 
 ### `/swarm epic`
 
-Toggle Epic Mode (autonomous coupling-aware parallel activation) and inspect its decisions
+Open, inspect, and close a plan-scoped epic (coupling-aware parallel execution of the current plan)
 
-**Args:** `on | off | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]`
+**Args:** `start [--force] | close [--abandon] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]`
 
-Epic Mode decides per phase whether the plan's tasks can run in parallel and dispatches promoted waves itself via visible Task calls (it does not require Lean Turbo). Requires `turbo.epic.mode.enabled: true` in config (a `turbo` block must also declare `strategy`); `on` is refused otherwise. When on, the architect follows the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → for each wave in order, dispatch one Task per taskId in the wave, ALL in one assistant message (each concurrent coder appears as a visible subagent the user can click into) → per task: pre_check_batch → reviewer + test_engineer → update_task_status(completed) → epic_record_divergence → epic_phase_review → phase_complete. epic_decide_phase computes the plan-wide coupling coefficient p and gates parallel promotion on p + a hot-module check + a greenfield (predecessor-evidence) rule. epic_plan_waves partitions promoted phases into ordered concurrent groups (waves) that respect dependency order and scope disjointness. Subcommands: on, off, status, decide (read-only what-if), last (most recent decision from durable evidence log), calibration (Capability D state: learned threshold + hot modules + recent divergent tasks), clear-merge-failure <taskId> [--confirm] (clear a recorded worktree merge failure that blocks Rule 2's completion marker — read-only preview without --confirm; only for a task id that has a recorded failure). status also lists recorded worktree merge failures as blocking, undated (blocking, fail closed) or stale (from before the current plan; ignored). Bare /swarm epic shows status. Decision rationale persists to .swarm/evidence/epic-promotions.jsonl after every epic_decide_phase invocation.
+An epic is bound to ONE plan: `start` opens it for the current plan, `close` ends it. Requires `turbo.epic.mode.enabled: true` in config (a `turbo` block must also declare `strategy`). `start [--force]` refuses, in order: epic-disabled-by-config, no-plan / plan-ledger-unreadable, epic-already-open (idempotent for the same plan) / epic-open-for-other-plan, turbo-active (config turbo_mode, a session with Turbo on, or a running Lean run — Epic enables neither Lean nor Turbo and never waives per-task QA), dirty-baseline (git: uncommitted changes outside .swarm/), in-flight-coders (any coder dispatch, background delegation, unsettled settlement, or preserved/recovery lane), not-epic-sized (too few pending tasks, insufficient scope coverage, or insufficient effective speedup — run it in Balanced; `--force` overrides and is recorded). Non-git projects run an epic serially (one task per wave). While open, the architect follows the decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → for each wave, one Task per taskId in ONE message → per task: pre_check_batch → reviewer + test_engineer → update_task_status(completed) → epic_record_divergence → epic_phase_review → phase_complete. `close [--abandon]` refuses while tasks are pending (or the epic is orphaned / unreadable) unless `--abandon`, then writes a close report to .swarm/epic/reports/ and .swarm/epic-prior/reports/ (newest 50 kept). `status` (also bare /swarm epic) shows the epic, orphan detection (plan renamed or replaced), sentinel/row repair, recorded worktree merge failures, and retires legacy Epic v1 session state once. Also: decide (read-only what-if), last (most recent decision from .swarm/evidence/epic-promotions.jsonl), calibration (Capability D state), clear-merge-failure <taskId> [--confirm]. The former `on` / `off` toggles were removed.
 
 ### `/swarm dark-matter`
 
@@ -755,15 +755,14 @@ Loads the full tool output that was previously summarized (referenced by IDs lik
 
 ### `/swarm turbo`
 
-Toggle Turbo Mode strategy for the active session [on|off|lean|standard|epic|status]
+Toggle Turbo Mode strategy for the active session [on|off|lean|standard|status]
 
-**Args:** `on, off, lean, standard, epic, status`
+**Args:** `on, off, lean, standard, status`
 
-Toggles Turbo Mode for the current session. Supports three strategies:
+Toggles Turbo Mode for the current session. Supports two strategies:
 
 **Standard turbo** — Bypassed: Stage B (reviewer + test_engineer) for Tier 0-2 tasks; phase_complete Gates 1-5 (completion-verify, drift-verifier, hallucination-guard, mutation-gate, phase-council). Still enforced: Stage A (lint, imports, pre_check_batch); Tier 3 Stage B; Gate 5b (architecture-supervisor); Gate 6 (final-council); Gate 7 (full-auto).
 **Lean turbo** — parallel lane execution with per-lane reviewer gates and file-lock conflict detection. Bypassed: Stage B (reviewer + test_engineer) for Tier 0-2 tasks; phase_complete Gates 1-5 (completion-verify, drift-verifier, hallucination-guard, mutation-gate, phase-council). Still enforced: Stage A (lint, imports, pre_check_batch); Tier 3 Stage B; Gate 5b (architecture-supervisor); Gate 6 (final-council); Gate 7 (full-auto).
-**Epic** — auto-decides per phase whether to run tasks in parallel via the coupling coefficient `p` and three gates (p-threshold, hot-module, greenfield). Promoted waves are dispatched by the architect as visible `Task` calls (not through Lean Turbo); every task still runs per-task Stage A/B, and `epic_phase_review` is required before `phase_complete`. Requires `turbo.epic.mode.enabled: true`. `/swarm turbo epic on` enables Lean Turbo and Epic Mode together.
 
 Subcommands:
   turbo on           — enable turbo (uses lean when config turbo.strategy is "lean", otherwise standard)
@@ -773,12 +772,11 @@ Subcommands:
   turbo lean         — toggle Lean Turbo on/off
   turbo standard on  — force standard turbo (disables lean even if config says lean)
   turbo standard off — disable all turbo modes (standard + lean)
-  turbo epic on      — enable Lean Turbo + Epic Mode together (autonomous decision)
-  turbo epic off     — disable both Lean Turbo and Epic Mode
-  turbo epic         — toggle Epic Mode (+ Lean Turbo) on/off
   turbo status       — show detailed status including active strategy and lanes
 
-Session-scoped — resets on new session. `/swarm epic` remains as the epic-only toggle that does not also flip Lean Turbo session state.
+Epic Mode is not a Turbo strategy: start it with `/swarm epic start` (it enables neither Lean nor Turbo, and per-task QA is never waived). `turbo epic [on|off]` replies with that redirect and changes nothing. While an epic is open, every Turbo-enabling subcommand is refused (`epic-open`) until `/swarm epic close`; turning Turbo off always works.
+
+Session-scoped — resets on new session.
 
 ### `/swarm full-auto`
 

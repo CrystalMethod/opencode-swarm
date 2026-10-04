@@ -328,7 +328,6 @@ import {
 	getLiveContextModelIdentity,
 	getLiveContextWindow,
 	getSessionBudgetPct,
-	hasActiveEpicMode,
 	setLiveContextWindow,
 	swarmState,
 } from './state';
@@ -341,12 +340,6 @@ import {
 import { buildPluginToolObject } from './tools/plugin-registration';
 import { reconcilePrWorkflowCheckoutReceipts } from './tools/prepare-pr-workflow-checkout.js';
 import { createTrainingCaptureObserver } from './training/capture.js';
-import { isEpicModeConfigEnabled } from './turbo/epic/config-gate.js';
-import {
-	clearEpicSessionRow,
-	_internals as epicStateInternals,
-	refreshEpicSessionHeartbeat,
-} from './turbo/epic/state.js';
 import { error, log, warn } from './utils';
 import { pushAdvisory } from './utils/advisory-queue';
 import { setGitBinaryOverride } from './utils/git-executable';
@@ -2305,15 +2298,6 @@ async function initializeOpenCodeSwarm(
 	const backgroundSubagentsEnabled =
 		(config.hooks as Record<string, unknown> | undefined)
 			?.background_subagents === true;
-	// Epic Mode session-lifecycle hooks (row clear / heartbeat) are Epic-only:
-	// computed once from the already-loaded config so non-Epic sessions pay
-	// zero extra I/O on session events.
-	const epicModeConfigEnabled = isEpicModeConfigEnabled(config);
-	// Let the project-scoped Epic probe honour a LIVE in-process Epic session
-	// past its row's staleness TTL (in-memory read, zero I/O; see
-	// `isSessionLiveInProcess` in src/turbo/epic/state.ts).
-	epicStateInternals.isSessionLiveInProcess = (sessionID) =>
-		hasActiveEpicMode(sessionID);
 	let pendingDelegationsModulePromise: Promise<
 		typeof import('./background/pending-delegations.js')
 	> | null = null;
@@ -4080,9 +4064,6 @@ async function initializeOpenCodeSwarm(
 						properties?.info?.id ??
 						properties?.id;
 					if (sessionID) {
-						// Read before any session teardown below: the in-memory
-						// Epic flag (zero I/O) gates the Epic row heartbeat/clear.
-						const epicSessionActive = hasActiveEpicMode(sessionID);
 						delegationGateHooks.sessionEnded(
 							sessionID,
 							lifecycleEvent.type === 'session.deleted' ||
@@ -4138,35 +4119,10 @@ async function initializeOpenCodeSwarm(
 							}
 							if (bootstrapStateWritesEnabled) {
 								deleteSnapshotSessionRows(bootstrapRoot, sessionID);
-								// Session end clears this session's durable Epic Mode row so a
-								// deleted Epic session cannot keep the project-scoped Epic probe
-								// (Rule 2 auto-commit, Epic phase readiness) on for later
-								// sessions. Epic-only: skipped (no DB open) unless Epic is
-								// enabled by config or this session carries the Epic flag.
-								if (epicModeConfigEnabled || epicSessionActive) {
-									try {
-										clearEpicSessionRow(bootstrapRoot, sessionID);
-									} catch {
-										warn(
-											'Epic Mode session row cleanup on session deletion failed (non-fatal)',
-										);
-									}
-								}
 							}
 							clearPendingTaskModelRoutesForSession(sessionID);
 							clearSessionActionCircuits(sessionID);
 							clearFullAutoSevereSession(sessionID);
-						} else if (bootstrapStateWritesEnabled && epicSessionActive) {
-							// A live Epic session finished a turn: refresh its Epic Mode
-							// liveness heartbeat (throttled; no-op without an active
-							// row) so the project probe's staleness TTL only retires
-							// rows of crashed/abandoned sessions. Non-Epic sessions
-							// skip this entirely (in-memory flag, zero I/O).
-							try {
-								refreshEpicSessionHeartbeat(bootstrapRoot, sessionID);
-							} catch {
-								warn('Epic Mode session heartbeat refresh failed (non-fatal)');
-							}
 						}
 						// Issue #2104 — maintenance point P3: a closed/idle
 						// session is a listed runtime maintenance trigger (a
