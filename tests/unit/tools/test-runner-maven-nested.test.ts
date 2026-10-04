@@ -143,16 +143,12 @@ describe('nested Maven module detection and execution', () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 
 			await test_runner.execute(
-				{ scope: 'all', targets: ['ComdirectOAuthClientFetchSessionTest'] },
+				{ scope: 'all', targets: ['FooTest'] },
 				{ directory: tempDir },
 			);
 
 			expect(spawnCalls.length).toBe(1);
-			expect(spawnCalls[0].cmd).toEqual([
-				'mvn',
-				'test',
-				'-Dtest=ComdirectOAuthClientFetchSessionTest',
-			]);
+			expect(spawnCalls[0].cmd).toEqual(['mvn', 'test', '-Dtest=FooTest']);
 			expect(spawnCalls[0].opts.cwd).toBe(path.join(tempDir, 'backend'));
 		});
 	});
