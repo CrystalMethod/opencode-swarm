@@ -106,9 +106,11 @@ export const EPIC_PHASE_REVIEW_TOOL = 'epic_phase_review';
  * disables `bash` with HTTP 403 ("free tier can only be used from within
  * OpenCode"), and the shared dispatcher (which disables `bash` along with
  * every mutating and plugin tool) surfaces ANY provider-side error as a
- * `completed` response with no text — so the retry fires on every empty
- * completion, not only the Zen 403; a second empty response stays a
- * fail-closed REJECTED. Every other tool stays denied, so this profile is
+ * `completed` response with no text (or, where it reads the assistant
+ * message's `info.error`, as an `error` with a `providerError`) — so the
+ * retry fires on every empty completion and every structured provider
+ * refusal, not only the Zen 403; a second refusal stays a fail-closed
+ * REJECTED. Every other tool stays denied, so this profile is
  * still narrower than the standard per-task reviewer/critic agents (whose
  * own config denies only write/edit/patch among the built-ins). Their shell
  * commands pass the same guardrails, which for a scope-less non-coder role
@@ -735,16 +737,19 @@ async function dispatchRole(
 				let response = await dispatcher.dispatch(request);
 				// A provider-side error (e.g. the Zen free tier's 403 for a
 				// bash-less request) arrives as `completed` with no text (see
-				// EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS): retry once keeping `bash`,
-				// within what is left of this attempt's timeout so one model
-				// attempt never exceeds `timeoutMs`. A model that answers — even
-				// without a verdict — is not retried.
+				// EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS), or — from a dispatcher that
+				// reads the assistant message's `info.error` — as `error` with a
+				// structured `providerError`: retry once keeping `bash`, within
+				// what is left of this attempt's timeout so one model attempt
+				// never exceeds `timeoutMs`. A model that answers — even without
+				// a verdict — and any other failed dispatch are not retried.
 				const remainingMs = timeoutMs - response.durationMs;
-				if (
-					response.status === 'completed' &&
-					response.text.trim() === '' &&
-					remainingMs > 0
-				) {
+				const providerRefused =
+					(response.status === 'completed' && response.text.trim() === '') ||
+					(response.status === 'error' &&
+						(response as { providerError?: unknown }).providerError !==
+							undefined);
+				if (providerRefused && remainingMs > 0) {
 					toolProfile = 'read-only-with-bash';
 					const firstMs = response.durationMs;
 					const retry = await dispatcher.dispatch({

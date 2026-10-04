@@ -247,6 +247,54 @@ describe('runEpicPhaseReview provider-refusal retry', () => {
 		);
 	});
 
+	test('a structured provider refusal (status error + providerError) is retried with bash', async () => {
+		// A dispatcher that reads the assistant message's info.error reports
+		// the Zen 403 as an error carrying providerError instead of an empty
+		// completion; the retry must cover that shape too.
+		const calls: ReviewDispatchRequest[] = [];
+		const scripted = scriptedDispatcher(
+			{ reviewer: [APPROVED], critic: [APPROVED] },
+			calls,
+		);
+		let refused = false;
+		const dispatcher: ReviewModelDispatcher = {
+			dispatch: async (request) => {
+				if (request.agentName === 'reviewer' && !refused) {
+					refused = true;
+					calls.push(request);
+					return {
+						agentName: request.agentName,
+						status: 'error',
+						text: '',
+						error:
+							'Ephemeral agent provider error: APIError (HTTP 403): free tier',
+						providerError: {
+							name: 'APIError',
+							statusCode: 403,
+							message: 'free tier',
+						},
+						durationMs: 5,
+						promptBytes: request.prompt.length,
+						responseBytes: 0,
+					} as never;
+				}
+				return scripted.dispatch(request);
+			},
+		};
+		const result = await runEpicPhaseReview(dir, 1, 'arch', { dispatcher });
+		expect(result.success && result.ready).toBe(true);
+		expect(calls.map((c) => c.agentName)).toEqual([
+			'reviewer',
+			'reviewer',
+			'critic',
+		]);
+		expect(calls[1].tools).toBe(EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS);
+		expect(stored().reviewer).toMatchObject({
+			verdict: 'APPROVED',
+			tool_profile: 'read-only-with-bash',
+		});
+	});
+
 	test('a failed dispatch is not retried with bash', async () => {
 		const calls: ReviewDispatchRequest[] = [];
 		await runEpicPhaseReview(dir, 1, 'arch', {
