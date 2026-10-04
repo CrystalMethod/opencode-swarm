@@ -21,13 +21,25 @@
  *   --min-co-changes <n>    Co-change-count floor override (default: 5).
  *   --format <fmt>          'markdown' (default) or 'json'.
  *   --persist               Also write JSON to .swarm/epic/coupling-report.json.
+ *   --suggest               Also shape the whole plan (Epic v2 C7): the same
+ *                           ranked advisory `save_plan` returns as
+ *                           `epic_shaping` (`src/turbo/epic/shaping.ts`), with
+ *                           the start's inputs (live declared scopes, learned
+ *                           signals of the project prior, co-change when
+ *                           enabled, the epic's wave width). Read-only.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { loadPluginConfigWithMeta } from '../config/index.js';
+import type { Plan } from '../config/plan-schema.js';
+import type { PluginConfig } from '../config/schema.js';
+import { isGitRepo } from '../git/branch.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import { getCoChangePairs } from '../turbo/epic/cochange-source.js';
+import {
+	getCoChangeData,
+	getCoChangePairs,
+} from '../turbo/epic/cochange-source.js';
 import { isEpicCochangeConfigEnabled } from '../turbo/epic/config-gate.js';
 import {
 	type CouplingReport,
@@ -37,6 +49,19 @@ import {
 	formatCouplingReportMarkdown,
 } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
+import { loadEpicLearningView } from '../turbo/epic/learning-store.js';
+import { loadEpicPlanningSignals } from '../turbo/epic/planning-signals.js';
+import {
+	type EpicShapingReport,
+	formatEpicShapingLines,
+	shapeEpicPlan,
+} from '../turbo/epic/shaping.js';
+import {
+	epicSizingContextFor,
+	epicWaveWidth,
+	isDirectoryOnDisk,
+	isEpicPendingStatus,
+} from '../turbo/epic/shaping-sizing.js';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write';
 
 interface CouplingCliArgs {
@@ -45,6 +70,7 @@ interface CouplingCliArgs {
 	minCoChanges: number;
 	format: 'markdown' | 'json';
 	persist: boolean;
+	suggest: boolean;
 	parseError?: string;
 }
 
@@ -57,6 +83,7 @@ function parseArgs(args: string[]): CouplingCliArgs {
 		minCoChanges: DEFAULT_MIN_CO_CHANGES,
 		format: 'markdown',
 		persist: false,
+		suggest: false,
 	};
 
 	for (let i = 0; i < args.length; i++) {
@@ -128,6 +155,9 @@ function parseArgs(args: string[]): CouplingCliArgs {
 			case '--persist':
 				parsed.persist = true;
 				break;
+			case '--suggest':
+				parsed.suggest = true;
+				break;
 			default:
 				parsed.parseError = `unknown argument: ${flag}`;
 				return parsed;
@@ -172,7 +202,7 @@ export async function handleCouplingCommand(
 ): Promise<string> {
 	const parsed = parseArgs(args);
 	if (parsed.parseError) {
-		return `Error: ${parsed.parseError}\n\nUsage: /swarm coupling [--phase <n>] [--threshold <-1..1>] [--min-co-changes <n>] [--format markdown|json] [--persist]`;
+		return `Error: ${parsed.parseError}\n\nUsage: /swarm coupling [--phase <n>] [--threshold <-1..1>] [--min-co-changes <n>] [--format markdown|json] [--persist] [--suggest]`;
 	}
 
 	const plan = await _internals.loadPlanJsonOnly(directory);
@@ -217,10 +247,10 @@ export async function handleCouplingCommand(
 
 	// Co-change master gate. A config load failure fails closed (signal off).
 	let cochangeEnabled = false;
+	let config: PluginConfig | null = null;
 	try {
-		cochangeEnabled = isEpicCochangeConfigEnabled(
-			_internals.loadPluginConfigWithMeta(directory).config,
-		);
+		config = _internals.loadPluginConfigWithMeta(directory).config;
+		cochangeEnabled = isEpicCochangeConfigEnabled(config);
 	} catch {
 		cochangeEnabled = false;
 	}
@@ -259,13 +289,22 @@ export async function handleCouplingCommand(
 		}
 	}
 
+	const shaping = parsed.suggest
+		? await shapeCurrentPlan(directory, plan, config ?? ({} as PluginConfig))
+		: null;
+
 	if (parsed.format === 'json') {
 		// Embed persist status inside the JSON envelope so programmatic
 		// consumers see persistence failures (previously this returned the
 		// report verbatim even when --persist failed, silently misleading
 		// the caller).
 		return JSON.stringify(
-			{ ...report, cochangeSignal, persist: persistStatus },
+			{
+				...report,
+				cochangeSignal,
+				persist: persistStatus,
+				...(shaping ? { shaping } : {}),
+			},
 			null,
 			2,
 		);
@@ -281,7 +320,48 @@ export async function handleCouplingCommand(
 		cochangeSignal === 'disabled-by-config'
 			? '\n\n_Co-change signal: disabled by config (`turbo.epic.cochange.enabled` is not true) — p reflects declared-path conflicts only._'
 			: '\n\n_Co-change signal: enabled._';
-	return `${formatCouplingReportMarkdown(report)}${signalTrailer}${persistTrailer}`;
+	const shapingSection = shaping
+		? `\n\n## Plan shaping (whole plan)\n\n${formatEpicShapingLines(shaping).join('\n')}`
+		: '';
+	return `${formatCouplingReportMarkdown(report)}${signalTrailer}${persistTrailer}${shapingSection}`;
+}
+
+/**
+ * `--suggest`: shape the whole plan with `/swarm epic start`'s inputs —
+ * live declared scopes, the project prior's learned signals, co-change
+ * (fresh, when enabled) and the epic's wave width.
+ */
+async function shapeCurrentPlan(
+	directory: string,
+	plan: Plan,
+	config: PluginConfig,
+): Promise<EpicShapingReport> {
+	const signals = await loadEpicPlanningSignals(
+		directory,
+		config,
+		{
+			loadLearningView: _internals.loadEpicLearningView,
+			getCoChangeData: _internals.getCoChangeData,
+			now: () => Date.now(),
+		},
+		null,
+	);
+	const pendingIds = plan.phases.flatMap((phase) =>
+		phase.tasks
+			.filter((task) => isEpicPendingStatus(task.status))
+			.map((task) => task.id),
+	);
+	return shapeEpicPlan({
+		...epicSizingContextFor(
+			directory,
+			config,
+			epicWaveWidth(config, _internals.isGitRepo(directory)),
+			signals,
+		),
+		phases: plan.phases,
+		declared: resolveEpicDeclaredScopes(directory, plan, pendingIds),
+		isDirectory: (entry) => isDirectoryOnDisk(directory, entry),
+	});
 }
 
 /**
@@ -291,9 +371,15 @@ export async function handleCouplingCommand(
 export const _internals: {
 	loadPlanJsonOnly: typeof loadPlanJsonOnly;
 	getCoChangePairs: typeof getCoChangePairs;
+	getCoChangeData: typeof getCoChangeData;
 	loadPluginConfigWithMeta: typeof loadPluginConfigWithMeta;
+	loadEpicLearningView: typeof loadEpicLearningView;
+	isGitRepo: typeof isGitRepo;
 } = {
 	loadPlanJsonOnly,
 	getCoChangePairs,
+	getCoChangeData,
 	loadPluginConfigWithMeta,
+	loadEpicLearningView,
+	isGitRepo,
 };

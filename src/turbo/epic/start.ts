@@ -41,7 +41,6 @@ import {
 	isTerminalDelegationStatus,
 	readDelegationsDetailed,
 } from '../../background/pending-delegations.js';
-import { DEFAULT_LEAN_TURBO_CONFIG } from '../../config/constants.js';
 import { loadPluginConfigWithMeta } from '../../config/index.js';
 import type { Plan } from '../../config/plan-schema.js';
 import type { PluginConfig } from '../../config/schema.js';
@@ -63,10 +62,8 @@ import { hasActiveTurboMode } from '../../state.js';
 import * as logger from '../../utils/logger.js';
 import { withTimeout } from '../../utils/timeout.js';
 import { listCoderSettlementWalStates } from '../../workflow/coder-settlement.js';
-import type { PlanTask as PartitionTask } from '../lean/partition-common.js';
 import { listRecoveryRecords, recoveryReadErrored } from '../lean/recovery.js';
 import { getCoChangeData } from './cochange-source.js';
-import { dryRunEpicPhase } from './components.js';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
 	isEpicModeConfigEnabled,
@@ -109,11 +106,20 @@ import {
 	type EpicPlanningSignals,
 	loadEpicPlanningSignals,
 } from './planning-signals.js';
+import { type EpicShapingReport, shapeEpicPlan } from './shaping.js';
 import {
-	type EpicSizingVerdict,
-	evaluateEpicSizing,
-	resolveEpicSizingThresholds,
-} from './sizing.js';
+	type EpicPlanSizing,
+	type EpicPlanSizingContext,
+	type EpicScopeEstimate,
+	epicSizingContextFor,
+	epicWaveWidth,
+	estimateEpicScopes,
+	isDirectoryOnDisk,
+	isEpicPendingStatus,
+	MAX_START_SIZING_WORK,
+	sizeEpicPlan,
+} from './shaping-sizing.js';
+import type { EpicSizingVerdict } from './sizing.js';
 
 export type EpicStartRefusal =
 	| 'epic-disabled-by-config'
@@ -149,6 +155,8 @@ export type EpicStartResult =
 			reason: EpicStartRefusal;
 			details: string[];
 			sizing?: EpicSizingVerdict;
+			/** Plan shaping advisory (`not-epic-sized` only; Epic v2 C7). */
+			shaping?: EpicShapingReport;
 	  };
 
 export interface EpicStartOptions {
@@ -361,8 +369,35 @@ export async function findInFlightCoderWork(
 	return found;
 }
 
+/** The refusal detail when the sizing stopped at its work budget. */
+const SIZING_ABORTED_DETAIL =
+	'The plan is too large or densely coupled to size exactly within the sizing work budget: the tasks left unplanned were counted as serial steps. Run it in Balanced, or open it anyway with `/swarm epic start --force`.';
+
 function isPending(status: string | undefined): boolean {
-	return status !== 'completed' && status !== 'closed';
+	return isEpicPendingStatus(status);
+}
+
+/** Sizing of the plan plus the scope estimate it used (start + shaping). */
+interface StartSizing {
+	plan: EpicPlanSizing;
+	estimate: EpicScopeEstimate;
+	context: EpicPlanSizingContext;
+}
+
+function sizeStartPlan(
+	directory: string,
+	plan: Plan,
+	config: PluginConfig,
+	maxParallel: number,
+	signals: EpicPlanningSignals,
+): StartSizing {
+	const estimate = estimatePlanScopes(directory, plan);
+	const context = epicSizingContextFor(directory, config, maxParallel, signals);
+	return {
+		plan: sizeEpicPlan(context, plan.phases, estimate, MAX_START_SIZING_WORK),
+		estimate,
+		context,
+	};
 }
 
 /**
@@ -373,7 +408,10 @@ function isPending(status: string | undefined): boolean {
  * planning signals (learned hot files and co-writes, co-change, density
  * threshold). L = waves
  * + tasks the planner can never schedule (a dependency cycle). Cross-phase
- * dependencies count as satisfied (phases run in order).
+ * dependencies count as satisfied (phases run in order). The computation
+ * is `sizeEpicPlan` (`shaping-sizing.ts`), shared with plan shaping, bounded
+ * by {@link MAX_START_SIZING_WORK} (beyond it the remaining tasks count as
+ * serial — a pessimistic L).
  */
 export function computeEpicSizing(
 	directory: string,
@@ -382,57 +420,53 @@ export function computeEpicSizing(
 	maxParallel: number,
 	signals: EpicPlanningSignals,
 ): EpicSizingVerdict {
+	return sizeStartPlan(directory, plan, config, maxParallel, signals).plan
+		.verdict;
+}
+
+/** Estimated scopes of the plan's pending tasks (live declared, else plan). */
+function estimatePlanScopes(directory: string, plan: Plan): EpicScopeEstimate {
 	const pendingIds: string[] = [];
 	for (const phase of plan.phases) {
 		for (const task of phase.tasks ?? []) {
 			if (isPending(task.status)) pendingIds.push(task.id);
 		}
 	}
-	const declared = _internals.resolveEpicDeclaredScopes(
-		directory,
-		plan,
-		pendingIds,
+	return estimateEpicScopes(
+		plan.phases,
+		_internals.resolveEpicDeclaredScopes(directory, plan, pendingIds),
 	);
-	// Estimated scope: the live declared scope, else `files_touched`
-	// (declarations are per phase and expire, so most tasks are estimated
-	// from the plan at start time).
-	const scopes: Record<string, string[]> = Object.create(null);
-	let scoped = 0;
-	for (const phase of plan.phases) {
-		for (const task of phase.tasks ?? []) {
-			if (!isPending(task.status)) continue;
-			const live = declared[task.id] ?? [];
-			scopes[task.id] = live.length > 0 ? live : (task.files_touched ?? []);
-			if (scopes[task.id].length > 0) scoped += 1;
-		}
-	}
-	const leanConfig = {
-		...DEFAULT_LEAN_TURBO_CONFIG,
-		...(config.turbo?.lean ?? {}),
-	};
-	let serialSteps = 0;
-	for (const phase of plan.phases) {
-		const pending = (phase.tasks ?? []).filter((task) =>
-			isPending(task.status),
-		);
-		if (pending.length === 0) continue;
-		const dryRun = dryRunEpicPhase({
-			directory,
-			tasks: pending as unknown as PartitionTask[],
-			scopes,
-			leanConfig,
-			hotFiles: signals.hotFiles,
-			coWrites: signals.coWrites,
-			cochange: signals.cochange,
-			maxParallel,
-			densityThreshold: signals.densityThreshold,
+}
+
+/**
+ * Plan shaping for a `not-epic-sized` refusal: the start's own sizing (no
+ * second baseline) and scopes, so the suggestions say how to make THIS
+ * start succeed. Fails open (no suggestions).
+ */
+function shapeRefusedPlan(
+	directory: string,
+	plan: Plan,
+	sizing: StartSizing,
+): EpicShapingReport | undefined {
+	try {
+		return _internals.shapeEpicPlan({
+			...sizing.context,
+			phases: plan.phases,
+			declared: Object.fromEntries(
+				sizing.estimate.pendingIds.map((id) => [
+					id,
+					sizing.estimate.scopes[id],
+				]),
+			),
+			baseline: sizing.plan,
+			isDirectory: (entry) => isDirectoryOnDisk(directory, entry),
 		});
-		serialSteps += dryRun.waves.length + dryRun.unscheduled.length;
+	} catch (error) {
+		logger.warn(
+			`[epic/start] plan shaping failed (the refusal carries no suggestions): ${errorText(error)}`,
+		);
+		return undefined;
 	}
-	return evaluateEpicSizing(
-		{ pendingTasks: pendingIds.length, scopedTasks: scoped, serialSteps },
-		resolveEpicSizingThresholds(config.turbo?.epic?.sizing),
-	);
 }
 
 /**
@@ -653,13 +687,7 @@ export async function startEpic(
 	if (inFlight.length > 0) return refused('in-flight-coders', inFlight);
 
 	// 7. Sizing.
-	const maxParallel = git.isRepo
-		? Math.max(
-				1,
-				config.turbo?.lean?.max_parallel_coders ??
-					DEFAULT_LEAN_TURBO_CONFIG.max_parallel_coders,
-			)
-		: 1;
+	const maxParallel = epicWaveWidth(config, git.isRepo);
 	// Learning: import Epic v1 files once, then snapshot the prior the
 	// sizing (and, once open, the epic's posterior) inherits.
 	const learningSettings = resolveEpicLearningSettings(config);
@@ -692,13 +720,14 @@ export async function startEpic(
 		},
 		null,
 	);
-	const sizing = computeEpicSizing(
+	const startSizing = sizeStartPlan(
 		directory,
 		plan,
 		config,
 		maxParallel,
 		signals,
 	);
+	const sizing = startSizing.plan.verdict;
 	if (sizing.pendingTasks === 0) {
 		// Nothing to run: --force cannot open an empty epic.
 		return refused(
@@ -708,7 +737,16 @@ export async function startEpic(
 		);
 	}
 	if (!sizing.epicSized && !force) {
-		return refused('not-epic-sized', [], sizing);
+		// Epic v2 C7: say how to reshape the plan (same scopes + signals —
+		// the co-change data was just read fresh by loadEpicPlanningSignals).
+		return {
+			...refused(
+				'not-epic-sized',
+				startSizing.plan.aborted ? [SIZING_ABORTED_DETAIL] : [],
+				sizing,
+			),
+			shaping: shapeRefusedPlan(directory, plan, startSizing),
+		};
 	}
 
 	const record: EpicRecordV1 = {
@@ -931,6 +969,7 @@ export const _internals = {
 	importLegacyEpicCalibrationOnce,
 	initEpicPosterior,
 	getCoChangeData,
+	shapeEpicPlan,
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
 	findRunningLeanRun,
 	gitExec: (args: string[], cwd: string): string =>

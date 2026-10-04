@@ -12,6 +12,7 @@ import {
 	dryRunEpicPhase,
 	type EpicCochangeSignal,
 	type EpicConflictGraphInput,
+	epicWaveWork,
 	partitionEpicComponents,
 	readyEpicTasks,
 	toWaveComponents,
@@ -369,5 +370,40 @@ describe('recorded components and the dry-run', () => {
 			['1.3'],
 		]);
 		expect(run.unscheduled).toEqual(['1.6', '1.7']);
+	});
+});
+
+describe('bounded dry-run (Epic v2 C7)', () => {
+	const specs = [
+		{ id: '1.1', files: ['src/hub.ts'] },
+		{ id: '1.2', files: ['src/hub.ts'] },
+		{ id: '1.3', files: ['src/hub.ts'] },
+		{ id: '1.4' },
+	];
+	const input = { ...graphInput(specs), maxParallel: 4, densityThreshold: 0.3 };
+
+	test('a sufficient budget changes nothing; the work is counted', () => {
+		const free = dryRunEpicPhase(input);
+		const bounded = dryRunEpicPhase({ ...input, maxWork: 1_000_000 });
+		expect(bounded).toEqual(free);
+		expect(free.aborted).toBe(false);
+		expect(free.work).toBeGreaterThan(0);
+	});
+
+	test('the budget stops the run before a step that would exceed it', () => {
+		const free = dryRunEpicPhase(input);
+		const firstStep = epicWaveWork([1, 1, 1, 1], 0);
+		const bounded = dryRunEpicPhase({ ...input, maxWork: firstStep });
+		expect(bounded.aborted).toBe(true);
+		expect(bounded.waves).toEqual(free.waves.slice(0, 1));
+		expect(bounded.work).toBe(firstStep);
+		// Every task not planned counts as unscheduled (pessimistic steps).
+		expect(bounded.unscheduled.length).toBe(4 - free.waves[0].taskIds.length);
+		expect(dryRunEpicPhase({ ...input, maxWork: 0 })).toMatchObject({
+			waves: [],
+			unscheduled: ['1.1', '1.2', '1.3', '1.4'],
+			aborted: true,
+			work: 0,
+		});
 	});
 });

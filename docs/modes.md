@@ -816,11 +816,38 @@ The Epic v1 `/swarm epic on` / `off` toggles were removed. `/swarm turbo epic �
 
 ### Sizing
 
-`/swarm epic start` refuses a plan that is not worth running as an epic (reason `not-epic-sized`, with the measured values and "run it in Balanced"). With *T* pending tasks (status not `completed`/`closed`), *coverage* the share of them with a scope (live declared scope, else `files_touched`), and *L* the serial steps of a dry run of the Epic component planner — the planner `epic_next_wave` issues waves with, with the same learned hot files and co-writes (from the project prior), co-change signal and density threshold — over every phase under the epic's wave width (the waves it would issue, assuming each completes, plus one step per task it could never schedule, e.g. a dependency cycle):
+`/swarm epic start` refuses a plan that is not worth running as an epic (reason `not-epic-sized`, with the measured values, the top [plan-shaping](#plan-shaping) suggestions, and "run it in Balanced"). With *T* pending tasks (status not `completed`/`closed`), *coverage* the share of them with a scope (live declared scope, else `files_touched`), and *L* the serial steps of a dry run of the Epic component planner — the planner `epic_next_wave` issues waves with, with the same learned hot files and co-writes (from the project prior), co-change signal and density threshold — over every phase under the epic's wave width (the waves it would issue, assuming each completes, plus one step per task it could never schedule, e.g. a dependency cycle):
 
 *S* = *T* / *L*, *S*<sub>eff</sub> = 1 / ((1 − *c*) + *c* / *S*), where *c* = `coder_fraction` (the share of a task's time parallel coders overlap; QA and architect turns stay serial).
 
 A plan is epic-sized when *T* ≥ `min_tasks` (6), coverage ≥ `min_scope_coverage` (0.8), and *S*<sub>eff</sub> ≥ `min_effective_speedup` (1.25); otherwise the reasons are `too-few-tasks`, `insufficient-scope-coverage`, `insufficient-parallelism`. `--force` opens the epic anyway and records `forced: true` in the epic record and its report. A non-git epic (wave width 1) is never epic-sized, so it needs `--force`.
+
+### Plan shaping
+
+Plan shaping says how a plan could run better as an epic, using the same model as [Sizing](#sizing) — and where it appears it is **advice only**: nothing is changed, and the architect decides whether to apply a suggestion through `save_plan`.
+
+**Where it appears.**
+
+- **`save_plan`** — when `turbo.epic.mode.enabled` is true (and no epic is open), the tool result gains `epic_shaping`, computed for the plan as persisted (`plan.json` after the save). With Epic off nothing is computed and the result is unchanged (save_plan reuses the config it already loaded; no extra read, I/O or await). Shaping runs after the plan lock is released and fails open: an error leaves the save successful without `epic_shaping`.
+  - A plan that is not epic-sized and that no suggestion fixes gets one line: `{ status: "not-epic-sized", message: "Plan is not epic-sized (<reason>) — run it in Balanced", cochange }`. A plan over the budget (below) gets `{ status: "skipped-budget", message, cochange }`. With a cold co-change cache the message says so.
+  - Otherwise the full advisory: `status` (`acceptable` — epic-sized, nothing worth changing; or `improvable`), `epic_sized`, `effective_speedup`, `pending_tasks`, `serial_steps`, `reasons`, `cochange`, up to 5 `suggestions`, `iteration` and `next_step`. Every key of the advisory, suggestions and patches included, is snake_case (`task_ids`, `patch.new_task`, `patch.edits[].task_id`, …). The iteration counter (`.swarm/epic/shaping.json`, keyed by plan identity and plan epoch) counts saves of the same plan; from iteration 3, `next_step` says to accept the plan and proceed instead of reshaping again.
+- **`/swarm epic start`** — a `not-epic-sized` refusal shows the top 3 suggestions with their patch, computed from the start's own sizing (no second dry run) and inputs, including fresh co-change data.
+- **`/swarm coupling --suggest`** — the whole plan's advisory, read-only (nothing is written).
+
+**Inputs.** Each pending task's estimated scope (live declared scope, else `files_touched`), the learned hot files and co-writes of the project prior, the epic's wave width (`max_parallel_coders` in a git project, 1 otherwise), and co-change when `turbo.epic.cochange.enabled`. In `save_plan` co-change comes only from the in-memory cache that `/swarm epic start`, `/swarm coupling` and `epic_next_wave` fill (no git command on a plan save): with a cold cache shaping is path-only and says `cochange: "cold"`.
+
+**Suggestions.** Scope advice first, then the rest ranked by ΔS<sub>eff</sub> — the change in effective speedup when the suggestion's patch is applied to the plan and the dry run is repeated. Every plan-changing suggestion is a **concrete patch**: apply it verbatim (new task(s) added to the phase, each edited task given exactly the edit's complete `files_touched` and `depends`, `removed_task_ids` with `removal_reason`) and the plan is valid (unused `N.M` ids, no dangling dependency, no cycle — a patch that would create one is never offered) and sizes exactly as promised.
+
+| Type | When | Payload |
+|---|---|---|
+| `declare-scope` | pending tasks without a scope (they always run alone) | `task_ids` |
+| `narrow-scope` | a directory scope entry that drives conflicts (it conflicts with every task under it, so it is never extracted) | `entry`, `task_ids` |
+| `extract-prerequisite` | a file declared by ≥ 3 tasks that drives ≥ 25 % of the plan's conflict edges or gains ≥ 0.25 × — the fix for a shared registry/barrel/global file or a hot file | `patch`: `new_task` (owns the file; inherits the owners' outside dependencies that do not lead back to an owner) and `edits` (per owner: `remove_files`, `add_depends`, complete `files_touched` and `depends`) |
+| `isolate-hot-file` | a learned hot file declared by fewer tasks: the same patch moves it into its own task so the rest of each task stops running alone | `patch` |
+| `split-task` | a task joining two conflict clusters (an articulation point): one part per cluster; every task depending on it must depend on all parts | `parts`, `patch`: `new_tasks` + `edits` (the task keeps part 1; dependents gain the new part ids) |
+| `merge-tasks` | two small tasks whose scopes overlap with Jaccard ≥ 0.8 and neither depends on the other through a third task; offered at ΔS<sub>eff</sub> ≥ 0 (they serialize anyway; one task saves a QA cycle) | `keep`, `absorb`, `patch`: `removed_task_ids`, `removal_reason`, `edits` (the kept task's union scope and dependencies; every dependent re-pointed) |
+
+**Budget.** Bounded by work, not time: at most 200 pending tasks and 500 distinct scope files; what-ifs for at most the top 10 candidate files (by edges driven plus tasks made exclusive), 3 split and 3 merge candidates; and one deterministic work allowance (units ≈ path comparisons, charged before each dry-run step, for each graph build, edge-driver lookup and pair scan) — about 0.25 s of computation on a laptop, so Epic adds at most ≈ 0.3 s to a `save_plan`. A plan that does not fit is `skipped-budget` (with its sizing when the baseline fit). Because the bound is the budget, there is no timeout verdict. `/swarm epic start` sizes with a larger allowance (≈ 1–2 s); a plan too large or densely coupled to size within it is refused `not-epic-sized` with the unplanned tasks counted as serial and a "too large to size exactly" note (run it in Balanced, or `--force`).
 
 ### Slash command
 
@@ -890,6 +917,7 @@ The combination is **conservative**: the co-change signal can only escalate a ve
 /swarm coupling --min-co-changes 10            # what-if a stricter count floor
 /swarm coupling --format json                  # machine-readable
 /swarm coupling --persist                      # also write .swarm/epic/coupling-report.json
+/swarm coupling --suggest                      # also shape the whole plan (see Plan shaping)
 ```
 
 **Output structure.** A short header (`p = 0.NNN`, X conflicting pairs out of Y), a per-module contention table, a decoupling roadmap (top-5 modules with their share of detected coupling), and a conflicting-task-pairs table with each pair's reason (`path` / `cochange` / `both`). All figures are *estimates*.

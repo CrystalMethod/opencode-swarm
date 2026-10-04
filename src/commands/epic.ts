@@ -75,6 +75,7 @@ import {
 } from '../turbo/epic/merge-epoch.js';
 import { completedBeforeEpic } from '../turbo/epic/next-wave.js';
 import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
+import { formatEpicShapingLines } from '../turbo/epic/shaping.js';
 import {
 	describeEpicSizingReason,
 	type EpicSizingVerdict,
@@ -188,6 +189,9 @@ function unknownFlags(flags: Set<string>, allowed: string): string[] {
 	return [...flags].filter((flag) => flag !== allowed);
 }
 
+/** Plan-shaping suggestions shown with a `not-epic-sized` refusal. */
+const START_REFUSAL_SUGGESTIONS = 3;
+
 function renderSizingLines(sizing: EpicSizingVerdict): string[] {
 	const lines = [`Sizing: ${summarizeEpicSizing(sizing)}.`];
 	for (const reason of sizing.reasons) {
@@ -231,9 +235,23 @@ async function renderStart(
 		for (const detail of result.details) lines.push(`- ${detail}`);
 		if (result.sizing && result.sizing.pendingTasks > 0) {
 			lines.push(...renderSizingLines(result.sizing));
+			if (
+				result.shaping &&
+				(result.shaping.suggestions.length > 0 ||
+					result.shaping.verdict === 'skipped-budget')
+			) {
+				lines.push(
+					'',
+					...formatEpicShapingLines(result.shaping, {
+						maxSuggestions: START_REFUSAL_SUGGESTIONS,
+					}),
+				);
+			}
 			lines.push(
 				'',
-				'This plan is not epic-sized — run it in Balanced (the standard serial flow). To open an epic anyway, rerun `/swarm epic start --force` (recorded as forced).',
+				result.shaping?.verdict === 'improvable'
+					? 'This plan is not epic-sized as it stands — reshape it (above; the architect applies a patch with save_plan), run it in Balanced (the standard serial flow), or rerun `/swarm epic start --force` (recorded as forced).'
+					: 'This plan is not epic-sized — run it in Balanced (the standard serial flow). To open an epic anyway, rerun `/swarm epic start --force` (recorded as forced).',
 			);
 		}
 		return lines.join('\n');

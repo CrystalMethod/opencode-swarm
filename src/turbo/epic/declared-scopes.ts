@@ -58,9 +58,13 @@ export function resolveEpicDeclaredScopes(
 	} catch {
 		bindingSet = null;
 	}
-	if (bindingSet === null) return result;
+	if (bindingSet === null || bindingSet.length === 0) return result;
 
+	// Only tasks with a binding in the set can resolve to a scope: skip the
+	// per-task lookup (which hashes the plan structure) for the others.
+	const bound = new Set(bindingSet.map((binding) => binding.taskId));
 	for (const taskId of taskIds) {
+		if (!bound.has(taskId)) continue;
 		let files: string[] | null = null;
 		try {
 			files = readDeclaredScopeFilesFromBindings({

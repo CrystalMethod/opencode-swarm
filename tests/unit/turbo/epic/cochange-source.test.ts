@@ -17,7 +17,9 @@ import {
 	_cacheSize,
 	_clearCache,
 	_internals,
+	getCoChangeData,
 	getCoChangePairs,
+	peekCoChangeData,
 } from '../../../../src/turbo/epic/cochange-source';
 
 const realInternals = { ..._internals };
@@ -207,5 +209,26 @@ describe('getCoChangePairs — signal absent', () => {
 		// But analyzer still ran — we wanted to ask.
 		expect(stub.parseGitLogCalls).toEqual(['/young-repo']);
 		expect(stub.buildMatrixCalls).toBe(1);
+	});
+});
+
+describe('peekCoChangeData — warm cache only (Epic v2 C7 save_plan seam)', () => {
+	test('cold: null, and no git subprocess / analyzer run', () => {
+		stub.heads.set('/repo', 'sha-1');
+		expect(peekCoChangeData('/repo')).toBeNull();
+		expect(stub.execFileCalls).toEqual([]);
+		expect(stub.parseGitLogCalls).toEqual([]);
+	});
+
+	test('warm: the cached data, without re-reading HEAD', async () => {
+		stub.heads.set('/repo', 'sha-1');
+		stub.matrix.set('k', entry('src/a.ts', 'src/b.ts'));
+		const fresh = await getCoChangeData('/repo');
+		stub.execFileCalls.length = 0;
+		// HEAD moved: peek still returns the (older) cached estimate.
+		stub.heads.set('/repo', 'sha-2');
+		expect(peekCoChangeData('/repo')).toEqual(fresh);
+		expect(peekCoChangeData('/other')).toBeNull();
+		expect(stub.execFileCalls).toEqual([]);
 	});
 });

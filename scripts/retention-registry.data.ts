@@ -1473,10 +1473,11 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 	{
 		id: 'epic-lifecycle',
 		category: 3,
-		pathGrammar: '.swarm/epic/epic.json (sentinel projection) + .swarm/epic/reports/<epicKey>-<stamp>.json + project-DB coordination_state row turbo.epic.lifecycle/<epicKey>',
+		pathGrammar: '.swarm/epic/epic.json (sentinel projection) + .swarm/epic/reports/<epicKey>-<stamp>.json + .swarm/epic/shaping.json (plan-shaping iteration counter, epic-shaping-v1) + project-DB coordination_state row turbo.epic.lifecycle/<epicKey>',
 		canonicalRoot: 'project-swarm',
-		writerModules: ['src/turbo/epic/lifecycle.ts', 'src/turbo/epic/close.ts'],
+		writerModules: ['src/turbo/epic/lifecycle.ts', 'src/turbo/epic/close.ts', 'src/turbo/epic/plan-shaping-seam.ts'],
 		writerCitations: [
+			'src/turbo/epic/plan-shaping-seam.ts:175 bumpShapingIteration — one small atomic JSON (plan key + iteration) rewritten per save_plan with Epic config on and no epic open',
 			'src/turbo/epic/lifecycle.ts:914 createEpicRecord — CAS row create + sentinel write inside one BEGIN IMMEDIATE (the lifecycle lock)',
 			'src/turbo/epic/lifecycle.ts:956 updateEpicRecord — revision-CAS row update (waves, task outcomes, phases, epic branch, closing, landing attempt); the row grows with the plan: ≤ one wave + one outcome per task, ≤ 256 co-change pairs and ≤ 256 task → component entries per wave, ≤ 20 review verdicts per phase',
 			'src/turbo/epic/lifecycle.ts:1266 deleteEpicState — row delete + sentinel compare-and-delete under the lock',
@@ -1486,11 +1487,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		readerCitations: [
 			'src/turbo/epic/lifecycle.ts:801 getOpenEpic — sentinel existsSync first; one row read (≤8 rows listed) only when the sentinel exists',
 			'src/turbo/epic/lifecycle.ts:736 inspectEpic — /swarm epic * and /swarm close only',
+			'src/turbo/epic/plan-shaping-seam.ts:148 readShapingState — the small shaping counter, read by the same save_plan seam',
 		],
-		schemaVersion: 'epic-record-v1 / epic-sentinel-v1 / epic-report-v1',
+		schemaVersion: 'epic-record-v1 / epic-sentinel-v1 / epic-report-v1 / epic-shaping-v1',
 		stateClass: 'operational',
 		privacyClass: 'metadata',
-		writeLimits: { bound: 'at most ONE lifecycle row per project (start refuses while any row exists); one sentinel; one report per closed epic, under .swarm/epic/ which close archives+cleans', scope: 'global', citation: 'src/turbo/epic/lifecycle.ts:896; src/commands/close/constants.ts:268' },
+		writeLimits: { bound: 'at most ONE lifecycle row per project (start refuses while any row exists); one sentinel; one report per closed epic; one shaping counter (single plan key, overwritten), under .swarm/epic/ which close archives+cleans', scope: 'global', citation: 'src/turbo/epic/lifecycle.ts:896; src/commands/close/constants.ts:268' },
 		readBound: { pattern: 'indexed', bound: 'sentinel existsSync + ≤8-row namespace listing + bounded plan.json (8 MiB) / ledger root line (1 MiB) reads', sync: true, citation: 'src/turbo/epic/lifecycle.ts:783' },
 		lockModel: 'coordination BEGIN IMMEDIATE transaction is the lifecycle lock; row revision CAS',
 		crashBehavior: 'sentinel without row ⇒ probe off, repaired by /swarm epic status; row without sentinel ⇒ probe off, sentinel restored by status; interrupted close resumes from status closing',

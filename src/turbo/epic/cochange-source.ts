@@ -174,6 +174,20 @@ export async function getCoChangeData(
 }
 
 /**
+ * The co-change data last computed for `directory` (any HEAD), WITHOUT git:
+ * no subprocess, no scan — a read of the in-memory cache `getCoChangeData`
+ * fills. Null when nothing is cached (cold: the caller plans path-only and
+ * says so). The entry may be for an older HEAD; it is a planning estimate.
+ * Used by the `save_plan` plan-shaping seam (Epic v2 C7), which must not
+ * spawn git on a plan save.
+ */
+export function peekCoChangeData(directory: string): CoChangeData | null {
+	const cached = cache.get(canonicalRootKeyFresh(directory));
+	if (!cached) return null;
+	return { pairs: cached.entries, commitsObserved: cached.commitsObserved };
+}
+
+/**
  * Back-compat wrapper kept for the M2 path (`/swarm coupling` only needs
  * `pairs`). Capability C uses `getCoChangeData` directly for the
  * greenfield gate.

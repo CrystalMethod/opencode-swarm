@@ -593,10 +593,48 @@ export interface EpicPhaseDryRun {
 	/** Waves in issue order. */
 	waves: EpicWaveChoice[];
 	/**
-	 * Tasks never scheduled: `blocked` tasks, a dependency cycle, and tasks
-	 * downstream of either.
+	 * Tasks never scheduled: `blocked` tasks, a dependency cycle, tasks
+	 * downstream of either — and, when the run stopped at its work budget,
+	 * every task still pending (each then counts as one serial step: a
+	 * pessimistic L).
 	 */
 	unscheduled: string[];
+	/** Work units spent ({@link epicWaveWork} summed over the waves). */
+	work: number;
+	/** True when `maxWork` stopped the run before every task was planned. */
+	aborted: boolean;
+}
+
+/** Work units per scope path per wave (the shared preflight resolves each). */
+export const EPIC_WORK_PER_SCOPE_PATH = 8;
+/** Work units per task pair per wave (graph + component bookkeeping). */
+export const EPIC_WORK_PER_TASK_PAIR = 6;
+
+/**
+ * Deterministic cost estimate (work units ≈ path comparisons) of ONE
+ * planning step over `remaining` tasks with these scope sizes, `history`
+ * waves old: per-path preflight + per-pair graph work + the pairwise path
+ * comparisons (Σ_{i<j} |a_i|·|a_j|) + component aging. Callers that must
+ * stay bounded (start sizing, plan shaping) spend a budget of these.
+ */
+export function epicWaveWork(
+	scopeSizes: readonly number[],
+	history: number,
+): number {
+	let sum = 0;
+	let squares = 0;
+	for (const size of scopeSizes) {
+		const n = Math.max(1, size);
+		sum += n;
+		squares += n * n;
+	}
+	const r = scopeSizes.length;
+	return (
+		EPIC_WORK_PER_SCOPE_PATH * sum +
+		(EPIC_WORK_PER_TASK_PAIR * r * (r - 1)) / 2 +
+		(sum * sum - squares) / 2 +
+		r * history
+	);
 }
 
 /**
@@ -608,11 +646,16 @@ export interface EpicPhaseDryRun {
  * planning scope. `blocked` tasks never run (as in `epic_next_wave`), so
  * they and their dependents are unscheduled. Dependencies outside the
  * phase count as satisfied (phases run in order).
+ *
+ * `maxWork` bounds the run: before each step its {@link epicWaveWork} is
+ * charged; a step that would exceed the budget is not run (`aborted`, the
+ * rest unscheduled). Without it the run is unbounded (and identical).
  */
 export function dryRunEpicPhase(
 	input: EpicConflictGraphInput & {
 		maxParallel: number;
 		densityThreshold: number;
+		maxWork?: number;
 	},
 ): EpicPhaseDryRun {
 	const blocked = new Set(
@@ -621,7 +664,19 @@ export function dryRunEpicPhase(
 	let remaining = input.tasks.filter((task) => !blocked.has(task.id));
 	const history: EpicWaveHistoryEntry[] = [];
 	const waves: EpicWaveChoice[] = [];
+	const sizeOf = (id: string) => (input.scopes[id] ?? []).length;
+	let work = 0;
+	let aborted = false;
 	while (remaining.length > 0) {
+		const cost = epicWaveWork(
+			remaining.map((task) => sizeOf(task.id)),
+			history.length,
+		);
+		if (input.maxWork !== undefined && work + cost > input.maxWork) {
+			aborted = true;
+			break;
+		}
+		work += cost;
 		const { partition, choice } = planNextEpicWave({
 			...input,
 			tasks: remaining,
@@ -642,5 +697,7 @@ export function dryRunEpicPhase(
 		unscheduled: [...blocked, ...remaining.map((task) => task.id)].sort(
 			(a, b) => a.localeCompare(b),
 		),
+		work,
+		aborted,
 	};
 }
