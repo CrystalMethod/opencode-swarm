@@ -5,13 +5,18 @@
  * `main` branch, results threaded into checkQuarantineMetadata. Dropping the
  * extras wiring (M5) leaves every unit-level Check 7 call green, so this file
  * drives the REAL main() entry over a git fixture and asserts the ERROR line
- * and the gate exit code. All clocks are fixed literal dates.
+ * and the gate exit code. Fixture EXPIRYs are far-future literals: the
+ * renewal comparison never reads a clock, and Check 7's real-clock per-entry
+ * math cannot interfere at any wall-clock date (review PRR-002 time-bomb).
  */
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { main } from '../../../../scripts/check-invariants';
+import {
+	computeQuarantineRenewalFromBaseline,
+	main,
+} from '../../../../scripts/check-invariants';
 import { DEFAULT_QUARANTINE_LEDGERS } from '../../../../scripts/ci/quarantine-census';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
@@ -51,7 +56,7 @@ describe('gate wiring: main() drives the renewal gate (reviewer M5 kill)', () =>
 			[
 				'# fixture',
 				'# OWNER: @bob — #2973 anchor',
-				'# EXPIRY: 2026-10-08 — original expiry',
+				'# EXPIRY: 2099-01-01 — original expiry',
 				'tests/unit/renew.test.ts',
 			].join('\n'),
 		);
@@ -63,7 +68,7 @@ describe('gate wiring: main() drives the renewal gate (reviewer M5 kill)', () =>
 			[
 				'# fixture',
 				'# OWNER: @bob — legacy owner no ref',
-				'# EXPIRY: 2026-11-20 — renewed expiry',
+				'# EXPIRY: 2099-01-20 — renewed expiry',
 				'tests/unit/renew.test.ts',
 			].join('\n'),
 		);
@@ -95,7 +100,7 @@ describe('gate wiring: main() drives the renewal gate (reviewer M5 kill)', () =>
 		const dir = gitFixture();
 		try {
 			const { code, log } = await runMainCaptured(dir);
-			expect(log).toContain('renewed EXPIRY 2026-11-20');
+			expect(log).toContain('renewed EXPIRY 2099-01-20');
 			expect(log).toContain('tests/unit/renew.test.ts');
 			expect(log).toContain('without an OWNER issue reference');
 			expect(code).toBe(1);
@@ -121,4 +126,58 @@ describe('gate wiring: main() drives the renewal gate (reviewer M5 kill)', () =>
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	}, 120_000);
+});
+
+describe('renewal fail-open contract (review PRR-022): no base, no violation', () => {
+	test('repo with no resolvable base ref yields no renewal leg and no violations', async () => {
+		const dir = canonicalMkdtemp('q-census-gatewiring-nobase-');
+		try {
+			fs.mkdirSync(path.join(dir, 'scripts', 'ci'), { recursive: true });
+			// Head ledgers carry an active entry, so the fast all-empty guard
+			// passes and the base-ref resolution is the leg that fails open.
+			fs.writeFileSync(
+				path.join(dir, 'scripts', 'ci', 'quarantined-tests.txt'),
+				[
+					'# fixture',
+					'# OWNER: @bob — legacy owner no ref',
+					'# EXPIRY: 2099-01-20 — renewed expiry',
+					'tests/unit/renew.test.ts',
+				].join('\n'),
+			);
+			const renewal = await computeQuarantineRenewalFromBaseline(dir);
+			expect(renewal).toBeUndefined();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
+
+	test('base branch without the ledgers yields no baseline and no violations', async () => {
+		const dir = canonicalMkdtemp('q-census-gatewiring-nobaseline-');
+		try {
+			fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+			fs.writeFileSync(path.join(dir, 'src', 'index.ts'), 'export {};\n');
+			const git = (args: string[]) =>
+				spawnSync('git', args, { cwd: dir, encoding: 'utf8', timeout: 30_000 });
+			git(['init', '-b', 'main']);
+			git(['config', 'user.email', 't@example.com']);
+			git(['config', 'user.name', 'T']);
+			git(['add', '-A']);
+			git(['commit', '-m', 'base without ledgers']);
+			// Head ledgers appear only in the working tree, uncommitted.
+			fs.mkdirSync(path.join(dir, 'scripts', 'ci'), { recursive: true });
+			fs.writeFileSync(
+				path.join(dir, 'scripts', 'ci', 'quarantined-tests.txt'),
+				[
+					'# fixture',
+					'# OWNER: @bob — legacy owner no ref',
+					'# EXPIRY: 2099-01-20 — renewed expiry',
+					'tests/unit/renew.test.ts',
+				].join('\n'),
+			);
+			const renewal = await computeQuarantineRenewalFromBaseline(dir);
+			expect(renewal).toBeUndefined();
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}, 60_000);
 });

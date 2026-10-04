@@ -23,12 +23,16 @@ I slot I8):
   offline gate verifies the reference; the weekly aging run additionally
   reports each anchor's live open/closed state.
 - **Weekly aging workflow** — `.github/workflows/quarantine-aging.yml` (new;
-  Monday 12:00 UTC + `workflow_dispatch` with a `dry_run` input) runs
-  `scripts/ci/quarantine-aging.ts` (new), which maintains exactly one
-  deduplicated tracking issue titled `Quarantine aging: <n> entries expire
-  within 21 days` (adopted only when authored by `github-actions[bot]`;
-  duplicates closed) and closes it when the count reaches 0. Routing is
-  fail-open; a local dry run (`--dry-run`) makes no network calls.
+  Monday 12:00 UTC + `workflow_dispatch` with a `dry_run` input,
+  `fetch-depth: 0` checkout so the trend reads real history, 15-minute job
+  timeout) runs `scripts/ci/quarantine-aging.ts` (new), which maintains
+  exactly one deduplicated tracking issue titled `Quarantine aging: <n>
+  entries expire within 21 days` (adopted only when bot-authored — matched
+  structurally via the author's `is_bot` flag or the known Actions bot
+  logins, since gh renders the Actions app actor as `app/github-actions`;
+  duplicates closed) and closes it when the count reaches 0 — refusing to
+  close when a ledger file is missing. Routing is fail-open; a local dry
+  run (`--dry-run`) makes no network calls.
 
 Also: TESTING.md and `docs/testing/test-stability.md` now document the
 OWNER/EXPIRY grammar, grace semantics, renewal rule, census, and aging

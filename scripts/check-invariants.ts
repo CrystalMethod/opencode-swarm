@@ -1586,14 +1586,10 @@ export async function computeQuarantineRenewalFromBaseline(
 		const headFile = path.join(repoRoot, listRel);
 		const headContent = fs.existsSync(headFile) ? readText(headFile) : '';
 		headLedgerContents.push({ ledger: listRel, content: headContent });
-		// A renewal requires the path to be active in BOTH trees, so a
-		// head ledger with no active entries can never produce one — skip
-		// its baseline read entirely (keeps fixture-path latency flat).
-		const headEntries = parseLedgerEntries(headContent);
-		if (headEntries.length === 0) {
-			baseLedgerContents.push({ ledger: listRel, content: '' });
-			continue;
-		}
+		// The baseline is read for EVERY ledger, including ones that are empty
+		// at head: a path moved out of ledger A (emptying it) into ledger B is
+		// still a renewal, and its baseline lives in A — skipping A's read
+		// silently dropped exactly that case (PR #3067 review finding PRR-007).
 		const show = await runGit(['show', `${baseRef}:${listRel}`], repoRoot);
 		if (show.exitCode === 0) {
 			anyBaseline = true;

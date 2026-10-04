@@ -322,38 +322,53 @@ export function checkQuarantineRenewal(options: {
 	baseLedgerContents: QuarantineLedgerContent[];
 	enforce: boolean;
 }): QuarantineRenewalResult {
-	const headByPath = new Map<string, QuarantineEntry>();
+	const headByPath = new Map<string, QuarantineEntry[]>();
 	for (const { ledger, content } of options.headLedgerContents) {
 		for (const entry of parseQuarantineLedger(content, ledger)) {
-			headByPath.set(entry.path, entry);
+			const list = headByPath.get(entry.path) ?? [];
+			list.push(entry);
+			headByPath.set(entry.path, list);
 		}
 	}
-	const baseByPath = new Map<string, QuarantineEntry>();
+	const baseByPath = new Map<string, QuarantineEntry[]>();
 	for (const { ledger, content } of options.baseLedgerContents) {
 		for (const entry of parseQuarantineLedger(content, ledger)) {
-			baseByPath.set(entry.path, entry);
+			const list = baseByPath.get(entry.path) ?? [];
+			list.push(entry);
+			baseByPath.set(entry.path, list);
 		}
 	}
 	const messages: string[] = [];
 	let violations = 0;
-	for (const [entryPath, headEntry] of headByPath) {
-		const baseEntry = baseByPath.get(entryPath);
-		if (!baseEntry) continue; // new quarantine, not a renewal
-		if (headEntry.expiry === null || baseEntry.expiry === null) continue;
-		if (!(headEntry.expiry > baseEntry.expiry)) continue;
-		if (headEntry.ownerIssueRefs.length > 0) continue;
-		const moved = headEntry.ledger !== baseEntry.ledger;
-		const wasText = moved
-			? `${baseEntry.expiry}, previously quarantined in ${baseEntry.ledger}`
-			: baseEntry.expiry;
-		const detail = `entry '${entryPath}' renewed EXPIRY ${headEntry.expiry} (was ${wasText}) without an OWNER issue reference — link an open tracking issue (e.g. #2973) or revert the renewal.`;
-		if (options.enforce) {
-			messages.push(`ERROR: ${headEntry.ledger} ${detail}`);
-			violations += 1;
-		} else {
-			messages.push(
-				`WARNING: ${headEntry.ledger} ${detail} (QUARANTINE_RENEWAL_ENFORCE is off — soft-warn, non-blocking.)`,
-			);
+	for (const [entryPath, headEntries] of headByPath) {
+		const baseEntries = baseByPath.get(entryPath);
+		if (!baseEntries || baseEntries.length === 0) continue; // new quarantine
+		// The path's baseline is its LATEST base expiry: taking the maximum
+		// keeps a duplicated path in another ledger from shadowing a real
+		// renewal, while a non-renewed duplicate compares equal (no violation).
+		const baseExpiry = baseEntries
+			.map((entry) => entry.expiry)
+			.filter((expiry): expiry is string => expiry !== null)
+			.sort()
+			.at(-1);
+		if (baseExpiry === undefined) continue;
+		for (const headEntry of headEntries) {
+			if (headEntry.expiry === null) continue;
+			if (!(headEntry.expiry > baseExpiry)) continue;
+			if (headEntry.ownerIssueRefs.length > 0) continue;
+			const moved = headEntry.ledger !== baseEntries[0].ledger;
+			const wasText = moved
+				? `${baseExpiry}, previously quarantined in ${baseEntries[0].ledger}`
+				: baseExpiry;
+			const detail = `entry '${entryPath}' renewed EXPIRY ${headEntry.expiry} (was ${wasText}) without an OWNER issue reference — link an open tracking issue (e.g. #2973) or revert the renewal.`;
+			if (options.enforce) {
+				messages.push(`ERROR: ${headEntry.ledger} ${detail}`);
+				violations += 1;
+			} else {
+				messages.push(
+					`WARNING: ${headEntry.ledger} ${detail} (QUARANTINE_RENEWAL_ENFORCE is off — soft-warn, non-blocking.)`,
+				);
+			}
 		}
 	}
 	return { messages, violations };
@@ -373,7 +388,8 @@ export const _internals = {
 		root: string,
 		sinceIso: string,
 	): Promise<{ exitCode: number; stdout: string; stderr: string }> =>
-		runGitFailOpen(
+		// Routed through _internals so tests can capture the argv (PRR-029).
+		_internals.runGit(
 			[
 				'log',
 				`--since=${sinceIso}`,
@@ -438,12 +454,18 @@ export function readLedgerContents(
 	const contents: QuarantineLedgerContent[] = [];
 	for (const ledger of ledgers) {
 		const full = path.join(repoRoot, ledger);
-		contents.push({
-			ledger,
-			content: fs.existsSync(full)
-				? fs.readFileSync(full, 'utf8')
-				: '# ledger missing\n',
-		});
+		let content = '# ledger missing\n';
+		if (fs.existsSync(full)) {
+			// Fail-open on unreadable files (permissions, EISDIR, ...): census
+			// consumers must see a parseable empty ledger, never a throw that
+			// fails an advisory run.
+			try {
+				content = fs.readFileSync(full, 'utf8');
+			} catch {
+				content = '# ledger missing\n';
+			}
+		}
+		contents.push({ ledger, content });
 	}
 	return contents;
 }
@@ -478,6 +500,15 @@ function parseArgs(argv: string[]) {
 
 async function main(argv: string[]): Promise<number> {
 	const options = parseArgs(argv);
+	if (
+		options.now !== null &&
+		Number.isNaN(new Date(`${options.now}T00:00:00.000Z`).getTime())
+	) {
+		console.error(
+			`invalid --now '${options.now}' (expected YYYY-MM-DD); refusing to run.`,
+		);
+		return 2;
+	}
 	const now = options.now
 		? new Date(`${options.now}T00:00:00.000Z`)
 		: new Date();

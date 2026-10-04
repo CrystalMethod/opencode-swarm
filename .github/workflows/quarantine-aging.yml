@@ -3,10 +3,12 @@ name: quarantine-aging
 # Issue #2905 (Workstream I, slot I8): weekly expiry-aware quarantine aging
 # tracker. Runs the census and maintains exactly ONE deduplicated tracking
 # issue titled "Quarantine aging: <n> entries expire within 21 days"
-# (adopted only when authored by github-actions[bot]); closes it when the
-# count reaches 0. Routing is fail-open: gh failures emit ::warning:: lines
-# and never fail the run — the aging view is advisory, the blocking gates
-# live in check:invariants Check 7.
+# (adopted only when bot-authored — matched structurally via is_bot or the
+# known Actions bot logins, since gh renders the app actor as
+# app/github-actions); closes it when the count reaches 0, and refuses to
+# close when a ledger file is missing. Routing is fail-open: gh failures
+# emit ::warning:: lines and never fail the run — the aging view is
+# advisory, the blocking gates live in check:invariants Check 7.
 
 on:
   schedule:
@@ -33,10 +35,17 @@ jobs:
       contents: read
       issues: write
     runs-on: ubuntu-latest
+    # Bounded: per-gh-call timeout is 30s in the script and anchors cap at
+    # 20 lookups, so ~15 minutes is a generous ceiling (review PRR-037).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
           persist-credentials: false
+          # Full history: the 30-day add/retire trend is a git-log query and
+          # a depth-1 clone publishes fabricated counts (review PRR-010;
+          # same rationale as drift-check.yml).
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: "1.3.13"

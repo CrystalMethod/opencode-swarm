@@ -9,7 +9,6 @@
  * (check:test-clock).
  */
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { checkQuarantineMetadata } from '../../../../scripts/check-invariants';

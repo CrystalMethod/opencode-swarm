@@ -188,9 +188,10 @@ warns; from day 15 past EXPIRY the check hard-fails the required quality job
 (an EXPIRY moved later than the committed baseline, diff-scoped vs
 `origin/main`) requires an `#<issue>` reference in its OWNER metadata** —
 otherwise Check 7 errors naming the entry (issue #2905). The offline gate can
-only verify that a reference exists; the weekly aging run additionally reports
-each anchor issue's live open/closed state. `QUARANTINE_RENEWAL_ENFORCE=0`
-downgrades renewal findings to non-blocking warnings. Always add a comment
+only verify that a reference exists (not that the target is open); the weekly
+aging run additionally reports the live open/closed state of anchor issues for
+entries expiring within 21 days. `QUARANTINE_RENEWAL_ENFORCE=0` downgrades
+renewal findings to non-blocking warnings. Always add a comment
 explaining the flake (root cause, related issue, validation tier). CI reads
 these lists and subtracts them from the discovered test set (`comm -23`) at
 `.github/workflows/ci.yml`.
@@ -212,11 +213,14 @@ ones. Standalone: `bun scripts/ci/quarantine-census.ts --root . --now <ISO>`.
 `.github/workflows/quarantine-aging.yml` (Monday 12:00 UTC + manual
 `workflow_dispatch`) runs `scripts/ci/quarantine-aging.ts`: it maintains
 exactly ONE deduplicated tracking issue titled `Quarantine aging: <n> entries
-expire within 21 days` — adopted only when authored by `github-actions[bot]`
-(a human-titled issue is never absorbed), duplicates are closed, and the issue
-is closed when the count reaches 0. Routing failures are `::warning::`-only
-and never fail the run. Local dry run (no GitHub calls):
-`bun scripts/ci/quarantine-aging.ts --dry-run --root .`.
+expire within 21 days` — adopted only when bot-authored (matched via the
+author's `is_bot` flag or the known Actions bot logins; gh renders the Actions
+app actor as `app/github-actions`), a human-titled issue is never absorbed,
+duplicates are closed, and the issue is closed when the count reaches 0. A
+close is refused with a warning when a ledger file is missing, and opening
+warns when a same-titled issue exists that the bot filter could not adopt.
+Routing failures are `::warning::`-only and never fail the run. Local dry run
+(no GitHub calls): `bun scripts/ci/quarantine-aging.ts --dry-run --root .`.
 
 ## Auto-detection (the flake-detection workflow)
 

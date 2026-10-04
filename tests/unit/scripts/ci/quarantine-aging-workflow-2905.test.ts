@@ -121,14 +121,27 @@ describe('decideAgingAction', () => {
 describe('quarantine-aging dry-run printed-line contract (frozen by check C4)', () => {
 	test('decision vocabulary is exactly open|update|close (no "none")', () => {
 		// The frozen C4 regex is ^decision: (open|update|close|open-or-update);
-		// the implementation prints a strict subset that always matches it.
-		const allowed = /^(open|update|close|open-or-update)$/;
-		expect(allowed.test('open')).toBe(true);
-		expect(allowed.test('update')).toBe(true);
-		expect(allowed.test('close')).toBe(true);
-		// n=0 maps to close — the printed form for the real tree today.
+		// pin the vocabulary through the PRODUCTION decision core so a mutant
+		// returning 'none' fails here (review PRR-026: regex-vs-literal
+		// assertions cannot fail).
+		expect(decideAgingAction(censusWithExpiring('2026-12-01'), []).action).toBe(
+			'close',
+		);
+		expect(decideAgingAction(censusWithExpiring('2026-10-10'), []).action).toBe(
+			'open',
+		);
+		const adopted = botIssue(
+			'Quarantine aging: 1 entries expire within 21 days',
+			21,
+		);
+		expect(
+			decideAgingAction(censusWithExpiring('2026-10-10'), [adopted]).action,
+		).toBe('update');
+		// And the printed form for the real tree today stays inside C4's regex.
 		const decision = decideAgingAction(censusWithExpiring('2026-12-01'), []);
-		expect(`decision: ${decision.action}`).toBe('decision: close');
+		expect(`decision: ${decision.action}`).toMatch(
+			/^decision: (open|update|close|open-or-update)$/,
+		);
 	});
 
 	test('aging line form', () => {
@@ -141,13 +154,22 @@ describe('quarantine-aging.yml workflow shape', () => {
 	interface WorkflowShape {
 		on?: {
 			schedule?: { cron?: string }[];
-			workflow_dispatch?: unknown;
+			workflow_dispatch?: {
+				inputs?: Record<string, { description?: string; type?: string }>;
+			};
 		};
+		permissions?: Record<string, string>;
 		jobs?: Record<
 			string,
 			{
 				permissions?: Record<string, string>;
-				steps?: { uses?: string; run?: string; name?: string }[];
+				'timeout-minutes'?: number;
+				steps?: {
+					uses?: string;
+					run?: string;
+					name?: string;
+					with?: Record<string, unknown>;
+				}[];
 			}
 		>;
 	}
@@ -157,10 +179,35 @@ describe('quarantine-aging.yml workflow shape', () => {
 		return load(raw) as WorkflowShape;
 	}
 
-	test('weekly schedule + workflow_dispatch', () => {
+	test('weekly schedule + workflow_dispatch with the dry_run input', () => {
 		const wf = loadWorkflow();
 		expect(wf.on?.schedule?.[0]?.cron).toBe('0 12 * * 1');
 		expect(wf.on?.workflow_dispatch).toBeTruthy();
+		// PRR-023: the dry_run input is load-bearing (it is the only thing
+		// mapping a dispatch onto --dry-run); pin its presence explicitly.
+		expect(wf.on?.workflow_dispatch?.inputs?.dry_run).toBeTruthy();
+	});
+
+	test('workflow and job permissions are least-privilege', () => {
+		const wf = loadWorkflow();
+		expect(wf.permissions?.contents).toBe('read');
+		const job = wf.jobs?.aging;
+		expect(job?.permissions?.contents).toBe('read');
+		expect(job?.permissions?.issues).toBe('write');
+	});
+
+	test('aging job is time-bounded (PRR-037)', () => {
+		const wf = loadWorkflow();
+		expect(wf.jobs?.aging?.['timeout-minutes']).toBe(15);
+	});
+
+	test('checkout fetches full history for the trend (PRR-010)', () => {
+		const wf = loadWorkflow();
+		const checkout = (wf.jobs?.aging?.steps ?? []).find((s) =>
+			s.uses?.startsWith('actions/checkout'),
+		);
+		expect(checkout?.with?.['fetch-depth']).toBe(0);
+		expect(checkout?.with?.['persist-credentials']).toBe(false);
 	});
 
 	test('aging job carries issues: write permission and a census step', () => {
