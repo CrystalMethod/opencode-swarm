@@ -122,4 +122,20 @@ describe('skill_opt registry config wiring (issue #2949)', () => {
 		expect(output).not.toMatch(/"status":\s*"disabled"/);
 		expect(output).toMatch(/pass --confirm/);
 	});
+
+	test('configless dispatch (the swarm_command/CLI shape) honors the on-disk block', async () => {
+		// executeSwarmCommand WITHOUT a config key is the tool/CLI dispatch
+		// shape (src/tools/swarm-command.ts passes no config): the fallback
+		// resolver is the deciding branch, so this arm pins the fallback with
+		// a present-and-true on-disk block end to end.
+		writeSwarmConfig({ enabled: true });
+		const result = await executeSwarmCommand({
+			directory: root,
+			agents: {},
+			sessionID: 'skill-opt-registry-wiring-configless',
+			tokens: ['skill-opt', 'run', 'wiring-slug'],
+		});
+		expect(result.text).not.toMatch(/"status":\s*"disabled"/);
+		expect(result.text).toMatch(/pass --confirm/);
+	});
 });

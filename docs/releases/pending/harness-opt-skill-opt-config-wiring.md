@@ -56,8 +56,10 @@ issue: 2949
   exists (the loader then uses the user config alone), or if the project file
   cannot be parsed at all, the block is dropped with the rest of the config
   and the refusal is the "block not found" wording even though you wrote the
-  block. Run `/swarm config doctor` to see which recovery applied; the
-  fail-safe outcome in every case is `disabled`.
+  block. The same applies if the config cannot be merged safely (for example
+  a `__proto__` key anywhere in the file aborts the merge). Run
+  `/swarm config doctor` to see which recovery applied; the fail-safe
+  outcome in every case is `disabled`.
 
 ## Why
 

@@ -72,7 +72,7 @@ validation; draft/smoke retries are the only looped steps.
 ## Configuration
 
 `.opencode/opencode-swarm.json` (project) or `opencode-swarm.json` in your
-user config directory:
+user config directory (e.g. `~/.config/opencode/`):
 
 ```json
 {
