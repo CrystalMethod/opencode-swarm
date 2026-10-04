@@ -5,20 +5,22 @@
  * (plan status completed / closed, or removed from the plan) and none has a
  * relevant worktree merge-back failure. Closing records, in the epic record:
  *
- *   - `closeHead` (HEAD at close; commits still happen at task completion
- *     through Epic Rule 2 on the epic branch in C2 — commit-at-landing is C3);
+ *   - `closeHead` (HEAD at close — every task's work is already committed:
+ *     its coder's worktree landing is a merge commit and non-coder writes
+ *     are residue commits, see `task-landing.ts` / `residue-commit.ts`);
  *   - one {@link EpicTaskOutcome} per wave task: resolution and time (plan
  *     ledger), evidence workflow generation, Stage A/B failure LOWER BOUNDS
  *     (the evidence `retryHistory` keeps only its last 3 entries), the merge
  *     failure snapshot observed while the wave was blocked, reopen count
  *     (ledger transitions out of `completed`), declared (frozen) and
- *     undeclared files;
+ *     undeclared files, and the task's commit (`marker`: its newest
+ *     `swarm(task <id>):` commit for this plan inside the wave, else the
+ *     close HEAD) that `markers.ts` mirrors to `refs/swarm/epics/…/tasks/<id>`;
  *   - divergence, computed automatically: a task's actual files are its
  *     write attribution unioned across every same-project session (coder
  *     writes are attributed on the coder's CHILD session). When no session
  *     holds attribution the git fallback applies: files changed since the
- *     wave's `baseHead` (committed or not — Rule 2 commits only declared
- *     files), attributed to the task only when it was the wave's single
+ *     wave's `baseHead` (committed or not), attributed to the task only when it was the wave's single
  *     member, and otherwise kept at WAVE level (`wave.undeclared`) minus
  *     every declared and attributed file.
  *
@@ -60,6 +62,12 @@ import type {
 	EpicTaskOutcome,
 	EpicWaveRecord,
 } from './lifecycle.js';
+import {
+	epicCommitRange,
+	epicTaskRef,
+	findTaskCommits as findTaskCommits_import,
+	isFullSha,
+} from './markers.js';
 
 /** Bound on the git fallback's file list (per wave). */
 const MAX_FALLBACK_FILES = 2000;
@@ -82,6 +90,7 @@ export const _internals = {
 	loadCalibrationState: loadCalibrationState_import,
 	saveCalibrationState: saveCalibrationState_import,
 	applyCalibration: applyCalibration_import,
+	findTaskCommits: findTaskCommits_import,
 };
 
 /** Divergence input for one completed task with known actual files. */
@@ -282,6 +291,24 @@ function resolutionOf(
 	return 'removed';
 }
 
+function markerFor(
+	epic: EpicRecordV1,
+	taskId: string,
+	resolution: EpicTaskOutcome['resolution'],
+	closeHead: string | null,
+	taskCommits: Map<string, string>,
+): EpicTaskOutcome['marker'] {
+	if (resolution !== 'completed') return null;
+	if (!epic.git.isRepo) return { ref: null, sha: null, provenance: 'no-git' };
+	const landed = taskCommits.get(taskId);
+	const sha = landed ?? closeHead;
+	return {
+		ref: isFullSha(sha) ? epicTaskRef(epic.epicKey, taskId) : null,
+		sha,
+		provenance: landed ? 'landing-commit' : 'wave-close-head',
+	};
+}
+
 /**
  * Compute everything a wave close records. Reads only (git, ledger,
  * evidence, in-memory attribution); the caller CASes the result into the
@@ -309,6 +336,26 @@ export async function computeWaveClose(args: {
 	const changed = isRepo
 		? changedFilesSinceBase(directory, wave.baseHead)
 		: null;
+	const completedIds = wave.taskIds.filter(
+		(taskId) => resolutionOf(plan, taskId) === 'completed',
+	);
+	let taskCommits = new Map<string, string>();
+	if (isRepo && closeHead && completedIds.length > 0) {
+		try {
+			taskCommits = _internals.findTaskCommits(
+				directory,
+				isFullSha(wave.baseHead)
+					? `${wave.baseHead}..HEAD`
+					: epicCommitRange(epic),
+				epic.planKey,
+				completedIds,
+			);
+		} catch (error) {
+			logger.warn(
+				`[epic/wave-close] task commit lookup failed; markers fall back to the close HEAD: ${errorText(error)}`,
+			);
+		}
+	}
 
 	const outcomes: EpicTaskOutcome[] = [];
 	const divergence: EpicWaveDivergence[] = [];
@@ -361,9 +408,7 @@ export async function computeWaveClose(args: {
 			undeclared,
 			attribution,
 			reopened: countReopens(events, taskId, epic.startedAt),
-			marker: isRepo
-				? { ref: null, sha: closeHead, provenance: 'wave-close-head' }
-				: { ref: null, sha: null, provenance: 'no-git' },
+			marker: markerFor(epic, taskId, resolution, closeHead, taskCommits),
 		});
 	}
 

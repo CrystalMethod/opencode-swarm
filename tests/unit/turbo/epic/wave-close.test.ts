@@ -271,7 +271,11 @@ describe('divergence: git fallback (real repository)', () => {
 		expect(result.outcomes[0]).toMatchObject({
 			undeclared: ['src/stray.ts'],
 			attribution: 'git-single-task',
-			marker: { ref: null, sha: head, provenance: 'wave-close-head' },
+			marker: {
+				ref: 'refs/swarm/epics/test-swarm-Test_Plan-0123456789ab/tasks/1.1',
+				sha: head,
+				provenance: 'wave-close-head',
+			},
 		});
 		expect(result.waveUndeclared).toEqual(['src/stray.ts']);
 	});

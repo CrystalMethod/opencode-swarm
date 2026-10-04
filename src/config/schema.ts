@@ -3183,8 +3183,9 @@ export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
  * through `src/turbo/epic/config-gate.ts`:
  *   - `mode.enabled` gates Epic Mode itself: `/swarm epic start`, the Epic
  *     tools (`epic_next_wave`, `epic_phase_review`), and the
- *     project-scoped open-epic probe (Rule 2 auto-commit, the Epic
- *     phase-readiness gate in `phase_complete`). With it off, none of those
+ *     project-scoped open-epic probe (required worktree isolation and
+ *     commit-at-landing for epic coders, residue commits, the epic refs,
+ *     the Epic phase-readiness gate in `phase_complete`). With it off, none of those
  *     run (an already-open epic is inert until re-enabled or closed).
  *   - `cochange.enabled` gates only Capability A's git co-change conflict
  *     signal. With it off, `epic_next_wave` keeps a wave's tasks apart on
@@ -3324,6 +3325,14 @@ export const EpicConfigSchema = z
 		 * start and close does not land anything. Absent ⇒ `epic-branch`.
 		 */
 		commit_policy: z.enum(['epic-branch', 'current-branch']).optional(),
+		/**
+		 * Keep the epic's git refs (`refs/swarm/epics/<epicKey>/{base,
+		 * waves/<seq>,tasks/<id>}`) after `/swarm epic close`. Absent/false ⇒
+		 * close deletes them once the close report has captured their values.
+		 * The refs are never pushed or cloned by default (`--mirror` copies
+		 * them).
+		 */
+		retain_refs: z.boolean().optional(),
 	})
 	.strict();
 

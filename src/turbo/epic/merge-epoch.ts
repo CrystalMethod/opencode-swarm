@@ -4,10 +4,13 @@
  *
  * `.swarm/worktree-merge-status.json` is keyed by bare task id and is never
  * cleaned automatically (it also serves `/swarm lanes` and orphan recovery,
- * so it is NOT re-keyed here). Epic Rule 2 consults it to skip the completion
- * marker when a task's work never landed. Without an epoch filter, a failure
- * recorded for task `1.1` of a PREVIOUS plan suppresses Rule 2 for the
- * current plan's `1.1` forever.
+ * so it is NOT re-keyed here). Epic consults it where a task's work never
+ * landing matters: `epic_next_wave` does not close a wave while one of its
+ * completed tasks has a failure recorded since the wave was issued, and
+ * `update_task_status` skips the #2582 auto-checkpoint for such a task
+ * ({@link epicMergeFailureSkipsCheckpoint}). Without an epoch filter, a
+ * failure recorded for task `1.1` of a PREVIOUS plan would block the current
+ * plan's `1.1` forever.
  *
  * Most writers stamp `completedAt` and/or `queuedAt`, but NOT all: the
  * delegation-gate `task-result` failure (a cancelled/denied task) records no
@@ -29,6 +32,11 @@ import {
 	scanWorktreeMergeFailuresForRecovery as scanWorktreeMergeFailuresForRecovery_import,
 	type WorktreeMergeFailure,
 } from '../../hooks/delegation-gate/worktree-merge-status.js';
+import * as logger from '../../utils/logger.js';
+import {
+	epicSentinelExists as epicSentinelExists_import,
+	getOpenEpic as getOpenEpic_import,
+} from './lifecycle.js';
 
 /** How a recorded merge failure relates to the current plan. */
 export type MergeFailureRelevance = 'current' | 'undated' | 'stale';
@@ -103,6 +111,38 @@ export function relevantMergeFailureForProject(
 }
 
 /**
+ * Epic v2 C3 seam before the #2582 auto-checkpoint in `updateTaskStatus`
+ * (MINOR 3): true — skip the checkpoint, with a critical warning — when an
+ * epic is open and `taskId` has a merge-back failure recorded since the epic
+ * started (or undated): its work is not on the epic branch, so a checkpoint
+ * of HEAD would exclude it. One `existsSync` and `false` when no epic is
+ * open; unreadable lifecycle state counts as no epic. Never throws.
+ */
+export function epicMergeFailureSkipsCheckpoint(
+	directory: string,
+	taskId: string,
+): boolean {
+	try {
+		if (!_internals.epicSentinelExists(directory)) return false;
+		const epic = _internals.getOpenEpic(directory);
+		if (!epic) return false;
+		const started = Date.parse(epic.startedAt);
+		const failure = relevantMergeFailureForProject(
+			directory,
+			taskId,
+			Number.isFinite(started) ? started : 0,
+		);
+		if (!failure) return false;
+		logger.criticalWarn(
+			`[epic] auto-checkpoint SKIPPED for ${taskId}: its worktree merge-back ${failure.outcome} at stage '${failure.stage}', so its work is not on the epic branch. Resolve the preserved worktree (\`/swarm lanes\`) and re-dispatch the task. Detail: ${failure.message}`,
+		);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
  * `/swarm epic status` lines for recorded merge failures (read-only scan of
  * the durable file). Empty when there are none. `sinceMs` null ⇒ plan root
  * unknown, every failure is reported as blocking.
@@ -116,7 +156,7 @@ export function describeMergeFailuresForStatus(
 		return [
 			'',
 			'### Worktree merge failures',
-			`- Could not read \`.swarm/worktree-merge-status.json\`: ${scan.reason}. Rule 2 falls back to the in-memory registry; repair or remove the file (no swarm session running) if this persists.`,
+			`- Could not read \`.swarm/worktree-merge-status.json\`: ${scan.reason}. Epic falls back to the in-memory registry; repair or remove the file (no swarm session running) if this persists.`,
 		];
 	}
 	if (scan.failures.length === 0) return [];
@@ -136,18 +176,18 @@ export function describeMergeFailuresForStatus(
 		const what = `${failure.outcome} at '${failure.stage}'`;
 		if (relevance === 'stale') {
 			lines.push(
-				`- ${taskId}: ${what} — stale (recorded before the current plan); ignored by Rule 2.`,
+				`- ${taskId}: ${what} — stale (recorded before the current plan); ignored by Epic.`,
 			);
 			continue;
 		}
 		blocking += 1;
 		if (relevance === 'undated') {
 			lines.push(
-				`- ${taskId}: ${what} — NO timestamp, so it cannot be dated against the current plan; treated as BLOCKING (fail closed): Rule 2 will not write task ${taskId}'s completion marker.`,
+				`- ${taskId}: ${what} — NO timestamp, so it cannot be dated against the current plan; treated as BLOCKING (fail closed): an epic wave holding task ${taskId} will not close.`,
 			);
 		} else {
 			lines.push(
-				`- ${taskId}: ${what} — BLOCKING: Rule 2 will not write task ${taskId}'s completion marker.`,
+				`- ${taskId}: ${what} — BLOCKING: an epic wave holding task ${taskId} will not close.`,
 			);
 		}
 	}
@@ -161,7 +201,7 @@ export function describeMergeFailuresForStatus(
 
 /**
  * `/swarm epic clear-merge-failure <taskId> [--confirm]` — Epic-owned escape
- * hatch for a merge failure that blocks Rule 2 but no longer reflects
+ * hatch for a merge failure that blocks an epic wave but no longer reflects
  * reality (work landed by hand, undated record from an earlier plan).
  *
  * Only a task id that currently HAS a recorded failure (durable file or
@@ -194,13 +234,13 @@ export function clearMergeFailureCommand(
 	if (!confirm) {
 		return [
 			`Task ${taskId} has a recorded worktree merge failure: ${detail}.`,
-			`Clearing it lets Epic Rule 2 write task ${taskId}'s completion marker, so Rule 3 will treat the task as committed. Clear it only if the task's work is in the main tree (or the record belongs to an earlier plan); otherwise resolve the preserved worktree first (\`/swarm lanes\`).`,
+			`Clearing it lets the epic wave holding task ${taskId} close, treating the task's work as landed. Clear it only if the task's work is on the epic branch (or the record belongs to an earlier plan); otherwise resolve the preserved worktree first (\`/swarm lanes\`).`,
 			`To clear, run: /swarm epic clear-merge-failure ${taskId} --confirm`,
 		].join('\n');
 	}
 	_internals.initDurableStatusPath(directory);
 	_internals.clearWorktreeMergeStatus(taskId);
-	return `Cleared the recorded worktree merge failure for task ${taskId} (${detail}). The next \`update_task_status(${taskId}, completed)\` under Epic may write its completion marker.`;
+	return `Cleared the recorded worktree merge failure for task ${taskId} (${detail}). The next \`epic_next_wave\` may close its wave.`;
 }
 
 /**
@@ -208,6 +248,8 @@ export function clearMergeFailureCommand(
  * through its exported API only, never modified.
  */
 export const _internals = {
+	epicSentinelExists: epicSentinelExists_import,
+	getOpenEpic: getOpenEpic_import,
 	clearWorktreeMergeStatus: clearWorktreeMergeStatus_import,
 	initDurableStatusPath: initDurableStatusPath_import,
 	getWorktreeMergeFailure: getWorktreeMergeFailure_import,

@@ -123,7 +123,15 @@ import {
 	updateTaskWorkflowCache,
 } from '../state';
 import { telemetry } from '../telemetry.js';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
+import {
+	epicSentinelExists,
+	isEpicOpenForProject,
+} from '../turbo/epic/lifecycle.js';
+import { commitEpicResidueAfterDelegation } from '../turbo/epic/residue-commit.js';
+import {
+	epicIsolationDegradedMessage,
+	epicRequiresWorktreeIsolation,
+} from '../turbo/epic/task-landing.js';
 import type {
 	DelegationEnvelope,
 	EnvelopeValidationResult,
@@ -3406,6 +3414,12 @@ const maintainBackgroundDelegationsForDispatch: typeof import('../background/pen
  */
 export const _internals = {
 	isEpicOpenForProject,
+	/** Epic v2 C3 (M-b): epic coders must be worktree-isolated. */
+	epicRequiresWorktreeIsolation,
+	/** Epic v2 C3 (X1): commit a non-coder writer's residue for an epic task. */
+	commitEpicResidueAfterDelegation,
+	/** Epic sentinel probe (one existsSync) gating the residue seam. */
+	epicSentinelExists,
 	recordStageBDispatchBindings,
 	readStageBDispatchBindings,
 	deleteStageBDispatchBindings,
@@ -5311,14 +5325,24 @@ export function createDelegationGateHook(
 		// verdict falls back to serial. F-014: coupling isolation to
 		// `scopeAllowsParallel` made overlapping/unknown scopes run in the project
 		// root, defeating the safety boundary that serial fallback is meant to keep.
-		const standardWorktreeIsolationActive =
+		const parallelWorktreeIsolationActive =
 			parallelEnabled &&
 			effectiveMaxConcurrent > 1 &&
 			!hasActiveLeanTurbo(input.sessionID);
+		// Epic v2 C3 (M-b): a coder for a task of the open git epic is always
+		// isolated in a worktree (degradation refused below). With no open
+		// epic this is one existsSync and `false`, so isolation is exactly the
+		// parallel-mode expression above.
+		const epicIsolationRequired = _internals.epicRequiresWorktreeIsolation(
+			directory,
+			incomingCoderTaskId,
+		);
+		const standardWorktreeIsolationActive =
+			parallelWorktreeIsolationActive || epicIsolationRequired;
 		// Parallel gate exemptions and slot accounting additionally require the
 		// pending tasks to be provably disjoint.
 		const parallelModeActive =
-			standardWorktreeIsolationActive && scopeAllowsParallel;
+			parallelWorktreeIsolationActive && scopeAllowsParallel;
 		const criticPolicy = resolvePlanCriticPolicyForExecution(
 			directory,
 			plan,
@@ -5513,7 +5537,8 @@ export function createDelegationGateHook(
 			// or prior declare_scope) so provisionWorktree can materialize it into the
 			// lane's .swarm/scopes/ for durability across plugin restart.
 			const laneScope = correlatedBinding.files;
-			await precreateStandardWorktreeSession({
+			const precreate = precreateStandardWorktreeSession({
+				...(epicIsolationRequired ? { isolationRequired: true } : {}),
 				config,
 				directory,
 				parentSessionID: input.sessionID,
@@ -5536,6 +5561,19 @@ export function createDelegationGateHook(
 						? { taskId: resolvedTaskId, files: laneScope }
 						: undefined,
 			});
+			// Epic v2 C3: an epic coder's isolation failure is refused as
+			// EPIC_ISOLATION_DEGRADED (carrying the original error); without an
+			// open epic the promise is awaited exactly as before.
+			await (epicIsolationRequired
+				? precreate.catch((error: unknown) => {
+						throw new Error(
+							epicIsolationDegradedMessage(
+								incomingCoderTaskId ?? 'unknown',
+								error instanceof Error ? error.message : String(error),
+							),
+						);
+					})
+				: precreate);
 			const standardDispatch = standardWorktreeByCallID.get(input.callID);
 			if (standardDispatch) {
 				if (resolvedTaskId) {
@@ -5596,6 +5634,15 @@ export function createDelegationGateHook(
 					);
 				}
 			} else {
+				if (epicIsolationRequired) {
+					throw new Error(
+						epicIsolationDegradedMessage(
+							incomingCoderTaskId ?? 'unknown',
+							getStandardWorktreeDegradationReason(input.sessionID)?.reason ??
+								'no isolated worktree was provisioned (worktree.policy is "disabled", or the session was released from serialized mode)',
+						),
+					);
+				}
 				// Isolation may degrade to the project root; capture only after the
 				// provisioning attempt and before the upstream coder begins execution.
 				if (
@@ -7266,6 +7313,48 @@ export function createDelegationGateHook(
 							session.qaSkipTaskIds = [];
 						}
 					}
+				}
+
+				// Epic v2 C3 (X1) seam: a non-coder writer (test_engineer, docs, …)
+				// that returned for a task of the open epic has its attributed
+				// main-tree writes committed on the epic branch, so a rework
+				// coder's worktree (cut from HEAD) starts from them. Never throws.
+				// Gated synchronously: with no open epic it is one existsSync and
+				// no extra await.
+				if (
+					typeof subagentType === 'string' &&
+					_internals.epicSentinelExists(directory)
+				) {
+					const routeBindings = stageBRouteSlotByCallID.get(input.callID);
+					await _internals.commitEpicResidueAfterDelegation({
+						directory,
+						agent: subagentType,
+						sessionID: input.sessionID,
+						resolveTaskIds: async () => {
+							const ids = [...(routeBindings?.keys() ?? [])];
+							if (ids.length > 0) return ids;
+							const resolved = await resolveEvidenceTaskId(
+								{ ...(storedArgs ?? {}), ...(directArgs ?? {}) },
+								session,
+								directory,
+								evidenceTaskResolutionOptions(
+									stripKnownSwarmPrefix(subagentType),
+								),
+							);
+							return resolved ? [resolved] : [];
+						},
+						childSessionIds: async () => {
+							const { extractDispatchIds } = await import(
+								'../background/task-envelope.js'
+							);
+							return [
+								...[...(routeBindings?.values() ?? [])].map(
+									(binding) => binding.childSessionId,
+								),
+								extractDispatchIds(_output).subagentSessionId,
+							];
+						},
+					});
 				}
 
 				stageBDispatchGenerationsByCallID.delete(input.callID);

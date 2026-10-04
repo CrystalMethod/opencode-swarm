@@ -1,40 +1,31 @@
 /**
- * Plan-scoped Epic completion markers (Epic v2 C0).
+ * Plan identity for Epic commits (Epic v2 C0, reshaped in C3).
  *
- * Rule 2 writes a `swarm(task <id>):` marker commit when a task completes;
- * Rule 2's idempotency guard and Rule 3's predecessor evidence read those
- * markers back. Task ids repeat across plans (every plan has a `1.1`), so a
- * marker must be bound to the plan that wrote it — otherwise a previous
- * plan's `swarm(task 1.1):` makes the current plan's 1.1 an idempotent skip
- * (its work is never committed) and satisfies Rule 3 falsely.
+ * Every commit Epic writes for a task — the worktree LANDING merge commit of
+ * its coder and the RESIDUE commit of a non-coder writer (test_engineer,
+ * docs, …) — has the subject `swarm(task <id>): …` and a final
+ * `Swarm-Plan: <planKey>` trailer, where
+ * `planKey = sha256(planIdentityHash + '|' + (planEpoch ?? '')).slice(0, 16)`.
+ * The plan epoch is minted per ledger root, so two consecutive plans with the
+ * same title (every plan has a `1.1`) get different keys. Task ids repeat
+ * across plans, so a commit is attributed to a task only when its trailer
+ * names the current plan.
  *
- * Binding:
- *   - Every marker carries a `Swarm-Plan: <planKey>` trailer, where
- *     `planKey = sha256(planIdentityHash + '|' + (planEpoch ?? '')).slice(0, 16)`.
- *     The plan epoch is minted per ledger root, so two consecutive plans with
- *     the same title still get different keys.
- *   - A marker WITH a trailer is honored only when the trailer equals the
- *     current planKey AND it was committed at/after the plan root (the
- *     earliest plan-ledger event); a legacy marker WITHOUT a trailer is
- *     honored only when committed at/after the plan root. The root check is
- *     done in JS on each record's committer time — NOT with `git log
- *     --since`, whose walk stops at the first commit older than the cutoff
- *     and would hide newer markers beneath an old-dated commit (clock skew,
- *     `rebase --committer-date-is-author-date`). Reads are bounded by the
- *     `--grep` filter plus `--max-count`.
- *   - Records are NUL-separated (`git log -z`); git refuses NUL bytes in
- *     commit messages, so a message body cannot forge a record boundary.
- *   - When the plan root is unknown (no ledger), legacy markers are never
- *     honored and the scan is bounded only by its max-count (fail closed).
+ * Predecessor evidence no longer greps history: wave close records each
+ * task's commit in the epic record and mirrors it to the ref
+ * `refs/swarm/epics/<epicKey>/tasks/<id>` (`markers.ts`). The marker
+ * subject + trailer remain the way wave close and `/swarm epic status
+ * --repair-refs` find a task's commit inside the epic's own commit range.
  *
- * Subprocess discipline: every git call goes through `src/git/branch.ts`
- * `gitExec` (array-form, explicit cwd, timeout, bounded buffer, stdin
- * ignored — AGENTS.md #3).
+ * Records are NUL-separated (`git log -z`); git refuses NUL bytes in commit
+ * messages, so a message body cannot forge a record boundary.
+ *
+ * Subprocess discipline: no git call is made here; readers go through
+ * `src/git/branch.ts` `gitExec` (AGENTS.md #3).
  */
 
 import { createHash } from 'node:crypto';
 import type { Plan } from '../../config/plan-schema.js';
-import { _internals as gitBranchInternals } from '../../git/branch.js';
 import {
 	readLedgerEvents as readLedgerEvents_import,
 	readPlanEpochIdentity as readPlanEpochIdentity_import,
@@ -57,27 +48,28 @@ export interface PlanMarkerScope {
 	rootTimestampMs: number | null;
 }
 
-/** One `swarm(task <id>):` marker commit read back from git. */
+/** One `swarm(task <id>):` commit read back from git. */
 export interface ParsedTaskMarker {
+	/** Full commit id (`%H`). */
+	sha: string;
 	taskId: string;
-	/** Last `Swarm-Plan:` trailer value; null for a legacy (pre-C0) marker. */
+	/** Last `Swarm-Plan:` trailer value; null when the commit carries none. */
 	planKey: string | null;
-	/** Committer time in seconds since epoch (`%ct`). */
-	committedAtSec: number;
 }
 
-/** Subject shape produced by `formatTaskCommitMessage`. */
+/** Subject shape produced by {@link formatEpicTaskCommitMessage}. */
 export const SWARM_TASK_SUBJECT_RE = /^swarm\(task ([^)]+)\):/;
 const TRAILER_LINE_RE = /^Swarm-Plan:[ \t]*(\S+)[ \t]*$/;
 const RECORD_SEP = '\0';
 const FIELD_SEP = '\x1f';
+const SHA_RE = /^[0-9a-f]{40,64}$/;
 /**
- * `git log -z --format` producing `<ct> US <raw message>` per commit, records
- * separated by NUL (`-z`).
+ * `git log -z --format` producing `<sha> US <raw message>` per commit,
+ * records separated by NUL (`-z`).
  */
-const MARKER_LOG_FORMAT = '--format=%ct%x1f%B';
+export const MARKER_LOG_FORMAT = '--format=%H%x1f%B';
 
-/** Bound on scope resolution (ledger reads) so Rule 2/3 never hang. */
+/** Bound on scope resolution (ledger reads) so status never hangs. */
 export const PLAN_SCOPE_RESOLVE_TIMEOUT_MS = 10_000;
 /** Max (directory, planKey) entries in the root-timestamp cache (FIFO). */
 export const MAX_ROOT_TS_CACHE_ENTRIES = 16;
@@ -92,10 +84,6 @@ export function scrubTaskIdForGitSubject(taskId: string): string {
 	return taskId.replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-function escapeForEre(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** `sha256(planIdentityHash + '|' + (planEpoch ?? '')).slice(0, 16)`. */
 export function computePlanKey(
 	planIdentityHash: string,
@@ -107,16 +95,27 @@ export function computePlanKey(
 		.slice(0, 16);
 }
 
-/** The trailer line appended to every Rule 2 marker commit message. */
+/** The trailer line closing every Epic task commit message. */
 export function formatSwarmPlanTrailer(planKey: string): string {
 	return `${SWARM_PLAN_TRAILER_KEY}: ${planKey}`;
 }
 
-/** Root timestamp floored to whole seconds (git commit-time granularity). */
-function rootSeconds(scope: PlanMarkerScope): number | null {
-	return scope.rootTimestampMs === null
-		? null
-		: Math.floor(scope.rootTimestampMs / 1000);
+/**
+ * The message of an Epic task commit (landing merge or residue): subject
+ * `swarm(task <id>): <summary>` — the summary whitespace-collapsed and
+ * truncated to keep the subject within git's conventional 72 columns — and a
+ * final `Swarm-Plan: <planKey>` trailer. The task id is scrubbed by
+ * {@link scrubTaskIdForGitSubject}. Treat the shape as a stable contract.
+ */
+export function formatEpicTaskCommitMessage(
+	taskId: string,
+	planKey: string,
+	summary?: string,
+): string {
+	const safeId = scrubTaskIdForGitSubject(taskId);
+	const text = (summary ?? 'completed').replace(/\s+/g, ' ').trim();
+	const truncated = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+	return `swarm(task ${safeId}): ${truncated || 'completed'}\n\n${formatSwarmPlanTrailer(planKey)}`;
 }
 
 const rootTimestampCache = new Map<string, number>();
@@ -175,10 +174,11 @@ async function resolvePlanMarkerScopeUnbounded(
 }
 
 /**
- * Resolve the marker scope (planKey + plan root time) for `plan`. Throws
- * when the ledger identity is invalid/conflicting or the read exceeds
- * {@link PLAN_SCOPE_RESOLVE_TIMEOUT_MS}; callers fail closed on a throw
- * (no marker written, Rule 3 evidence unavailable).
+ * Resolve the plan scope (planKey + plan root time) for `plan` — used by
+ * `/swarm epic status` to date recorded merge failures. Throws when the
+ * ledger identity is invalid/conflicting or the read exceeds
+ * {@link PLAN_SCOPE_RESOLVE_TIMEOUT_MS}; the caller then reports the root as
+ * unknown (every failure blocking).
  */
 export async function resolvePlanMarkerScope(
 	directory: string,
@@ -194,7 +194,7 @@ export async function resolvePlanMarkerScope(
 }
 
 /**
- * Parse `git log` output produced with {@link MARKER_LOG_FORMAT}. Records
+ * Parse `git log -z` output produced with {@link MARKER_LOG_FORMAT}. Records
  * whose subject is not a `swarm(task <id>):` marker are dropped (a squash
  * message may quote a marker in its body).
  */
@@ -203,8 +203,8 @@ export function parseTaskMarkerLog(output: string): ParsedTaskMarker[] {
 	for (const record of output.split(RECORD_SEP)) {
 		const sep = record.indexOf(FIELD_SEP);
 		if (sep < 0) continue;
-		const committedAtSec = Number.parseInt(record.slice(0, sep).trim(), 10);
-		if (!Number.isFinite(committedAtSec)) continue;
+		const sha = record.slice(0, sep).trim();
+		if (!SHA_RE.test(sha)) continue;
 		const lines = record
 			.slice(sep + 1)
 			.split('\n')
@@ -217,97 +217,9 @@ export function parseTaskMarkerLog(output: string): ParsedTaskMarker[] {
 			const trailer = TRAILER_LINE_RE.exec(line);
 			if (trailer) planKey = trailer[1];
 		}
-		markers.push({ taskId: match[1], planKey, committedAtSec });
+		markers.push({ sha, taskId: match[1], planKey });
 	}
 	return markers;
-}
-
-/**
- * Whether a parsed marker belongs to the plan in `scope`:
- *  - committed before the plan root ⇒ never (bounds trailer markers too);
- *  - with a trailer ⇒ only when it equals the current planKey;
- *  - legacy (no trailer) ⇒ only when the plan root is known.
- */
-export function isMarkerHonored(
-	marker: ParsedTaskMarker,
-	scope: PlanMarkerScope,
-): boolean {
-	const since = rootSeconds(scope);
-	if (since !== null && marker.committedAtSec < since) return false;
-	if (marker.planKey !== null) return marker.planKey === scope.planKey;
-	return since !== null;
-}
-
-/** Bound on per-task marker records read by the idempotency probe. */
-const MAX_TASK_MARKER_RECORDS = 64;
-
-/**
- * `git log` args for one task's markers (the plan-root check happens per
- * record in JS — see the file header for why `--since` is not used). Exported for
- * argv assertions in tests.
- */
-export function buildTaskMarkerLogArgs(taskId: string): string[] {
-	const escaped = escapeForEre(scrubTaskIdForGitSubject(taskId));
-	return [
-		'log',
-		'-z',
-		'--extended-regexp',
-		`--grep=^swarm\\(task ${escaped}\\):`,
-		`--max-count=${MAX_TASK_MARKER_RECORDS}`,
-		MARKER_LOG_FORMAT,
-	];
-}
-
-/** `git log` args for the bulk Rule 3 read (plan-root check in JS). */
-export function buildAllMarkersLogArgs(maxCommits: number): string[] {
-	return [
-		'log',
-		'--no-merges',
-		'-z',
-		'--extended-regexp',
-		'--grep=^swarm\\(task [^)]+\\):',
-		`--max-count=${maxCommits}`,
-		MARKER_LOG_FORMAT,
-	];
-}
-
-/**
- * True when a marker for `taskId` that belongs to the current plan exists.
- * Throws on git failure (the caller decides its fail-closed policy).
- */
-export function hasPlanScopedTaskMarker(
-	cwd: string,
-	taskId: string,
-	scope: PlanMarkerScope,
-): boolean {
-	const safeId = scrubTaskIdForGitSubject(taskId);
-	const output = gitBranchInternals.gitExec(
-		buildTaskMarkerLogArgs(taskId),
-		cwd,
-	);
-	return parseTaskMarkerLog(output).some(
-		(marker) => marker.taskId === safeId && isMarkerHonored(marker, scope),
-	);
-}
-
-/**
- * Task ids with a current-plan marker, from one bounded `git log` read.
- * Throws on git failure.
- */
-export function readPlanScopedCommittedTaskIds(
-	cwd: string,
-	scope: PlanMarkerScope,
-	maxCommits: number,
-): Set<string> {
-	const output = gitBranchInternals.gitExec(
-		buildAllMarkersLogArgs(maxCommits),
-		cwd,
-	);
-	const committed = new Set<string>();
-	for (const marker of parseTaskMarkerLog(output)) {
-		if (isMarkerHonored(marker, scope)) committed.add(marker.taskId);
-	}
-	return committed;
 }
 
 /** Test-only: number of cached root timestamps. */

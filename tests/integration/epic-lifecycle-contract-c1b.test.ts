@@ -4,8 +4,8 @@
  * One epic, end to end, through the production entry points on a real git
  * repository with the DEFAULT commit policy (`epic-branch`):
  *   `/swarm epic start` (checks out `swarm/epic/<epicKey>`) → declare_scope
- *   → per-task completion (Rule 2 commits land on the EPIC branch; the
- *   original branch never moves) → `/swarm epic close` (default
+ *   → each coder's real worktree landing (Epic v2 C3: a merge commit on the
+ *   EPIC branch; the original branch never moves) → per-task completion → `/swarm epic close` (default
  *   `--land squash`) → back on the original branch with the epic's whole
  *   diff staged and uncommitted, the epic branch kept, probe off.
  */
@@ -24,6 +24,7 @@ import {
 	isEpicOpenForProject,
 } from '../../src/turbo/epic/lifecycle';
 import { _internals as startInternals } from '../../src/turbo/epic/start';
+import { landEpicTaskForTest } from '../helpers/epic-landing';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -120,7 +121,7 @@ afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('Epic lifecycle contract v1b — epic branch → Rule 2 on the branch → close squash', () => {
+describe('Epic lifecycle contract v1b — epic branch → landings on the branch → close squash', () => {
 	test('the original branch receives the epic diff as staged, uncommitted changes', async () => {
 		const originalBranch = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
 		const originalTip = git(['rev-parse', 'HEAD']).trim();
@@ -137,7 +138,7 @@ describe('Epic lifecycle contract v1b — epic branch → Rule 2 on the branch �
 		);
 		expect(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe(epicBranch);
 
-		// per-task completion → Rule 2 commits on the epic branch.
+		// each task lands as a commit on the epic branch.
 		for (const id of TASK_IDS) {
 			const declared = await executeDeclareScope(
 				{ taskId: id, files: [`src/task-${id}.ts`], working_directory: dir },
@@ -147,11 +148,11 @@ describe('Epic lifecycle contract v1b — epic branch → Rule 2 on the branch �
 			expect(declared.success).toBe(true);
 		}
 		for (const id of TASK_IDS) {
-			fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-			fs.writeFileSync(
-				path.join(dir, 'src', `task-${id}.ts`),
-				`export const ${ident(id)} = '${id}';\n`,
-			);
+			expect(
+				await landEpicTaskForTest(dir, id, {
+					[`src/task-${id}.ts`]: `export const ${ident(id)} = '${id}';\n`,
+				}),
+			).toMatchObject({ merged: true, strategy: 'merge' });
 			await updateTaskStatus(dir, id, 'completed');
 			const message = git(['log', '-1', '--format=%B', epicBranch]);
 			expect(message.startsWith(`swarm(task ${id}):`)).toBe(true);

@@ -20,12 +20,14 @@ import {
 } from '../../../src/plan/auto-checkpoint.js';
 import { _internals as managerInternals } from '../../../src/plan/manager.js';
 import { executeSavePlan } from '../../../src/tools/save-plan.js';
+import { _internals as mergeEpochInternals } from '../../../src/turbo/epic/merge-epoch.js';
 import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const ORIGINAL_TRIGGER = managerInternals.maybeSaveAutoCheckpoint;
-const ORIGINAL_MERGE_FAILURE = managerInternals.relevantMergeFailure;
+const ORIGINAL_MERGE_FAILURE = mergeEpochInternals.getWorktreeMergeFailure;
+const ORIGINAL_BOUND_PATH = mergeEpochInternals.getBoundStatusPath;
 const ORIGINAL_LOADER = autoCheckpointInternals.loadPluginConfigWithMeta;
 const ORIGINAL_SPAWN_SYNC = autoCheckpointInternals.spawnSync;
 
@@ -161,7 +163,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	managerInternals.maybeSaveAutoCheckpoint = ORIGINAL_TRIGGER;
-	managerInternals.relevantMergeFailure = ORIGINAL_MERGE_FAILURE;
+	mergeEpochInternals.getWorktreeMergeFailure = ORIGINAL_MERGE_FAILURE;
+	mergeEpochInternals.getBoundStatusPath = ORIGINAL_BOUND_PATH;
 	autoCheckpointInternals.loadPluginConfigWithMeta = ORIGINAL_LOADER;
 	autoCheckpointInternals.spawnSync = ORIGINAL_SPAWN_SYNC;
 	console.warn = originalConsoleWarn;
@@ -344,29 +347,26 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		).toBe(true);
 	});
 
-	test('Epic-mode completion records the post-Rule-2 HEAD', async () => {
+	test('Epic-mode completion records HEAD and writes no commit (Epic v2 C3)', async () => {
 		gitInit(tempDir);
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
-			// Epic Mode is opt-in: the Rule 2 project probe is false without it.
 			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 		});
-		// Commit the config so the (scope-less) completion sees a clean
-		// non-.swarm tree — Rule 2 refuses a marker over uncommitted work.
 		gitRun(tempDir, ['add', '.opencode/opencode-swarm.json']);
 		gitRun(tempDir, ['commit', '-m', 'config']);
 		await savePlanWithTasks(['1.1']);
 		// An epic is open for this plan (real lifecycle row + sentinel).
 		openEpicForTest(tempDir);
+		const headBefore = gitRun(tempDir, ['rev-parse', 'HEAD']).trim();
 
 		await completeTasks(['1.1']);
 		const entries = readCheckpointEntries();
 		expect(entries).toHaveLength(1);
-		const head = gitRun(tempDir, ['rev-parse', 'HEAD']).trim();
-		expect(entries[0]?.sha).toBe(head);
-		const subject = gitRun(tempDir, ['log', '-1', '--format=%s']).trim();
-		// The Rule 2 marker commit ran before the checkpoint recorded its SHA.
-		expect(subject.startsWith('swarm(task 1.1):')).toBe(true);
+		// An epic task's work is committed when its worktree lands, so the
+		// completion itself commits nothing and the checkpoint records HEAD.
+		expect(gitRun(tempDir, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
+		expect(entries[0]?.sha).toBe(headBefore);
 	});
 
 	test('default threshold (3) applies when the config omits the key (PRR-006)', async () => {
@@ -384,7 +384,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		expect(readCheckpointEntries()).toHaveLength(1);
 	});
 
-	test('worktree-merge failure skips the auto-checkpoint via Rule 2 early return (PRR-008)', async () => {
+	test('worktree-merge failure of an epic task skips the auto-checkpoint (PRR-008, Epic v2 C3)', async () => {
 		gitInit(tempDir);
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
@@ -392,7 +392,11 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		});
 		await savePlanWithTasks(['1.1']);
 		openEpicForTest(tempDir);
-		managerInternals.relevantMergeFailure = () => ({
+		// The shared registry is bound to this project and holds an undated
+		// failure for 1.1 (undated ⇒ relevant, fail closed).
+		mergeEpochInternals.getBoundStatusPath = () =>
+			path.join(tempDir, '.swarm', 'worktree-merge-status.json');
+		mergeEpochInternals.getWorktreeMergeFailure = () => ({
 			outcome: 'failed' as const,
 			stage: 'merge',
 			message: 'injected merge-back failure',
@@ -401,12 +405,29 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		await completeTasks(['1.1']);
 		expect(readTaskStatus('1.1')).toBe('completed');
 		expect(readCheckpointEntries()).toHaveLength(0);
-		// Rule 2's criticalWarn fired, and the checkpoint trigger never ran.
 		expect(
 			consoleCapture.some((message) =>
-				message.includes('Rule 2 auto-commit SKIPPED'),
+				message.includes('auto-checkpoint SKIPPED for 1.1'),
 			),
 		).toBe(true);
+	});
+
+	test('the same injected failure does NOT skip the checkpoint without an open epic', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		await savePlanWithTasks(['1.1']);
+		mergeEpochInternals.getBoundStatusPath = () =>
+			path.join(tempDir, '.swarm', 'worktree-merge-status.json');
+		mergeEpochInternals.getWorktreeMergeFailure = () => ({
+			outcome: 'failed' as const,
+			stage: 'merge',
+			message: 'injected merge-back failure',
+		});
+
+		await completeTasks(['1.1']);
+		expect(readCheckpointEntries()).toHaveLength(1);
 	});
 
 	test('successful automatic saves emit checkpoint_auto_saved on the events stream (PRR-009)', async () => {

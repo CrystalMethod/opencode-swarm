@@ -1,7 +1,7 @@
 /**
  * Epic v2 C0 (reviewer L1) — `/swarm epic clear-merge-failure <taskId>
  * [--confirm]`: the Epic-owned escape hatch for a recorded worktree merge
- * failure that blocks Rule 2 (e.g. the undated delegation-gate
+ * failure that blocks an epic wave (e.g. the undated delegation-gate
  * `task-result` record). Read-only without `--confirm`; only a task id with
  * a recorded failure can be cleared; clearing goes through the shared
  * registry's own `clearWorktreeMergeStatus`.
@@ -74,7 +74,7 @@ describe('/swarm epic clear-merge-failure', () => {
 			's',
 		);
 		expect(out).toContain('no timestamp');
-		expect(out).toContain('Rule 3 will treat the task as committed');
+		expect(out).toContain("treating the task's work as landed");
 		expect(out).toContain('/swarm epic clear-merge-failure 1.3 --confirm');
 		expect(getWorktreeMergeFailure('1.3')).toBeDefined();
 		expect(Object.keys(onDisk())).toEqual(['1.3']);

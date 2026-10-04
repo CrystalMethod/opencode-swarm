@@ -144,12 +144,27 @@ export interface EpicTaskOutcome {
 	attribution: 'session' | 'git-single-task' | 'unavailable' | 'no-git';
 	/** Ledger transitions out of `completed` for this task since the epic started. */
 	reopened: number;
+	/**
+	 * The commit proving the task's work is on the epic branch (Epic v2 C3),
+	 * mirrored to `ref` (`refs/swarm/epics/<epicKey>/tasks/<id>`, see
+	 * `markers.ts`): the task's newest `swarm(task <id>):` commit for this
+	 * plan inside the wave (`landing-commit` — its coder's landing merge or a
+	 * residue commit), else HEAD at wave close (`wave-close-head`), or a
+	 * commit re-adopted by `/swarm epic status --repair-refs` (`repaired`).
+	 * Completed tasks only; `no-git` epics record no commit.
+	 */
 	marker: {
 		ref: string | null;
 		sha: string | null;
-		provenance: 'wave-close-head' | 'no-git';
+		provenance: EpicTaskMarkerProvenance;
 	} | null;
 }
+
+export type EpicTaskMarkerProvenance =
+	| 'landing-commit'
+	| 'wave-close-head'
+	| 'repaired'
+	| 'no-git';
 
 /** Per-phase lifecycle as seen by `epic_next_wave` / `epic_phase_review`. */
 export interface EpicPhaseRecord {
@@ -345,7 +360,12 @@ const taskOutcomeSchema = z
 			.object({
 				ref: z.string().nullable(),
 				sha: z.string().nullable(),
-				provenance: z.enum(['wave-close-head', 'no-git']),
+				provenance: z.enum([
+					'landing-commit',
+					'wave-close-head',
+					'repaired',
+					'no-git',
+				]),
 			})
 			.nullable(),
 	})
@@ -450,7 +470,10 @@ export function epicSentinelPath(directory: string): string {
  * Never follows raw `..` segments into an ancestor's `.swarm/`.
  */
 export function epicSentinelExists(directory: string): boolean {
-	if (!directory || hasTraversalSegment(directory)) return false;
+	// Hook callers may hand a non-string directory (adversarial inputs): no
+	// epic, never a throw.
+	if (typeof directory !== 'string' || !directory) return false;
+	if (hasTraversalSegment(directory)) return false;
 	return fs.existsSync(epicSentinelPath(directory));
 }
 
@@ -954,6 +977,57 @@ export function readPlanPhaseRefs(directory: string): EpicPhaseRef[] | null {
 				id: phase.id,
 				status: typeof phase.status === 'string' ? phase.status : undefined,
 			}));
+	} catch {
+		return null;
+	}
+}
+
+/** A plan task as Epic's hot-path seams see it. */
+export interface EpicPlanTaskRef {
+	id: string;
+	phase: number;
+	description: string | undefined;
+	files: string[];
+}
+
+/**
+ * Bounded synchronous lookup of one task in `.swarm/plan.json` (the derived
+ * projection — enough for membership and the commit subject). Null when the
+ * plan is unreadable or the task is not in it.
+ */
+export function readPlanTaskRef(
+	directory: string,
+	taskId: string,
+): EpicPlanTaskRef | null {
+	const planPath = path.join(directory, PLAN_JSON_RELATIVE_PATH);
+	try {
+		const stat = fs.statSync(planPath);
+		if (!stat.isFile() || stat.size > MAX_PLAN_JSON_BYTES) return null;
+		const parsed = JSON.parse(fs.readFileSync(planPath, 'utf-8')) as {
+			phases?: unknown;
+		};
+		if (!Array.isArray(parsed?.phases)) return null;
+		for (const phase of parsed.phases as Array<{
+			id?: unknown;
+			tasks?: unknown;
+		}>) {
+			if (!phase || !Array.isArray(phase.tasks)) continue;
+			for (const task of phase.tasks as Array<Record<string, unknown>>) {
+				if (task?.id !== taskId) continue;
+				return {
+					id: taskId,
+					phase: typeof phase.id === 'number' ? phase.id : 0,
+					description:
+						typeof task.description === 'string' ? task.description : undefined,
+					files: Array.isArray(task.files_touched)
+						? task.files_touched.filter(
+								(f): f is string => typeof f === 'string',
+							)
+						: [],
+				};
+			}
+		}
+		return null;
 	} catch {
 		return null;
 	}

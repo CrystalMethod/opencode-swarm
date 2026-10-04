@@ -4,8 +4,9 @@
  *
  * One epic, end to end, through the production entry points on a real git
  * repository:
- *   `/swarm epic start` → epic_next_wave (dispatch) → per-task completion
- *   (Rule 2 marker commit carrying the `Swarm-Plan:` trailer) →
+ *   `/swarm epic start` → epic_next_wave (dispatch) → each coder's real
+ *   worktree landing (Epic v2 C3: a merge commit carrying the
+ *   `Swarm-Plan:` trailer) → per-task completion (no git write) →
  *   epic_next_wave (closes the wave, dispatches the next) → … →
  *   phase-ready-for-review → epic_phase_review (fake review dispatcher
  *   injected through the tool's dispatcher option — no model call) →
@@ -40,6 +41,7 @@ import {
 } from '../../src/turbo/epic/lifecycle';
 import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import { _internals as startInternals } from '../../src/turbo/epic/start';
+import { landEpicTaskForTest } from '../helpers/epic-landing';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -235,7 +237,7 @@ describe('Epic lifecycle contract v1a — start → next_wave → tasks → revi
 		}
 
 		// epic_next_wave issues waves (width = the record's cap, 4); each
-		// completion commits a Rule 2 marker bound to this plan.
+		// coder's worktree lands as a commit bound to this plan.
 		const issued: string[][] = [];
 		for (let step = 0; step < 2; step += 1) {
 			const next = await runEpicNextWave(dir, SESSION);
@@ -243,18 +245,20 @@ describe('Epic lifecycle contract v1a — start → next_wave → tasks → revi
 			if (next.status !== 'dispatch') return;
 			issued.push(next.wave.taskIds);
 			for (const id of next.wave.taskIds) {
-				fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-				fs.writeFileSync(
-					path.join(dir, 'src', `task-${id}.ts`),
-					`export const ${ident(id)} = '${id}';\n`,
-				);
+				expect(
+					await landEpicTaskForTest(dir, id, {
+						[`src/task-${id}.ts`]: `export const ${ident(id)} = '${id}';\n`,
+					}),
+				).toMatchObject({ merged: true, strategy: 'merge' });
+				const head = git(['rev-parse', 'HEAD']);
 				await updateTaskStatus(dir, id, 'completed');
+				expect(git(['rev-parse', 'HEAD'])).toBe(head);
 				const message = git(['log', '-1', '--format=%B']);
 				expect(
 					message.startsWith(`swarm(task ${id}): Create src/task-${id}.ts`),
 				).toBe(true);
 				expect(message).toContain(`Swarm-Plan: ${epic?.planKey}`);
-				expect(git(['log', '-1', '--name-only', '--format='])).toContain(
+				expect(git(['diff', '--name-only', 'HEAD^1', 'HEAD'])).toContain(
 					`src/task-${id}.ts`,
 				);
 			}

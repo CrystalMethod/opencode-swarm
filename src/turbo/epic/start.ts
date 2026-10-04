@@ -53,6 +53,7 @@ import {
 } from '../../plan/ledger.js';
 import { loadPlanJsonOnly } from '../../plan/manager.js';
 import { hasActiveTurboMode } from '../../state.js';
+import * as logger from '../../utils/logger.js';
 import { withTimeout } from '../../utils/timeout.js';
 import { listCoderSettlementWalStates } from '../../workflow/coder-settlement.js';
 import { listRecoveryRecords, recoveryReadErrored } from '../lean/recovery.js';
@@ -80,6 +81,7 @@ import {
 	readLedgerRootDigest,
 	recordEpicBranch,
 } from './lifecycle.js';
+import { isFullSha, syncEpicRefs } from './markers.js';
 import { computePlanKey, PLAN_SCOPE_RESOLVE_TIMEOUT_MS } from './plan-key.js';
 import {
 	type EpicSizingVerdict,
@@ -677,15 +679,33 @@ export async function startEpic(
 			`Another epic was opened concurrently (${created.existingKeys.join(', ')}).`,
 		]);
 	}
-	if (epicBranch === null || git.originalBranch === null) {
-		return { status: 'started', record: created.record };
+	const result =
+		epicBranch === null || git.originalBranch === null
+			? ({ status: 'started', record: created.record } as const)
+			: switchToEpicBranch(
+					directory,
+					created.record,
+					git.originalBranch,
+					epicBranch,
+				);
+	if (result.status === 'started') writeBaseRef(directory, result.record);
+	return result;
+}
+
+/**
+ * Epic v2 C3: `refs/swarm/epics/<epicKey>/base` → the start commit (create-
+ * only; see `markers.ts`). Best-effort: the record holds the base commit and
+ * the refs are re-synced from it later, so a failure only warns.
+ */
+function writeBaseRef(directory: string, record: EpicRecordV1): void {
+	if (!record.git.isRepo || !isFullSha(record.git.baseCommit)) return;
+	try {
+		_internals.syncEpicRefs(directory, record);
+	} catch (error) {
+		logger.warn(
+			`[epic/start] base ref for ${record.epicKey} not written yet: ${errorText(error)}`,
+		);
 	}
-	return switchToEpicBranch(
-		directory,
-		created.record,
-		git.originalBranch,
-		epicBranch,
-	);
 }
 
 /**
@@ -803,6 +823,7 @@ export const _internals = {
 	recoveryReadErrored,
 	scanWorktreeRecoveryAuthoritiesForRecovery,
 	scanWorktreeProvisioningOwnersForRecovery,
+	syncEpicRefs,
 	now: (): number => Date.now(),
 	newToken: (): string => randomUUID(),
 };

@@ -86,10 +86,11 @@ export interface EpicWavePlan {
  * @param plan - The full plan object (from `.swarm/plan.json`)
  * @param config - Lean Turbo configuration (reused for risk/conflict policy)
  * @param scopes - Optional pre-loaded scopes map (taskId -> file paths)
- * @param isUpstreamCommitted - Optional Rule-3 predicate (greenfield-smart).
- *        When supplied, a cross-batch dependency (a `depends:` upstream NOT
- *        in this planning call's task set) is treated as satisfied only if
- *        the predicate returns `true`. Without it, legacy semantics apply
+ * @param isUpstreamCommitted - Optional predecessor-evidence predicate
+ *        (Epic: the dependency's task ref is an ancestor of HEAD, see
+ *        `markers.ts`). When supplied, a cross-batch dependency (a
+ *        `depends:` upstream NOT in this planning call's task set) is
+ *        treated as satisfied only if the predicate returns `true`. Without it, legacy semantics apply
  *        (cross-batch deps implicitly satisfied).
  * @returns Complete wave plan with ordered concurrent groups.
  */
@@ -347,7 +348,7 @@ export function planEpicWaves(
 				t.reason.includes('greenfield-smart Rule 3'),
 			).length;
 			if (rule3Count > 0 && rule3Count >= degradedTasks.length / 2) {
-				degradationSummary = `All ${pendingTasks.length} tasks degraded. ${rule3Count} blocked by greenfield-smart Rule 3 — cross-batch upstream(s) not in git history. Remediation: verify Epic Mode commit-on-completion is succeeding for upstream phases, or commit those tasks manually before re-running.`;
+				degradationSummary = `All ${pendingTasks.length} tasks degraded. ${rule3Count} blocked by greenfield-smart Rule 3 — cross-batch upstream(s) not in git history. Remediation: run \`/swarm epic status --repair-refs\` to re-adopt the upstream tasks' commits on the epic branch, or re-run those tasks.`;
 			} else {
 				degradationSummary = `All ${pendingTasks.length} tasks degraded. Reasons: ${reasons.join(', ')}. Consider running in standard (serial) mode.`;
 			}

@@ -2,7 +2,7 @@
  * Epic v2 C0 — merge-failure epoch filter (`src/turbo/epic/merge-epoch.ts`).
  *
  * The shared registry is keyed by bare task id and never cleaned, so a
- * failure from a previous plan must not suppress the current plan's Rule 2,
+ * failure from a previous plan must not block the current plan's epic,
  * while an undated failure stays relevant (fail closed). Registry reads go
  * through the module's `_internals` seam; timestamps are literals.
  */
@@ -97,7 +97,7 @@ describe('describeMergeFailuresForStatus', () => {
 		const text = describeMergeFailuresForStatus(dir, ROOT).join('\n');
 		expect(text).toContain('### Worktree merge failures');
 		expect(text).toContain('2026-01-01T00:00:00.000Z');
-		expect(text).toMatch(/1\.1: .*stale .*ignored by Rule 2/);
+		expect(text).toMatch(/1\.1: .*stale .*ignored by Epic/);
 		expect(text).toMatch(/1\.2: .*BLOCKING/);
 		expect(text).toMatch(/1\.3: .*NO timestamp.*BLOCKING \(fail closed\)/);
 		expect(text).toContain('Remedy:');

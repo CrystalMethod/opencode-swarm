@@ -6,8 +6,9 @@
  *     fails closed on an unrecorded branch or a git failure;
  *   - `epic_next_wave` blocks with `epic-branch-mismatch` (and issues no
  *     wave);
- *   - Rule 2 writes its marker on the epic branch, and skips it (fail
- *     closed) when HEAD is on any other branch.
+ *   - an epic task's worktree landing is committed only while HEAD is the
+ *     epic branch (`epicCommitLandingFor`; never onto a foreign branch), and
+ *     `update_task_status` commits nothing on either branch (Epic v2 C3).
  * Real git repositories, epics opened by the production `startEpic`.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -18,10 +19,13 @@ import { updateTaskStatus } from '../../../../src/plan/manager';
 import {
 	_internals as branchInternals,
 	checkEpicBranch,
-	describeEpicBranchMismatchForProject,
 } from '../../../../src/turbo/epic/epic-branch';
 import { getOpenEpic } from '../../../../src/turbo/epic/lifecycle';
 import { runEpicNextWave } from '../../../../src/turbo/epic/next-wave';
+import {
+	epicCommitLandingFor,
+	_internals as landingInternals,
+} from '../../../../src/turbo/epic/task-landing';
 import { stubEpicRecord } from '../../../helpers/epic-lifecycle';
 import { freezeClock, type Restore } from '../../../helpers/test-clock';
 import {
@@ -34,6 +38,7 @@ import {
 } from './epic-branch-fixture';
 
 const realBranchInternals = { ...branchInternals };
+const realLandingInternals = { ...landingInternals };
 let epic: StartedEpic;
 let restoreClock: Restore | null = null;
 
@@ -48,6 +53,7 @@ afterEach(() => {
 	restoreClock = null;
 	restoreStartInternals();
 	Object.assign(branchInternals, realBranchInternals);
+	Object.assign(landingInternals, realLandingInternals);
 	closeAllProjectDbs();
 	fs.rmSync(epic.dir, { recursive: true, force: true });
 });
@@ -55,7 +61,6 @@ afterEach(() => {
 describe('checkEpicBranch', () => {
 	test('on the epic branch ⇒ ok', () => {
 		expect(checkEpicBranch(epic.dir, epic.record)).toEqual({ ok: true });
-		expect(describeEpicBranchMismatchForProject(epic.dir)).toBeNull();
 	});
 
 	test('another branch ⇒ EPIC_BRANCH_MISMATCH with the checkout remedy', () => {
@@ -70,9 +75,6 @@ describe('checkEpicBranch', () => {
 		if (!check.ok) {
 			expect(check.message).toContain(`git checkout ${epic.epicBranch}`);
 		}
-		expect(describeEpicBranchMismatchForProject(epic.dir)).toContain(
-			'EPIC_BRANCH_MISMATCH',
-		);
 	});
 
 	test('/swarm epic status shows the branch and the drift', async () => {
@@ -126,13 +128,11 @@ describe('checkEpicBranch', () => {
 		).toEqual({ ok: true });
 	});
 
-	test('unreadable epic ⇒ Rule 2 seam fails closed', () => {
-		branchInternals.getOpenEpic = () => {
+	test('unreadable epic ⇒ the landing seam keeps the default landing', () => {
+		landingInternals.getOpenEpic = () => {
 			throw new Error('multiple Epic lifecycle rows present');
 		};
-		expect(describeEpicBranchMismatchForProject(epic.dir)).toContain(
-			'could not be read',
-		);
+		expect(epicCommitLandingFor(epic.dir, '1.1')).toBeUndefined();
 	});
 });
 
@@ -155,20 +155,27 @@ describe('epic_next_wave refuses on branch drift', () => {
 	});
 });
 
-describe('Rule 2 and the epic branch', () => {
-	test('the completion marker lands on the epic branch, not the original branch', async () => {
-		const originalTip = headSha(epic.dir, epic.originalBranch);
-		await updateTaskStatus(epic.dir, '1.1', 'completed');
-		expect(
-			git(epic.dir, ['log', '-1', '--format=%s', epic.epicBranch]).trim(),
-		).toBe('swarm(task 1.1): task 1');
-		expect(headSha(epic.dir, epic.originalBranch)).toBe(originalTip);
+describe('commit-at-landing and the epic branch (Epic v2 C3)', () => {
+	test('on the epic branch an epic task lands as a commit with the task message', () => {
+		expect(epicCommitLandingFor(epic.dir, '1.1')).toEqual({
+			commitLanding: true,
+			landingCommitMessage: `swarm(task 1.1): task 1\n\nSwarm-Plan: ${epic.record.planKey}`,
+		});
+		// A task that is not in the epic's plan keeps the default landing.
+		expect(epicCommitLandingFor(epic.dir, '9.9')).toBeUndefined();
+		expect(epicCommitLandingFor(epic.dir, undefined)).toBeUndefined();
 	});
 
-	test('HEAD on another branch ⇒ marker skipped (fail closed); status still persisted', async () => {
+	test('HEAD on another branch ⇒ no committed landing (never onto a foreign branch)', () => {
 		git(epic.dir, ['checkout', '-q', epic.originalBranch]);
+		expect(epicCommitLandingFor(epic.dir, '1.1')).toBeUndefined();
+	});
+
+	test('update_task_status commits nothing, on the epic branch or off it', async () => {
 		const originalTip = headSha(epic.dir, epic.originalBranch);
 		const epicTip = headSha(epic.dir, epic.epicBranch);
+		await updateTaskStatus(epic.dir, '1.1', 'completed');
+		git(epic.dir, ['checkout', '-q', epic.originalBranch]);
 		const updated = await updateTaskStatus(epic.dir, '1.2', 'completed');
 		expect(
 			updated.phases[0].tasks.find((task) => task.id === '1.2')?.status,

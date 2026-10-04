@@ -9,10 +9,11 @@
  * Inputs and rules:
  *   - batch = the phase's tasks that are not completed / closed / blocked;
  *   - a dependency OUTSIDE the batch is satisfied only when that task is
- *     `completed` in the plan AND (under git) has a current-plan completion
- *     marker (`isCommitted`, the plan-scoped marker query of `plan-key.ts`);
- *     a dependency on a closed or removed task, on a later-phase task, or a
- *     completed task without a marker makes the dependent
+ *     `completed` in the plan AND (under git) its commit is on the epic
+ *     branch (`isCommitted`: its epic task ref is an ancestor of HEAD, see
+ *     `markers.ts`, or it was completed before the epic started); a
+ *     dependency on a closed or removed task, on a later-phase task, or a
+ *     completed task without that evidence makes the dependent
  *     `predecessor-missing` (the plan must be fixed — it can never run);
  *   - scopes: the live `declare_scope` binding, else `files_touched` (an
  *     estimate); the chosen members must all have a live binding, otherwise
@@ -52,9 +53,9 @@ export interface EpicWaveSelectionInput {
 	maxParallel: number;
 	leanConfig: LeanTurboConfig;
 	/**
-	 * Current-plan completion evidence for a completed out-of-batch task
-	 * (git: plan-scoped marker; non-git: always true). May throw — the caller
-	 * maps a throw to `git-failed`.
+	 * Predecessor evidence for a completed out-of-batch task (git: its task
+	 * ref is an ancestor of HEAD; non-git: always true). Precomputed by the
+	 * caller, which maps a git failure to `git-failed`.
 	 */
 	isCommitted: (taskId: string) => boolean;
 	/** Learned hot modules (calibration); tasks touching them run alone. */

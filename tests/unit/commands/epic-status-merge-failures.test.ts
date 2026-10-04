@@ -1,7 +1,7 @@
 /**
  * Epic v2 C0 — `/swarm epic status` surfaces recorded worktree merge-back
  * failures classified against the current plan's root (stale ⇒ ignored by
- * Rule 2; undated ⇒ blocking, fail closed) with a remedy.
+ * Epic; undated ⇒ blocking, fail closed) with a remedy.
  *
  * Uses the command's `_internals` seam (AGENTS.md #7) with a real temp
  * project holding `.swarm/worktree-merge-status.json`. Timestamps are

@@ -1,15 +1,17 @@
 /**
- * Epic v2 lifecycle CONTRACT v0 (commit C0 — plan-scoped markers).
+ * Epic v2 lifecycle CONTRACT v0 (commit C0 — plan-scoped markers; C3:
+ * markers are the task commits themselves).
  *
- * Two consecutive plans in ONE repository both contain task `1.1`. Through
- * the real completion funnel (`updateTaskStatus` → Rule 2 → real git) and
- * the real Rule 3 evidence read (`resolvePlanMarkerScope` +
- * `readPlanScopedCommittedTaskIds`, which `epic_next_wave` uses):
+ * Two consecutive plans in ONE repository both contain task `1.1`. Each
+ * epic's 1.1 lands as a real merge commit with the Epic task message
+ * (`mergeLaneBranch`, as a worktree landing does), and the plan-scoped
+ * marker query `findTaskCommits` (what wave close and `--repair-refs` use)
+ * reads them back:
  *
- *   - plan A's 1.1 commits a marker bound to plan A (`Swarm-Plan:` trailer);
- *   - plan B's Rule 3 does NOT see plan A's marker as evidence for B's 1.1;
- *   - plan B's 1.1 gets its OWN marker commit (no idempotent skip on A's);
- *   - afterwards plan B's Rule 3 sees its own 1.1.
+ *   - plan A's 1.1 commit is bound to plan A (`Swarm-Plan:` trailer);
+ *   - plan B's query does NOT see plan A's commit as B's 1.1;
+ *   - plan B's 1.1 gets its OWN commit, which B's query then finds;
+ *   - `update_task_status` writes no commit in either epic.
  *
  * Epic runs through the sanctioned path (project config + `/swarm epic
  * start` / `close` lifecycle, forced past sizing for a one-task plan), not a
@@ -22,17 +24,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeProjectDb } from '../../src/db/project-db.js';
-import {
-	loadPlanJsonOnly,
-	savePlan,
-	updateTaskStatus,
-} from '../../src/plan/manager';
+import { savePlan, updateTaskStatus } from '../../src/plan/manager';
 import { closeEpic } from '../../src/turbo/epic/close.js';
-import {
-	readPlanScopedCommittedTaskIds,
-	resolvePlanMarkerScope,
-} from '../../src/turbo/epic/plan-key';
+import { getOpenEpic } from '../../src/turbo/epic/lifecycle.js';
+import { findTaskCommits } from '../../src/turbo/epic/markers.js';
+import { formatEpicTaskCommitMessage } from '../../src/turbo/epic/plan-key';
 import { startEpic } from '../../src/turbo/epic/start.js';
+import { mergeLaneBranch } from '../../src/worktree/merge';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
 
@@ -110,12 +108,30 @@ async function openEpic() {
 	});
 }
 
-/** The predecessor-evidence read `epic_next_wave` uses (Rule 3). */
-async function rule3(taskId: string): Promise<boolean> {
-	const current = await loadPlanJsonOnly(dir);
-	if (!current) throw new Error('no plan');
-	const scope = await resolvePlanMarkerScope(dir, current);
-	return readPlanScopedCommittedTaskIds(dir, scope, 10_000).has(taskId);
+/** The plan-scoped task-commit query of the open epic. */
+function epicSees(taskId: string): boolean {
+	const epic = getOpenEpic(dir);
+	if (!epic) throw new Error('no open epic');
+	return findTaskCommits(dir, 'HEAD', epic.planKey, [taskId]).has(taskId);
+}
+
+/** 1.1's coder lane lands as a merge commit with the Epic task message. */
+async function land(title: string): Promise<void> {
+	const epic = getOpenEpic(dir);
+	if (!epic) throw new Error('no open epic');
+	const lane = `lane-${epic.planKey}`;
+	git(['checkout', '-q', '-b', lane]);
+	fs.writeFileSync(path.join(dir, `${epic.planKey}.txt`), `${title}\n`);
+	git(['add', '.']);
+	git(['commit', '-q', '-m', 'lane work']);
+	git(['checkout', '-q', '-']);
+	const landed = await mergeLaneBranch(
+		dir,
+		lane,
+		'merge',
+		formatEpicTaskCommitMessage('1.1', epic.planKey, `${title} task`),
+	);
+	expect(landed).toMatchObject({ merged: true });
 }
 
 beforeEach(() => {
@@ -138,8 +154,7 @@ beforeEach(() => {
 			},
 		}),
 	);
-	// `.swarm/` is runtime state (AGENTS.md #4); keep the tree clean so the
-	// scope-less completion may write its marker.
+	// `.swarm/` is runtime state (AGENTS.md #4), never committed.
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');
 	git(['add', '.']);
 	git(['commit', '-q', '-m', 'seed']);
@@ -157,18 +172,21 @@ afterEach(() => {
 });
 
 describe('Epic lifecycle contract v0 — plan-scoped markers across consecutive plans', () => {
-	test("plan B's 1.1 gets its own commit and B's Rule 3 never sees plan A's marker", async () => {
-		// Plan A: 1.1 completes → Rule 2 marker bound to plan A.
+	test("plan B's 1.1 gets its own commit and B's query never sees plan A's", async () => {
+		// Plan A: 1.1 lands → commit bound to plan A.
 		await savePlan(dir, plan('Contract Plan A'));
 		expect((await openEpic()).status).toBe('started');
-		expect(await rule3('1.1')).toBe(false);
+		expect(epicSees('1.1')).toBe(false);
+		await land('Contract Plan A');
+		const head = git(['rev-parse', 'HEAD']);
 		await updateTaskStatus(dir, '1.1', 'completed');
+		expect(git(['rev-parse', 'HEAD'])).toBe(head);
 		const afterA = markers();
 		expect(afterA).toHaveLength(1);
 		expect(afterA[0].subject).toBe('swarm(task 1.1): Contract Plan A task');
 		const keyA = afterA[0].trailer;
 		expect(keyA).toMatch(/^[0-9a-f]{16}$/);
-		expect(await rule3('1.1')).toBe(true);
+		expect(epicSees('1.1')).toBe(true);
 
 		expect((await closeEpic({ directory: dir, abandon: true })).status).toBe(
 			'closed',
@@ -177,8 +195,9 @@ describe('Epic lifecycle contract v0 — plan-scoped markers across consecutive 
 		// Plan B (consecutive, same repo, same task id 1.1).
 		await savePlan(dir, plan('Contract Plan B'));
 		expect((await openEpic()).status).toBe('started');
-		expect(await rule3('1.1')).toBe(false);
+		expect(epicSees('1.1')).toBe(false);
 
+		await land('Contract Plan B');
 		await updateTaskStatus(dir, '1.1', 'completed');
 		const afterB = markers();
 		expect(afterB).toHaveLength(2);
@@ -186,6 +205,6 @@ describe('Epic lifecycle contract v0 — plan-scoped markers across consecutive 
 		const keyB = afterB[0].trailer;
 		expect(keyB).toMatch(/^[0-9a-f]{16}$/);
 		expect(keyB).not.toBe(keyA);
-		expect(await rule3('1.1')).toBe(true);
+		expect(epicSees('1.1')).toBe(true);
 	});
 });

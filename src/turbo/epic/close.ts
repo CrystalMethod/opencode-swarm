@@ -18,8 +18,12 @@
  *      the row, and the close STOPS with the row still `closing` — rerunning
  *      `/swarm epic close` resumes. `--abandon` never lands: it switches back
  *      to the original branch when the tree is clean and keeps the branch;
- *   6. rewrite the report with the landing outcome, delete the row, then
- *      compare-and-delete the sentinel, under the lifecycle lock.
+ *   6. delete the epic's refs `refs/swarm/epics/<epicKey>/*` (Epic v2 C3;
+ *      the report captured their values in step 4) unless
+ *      `turbo.epic.retain_refs: true`, rewrite the report with the landing
+ *      and ref outcome, delete the row, then compare-and-delete the
+ *      sentinel, under the lifecycle lock. A failed landing keeps the refs
+ *      (the close resumes).
  * `--abandon` on unreadable state deletes every lifecycle row without
  * parsing it, then the sentinel.
  */
@@ -52,6 +56,7 @@ import {
 	recordEpicLandingAttempt,
 	repairEpicSentinel,
 } from './lifecycle.js';
+import { deleteEpicRefs, readEpicRefs } from './markers.js';
 
 /** Newest close reports kept under `.swarm/epic-prior/reports/`. */
 export const EPIC_PRIOR_REPORTS_KEEP = 50;
@@ -118,6 +123,18 @@ export interface EpicCloseReport {
 	/** Phase lifecycle (review runs, verdicts). */
 	phases: EpicRecordV1['phases'];
 	landing: EpicLandingSummary;
+	/**
+	 * The epic's refs (`refs/swarm/epics/<epicKey>/*`, name → sha) captured
+	 * at close, and what close did with them. Null for non-git epics.
+	 */
+	refs: {
+		entries: Record<string, string>;
+		retained: boolean;
+		/** Refs that could not be deleted (or listed); empty when clean. */
+		deleteFailures: string[];
+		/** Why the refs could not be captured, when they could not. */
+		captureError?: string;
+	} | null;
 }
 
 export type EpicCloseResult =
@@ -164,6 +181,8 @@ export interface EpicCloseOptions {
 	land?: EpicLandMode;
 	/** Overrides the outcome label (swarm-close finalization). */
 	outcome?: EpicCloseOutcome;
+	/** `turbo.epic.retain_refs`: keep the epic's refs after close. */
+	retainRefs?: boolean;
 }
 
 function compactStamp(iso: string): string {
@@ -385,6 +404,7 @@ export async function closeEpic(
 		waves: closing.waves,
 		taskOutcomes: closing.tasks,
 		phases: closing.phases,
+		refs: captureEpicRefs(directory, closing, options.retainRefs === true),
 		landing:
 			preflight?.kind === 'ready'
 				? { ...baseLanding, status: 'pending', detail: 'landing not done yet' }
@@ -442,6 +462,12 @@ export async function closeEpic(
 			};
 		}
 	}
+	if (report.refs && !report.refs.retained) {
+		report.refs.deleteFailures = _internals.deleteEpicRefs(
+			directory,
+			closing.epicKey,
+		).failed;
+	}
 	report.git.headAtClose = readHead(directory, closing);
 	reportPaths = _internals.writeReport(directory, report);
 	const deleted = _internals.deleteEpicState(
@@ -455,6 +481,30 @@ export async function closeEpic(
 		reportPaths,
 		sentinelDeleted: deleted.sentinelDeleted,
 	};
+}
+
+function captureEpicRefs(
+	directory: string,
+	record: EpicRecordV1,
+	retained: boolean,
+): EpicCloseReport['refs'] {
+	if (!record.git.isRepo) return null;
+	try {
+		return {
+			entries: Object.fromEntries(
+				_internals.readEpicRefs(directory, record.epicKey),
+			),
+			retained,
+			deleteFailures: [],
+		};
+	} catch (error) {
+		return {
+			entries: {},
+			retained,
+			deleteFailures: [],
+			captureError: error instanceof Error ? error.message : String(error),
+		};
+	}
 }
 
 function landingWithoutGitWork(
@@ -509,6 +559,7 @@ export async function finalizeOpenEpicOnSwarmClose(
 			directory,
 			abandon: true,
 			outcome: 'abandoned-by-swarm-close',
+			retainRefs: config?.turbo?.epic?.retain_refs === true,
 		});
 		switch (result.status) {
 			case 'closed': {
@@ -547,6 +598,8 @@ export const _internals = {
 	performEpicLanding,
 	leaveEpicBranchOnAbandon,
 	writeReport,
+	readEpicRefs,
+	deleteEpicRefs,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),
 	now: (): number => Date.now(),

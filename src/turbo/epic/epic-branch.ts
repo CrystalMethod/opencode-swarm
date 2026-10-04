@@ -17,11 +17,12 @@
  * Read-only git calls go through `gitExec` (`src/git/branch.ts`: array argv,
  * explicit cwd, closed stdin, timeout, bounded output, GIT_TERMINAL_PROMPT=0).
  * State-changing calls (checkout -b, checkout, merge, merge --squash,
- * reset --merge, merge --abort, branch -D) go through {@link gitExecOnce}:
- * the same spawn primitive and hardening but WITHOUT `gitExec`'s transient
- * (ETIMEDOUT) retry — re-running a non-idempotent command after a timeout
- * whose effect may already have happened would misreport the state. Callers
- * inspect the actual repository state after any failure instead.
+ * reset --merge, merge --abort, branch -D) go through `gitExecOnce`
+ * (`./git-once.ts`): the same spawn primitive and hardening but WITHOUT
+ * `gitExec`'s transient (ETIMEDOUT) retry — re-running a non-idempotent
+ * command after a timeout whose effect may already have happened would
+ * misreport the state. Callers inspect the actual repository state after any
+ * failure instead.
  * Landing additionally pins a non-interactive editor (`GIT_EDITOR=true`,
  * `GIT_MERGE_AUTOEDIT=no`, `--no-edit`) and disables commit signing for the
  * `--land merge` commit, so no merge can wait on an editor or a pinentry.
@@ -33,59 +34,17 @@
 import type { PluginConfig } from '../../config/schema.js';
 import { _internals as gitBranchInternals } from '../../git/branch.js';
 import { assertSafeGitRefArg } from '../../git/safe-ref.js';
-import {
-	type EpicCommitPolicy,
-	type EpicLandMode,
-	type EpicRecordV1,
-	getOpenEpic,
+import { gitExecOnce } from './git-once.js';
+import type {
+	EpicCommitPolicy,
+	EpicLandMode,
+	EpicRecordV1,
 } from './lifecycle.js';
 
 /** Branch namespace of every epic branch. */
 export const EPIC_BRANCH_PREFIX = 'swarm/epic/';
 export const DEFAULT_EPIC_COMMIT_POLICY: EpicCommitPolicy = 'epic-branch';
 export const DEFAULT_EPIC_LAND_MODE: EpicLandMode = 'squash';
-
-/** Bounds for {@link gitExecOnce} (same values as `gitExec`). */
-const GIT_ONCE_TIMEOUT_MS = 30_000;
-const GIT_ONCE_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
-
-/**
- * One bounded, non-interactive git spawn with NO transient retry (see the
- * module header). Throws git's stderr (or the spawn error) on failure.
- */
-function gitExecOnce(
-	args: string[],
-	cwd: string,
-	env?: Record<string, string>,
-): string {
-	const result = gitBranchInternals.spawnSync(
-		gitBranchInternals.resolveGitExecutable(),
-		args,
-		{
-			cwd,
-			encoding: 'utf-8',
-			timeout: GIT_ONCE_TIMEOUT_MS,
-			windowsHide: true,
-			maxBuffer: GIT_ONCE_MAX_BUFFER_BYTES,
-			stdio: ['ignore', 'pipe', 'pipe'],
-			env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-			envOverrides: env,
-		},
-	);
-	if (result.error) {
-		throw new Error(
-			`git ${args[0] ?? ''} failed to complete: ${result.error.message}`,
-		);
-	}
-	if (result.status !== 0) {
-		throw new Error(
-			String(result.stderr ?? '') ||
-				String(result.stdout ?? '') ||
-				`git exited with ${result.status}`,
-		);
-	}
-	return String(result.stdout ?? '');
-}
 
 /** Env for landing commands: never open an editor, never prompt. */
 const NON_INTERACTIVE_LANDING_ENV: Record<string, string> = {
@@ -102,7 +61,6 @@ export const _internals = {
 		gitBranchInternals.gitExec(args, cwd, env),
 	/** State-changing git commands: one attempt, no transient retry. */
 	gitExecOnce,
-	getOpenEpic,
 };
 
 function errorText(error: unknown): string {
@@ -320,24 +278,6 @@ export function checkEpicBranch(
 		actual,
 		message: `EPIC_BRANCH_MISMATCH: the epic's work belongs on \`${expected}\`, but HEAD is ${actual === null ? 'detached' : `on \`${actual}\``}. Ask the user to commit or stash any changes and run \`git checkout ${expected}\`, then retry (or close the epic with \`/swarm epic close\`).`,
 	};
-}
-
-/**
- * Rule 2 seam: null when an epic-branch epic's HEAD is on its branch (or the
- * epic does not use one); otherwise the mismatch message. Fails closed: an
- * unreadable record or git failure is a mismatch.
- */
-export function describeEpicBranchMismatchForProject(
-	directory: string,
-): string | null {
-	try {
-		const record = _internals.getOpenEpic(directory);
-		if (!record) return null;
-		const check = checkEpicBranch(directory, record);
-		return check.ok ? null : check.message;
-	} catch (error) {
-		return `EPIC_BRANCH_MISMATCH: the open epic could not be read (${errorText(error)}), so its branch cannot be verified (fail closed).`;
-	}
 }
 
 // ---------------------------------------------------------------------------

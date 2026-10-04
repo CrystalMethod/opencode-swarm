@@ -4,7 +4,7 @@
  * `turbo.epic.mode.enabled` and `turbo.epic.cochange.enabled` are documented
  * as opt-in master gates (both default `false`). This module is the single
  * source of truth for reading them so every Epic entry point (slash commands,
- * architect tools, Rule 2 auto-commit, phase-complete readiness) agrees.
+ * architect tools, the hot-path seams, phase-complete readiness) agrees.
  *
  * Pure predicates take an already-loaded `PluginConfig`; callers that only
  * have a directory use the `*ForDirectory` variants, which load config via

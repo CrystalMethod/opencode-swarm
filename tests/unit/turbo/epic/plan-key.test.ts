@@ -1,6 +1,7 @@
 /**
- * Epic v2 C0 — plan key, marker parsing, honor rule, root-timestamp cache,
- * bounded scope resolution (`src/turbo/epic/plan-key.ts`).
+ * Epic v2 C0/C3 — plan key, task commit message, marker parsing,
+ * root-timestamp cache, bounded scope resolution
+ * (`src/turbo/epic/plan-key.ts`).
  *
  * Ledger reads go through the module's `_internals` DI seam (AGENTS.md #7);
  * every timestamp is a literal, so no clock is read.
@@ -13,10 +14,9 @@ import {
 	_internals,
 	_resetRootTimestampCacheForTest,
 	_rootTimestampCacheSizeForTest,
-	buildTaskMarkerLogArgs,
 	computePlanKey,
+	formatEpicTaskCommitMessage,
 	formatSwarmPlanTrailer,
-	isMarkerHonored,
 	MAX_ROOT_TS_CACHE_ENTRIES,
 	parseTaskMarkerLog,
 	resolvePlanMarkerScope,
@@ -74,51 +74,59 @@ describe('computePlanKey', () => {
 	});
 });
 
-describe('parseTaskMarkerLog + isMarkerHonored', () => {
+describe('formatEpicTaskCommitMessage', () => {
+	const KEY = 'feedfacecafebeef';
+
+	test('subject `swarm(task <id>): …`, blank line, Swarm-Plan trailer', () => {
+		expect(
+			formatEpicTaskCommitMessage('2.1', KEY, 'implement Dataset').split('\n'),
+		).toEqual(['swarm(task 2.1): implement Dataset', '', `Swarm-Plan: ${KEY}`]);
+		expect(formatEpicTaskCommitMessage('3.4', KEY)).toBe(
+			`swarm(task 3.4): completed\n\nSwarm-Plan: ${KEY}`,
+		);
+	});
+
+	test('collapses whitespace, truncates long summaries, scrubs unsafe ids', () => {
+		const [subject] = formatEpicTaskCommitMessage(
+			'1.1',
+			KEY,
+			`first line\n\nsecond  ${'a'.repeat(200)}`,
+		).split('\n');
+		expect(subject.startsWith('swarm(task 1.1): first line second a')).toBe(
+			true,
+		);
+		expect(subject.length).toBeLessThan(100);
+		expect(subject.endsWith('...')).toBe(true);
+		expect(formatEpicTaskCommitMessage('1.1)\nx', KEY, 's')).toStartWith(
+			'swarm(task 1.1__x): s',
+		);
+	});
+});
+
+describe('parseTaskMarkerLog', () => {
+	const A = 'a'.repeat(40);
+	const B = 'b'.repeat(40);
+	const C = 'c'.repeat(40);
+	const D = 'd'.repeat(40);
 	const out = [
-		'1700000100\x1fswarm(task 1.1): a\n\nSwarm-Plan: aaaa\n\n',
-		'1700000100\x1fswarm(task 1.2): legacy\n\n',
-		'1700000100\x1fMerge squash\n\nswarm(task 9.9): quoted in body\n',
-		'1700000100\x1fswarm(task 1.3): crlf\r\n\r\nSwarm-Plan: aaaa\r\n',
+		`${A}\x1fswarm(task 1.1): a\n\nSwarm-Plan: aaaa\n\n`,
+		`${B}\x1fswarm(task 1.2): no trailer\n\n`,
+		`${C}\x1fMerge squash\n\nswarm(task 9.9): quoted in body\n`,
+		`${D}\x1fswarm(task 1.3): crlf\r\n\r\nSwarm-Plan: aaaa\r\n`,
 	].join('\0');
 
 	test('parses subject markers and trailers; ignores body-only quotes', () => {
 		expect(parseTaskMarkerLog(out)).toEqual([
-			{ taskId: '1.1', planKey: 'aaaa', committedAtSec: 1_700_000_100 },
-			{ taskId: '1.2', planKey: null, committedAtSec: 1_700_000_100 },
-			{ taskId: '1.3', planKey: 'aaaa', committedAtSec: 1_700_000_100 },
+			{ sha: A, taskId: '1.1', planKey: 'aaaa' },
+			{ sha: B, taskId: '1.2', planKey: null },
+			{ sha: D, taskId: '1.3', planKey: 'aaaa' },
 		]);
 	});
 
 	test('a body cannot forge a record: only NUL separates records (-z)', () => {
-		const forged =
-			'1700000100\x1fdocs: notes\n\n\x1e1700000100\x1fswarm(task 7.7): forged\n\nSwarm-Plan: aaaa\n';
+		const forged = `${A}\x1fdocs: notes\n\n\x1e${B}\x1fswarm(task 7.7): forged\n\nSwarm-Plan: aaaa\n`;
 		expect(parseTaskMarkerLog(forged)).toEqual([]);
-	});
-
-	test('honor matrix', () => {
-		const scope = { planKey: 'aaaa', rootTimestampMs: 1_700_000_050_000 };
-		const m = (planKey: string | null, committedAtSec: number) => ({
-			taskId: '1.1',
-			planKey,
-			committedAtSec,
-		});
-		expect(isMarkerHonored(m('aaaa', 1_700_000_050), scope)).toBe(true);
-		expect(isMarkerHonored(m('bbbb', 1_700_000_100), scope)).toBe(false);
-		expect(isMarkerHonored(m(null, 1_700_000_100), scope)).toBe(true);
-		expect(isMarkerHonored(m(null, 1_700_000_049), scope)).toBe(false);
-		expect(isMarkerHonored(m('aaaa', 1_700_000_049), scope)).toBe(false);
-		const unknownRoot = { planKey: 'aaaa', rootTimestampMs: null };
-		expect(isMarkerHonored(m(null, 1_700_000_100), unknownRoot)).toBe(false);
-		expect(isMarkerHonored(m('aaaa', 1), unknownRoot)).toBe(true);
-	});
-
-	test('per-task query is bounded and escapes/scrubs the id', () => {
-		const args = buildTaskMarkerLogArgs('1.1)x');
-		expect(args).toContain('-z');
-		expect(args.some((a) => a.startsWith('--since'))).toBe(false);
-		expect(args).toContain('--grep=^swarm\\(task 1\\.1_x\\):');
-		expect(args.some((a) => /^--max-count=\d+$/.test(a))).toBe(true);
+		expect(parseTaskMarkerLog('not-a-sha\x1fswarm(task 1.1): x\n')).toEqual([]);
 	});
 });
 

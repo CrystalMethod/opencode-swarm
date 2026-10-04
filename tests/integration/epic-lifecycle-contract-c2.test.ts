@@ -5,20 +5,20 @@
  * real git repository with the default `epic-branch` policy:
  *
  *   `/swarm epic start` → declare_scope → epic_next_wave (dispatch wave 1)
- *   → simulated coder completions (a coder CHILD session attributes an
- *   undeclared write; Rule 2 commits each task's declared files on the
- *   epic branch) → epic_next_wave closes wave 1 (outcomes + divergence from
- *   the child session) and blocks `dirty-baseline` on the undeclared file
- *   → the user commits it → wave 2 → phase-ready-for-review →
- *   epic_phase_review (stub dispatcher) → phase_complete (records the phase
- *   complete on the epic) → phase 2 (its cross-phase dependency satisfied
- *   by the plan-scoped marker) → … → epic-complete → `/swarm epic close`
- *   (squash: the epic diff staged on the original branch; report carries
- *   the waves and outcomes).
+ *   → each coder's real worktree landing (Epic v2 C3: a commit on the epic
+ *   branch) + completion; 1.2's coder CHILD session also attributes an
+ *   undeclared main-tree write → epic_next_wave closes wave 1: the
+ *   attributed write is committed as 1.2's residue, outcomes + divergence
+ *   recorded, task refs written → a manual edit of a TRACKED file no task
+ *   declared blocks `dirty-baseline` → the user commits it → wave 2 →
+ *   phase-ready-for-review → epic_phase_review (stub dispatcher) →
+ *   phase_complete → phase 2 (its cross-phase dependency satisfied by the
+ *   task ref) → … → epic-complete → `/swarm epic close` (squash: the epic
+ *   diff staged on the original branch; report carries the waves, outcomes
+ *   and refs; the refs are deleted).
  *
- * MINOR 6: no in-wave rework is exercised — C2 still commits at task
- * completion (Rule 2), and rework of a worktree-isolated task keeps the B2
- * deadlock until C3 (commit at landing).
+ * In-wave rework is exercised by contract v3
+ * (epic-lifecycle-contract-c3.test.ts).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -44,6 +44,7 @@ import {
 } from '../../src/turbo/epic/lifecycle';
 import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import { _internals as startInternals } from '../../src/turbo/epic/start';
+import { landEpicTaskForTest } from '../helpers/epic-landing';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -185,15 +186,15 @@ async function declarePhase(phase: number): Promise<void> {
 	recordPhaseAgentDispatch(SESSION, 'coder');
 }
 
-/** What a coder + per-task QA leave behind: the file, then completion (Rule 2). */
+/** What a coder + per-task QA leave behind: the landed file, then completion. */
 async function completeTask(id: string): Promise<void> {
-	fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-	fs.writeFileSync(
-		path.join(dir, fileOf(id)),
-		`export const ${ident(id)} = '${id}';\n`,
-	);
-	await updateTaskStatus(dir, id, 'completed');
+	expect(
+		await landEpicTaskForTest(dir, id, {
+			[fileOf(id)]: `export const ${ident(id)} = '${id}';\n`,
+		}),
+	).toMatchObject({ merged: true, strategy: 'merge' });
 	expect(git(['log', '-1', '--format=%s'])).toStartWith(`swarm(task ${id}):`);
+	await updateTaskStatus(dir, id, 'completed');
 }
 
 async function reviewAndComplete(phase: number): Promise<void> {
@@ -298,18 +299,26 @@ describe('Epic lifecycle contract v2 — start → next_wave … → epic-comple
 		recordModifiedFileForTask(coder, '1.2', 'src/extra.ts', dir);
 		for (const id of ['1.1', '1.2', '1.4']) await completeTask(id);
 
-		// Wave 1 closes; the stray file is the wave's divergence AND a dirty
-		// baseline for the next wave.
+		// A manual edit of a tracked file no task declared.
+		fs.appendFileSync(path.join(dir, '.gitignore'), '# local\n');
+
+		// Wave 1 closes: the attributed stray file is committed as 1.2's
+		// residue (and is the wave's divergence); the unattributed tracked
+		// edit is a dirty baseline for the next wave.
 		const dirty = await runEpicNextWave(dir, SESSION);
 		expect(dirty).toMatchObject({
 			status: 'blocked',
 			reason: 'dirty-baseline',
-			details: { files: ['src/extra.ts'] },
+			details: { files: ['.gitignore'] },
 			closedWave: {
 				seq: 1,
 				divergence: [{ taskId: '1.2', undeclared: ['src/extra.ts'] }],
 			},
 		});
+		expect(git(['log', '-1', '--format=%s']).trim()).toBe(
+			'swarm(task 1.2): residue',
+		);
+		expect(git(['status', '--porcelain', 'src/extra.ts'])).toBe('');
 		let record = getOpenEpic(dir);
 		expect(record?.waves[0]).toMatchObject({
 			status: 'closed',
@@ -320,12 +329,21 @@ describe('Epic lifecycle contract v2 — start → next_wave … → epic-comple
 			declared: [fileOf('1.2')],
 			undeclared: ['src/extra.ts'],
 			attribution: 'session',
-			marker: { provenance: 'wave-close-head' },
+			marker: {
+				sha: git(['rev-parse', 'HEAD']).trim(),
+				provenance: 'landing-commit',
+			},
 		});
-		git(['add', 'src/extra.ts']);
-		git(['commit', '-q', '-m', 'user: keep extra.ts']);
+		expect(
+			git([
+				'rev-parse',
+				`refs/swarm/epics/${record?.epicKey}/tasks/1.2`,
+			]).trim(),
+		).toBe(git(['rev-parse', 'HEAD']).trim());
+		git(['add', '.gitignore']);
+		git(['commit', '-q', '-m', 'user: keep the ignore rule']);
 
-		// Wave 2 (1.3 depends on 1.1: plan-scoped marker in git).
+		// Wave 2 (1.3 depends on 1.1: its task ref is an ancestor of HEAD).
 		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
 			status: 'dispatch',
 			wave: { seq: 2, taskIds: ['1.3'] },
@@ -339,7 +357,7 @@ describe('Epic lifecycle contract v2 — start → next_wave … → epic-comple
 		await reviewAndComplete(1);
 
 		// Phase 2 only after phase_complete; 2.1's cross-phase dependency
-		// (1.3) is satisfied by its plan-scoped marker.
+		// (1.3) is satisfied by its task ref.
 		await declarePhase(2);
 		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
 			status: 'dispatch',
@@ -380,6 +398,8 @@ describe('Epic lifecycle contract v2 — start → next_wave … → epic-comple
 		);
 		expect(git(['diff', '--cached'])).toBe(epicDiff);
 		expect(isEpicOpenForProject(dir)).toBe(false);
+		// The epic's refs are gone (retain_refs is off); the report has them.
+		expect(git(['for-each-ref', 'refs/swarm'])).toBe('');
 		const reports = fs.readdirSync(
 			path.join(dir, '.swarm', 'epic-prior', 'reports'),
 		);
@@ -391,6 +411,22 @@ describe('Epic lifecycle contract v2 — start → next_wave … → epic-comple
 		);
 		expect(report.waves).toHaveLength(3);
 		expect(report.taskOutcomes['1.2'].undeclared).toEqual(['src/extra.ts']);
+		expect(Object.keys(report.refs.entries).sort()).toEqual(
+			[
+				'base',
+				'tasks/1.1',
+				'tasks/1.2',
+				'tasks/1.3',
+				'tasks/1.4',
+				'tasks/2.1',
+				'tasks/2.2',
+				'tasks/2.3',
+				'waves/1',
+				'waves/2',
+				'waves/3',
+			].map((name) => `refs/swarm/epics/${report.epicKey}/${name}`),
+		);
+		expect(report.refs).toMatchObject({ retained: false, deleteFailures: [] });
 		expect(report.phases['2'].status).toBe('complete');
 	});
 });

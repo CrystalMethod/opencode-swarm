@@ -29,6 +29,16 @@
  *      `dirty-baseline`), or `dispatch` — the wave (frozen declared scopes,
  *      base HEAD) is CAS-written into the epic record (token-guarded) and
  *      returned with dispatch instructions.
+ *
+ * Git epics (Epic v2 C3): every task's work is committed before the task
+ * completes (its coder's worktree lands as a merge commit; non-coder writes
+ * become residue commits). Closing a wave first commits any residue still
+ * attributed to its tasks, then records each task's commit and mirrors it to
+ * `refs/swarm/epics/<epicKey>/tasks/<id>` (`markers.ts`). A completed
+ * dependency outside the batch is satisfied by that ref being an ancestor of
+ * HEAD (or by having been completed before the epic started). Before a new
+ * wave, TRACKED changes block `dirty-baseline`; untracked files are only
+ * reported.
  */
 
 import { DEFAULT_LEAN_TURBO_CONFIG } from '../../config/constants.js';
@@ -36,8 +46,10 @@ import { loadPluginConfigWithMeta as loadPluginConfigWithMeta_import } from '../
 import type { Plan } from '../../config/plan-schema.js';
 import type { PluginConfig } from '../../config/schema.js';
 import { _internals as gitBranchInternals } from '../../git/branch.js';
+import { runSerializedWithMergeBacks } from '../../hooks/delegation-gate/worktree-isolation.js';
 import { readLedgerEvents as readLedgerEvents_import } from '../../plan/ledger.js';
 import { loadPlanJsonOnly as loadPlanJsonOnly_import } from '../../plan/manager.js';
+import * as logger from '../../utils/logger.js';
 import { loadCalibrationState as loadCalibrationState_import } from './calibration.js';
 import { effectiveHotModules } from './calibration-engine.js';
 import { getCoChangeData as getCoChangeData_import } from './cochange-source.js';
@@ -47,10 +59,7 @@ import {
 	isEpicModeConfigEnabled,
 } from './config-gate.js';
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from './declared-scopes.js';
-import {
-	checkEpicBranch as checkEpicBranch_import,
-	listDirtyPathsOutsideSwarm as listDirtyPathsOutsideSwarm_import,
-} from './epic-branch.js';
+import { checkEpicBranch as checkEpicBranch_import } from './epic-branch.js';
 import {
 	type EpicRecordV1,
 	type EpicWaveRecord,
@@ -59,6 +68,11 @@ import {
 	isEpicPhaseDone,
 	updateEpicRecord as updateEpicRecord_import,
 } from './lifecycle.js';
+import {
+	epicTaskRef,
+	isCommitAncestorOfHead as isCommitAncestorOfHead_import,
+	syncEpicRefs as syncEpicRefs_import,
+} from './markers.js';
 import { relevantMergeFailureForProject as relevantMergeFailureForProject_import } from './merge-epoch.js';
 import {
 	buildDispatchInstructions,
@@ -72,12 +86,14 @@ import {
 	toWaveView,
 } from './next-wave-format.js';
 import {
-	readPlanScopedCommittedTaskIds as readPlanScopedCommittedTaskIds_import,
-	resolvePlanMarkerScope as resolvePlanMarkerScope_import,
-	scrubTaskIdForGitSubject,
-} from './plan-key.js';
+	classifyDirtyBaseline,
+	commitTaskResidue as commitTaskResidue_import,
+	listDirtyEntries as listDirtyEntries_import,
+} from './residue-commit.js';
+import { EPIC_LANDING_INDEX_STAGE } from './task-landing.js';
 import {
 	applyWaveClose,
+	collectTaskAttribution as collectTaskAttribution_import,
 	computeWaveClose as computeWaveClose_import,
 	feedEpicCalibration as feedEpicCalibration_import,
 	releaseWaveAttribution as releaseWaveAttribution_import,
@@ -85,9 +101,6 @@ import {
 import { selectNextEpicWave } from './wave-select.js';
 
 export type { EpicNextWaveResult } from './next-wave-format.js';
-
-/** Window of the plan-scoped marker scan (Rule 3 predecessor evidence). */
-const MARKER_SCAN_MAX_COMMITS = 10_000;
 
 /** DI seam (AGENTS.md invariant 7). Restore in `afterEach`. */
 export const _internals = {
@@ -98,8 +111,14 @@ export const _internals = {
 	inspectEpic: inspectEpic_import,
 	updateEpicRecord: updateEpicRecord_import,
 	checkEpicBranch: checkEpicBranch_import,
-	listDirtyPathsOutsideSwarm: (directory: string): string[] =>
-		listDirtyPathsOutsideSwarm_import(directory),
+	listDirtyEntries: listDirtyEntries_import,
+	commitTaskResidue: commitTaskResidue_import,
+	collectTaskAttribution: collectTaskAttribution_import,
+	syncEpicRefs: syncEpicRefs_import,
+	isCommitAncestorOfHead: isCommitAncestorOfHead_import,
+	/** One writer of the primary checkout's index at a time (merge-back queue). */
+	serializeWithMergeBacks: <T>(task: () => T | Promise<T>): Promise<T> =>
+		runSerializedWithMergeBacks(task),
 	readHead: (directory: string): string | null => {
 		try {
 			const head = gitBranchInternals
@@ -112,8 +131,6 @@ export const _internals = {
 	},
 	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	relevantMergeFailureForProject: relevantMergeFailureForProject_import,
-	resolvePlanMarkerScope: resolvePlanMarkerScope_import,
-	readPlanScopedCommittedTaskIds: readPlanScopedCommittedTaskIds_import,
 	loadCalibrationState: loadCalibrationState_import,
 	getCoChangeData: getCoChangeData_import,
 	computeWaveClose: computeWaveClose_import,
@@ -405,6 +422,19 @@ async function advanceActiveWave(
 	}
 	if (failures.length > 0) {
 		recordMergeFailureSnapshots(directory, epic, wave.seq, failures);
+		const indexDirty = failures.filter(
+			(f) => f.stage === EPIC_LANDING_INDEX_STAGE,
+		);
+		if (indexDirty.length > 0) {
+			return {
+				result: {
+					status: 'blocked',
+					reason: 'landing-index-dirty',
+					details: { waveSeq: wave.seq, failures },
+					message: `Wave ${wave.seq} cannot close: ${indexDirty.map((f) => f.message).join(' ')} Tell the user exactly which staged files to unstage.`,
+				},
+			};
+		}
 		return {
 			result: {
 				status: 'blocked',
@@ -425,8 +455,19 @@ async function advanceActiveWave(
 		};
 	}
 
-	// Closable: compute, CAS-close, then (only if this call closed it) feed
-	// calibration and release attribution.
+	// Closable. Git: first commit residue still attributed to the wave's
+	// completed tasks (a missed or failed after-hook residue commit), so the
+	// close HEAD and the task commits include it.
+	if (epic.git.isRepo) {
+		// Serialized with worktree merge-backs: one writer of the primary
+		// checkout's index at a time.
+		const residue = await _internals.serializeWithMergeBacks(() =>
+			commitWaveResidue(directory, sessionID, epic, wave, plan),
+		);
+		if (residue) return { result: residue };
+	}
+	// Compute, CAS-close, then (only if this call closed it) mirror the refs,
+	// feed calibration and release attribution.
 	const nowIso = new Date(_internals.now()).toISOString();
 	const computation = await _internals.computeWaveClose({
 		directory,
@@ -454,6 +495,17 @@ async function advanceActiveWave(
 	// loses this wave's divergence records / calibration step (outcomes,
 	// including `undeclared`, are already in the record) — never blocks.
 	if (closedHere) {
+		if (updated.git.isRepo) {
+			try {
+				_internals.syncEpicRefs(directory, updated);
+			} catch (error) {
+				// The record holds the commits; predecessor evidence re-syncs
+				// (and blocks `git-failed` if git stays broken).
+				logger.warn(
+					`[epic/next-wave] refs for wave ${wave.seq} not written yet: ${errorText(error)}`,
+				);
+			}
+		}
 		_internals.feedEpicCalibration({
 			directory,
 			config,
@@ -467,6 +519,66 @@ async function advanceActiveWave(
 	return {
 		epic: updated,
 		closedWave: summarizeClosedWave(closedRecord, computation.outcomes),
+	};
+}
+
+/**
+ * Commit, as residue, the dirty paths attributed to the wave's completed
+ * tasks (declared scope or session write attribution). Returns a `blocked`
+ * result when git fails (the wave stays open; retry), else null.
+ */
+function commitWaveResidue(
+	directory: string,
+	sessionID: string | undefined,
+	epic: EpicRecordV1,
+	wave: EpicWaveRecord,
+	plan: Plan,
+): EpicNextWaveResult | null {
+	let dirty: ReturnType<typeof _internals.listDirtyEntries>;
+	try {
+		dirty = _internals.listDirtyEntries(directory);
+	} catch (error) {
+		return gitFailed(
+			`Cannot read the working tree before closing wave ${wave.seq} (git status failed: ${errorText(error)}).`,
+			error,
+		);
+	}
+	for (const taskId of wave.taskIds) {
+		if (dirty.length === 0) break;
+		if (findTask(plan, taskId)?.task.status !== 'completed') continue;
+		const result = _internals.commitTaskResidue({
+			directory,
+			epic,
+			taskId,
+			label: 'residue',
+			candidates: _internals.collectTaskAttribution(
+				directory,
+				sessionID,
+				taskId,
+			),
+			scopes: wave.files[taskId] ?? [],
+			dirty,
+		});
+		if (result.status === 'failed') {
+			return gitFailed(
+				`Wave ${wave.seq} cannot close: task ${taskId}'s uncommitted files (${result.files.slice(0, 5).join(', ')}) could not be committed on the epic branch (${result.error}).`,
+				result.error,
+			);
+		}
+		if (result.status === 'committed') {
+			const done = new Set(result.files);
+			dirty = dirty.filter((entry) => !done.has(entry.path));
+		}
+	}
+	return null;
+}
+
+function gitFailed(what: string, error: unknown): EpicNextWaveResult {
+	return {
+		status: 'blocked',
+		reason: 'git-failed',
+		details: { error: errorText(error) },
+		message: `${what} Usually transient (a git lock) — call epic_next_wave again. If git stays broken, tell the user to repair the repository.`,
 	};
 }
 
@@ -549,14 +661,14 @@ function syncPhases(
 
 /**
  * Tasks completed BEFORE the epic started. `/swarm epic start` refuses a
- * dirty tree, so their work is in HEAD even though no Epic (Rule 2) marker
- * was written for them — they need no marker as predecessor evidence. A task
+ * dirty tree, so their work is in HEAD even though the epic recorded no
+ * commit (task ref) for them — they need none as predecessor evidence. A task
  * counts when the epic never resolved it in a wave and either its phase was
  * already finished at start, or its last transition to `completed` in the
  * plan ledger predates the start (or it was saved completed, with no
  * transition at all).
  */
-async function completedBeforeEpic(
+export async function completedBeforeEpic(
 	directory: string,
 	epic: EpicRecordV1,
 	plan: Plan,
@@ -614,38 +726,44 @@ async function issueNextWave(
 		batchIds,
 	);
 
-	// Predecessor evidence: current-plan completion markers (git only), read
-	// once and only when an out-of-batch completed dependency exists.
+	// Predecessor evidence (git only): a completed dependency outside the
+	// batch is satisfied when it was completed before the epic started, or
+	// its task ref (mirrored from the epic record) is an ancestor of HEAD.
 	let isCommitted: (taskId: string) => boolean = () => true;
 	if (epic.git.isRepo) {
-		const needsEvidence = (phase?.tasks ?? []).some(
-			(task) =>
-				batchIds.includes(task.id) &&
-				(task.depends ?? []).some(
-					(dep) =>
-						!batchIds.includes(dep) &&
-						findTask(plan, dep)?.task.status === 'completed',
-				),
-		);
-		if (needsEvidence) {
+		const needed = new Set<string>();
+		for (const task of phase?.tasks ?? []) {
+			if (!batchIds.includes(task.id)) continue;
+			for (const dep of task.depends ?? []) {
+				if (
+					!batchIds.includes(dep) &&
+					findTask(plan, dep)?.task.status === 'completed'
+				) {
+					needed.add(dep);
+				}
+			}
+		}
+		if (needed.size > 0) {
 			try {
-				const scope = await _internals.resolvePlanMarkerScope(directory, plan);
-				const committed = _internals.readPlanScopedCommittedTaskIds(
-					directory,
-					scope,
-					MARKER_SCAN_MAX_COMMITS,
-				);
 				const preEpic = await completedBeforeEpic(directory, epic, plan);
-				isCommitted = (taskId) =>
-					preEpic.has(taskId) ||
-					committed.has(scrubTaskIdForGitSubject(taskId));
+				const refs = _internals.syncEpicRefs(directory, epic);
+				const committed = new Set<string>();
+				for (const dep of needed) {
+					if (preEpic.has(dep)) {
+						committed.add(dep);
+						continue;
+					}
+					const sha = refs.get(epicTaskRef(epic.epicKey, dep));
+					if (sha && _internals.isCommitAncestorOfHead(directory, sha)) {
+						committed.add(dep);
+					}
+				}
+				isCommitted = (taskId) => committed.has(taskId);
 			} catch (error) {
-				return {
-					status: 'blocked',
-					reason: 'git-failed',
-					details: { error: errorText(error) },
-					message: `Cannot verify that completed predecessor tasks are committed: the plan-scoped completion-marker read failed (${errorText(error)}). Usually transient (a git lock) — call epic_next_wave again. If git stays broken, tell the user to repair the repository.`,
-				};
+				return gitFailed(
+					`Cannot verify that completed predecessor tasks are on the epic branch: reading or writing the epic's task refs failed (${errorText(error)}).`,
+					error,
+				);
 			}
 		}
 	}
@@ -722,26 +840,11 @@ async function issueNextWave(
 			break;
 	}
 
+	let untrackedNote = '';
 	if (epic.git.isRepo) {
-		let dirty: string[];
-		try {
-			dirty = _internals.listDirtyPathsOutsideSwarm(directory);
-		} catch (error) {
-			return {
-				status: 'blocked',
-				reason: 'git-failed',
-				details: { error: errorText(error) },
-				message: `Cannot check the working tree before the next wave (git status failed: ${errorText(error)}). Call epic_next_wave again; if it persists, tell the user.`,
-			};
-		}
-		if (dirty.length > 0) {
-			return {
-				status: 'blocked',
-				reason: 'dirty-baseline',
-				details: { files: dirty.slice(0, 20), total: dirty.length },
-				message: `The working tree has ${dirty.length} uncommitted change(s) outside .swarm/ (${dirty.slice(0, 5).join(', ')}${dirty.length > 5 ? ', …' : ''}) that no task's completion commit took (undeclared writes or manual edits). Coders need a clean baseline. Tell the user and ask them to commit (on the epic branch) or discard them; then call epic_next_wave.`,
-			};
-		}
+		const baseline = settleDirtyBaseline(directory);
+		if ('result' in baseline) return baseline.result;
+		untrackedNote = baseline.untrackedNote;
 	}
 
 	const nowIso = new Date(_internals.now()).toISOString();
@@ -802,6 +905,46 @@ async function issueNextWave(
 	return {
 		status: 'dispatch',
 		wave: view,
-		instructions: buildDispatchInstructions(view),
+		instructions: `${buildDispatchInstructions(view)}${untrackedNote}`,
+	};
+}
+
+/**
+ * The working tree before a new wave (X1 `dirty-baseline`). The closing
+ * wave's residue was already committed, so nothing dirty belongs to a task:
+ * a TRACKED change blocks the wave; untracked files are only reported
+ * (worktree coders do not see them).
+ */
+function settleDirtyBaseline(
+	directory: string,
+): { result: EpicNextWaveResult } | { untrackedNote: string } {
+	let dirty: ReturnType<typeof _internals.listDirtyEntries>;
+	try {
+		dirty = _internals.listDirtyEntries(directory);
+	} catch (error) {
+		return {
+			result: gitFailed(
+				`Cannot check the working tree before the next wave (git status failed: ${errorText(error)}).`,
+				error,
+			),
+		};
+	}
+	if (dirty.length === 0) return { untrackedNote: '' };
+	const classified = classifyDirtyBaseline(dirty);
+	const tracked = classified.unattributedTracked;
+	if (tracked.length > 0) {
+		return {
+			result: {
+				status: 'blocked',
+				reason: 'dirty-baseline',
+				details: { files: tracked.slice(0, 20), total: tracked.length },
+				message: `The working tree has ${tracked.length} uncommitted change(s) to tracked files outside .swarm/ that no epic task declared (${tracked.slice(0, 5).join(', ')}${tracked.length > 5 ? ', …' : ''}) — manual edits or undeclared writes. Coders need a clean baseline. Tell the user and ask them to commit (on the epic branch) or discard them; then call epic_next_wave.`,
+			},
+		};
+	}
+	const untracked = classified.unattributedUntracked;
+	if (untracked.length === 0) return { untrackedNote: '' };
+	return {
+		untrackedNote: `\nNote: ${untracked.length} untracked file(s) outside .swarm/ belong to no task (${untracked.slice(0, 5).join(', ')}${untracked.length > 5 ? ', …' : ''}). They stay uncommitted and the wave's worktree coders do not see them; tell the user in one sentence (commit, ignore, or delete them).`,
 	};
 }

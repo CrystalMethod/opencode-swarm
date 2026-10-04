@@ -10,15 +10,18 @@
  *                            uncommitted), and write its close report
  *   /swarm epic           — same as `status` (the bare form never mutates
  *                            the epic)
- *   /swarm epic status    — lifecycle state, orphan detection, sentinel/row
+ *   /swarm epic status [--repair-refs]
+ *                          — lifecycle state, orphan detection, sentinel/row
  *                            repair, recorded worktree merge failures, and
  *                            the one-time retirement of Epic v1 session state
  *                            (including the epic's waves, phases and
- *                            divergence recorded by `epic_next_wave`)
+ *                            divergence recorded by `epic_next_wave`);
+ *                            `--repair-refs` re-adopts task commits a rebase
+ *                            or amend made unreachable (Epic v2 C3)
  *   /swarm epic calibration — Capability D calibration state
  *   /swarm epic clear-merge-failure <taskId> [--confirm]
  *                          — clear a recorded worktree merge failure that
- *                            blocks Rule 2 (read-only without --confirm)
+ *                            blocks an epic wave (read-only without --confirm)
  *
  * The Epic v1 `on` / `off` per-session toggles were removed: an epic is
  * bound to one plan and every Epic behaviour is driven by the sentinel-first
@@ -46,13 +49,23 @@ import {
 	type EpicInspection,
 	type EpicLandMode,
 	type EpicRecordV1,
+	getOpenEpic,
 	inspectEpic,
 	repairEpicSentinel,
+	updateEpicRecord,
 } from '../turbo/epic/lifecycle.js';
+import {
+	epicTaskRef,
+	planEpicTaskRefRepair,
+	readEpicRefs,
+	syncEpicRefs,
+	writeEpicRef,
+} from '../turbo/epic/markers.js';
 import {
 	clearMergeFailureCommand,
 	describeMergeFailuresForStatus,
 } from '../turbo/epic/merge-epoch.js';
+import { completedBeforeEpic } from '../turbo/epic/next-wave.js';
 import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
 import {
 	describeEpicSizingReason,
@@ -80,10 +93,17 @@ export const _internals = {
 	repairEpicSentinel,
 	retireLegacyEpicSessionState,
 	checkEpicBranch,
+	getOpenEpic,
+	updateEpicRecord,
+	planEpicTaskRefRepair,
+	syncEpicRefs,
+	readEpicRefs,
+	writeEpicRef,
+	completedBeforeEpic,
 };
 
 const USAGE =
-	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
+	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
 
 export async function handleEpicCommand(
 	directory: string,
@@ -102,12 +122,20 @@ export async function handleEpicCommand(
 		case 'close':
 			return renderClose(directory, args.slice(1));
 		case 'status':
-		case undefined:
+		case undefined: {
 			// No argument → status (NOT a mutation of the epic). Toggle-by-
 			// default created an infinite loop with weaker models (Kimi K2.6
 			// observed) when the architect called `swarm_command
 			// [command=epic]` without args to "check state".
-			return await renderStatus(directory);
+			const unknown = unknownFlags(flags, '--repair-refs');
+			if (unknown.length > 0) {
+				return `Unknown option(s) for status: ${unknown.join(', ')}.\n\n${USAGE}`;
+			}
+			const status = await renderStatus(directory);
+			return flags.has('--repair-refs')
+				? `${status}\n${await renderRefRepair(directory)}`
+				: status;
+		}
 		case 'decide':
 		case 'last':
 			return `\`/swarm epic ${arg0}\` was removed in Epic v2: the activation gate is gone and the architect's \`epic_next_wave\` plans every wave. Run \`/swarm epic status\` to see the epic's waves, phases and recorded divergence.\n\n${USAGE}`;
@@ -328,12 +356,21 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 	if ('error' in parsed) {
 		return `${parsed.error}\n\n${USAGE}`;
 	}
+	let retainRefs = false;
+	try {
+		retainRefs =
+			_internals.loadPluginConfigWithMeta(directory).config.turbo?.epic
+				?.retain_refs === true;
+	} catch {
+		retainRefs = false;
+	}
 	let result: Awaited<ReturnType<typeof closeEpic>>;
 	try {
 		result = await _internals.closeEpic({
 			directory,
 			abandon: parsed.abandon,
 			land: parsed.land,
+			retainRefs,
 		});
 	} catch (error) {
 		return `Error closing the epic: ${error instanceof Error ? error.message : String(error)}`;
@@ -362,6 +399,7 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 					? `Tasks: ${tasks.completed} completed, ${tasks.closed} closed, ${tasks.pending.length} pending (of ${tasks.total}).`
 					: 'Tasks: not summarized (the plan no longer matches the epic).',
 				...renderLandingLines(result.report.landing),
+				...renderRefLines(result.report.refs),
 				`Report: \`.swarm/epic/reports/${result.report.reportKey}.json\` (kept across /swarm close at \`.swarm/epic-prior/reports/${result.report.reportKey}.json\`).`,
 			].join('\n');
 		}
@@ -370,8 +408,8 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 
 /**
  * Epic v2 C0: recorded worktree merge-back failures, classified against the
- * current plan's root time (stale ⇒ ignored by Rule 2; undated ⇒ blocking,
- * fail closed). Read-only; any failure to resolve the plan degrades to
+ * current plan's root time (stale ⇒ ignored; undated ⇒ blocking, fail
+ * closed). Read-only; any failure to resolve the plan degrades to
  * "root unknown" (every failure reported as blocking).
  */
 async function renderMergeFailureLines(directory: string): Promise<string[]> {
@@ -393,6 +431,138 @@ async function renderMergeFailureLines(directory: string): Promise<string[]> {
 			`Worktree merge failures could not be listed: ${err instanceof Error ? err.message : String(err)}`,
 		];
 	}
+}
+
+function renderRefLines(
+	refs: {
+		entries: Record<string, string>;
+		retained: boolean;
+		deleteFailures: string[];
+		captureError?: string;
+	} | null,
+): string[] {
+	if (!refs) return [];
+	const count = Object.keys(refs.entries).length;
+	if (refs.captureError) {
+		return [
+			`Epic refs could not be listed (${refs.captureError}); remove any left under \`refs/swarm/epics/\` with \`git update-ref -d\`.`,
+		];
+	}
+	if (refs.retained) {
+		return [
+			`Epic refs kept (\`turbo.epic.retain_refs\`): ${count} under \`refs/swarm/epics/\` (recorded in the report).`,
+		];
+	}
+	if (refs.deleteFailures.length > 0) {
+		return [
+			`Epic refs: ${count - refs.deleteFailures.length} of ${count} deleted; delete the rest with \`git update-ref -d\`: ${refs.deleteFailures.slice(0, 5).join(', ')}${refs.deleteFailures.length > 5 ? ', …' : ''}.`,
+		];
+	}
+	return count > 0
+		? [`Epic refs: ${count} deleted (their values are in the report).`]
+		: [];
+}
+
+/**
+ * `/swarm epic status --repair-refs` (Epic v2 C3, MINOR 11): re-adopt the
+ * commit of each completed task whose recorded commit is no longer
+ * reachable from HEAD (rebase / amend), and of each task completed outside
+ * a wave, then mirror the refs. Only for the open git epic.
+ */
+async function renderRefRepair(directory: string): Promise<string> {
+	const lines = ['', '### Ref repair (`--repair-refs`)'];
+	let epic: EpicRecordV1 | null;
+	try {
+		epic = _internals.getOpenEpic(directory);
+	} catch (error) {
+		lines.push(
+			`- Not run: the epic state is unreadable (${error instanceof Error ? error.message : String(error)}).`,
+		);
+		return lines.join('\n');
+	}
+	if (!epic) {
+		lines.push('- Not run: no epic is open for the current plan.');
+		return lines.join('\n');
+	}
+	if (!epic.git.isRepo) {
+		lines.push('- Not applicable: this epic is not in a git repository.');
+		return lines.join('\n');
+	}
+	const branch = _internals.checkEpicBranch(directory, epic);
+	if (!branch.ok) {
+		lines.push(`- Not run: ${branch.message}`);
+		return lines.join('\n');
+	}
+	try {
+		const plan = await _internals.loadPlanJsonOnly(directory);
+		const preEpic = plan
+			? await _internals.completedBeforeEpic(directory, epic, plan)
+			: new Set<string>();
+		const unrecorded = (plan?.phases ?? [])
+			.flatMap((phase) => phase.tasks ?? [])
+			.filter(
+				(task) =>
+					task.status === 'completed' &&
+					!epic.tasks[task.id] &&
+					!preEpic.has(task.id),
+			)
+			.map((task) => task.id);
+		const repair = _internals.planEpicTaskRefRepair(
+			directory,
+			epic,
+			unrecorded,
+		);
+		let record = epic;
+		if (repair.recorded.size > 0) {
+			const updated = _internals.updateEpicRecord(
+				directory,
+				epic.epicKey,
+				(current) => {
+					const tasks = { ...current.tasks };
+					for (const [taskId, sha] of repair.recorded) {
+						const outcome = tasks[taskId];
+						if (!outcome) continue;
+						tasks[taskId] = {
+							...outcome,
+							marker: {
+								ref: epicTaskRef(current.epicKey, taskId),
+								sha,
+								provenance: 'repaired',
+							},
+						};
+					}
+					return { ...current, tasks };
+				},
+				epic.token,
+			);
+			if (!updated) {
+				lines.push('- Not run: the epic closed meanwhile.');
+				return lines.join('\n');
+			}
+			record = updated;
+		}
+		_internals.syncEpicRefs(directory, record);
+		if (repair.unrecorded.size > 0) {
+			const refs = _internals.readEpicRefs(directory, record.epicKey);
+			for (const [taskId, sha] of repair.unrecorded) {
+				const ref = epicTaskRef(record.epicKey, taskId);
+				_internals.writeEpicRef(directory, ref, sha, refs.get(ref) ?? null);
+			}
+		}
+		if (repair.repairs.length === 0) {
+			lines.push('- No completed task to check.');
+		}
+		for (const verdict of repair.repairs) {
+			lines.push(
+				`- ${verdict.taskId}: **${verdict.status}** — ${verdict.detail}`,
+			);
+		}
+	} catch (error) {
+		lines.push(
+			`- Failed: git error (${error instanceof Error ? error.message : String(error)}). Nothing was changed after the failure; retry.`,
+		);
+	}
+	return lines.join('\n');
 }
 
 const ORPHAN_TEXT: Record<

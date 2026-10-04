@@ -44,6 +44,7 @@ export type EpicNextWaveRefusal =
 export type EpicNextWaveBlockReason =
 	| 'task-blocked'
 	| 'merge-failed'
+	| 'landing-index-dirty'
 	| 'git-failed'
 	| 'dirty-baseline'
 	| 'predecessor-missing'
@@ -129,8 +130,8 @@ export function buildDispatchInstructions(wave: EpicWaveView): string {
 			? '2. Dispatch ONE Task(subagent_type="coder") for it.'
 			: `2. Dispatch ${n} SEPARATE Task(subagent_type="coder") calls, ALL in ONE assistant message (one per taskId) so they run concurrently. Never bundle several task ids into one Task; never split the wave across messages.`,
 		'   Each coder prompt: the task id, its description and acceptance criteria, and its declared scope (`wave.tasks[].files`) — the coder writes only inside that scope.',
-		"   Before dispatching, make sure each task's declared scope also lists the test files the test_engineer will write for it; if not, re-declare it now with `declare_scope` (`replace_existing: true`). A file a task writes outside its scope is not committed with the task and pauses the next wave until it is committed.",
-		"3. As each coder returns, run that task's per-task QA — Stage A `pre_check_batch`, then Stage B `reviewer` + `test_engineer` (per its tier) — then `update_task_status(<taskId>, completed)`. Per-task QA is never waived. If QA fails, send the task back to its coder and repeat the QA. If a task cannot be finished, tell the user and mark it blocked (or closed if the user drops it).",
+		"   Before dispatching, make sure each task's declared scope also lists the test files the test_engineer will write for it; if not, re-declare it now with `declare_scope` (`replace_existing: true`). Declared files written in the main tree (tests, docs) are committed on the epic branch as the task's residue; each coder runs in its own git worktree and its work lands as a commit when it returns.",
+		"3. As each coder returns, run that task's per-task QA — Stage A `pre_check_batch`, then Stage B `reviewer` + `test_engineer` (per its tier) — then `update_task_status(<taskId>, completed)`. Per-task QA is never waived. A returned coder's work is already committed on the epic branch (`swarm(task <id>): …`), so the working tree stays clean: point the reviewer and test_engineer at the task's declared files and that commit, not at uncommitted changes. If QA fails, send the task back to its coder (it starts from the committed work and the tests) and repeat the QA. If a task cannot be finished, tell the user and mark it blocked (or closed if the user drops it).",
 		'4. When every task of this wave is completed (or closed), call `epic_next_wave` again — it closes the wave (records outcomes and divergence) and issues the next one.',
 	].join('\n');
 }
@@ -160,7 +161,7 @@ const PREDECESSOR_WHY: Record<EpicPredecessorProblem['why'], string> = {
 	closed: 'was closed (its work will never exist)',
 	'later-phase': 'belongs to a later phase',
 	'not-committed':
-		'is completed but has no completion commit for this plan (Rule 2 skipped it — e.g. HEAD was off the epic branch, its merge-back failed, or the commit failed)',
+		'is completed but its commit is not on the epic branch (no epic task ref, or the ref is no longer reachable from HEAD — e.g. it was completed outside a wave, or a rebase/amend rewrote its commit)',
 	cycle: 'forms a dependency cycle',
 };
 
@@ -176,7 +177,7 @@ export function predecessorMessage(
 		);
 	const more = problems.length > 10 ? ` (+${problems.length - 10} more)` : '';
 	const committedHint = problems.some((p) => p.why === 'not-committed')
-		? ` A "no completion commit" task was completed during the epic but Rule 2 wrote no marker for it. If its work IS already committed on the epic branch, record the marker with: git commit --allow-empty -m "swarm(task <id>): <description>" -m "Swarm-Plan: ${planKey}" (one per task); otherwise commit its work with that same message.`
+		? ` For a task whose work IS on the epic branch, ask the user to run \`/swarm epic status --repair-refs\` (it re-adopts the task's commit: its \`swarm(task <id>): …\` commit with the trailer \`Swarm-Plan: ${planKey}\`, else the newest commit touching its declared files); if its work is missing, re-run the task.`
 		: '';
 	return `These tasks can never run as planned: ${lines.join('; ')}${more}. Tell the user and fix the plan — drop or correct the dependency (save_plan), or close the dependent task (update_task_status closed).${committedHint} Then call epic_next_wave.`;
 }

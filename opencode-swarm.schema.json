@@ -4662,6 +4662,9 @@
                     "epic-branch",
                     "current-branch"
                   ]
+                },
+                "retain_refs": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
@@ -4899,6 +4902,9 @@
                     "epic-branch",
                     "current-branch"
                   ]
+                },
+                "retain_refs": {
+                  "type": "boolean"
                 }
               },
               "additionalProperties": false
