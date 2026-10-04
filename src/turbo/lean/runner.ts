@@ -2033,7 +2033,12 @@ export class LeanTurboRunner {
 			);
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			log(`[lean-turbo] phase evidence write failed: ${msg}`);
+			// Always-visible channel (not log()): a swallowed write failure here
+			// becomes a hard phase-advance block later (integrated_diff_required
+			// defaults to true), with no link back to this failure.
+			criticalWarn(
+				`[lean-turbo] phase evidence write failed for phase ${evidence.phase}: ${msg}. The phase will not be able to advance at phase_complete until the evidence exists (.swarm/evidence/${evidence.phase}/lean-turbo/lean-turbo-phase.json) or turbo.lean.integrated_diff_required is set to false.`,
+			);
 		}
 	}
 
