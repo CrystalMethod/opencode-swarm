@@ -6,9 +6,13 @@
  *                            unless `turbo.epic.mode.enabled: true`)
  *   /swarm epic off       — disable Epic Mode for this session
  *   /swarm epic           — same as `status` (bare form never toggles)
- *   /swarm epic status    — show current state + last decision rationale
+ *   /swarm epic status    — show current state + last decision rationale +
+ *                            recorded worktree merge failures (Epic v2 C0)
  *   /swarm epic last      — most recent decision from the durable evidence log
  *   /swarm epic calibration — Capability D calibration state
+ *   /swarm epic clear-merge-failure <taskId> [--confirm]
+ *                          — clear a recorded worktree merge failure that
+ *                            blocks Rule 2 (read-only without --confirm)
  *   /swarm epic decide    — run the activation decision once and print the
  *                            verdict without dispatching execution
  *                            (read-only what-if; does NOT write to
@@ -43,6 +47,11 @@ import {
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory } from '../turbo/epic/divergence-recorder.js';
+import {
+	clearMergeFailureCommand,
+	describeMergeFailuresForStatus,
+} from '../turbo/epic/merge-epoch.js';
+import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
 import { readPromotionEvidence } from '../turbo/epic/promotion-evidence.js';
 import {
 	disableEpicMode,
@@ -75,6 +84,9 @@ export const _internals = {
 	isCalibrationStateUnreadable,
 	readDivergenceHistory,
 	isGitRepo,
+	resolvePlanMarkerScope,
+	describeMergeFailuresForStatus,
+	clearMergeFailureCommand,
 };
 
 export async function handleEpicCommand(
@@ -106,13 +118,15 @@ export async function handleEpicCommand(
 
 	switch (arg0) {
 		case 'status':
-			return renderStatus(directory, sessionID);
+			return await renderStatus(directory, sessionID);
 		case 'decide':
 			return renderDecide(directory);
 		case 'last':
 			return renderLast(directory);
 		case 'calibration':
 			return renderCalibration(directory);
+		case 'clear-merge-failure':
+			return _internals.clearMergeFailureCommand(directory, args.slice(1));
 		case 'on':
 			return enableAndAck(directory, sessionID, session);
 		case 'off':
@@ -125,9 +139,9 @@ export async function handleEpicCommand(
 			// call flipped it back; loop. Status is idempotent and matches
 			// the user's intent on a bare `/swarm epic` — see what's on,
 			// don't change anything. Explicit `on/off` are the mutators.
-			return renderStatus(directory, sessionID);
+			return await renderStatus(directory, sessionID);
 		default:
-			return `Unknown subcommand '${arg0}'.\n\nUsage:\n  /swarm epic on | off | status | decide | last | calibration\n  /swarm epic         (shows status)`;
+			return `Unknown subcommand '${arg0}'.\n\nUsage:\n  /swarm epic on | off | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)`;
 	}
 }
 
@@ -183,7 +197,37 @@ function disableAndAck(
 	return 'Epic Mode disabled for this session.';
 }
 
-function renderStatus(directory: string, sessionID: string): string {
+/**
+ * Epic v2 C0: recorded worktree merge-back failures, classified against the
+ * current plan's root time (stale ⇒ ignored by Rule 2; undated ⇒ blocking,
+ * fail closed). Read-only; any failure to resolve the plan degrades to
+ * "root unknown" (every failure reported as blocking).
+ */
+async function renderMergeFailureLines(directory: string): Promise<string[]> {
+	let sinceMs: number | null = null;
+	try {
+		const plan = await _internals.loadPlanJsonOnly(directory);
+		if (plan) {
+			sinceMs = (await _internals.resolvePlanMarkerScope(directory, plan))
+				.rootTimestampMs;
+		}
+	} catch {
+		sinceMs = null;
+	}
+	try {
+		return _internals.describeMergeFailuresForStatus(directory, sinceMs);
+	} catch (err) {
+		return [
+			'',
+			`Worktree merge failures could not be listed: ${err instanceof Error ? err.message : String(err)}`,
+		];
+	}
+}
+
+async function renderStatus(
+	directory: string,
+	sessionID: string,
+): Promise<string> {
 	const lines: string[] = ['## Epic Mode — Status', ''];
 	// Distinguish "state is corrupt / fail-closed" from "never toggled" —
 	// the underlying loader returns null for both, but the actionable advice
@@ -197,6 +241,7 @@ function renderStatus(directory: string, sessionID: string): string {
 	const state = _internals.loadEpicSessionState(directory, sessionID);
 	if (!state) {
 		lines.push('Epic Mode has not been toggled for this session.');
+		lines.push(...(await renderMergeFailureLines(directory)));
 		return lines.join('\n');
 	}
 	lines.push(`Active: **${state.active ? 'yes' : 'no'}**`);
@@ -215,6 +260,7 @@ function renderStatus(directory: string, sessionID: string): string {
 			for (const r of ld.blockingReasons) lines.push(`  - ${r}`);
 		}
 	}
+	lines.push(...(await renderMergeFailureLines(directory)));
 	return lines.join('\n');
 }
 

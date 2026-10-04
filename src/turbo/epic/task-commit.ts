@@ -35,6 +35,12 @@ import {
 	isGitRepo as isGitRepo_import,
 } from '../../git/branch.js';
 import { criticalWarn } from '../../utils/logger.js';
+import {
+	formatSwarmPlanTrailer,
+	hasPlanScopedTaskMarker,
+	type PlanMarkerScope,
+	scrubTaskIdForGitSubject,
+} from './plan-key.js';
 
 /** Result of a single task-commit attempt. */
 export interface CommitTaskCompletionResult {
@@ -116,38 +122,24 @@ export function parsePorcelainZPaths(output: string): string[] {
 }
 
 /**
- * Build the commit message body. The `swarm(task <id>):` prefix is the
- * searchable marker downstream Rule 3 lookups consume; treat it as a
- * stable contract. The description is truncated to keep the subject line
- * within git's conventional 72-char window.
+ * Build the marker commit message. The `swarm(task <id>):` subject prefix is
+ * the searchable marker Rule 2's idempotency guard and Rule 3 consume; the
+ * `Swarm-Plan: <planKey>` trailer binds it to the plan that wrote it (Epic v2
+ * C0, see `./plan-key.ts`) so a previous plan's marker for the same task id
+ * is never honored. Treat both as a stable contract. The description is
+ * truncated to keep the subject within git's conventional 72-char window.
+ * The task id is scrubbed by `scrubTaskIdForGitSubject` (Phase 17 C.H2).
  */
-/**
- * Phase 17 (C.H2): defensive taskId scrubber for commit-subject and
- * grep-pattern use. The full validator lives in `src/validation/task-id.ts`
- * and is enforced at tool boundaries — but plan-ledger dep IDs flow into
- * this code path from LLM-authored `plan.json` and are NOT re-validated.
- * A typo'd `)` or `\n` in a taskId would corrupt the Phase 6 parser
- * regex `/^swarm\(task ([^)]+)\):/` and silently mark unrelated tasks
- * as "committed", flipping Rule 3 fail-closed to fail-open.
- *
- * This scrubber keeps only characters safe for both git commit subjects
- * (no newlines, no parentheses) and ERE regex literals (no `*+?^${}|[]\`).
- * Disallowed characters become `_`. Output is then escaped further for
- * regex contexts by the existing escape in `hasExistingTaskCommit`.
- */
-function scrubTaskIdForGitSubject(taskId: string): string {
-	return taskId.replace(/[^a-zA-Z0-9._-]/g, '_');
-}
-
 export function formatTaskCommitMessage(
 	taskId: string,
+	planKey: string,
 	description?: string,
 ): string {
 	const safeId = scrubTaskIdForGitSubject(taskId);
 	const summary = (description ?? 'completed').replace(/\s+/g, ' ').trim();
 	const truncated =
 		summary.length > 60 ? `${summary.slice(0, 57)}...` : summary;
-	return `swarm(task ${safeId}): ${truncated || 'completed'}`;
+	return `swarm(task ${safeId}): ${truncated || 'completed'}\n\n${formatSwarmPlanTrailer(planKey)}`;
 }
 
 /**
@@ -203,8 +195,9 @@ function isLockContentionError(err: unknown): boolean {
 export async function commitTaskCompletion(
 	directory: string,
 	taskId: string,
-	description?: string,
-	scopePaths?: string[],
+	description: string | undefined,
+	scopePaths: string[] | undefined,
+	markerScope: PlanMarkerScope,
 ): Promise<CommitTaskCompletionResult> {
 	// Probe for git repo first. `isGitRepo` throws nothing — it returns
 	// `false` on any failure path (`git rev-parse --git-dir` non-zero exit
@@ -214,8 +207,10 @@ export async function commitTaskCompletion(
 	}
 
 	// Idempotency guard (Phase 8): if a `swarm(task <id>):` marker for
-	// this taskId already exists in git history, do not produce a second
-	// one. `updateTaskStatus(..., 'completed')` can legitimately fire
+	// this taskId already exists for the CURRENT plan (Epic v2 C0: matching
+	// `Swarm-Plan:` trailer, or a legacy trailer-less marker committed
+	// at/after the plan root), do not produce a second one. A previous
+	// plan's marker for the same id is ignored. `updateTaskStatus(..., 'completed')` can legitimately fire
 	// multiple times — council re-runs, status corrections, retry-after-
 	// error, recovery flows. Without this guard each repeat call mints
 	// another empty marker, polluting history and over-counting
@@ -224,7 +219,7 @@ export async function commitTaskCompletion(
 	// over polish; better a possible duplicate than a silent skip when
 	// detection is broken).
 	try {
-		if (_internals.hasExistingTaskCommit(directory, taskId)) {
+		if (_internals.hasExistingTaskCommit(directory, taskId, markerScope)) {
 			// Phase 17 (B.M9): `committed: true` because the marker IS
 			// in git history (we just didn't write it this call). This
 			// fixes the architect-LLM-retry loop where `committed: false`
@@ -260,7 +255,11 @@ export async function commitTaskCompletion(
 			`[epic:task-commit] dropped ${droppedMagic.length} scope path(s) starting with ':' (git pathspec magic, not allowed): ${droppedMagic.slice(0, 5).join(', ')}${droppedMagic.length > 5 ? `, +${droppedMagic.length - 5} more` : ''}. Architect should declare literal file paths only.`,
 		);
 	}
-	const message = formatTaskCommitMessage(taskId, description);
+	const message = formatTaskCommitMessage(
+		taskId,
+		markerScope.planKey,
+		description,
+	);
 
 	// No resolvable scope: a marker-only commit is correct ONLY when the task
 	// left nothing outside `.swarm/` to commit (pure verification tasks,
@@ -286,7 +285,7 @@ export async function commitTaskCompletion(
 				dirtyPaths === null
 					? `working-tree status could not be read (${statusError})`
 					: `${dirtyPaths.length} uncommitted non-.swarm path(s) present: ${dirtyPaths.slice(0, 5).join(', ')}${dirtyPaths.length > 5 ? `, +${dirtyPaths.length - 5} more` : ''}`;
-			const remediation = `No declared scope could be resolved for task ${taskId} (scope binding missing, expired, or declared against a different plan revision) and ${detail}. No \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\` marker was written, so Rule 3 will NOT treat this task as committed. Remediation: re-run \`declare_scope\` for task ${taskId} and then re-run its completion (\`update_task_status\` → completed), OR commit the task's changes manually with a subject starting \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\`.`;
+			const remediation = `No declared scope could be resolved for task ${taskId} (scope binding missing, expired, or declared against a different plan revision) and ${detail}. No \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\` marker was written, so Rule 3 will NOT treat this task as committed. Remediation: re-run \`declare_scope\` for task ${taskId} and then re-run its completion (\`update_task_status\` → completed), OR commit the task's changes manually with a subject starting \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\` and a final \`${formatSwarmPlanTrailer(markerScope.planKey)}\` trailer line.`;
 			criticalWarn(`[epic:task-commit] ${remediation}`);
 			return {
 				committed: false,
@@ -569,43 +568,23 @@ export const _internals = {
 		return gitBranchInternals.gitExec(['rev-parse', 'HEAD'], cwd).trim();
 	},
 	/**
-	 * Returns true when a `swarm(task <id>):` marker subject for this
-	 * taskId already exists anywhere in git history. Used by the
-	 * idempotency guard above so repeat completion calls don't mint
-	 * duplicate markers.
-	 *
-	 * Implementation: `git log --grep=<pattern> -F` is NOT used (it
-	 * fixed-string-matches the whole subject); instead we anchor the
-	 * regex with `--extended-regexp` and bound the scan with `-n 1` so a
-	 * single match suffices. Returns false on any git failure — the
-	 * caller treats that as "unknown" and proceeds.
-	 */
-	/**
 	 * Phase 11 (B5): async sleep used by `commitTaskCompletion`'s
 	 * retry loop. Routed through `_internals` so tests can substitute
 	 * a no-op stub and not actually wait during fast-path unit tests.
 	 */
 	sleep: (ms: number): Promise<void> =>
 		new Promise((resolve) => setTimeout(resolve, ms)),
-	hasExistingTaskCommit: (cwd: string, taskId: string): boolean => {
-		// Phase 17 (C.H2): scrub before escape so an injected `)` or
-		// `\n` in a typo'd dep ID can't corrupt the grep pattern.
-		const safeId = scrubTaskIdForGitSubject(taskId);
-		// Escape regex metacharacters in taskId so `1.1` matches `1.1`
-		// literally (not "1<any>1"). Task IDs are typically dotted
-		// numerics so this matters in practice.
-		const escaped = safeId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-		const output = gitBranchInternals.gitExec(
-			[
-				'log',
-				'--extended-regexp',
-				`--grep=^swarm\\(task ${escaped}\\):`,
-				'--pretty=format:%H',
-				'-n',
-				'1',
-			],
-			cwd,
-		);
-		return output.trim().length > 0;
-	},
+	/**
+	 * True when a marker for `taskId` that belongs to the current plan is in
+	 * git history (Epic v2 C0, `plan-key.ts`): one bounded `git log` read
+	 * bounded by the marker `--grep` and `--max-count`, with the
+	 * `Swarm-Plan:` trailer and commit time (plan root) checked per record. Throws on git
+	 * failure — the caller treats that as "unknown" and proceeds (a possible
+	 * duplicate marker beats a silent skip).
+	 */
+	hasExistingTaskCommit: (
+		cwd: string,
+		taskId: string,
+		markerScope: PlanMarkerScope,
+	): boolean => hasPlanScopedTaskMarker(cwd, taskId, markerScope),
 };

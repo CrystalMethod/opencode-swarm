@@ -90,11 +90,15 @@ import {
 } from '../db/task-checkpoint-receipt.js';
 import { appendCoreEventSync } from '../events/core-events.js';
 import { isGitRepo } from '../git/branch';
-import { getWorktreeMergeFailure } from '../hooks/delegation-gate/worktree-merge-status';
 import { readSwarmFileAsync } from '../hooks/utils';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { recordTaskAttempt } from '../services/run-memory.js';
 import { emit } from '../telemetry.js';
+import { relevantMergeFailure } from '../turbo/epic/merge-epoch.js';
+import {
+	type PlanMarkerScope,
+	resolvePlanMarkerScope,
+} from '../turbo/epic/plan-key.js';
 import { isEpicModeActiveForProject } from '../turbo/epic/state.js';
 import { commitTaskCompletion } from '../turbo/epic/task-commit.js';
 import type { SpecStaleDetectedEvent } from '../types/events';
@@ -198,7 +202,8 @@ export const _internals: {
 	isGitRepo: typeof isGitRepo;
 	isEpicModeActiveForProject: typeof isEpicModeActiveForProject;
 	commitTaskCompletion: typeof commitTaskCompletion;
-	getWorktreeMergeFailure: typeof getWorktreeMergeFailure;
+	relevantMergeFailure: typeof relevantMergeFailure;
+	resolvePlanMarkerScope: typeof resolvePlanMarkerScope;
 	recordTaskAttempt: typeof recordTaskAttempt;
 	/**
 	 * Issue #2582 — the checkpoint.auto_checkpoint_threshold runtime trigger,
@@ -227,7 +232,8 @@ export const _internals: {
 	// (#2532) readTaskScopes seam removed: the Rule 2 scope lookup now resolves
 	// from the authoritative v2 binding store (see readDeclaredScopeFilesFromBindings).
 	commitTaskCompletion,
-	getWorktreeMergeFailure,
+	relevantMergeFailure,
+	resolvePlanMarkerScope,
 	recordTaskAttempt,
 	maybeSaveAutoCheckpoint: defaultMaybeSaveAutoCheckpoint,
 };
@@ -2978,69 +2984,94 @@ export async function updateTaskStatus(
 				// (and records its outcome) inside the coder's `tool.execute.after`
 				// hook, which is awaited before the architect's turn that calls
 				// this function — so the status is always settled by now.
-				const mergeFailure = _internals.getWorktreeMergeFailure(taskId);
+				//
+				// Epic v2 C0: markers and the merge-failure registry are scoped
+				// to the CURRENT plan. The registry is keyed by bare task id and
+				// never cleaned, so a failure recorded before this plan's root
+				// (a previous plan's `1.1`) is ignored; an undated failure stays
+				// relevant (fail closed). An unresolvable plan identity yields
+				// no marker scope: every failure is then relevant (sinceMs 0)
+				// and no marker is written below.
+				let markerScope: PlanMarkerScope | null = null;
+				try {
+					markerScope = await _internals.resolvePlanMarkerScope(
+						directory,
+						updatedPlan,
+					);
+				} catch (scopeErr) {
+					criticalWarn(
+						`[plan/manager] Rule 2 cannot resolve the plan identity for ${taskId} (no completion marker will be written; Rule 3 treats the task as uncommitted): ${scopeErr instanceof Error ? scopeErr.message : String(scopeErr)}`,
+					);
+				}
+				const mergeFailure = _internals.relevantMergeFailure(
+					taskId,
+					markerScope?.rootTimestampMs ?? 0,
+				);
 				if (mergeFailure) {
 					criticalWarn(
 						`[plan/manager] Rule 2 auto-commit SKIPPED for ${taskId}: worktree merge-back ${mergeFailure.outcome} at stage '${mergeFailure.stage}'. The task's changes are NOT in the main tree, so no completion marker is written (Rule 3 must not treat this task as satisfied). Resolve the preserved worktree, then re-run the task. Detail: ${mergeFailure.message}`,
 					);
 					return updatedPlan;
 				}
-				try {
-					let taskDescription: string | undefined;
-					for (const phase of updatedPlan.phases) {
-						const found = phase.tasks.find((t) => t.id === taskId);
-						if (found) {
-							taskDescription = found.description;
-							break;
+				if (markerScope) {
+					try {
+						let taskDescription: string | undefined;
+						for (const phase of updatedPlan.phases) {
+							const found = phase.tasks.find((t) => t.id === taskId);
+							if (found) {
+								taskDescription = found.description;
+								break;
+							}
 						}
+						// Scope source (#2532): the authoritative v2 binding store —
+						// the same source `declare_scope` writes — resolved through
+						// `readDeclaredScopeFilesFromBindings`. The legacy v1
+						// `.swarm/scopes/scope-<id>.json` projection is NOT consulted:
+						// no production code writes it in the project root (its one
+						// writer targets lane worktrees), so reading it here made
+						// every Rule 2 auto-commit marker-only. Identity note: the
+						// lookup uses the in-memory `updatedPlan`, whose structure
+						// hash is exactly the identity the completing task's binding
+						// was declared against (task-status completion is
+						// hash-excluded, and savePlan's cursor normalization happens
+						// on its own validated clone). We do NOT fall back to the
+						// plan-ledger's `files_touched` field — the ledger replay
+						// path in `loadPlan` overrides savePlan mutations, making
+						// that source unreliable. When no live binding matches,
+						// `commitTaskCompletion` produces a marker-only
+						// `--allow-empty` commit — preserving Rule 3 evidence
+						// without sweeping in any sibling lane's working-tree
+						// changes.
+						// Lazy dynamic import (deliberately NOT a static edge): a static
+						// import of scope-persistence pulls the db/index -> global-db ->
+						// knowledge-store chain into every plan/manager graph, which
+						// breaks test modules that mock knowledge-store with a
+						// non-spread explicit object (bun link-time SyntaxError).
+						const { readDeclaredScopeFilesFromBindings } = await import(
+							'../scope/scope-persistence.js'
+						);
+						const canonicalScope = readDeclaredScopeFilesFromBindings({
+							directory,
+							taskId,
+							plan: updatedPlan,
+						});
+						await _internals.commitTaskCompletion(
+							directory,
+							taskId,
+							taskDescription,
+							canonicalScope ?? undefined,
+							markerScope,
+						);
+					} catch (commitErr) {
+						// commitTaskCompletion catches its own errors; this is
+						// belt-and-suspenders for any unexpected throw from
+						// scope lookup or the seam itself. Elevated to criticalWarn
+						// — the operator must see Rule 2 failures that bypass
+						// `commitTaskCompletion`'s own try/catch.
+						criticalWarn(
+							`[plan/manager] Rule 2 auto-commit for ${taskId} threw (non-fatal): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+						);
 					}
-					// Scope source (#2532): the authoritative v2 binding store —
-					// the same source `declare_scope` writes — resolved through
-					// `readDeclaredScopeFilesFromBindings`. The legacy v1
-					// `.swarm/scopes/scope-<id>.json` projection is NOT consulted:
-					// no production code writes it in the project root (its one
-					// writer targets lane worktrees), so reading it here made
-					// every Rule 2 auto-commit marker-only. Identity note: the
-					// lookup uses the in-memory `updatedPlan`, whose structure
-					// hash is exactly the identity the completing task's binding
-					// was declared against (task-status completion is
-					// hash-excluded, and savePlan's cursor normalization happens
-					// on its own validated clone). We do NOT fall back to the
-					// plan-ledger's `files_touched` field — the ledger replay
-					// path in `loadPlan` overrides savePlan mutations, making
-					// that source unreliable. When no live binding matches,
-					// `commitTaskCompletion` produces a marker-only
-					// `--allow-empty` commit — preserving Rule 3 evidence
-					// without sweeping in any sibling lane's working-tree
-					// changes.
-					// Lazy dynamic import (deliberately NOT a static edge): a static
-					// import of scope-persistence pulls the db/index -> global-db ->
-					// knowledge-store chain into every plan/manager graph, which
-					// breaks test modules that mock knowledge-store with a
-					// non-spread explicit object (bun link-time SyntaxError).
-					const { readDeclaredScopeFilesFromBindings } = await import(
-						'../scope/scope-persistence.js'
-					);
-					const canonicalScope = readDeclaredScopeFilesFromBindings({
-						directory,
-						taskId,
-						plan: updatedPlan,
-					});
-					await _internals.commitTaskCompletion(
-						directory,
-						taskId,
-						taskDescription,
-						canonicalScope ?? undefined,
-					);
-				} catch (commitErr) {
-					// commitTaskCompletion catches its own errors; this is
-					// belt-and-suspenders for any unexpected throw from
-					// scope lookup or the seam itself. Elevated to criticalWarn
-					// — the operator must see Rule 2 failures that bypass
-					// `commitTaskCompletion`'s own try/catch.
-					criticalWarn(
-						`[plan/manager] Rule 2 auto-commit for ${taskId} threw (non-fatal): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
-					);
 				}
 			}
 			// Issue #2582 — automatic checkpoint cadence. Runs after the Rule 2

@@ -503,7 +503,11 @@ export async function executeEpicDecidePhase(
 	// upstream as missing and the architect can see the broken state.
 	let isUpstreamCommitted: ((taskId: string) => boolean) | undefined;
 	if (isGitProject) {
-		const evidence = _internals.buildIsUpstreamCommittedWithStatus(directory);
+		// Plan-scoped markers (Epic v2 C0): only this plan's markers count.
+		const evidence = await _internals.buildIsUpstreamCommittedWithStatus(
+			directory,
+			plan,
+		);
 		isUpstreamCommitted = evidence.gitFailed ? () => false : evidence.predicate;
 	}
 

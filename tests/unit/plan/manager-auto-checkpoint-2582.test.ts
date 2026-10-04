@@ -25,7 +25,7 @@ import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const ORIGINAL_TRIGGER = managerInternals.maybeSaveAutoCheckpoint;
-const ORIGINAL_MERGE_FAILURE = managerInternals.getWorktreeMergeFailure;
+const ORIGINAL_MERGE_FAILURE = managerInternals.relevantMergeFailure;
 const ORIGINAL_LOADER = autoCheckpointInternals.loadPluginConfigWithMeta;
 const ORIGINAL_SPAWN_SYNC = autoCheckpointInternals.spawnSync;
 
@@ -161,7 +161,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	managerInternals.maybeSaveAutoCheckpoint = ORIGINAL_TRIGGER;
-	managerInternals.getWorktreeMergeFailure = ORIGINAL_MERGE_FAILURE;
+	managerInternals.relevantMergeFailure = ORIGINAL_MERGE_FAILURE;
 	autoCheckpointInternals.loadPluginConfigWithMeta = ORIGINAL_LOADER;
 	autoCheckpointInternals.spawnSync = ORIGINAL_SPAWN_SYNC;
 	console.warn = originalConsoleWarn;
@@ -394,7 +394,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 		});
 		await savePlanWithTasks(['1.1']);
-		managerInternals.getWorktreeMergeFailure = () => ({
+		managerInternals.relevantMergeFailure = () => ({
 			outcome: 'failed' as const,
 			stage: 'merge',
 			message: 'injected merge-back failure',

@@ -23,6 +23,11 @@ import {
 } from '../../../../src/turbo/epic/task-commit';
 import { createSafeTestDir } from '../../../helpers/safe-test-dir';
 
+/** Epic v2 C0: markers carry the plan's Swarm-Plan trailer. */
+const TEST_MARKER_SCOPE = {
+	planKey: 'feedfacecafebeef',
+	rootTimestampMs: null,
+};
 const originals = { ..._internals };
 
 function git(args: string[], cwd: string): string {
@@ -77,9 +82,13 @@ describe('Rule 2 — regression: glob metacharacters in scope swept sibling WIP 
 		write(dir, 'app/[id].tsx', 'export const page = 1;\n');
 		write(dir, 'app/i.tsx', 'sibling WIP\n');
 
-		const result = await commitTaskCompletion(dir, '4.1', 'route', [
-			'app/[id].tsx',
-		]);
+		const result = await commitTaskCompletion(
+			dir,
+			'4.1',
+			'route',
+			['app/[id].tsx'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual(['app/[id].tsx']);
@@ -92,7 +101,13 @@ describe('Rule 2 — regression: glob metacharacters in scope swept sibling WIP 
 		write(dir, 'src/*.ts', 'literal star file\n');
 		write(dir, 'src/sib.ts', 'sibling WIP\n');
 
-		const result = await commitTaskCompletion(dir, '4.2', 'star', ['src/*.ts']);
+		const result = await commitTaskCompletion(
+			dir,
+			'4.2',
+			'star',
+			['src/*.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual(['src/*.ts']);
@@ -109,7 +124,13 @@ describe('Rule 2 — regression: glob metacharacters in scope swept sibling WIP 
 		write(dir, 'pkg/keep.ts', 'edited\n');
 		write(dir, 'outside.ts', 'not in scope\n');
 
-		const result = await commitTaskCompletion(dir, '4.3', 'dir', ['pkg']);
+		const result = await commitTaskCompletion(
+			dir,
+			'4.3',
+			'dir',
+			['pkg'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual(['pkg/keep.ts', 'pkg/new/deep/a.ts']);
@@ -123,9 +144,13 @@ describe('Rule 2 — regression: rename left the source deletion staged (F7a)', 
 		git(['commit', '-q', '-m', 'add old'], dir);
 		git(['mv', 'src/old-name.ts', 'src/new-name.ts'], dir);
 
-		const result = await commitTaskCompletion(dir, '4.4', 'rename', [
-			'src/new-name.ts',
-		]);
+		const result = await commitTaskCompletion(
+			dir,
+			'4.4',
+			'rename',
+			['src/new-name.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual(['src/new-name.ts', 'src/old-name.ts']);

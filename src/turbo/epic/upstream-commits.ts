@@ -15,23 +15,27 @@
  * insists on the stronger condition so parallel coders can't inherit an
  * uncommitted upstream worktree.
  *
- * Source format: `commitTaskCompletion` writes commit subjects shaped like
- * `swarm(task <id>): <description>` (see `./task-commit.ts:formatTaskCommitMessage`).
- * This module parses the `<id>` from those subjects.
+ * Source format: `commitTaskCompletion` writes `swarm(task <id>): <desc>`
+ * subjects with a `Swarm-Plan: <planKey>` trailer (see
+ * `./task-commit.ts:formatTaskCommitMessage` and `./plan-key.ts`). Only
+ * markers belonging to the current plan count.
  *
  * Boundedness (AGENTS.md #3): subprocess timeout matches the rest of git
- * helpers (30s); `--max-count` caps the log scan; failures degrade to a
- * permissive predicate so the planner does not regress when git is broken.
+ * helpers (30s); the marker `--grep` and `--max-count` cap the log scan (the
+ * plan-root check is per record in JS, never `--since`);
+ * any read failure is reported via `gitFailed` so callers fail closed.
  */
 
-import { _internals as gitBranchInternals } from '../../git/branch.js';
+import type { Plan } from '../../config/plan-schema.js';
 import { criticalWarn } from '../../utils/logger.js';
+import {
+	type PlanMarkerScope,
+	readPlanScopedCommittedTaskIds,
+	resolvePlanMarkerScope,
+} from './plan-key.js';
 
 /** Cap on the git-log scan window. */
 const MAX_LOG_COMMITS = 10_000;
-
-/** Pattern matching commit subjects produced by `formatTaskCommitMessage`. */
-const SWARM_TASK_SUBJECT_RE = /^swarm\(task ([^)]+)\):/;
 
 export interface BuildUpstreamCommitsOptions {
 	/** Override the log scan window. Default: 10,000. */
@@ -39,88 +43,76 @@ export interface BuildUpstreamCommitsOptions {
 }
 
 /**
- * Eagerly read git log once and return a fast `(taskId) => boolean`
- * predicate the lane planner uses for cross-batch upstream-commit checks.
+ * Phase 12 (B10) — the Rule 3 predicate plus whether its evidence read
+ * failed. Callers FAIL CLOSED on `gitFailed` (the activation gate swaps in
+ * `() => false`; `epic_plan_waves` refuses with `git-failed`).
  *
- * Single evidence source: a `swarm(task <id>):` commit subject in git
- * log, produced by Rule 2's `commitTaskCompletion`.
+ * Single evidence source: a `swarm(task <id>):` marker commit produced by
+ * Rule 2's `commitTaskCompletion` FOR THE CURRENT PLAN (Epic v2 C0 —
+ * `Swarm-Plan:` trailer equal to the plan's key, or a legacy trailer-less
+ * marker committed at/after the plan root; see `./plan-key.ts`). A previous
+ * plan's marker for a reused task id is NOT evidence.
  *
  * History note: an earlier revision OR'd in a plan-ledger fallback (any
- * task with `status: completed` in `.swarm/plan.json` was treated as
- * committed) to guard against a hypothetical deadlock where `commit-
- * TaskCompletion` failed silently. Phase 5 of the 2026-06-03 corrective
- * plan made Rule 2 reliable on every completion path by centralizing
- * the invocation in `plan/manager.updateTaskStatus` — so the guard's
- * premise no longer holds, and keeping the fallback would defeat Rule 3's
- * own purpose (distinguishing "marked complete" from "in git history").
- * Removed in Phase 6.
- *
- * Failure mode:
- *  - Git log read fails (no git, spawn error, timeout) → predicate
- *    returns `true` for everything (permissive). The lane planner falls
- *    back to its legacy "cross-batch dep implicitly satisfied" behavior,
- *    which is the pre-Rule-3 semantics. Better legacy than wedged in a
- *    broken environment.
- */
-export function buildIsUpstreamCommitted(
-	directory: string,
-	options?: BuildUpstreamCommitsOptions,
-): (taskId: string) => boolean {
-	return buildIsUpstreamCommittedWithStatus(directory, options).predicate;
-}
-
-/**
- * Phase 12 (B10) — same predicate construction as `buildIsUpstreamCommitted`
- * but exposes whether the git-log read failed. Callers that need to FAIL
- * CLOSED on a broken git environment (e.g. the Phase 10 activation gate,
- * where the predicate is the only safety signal) use `gitFailed` to pick
- * a stricter policy; callers that can tolerate "I don't know" fall-open
- * (e.g. Rule 3 at the lane planner, where wave ordering is the backstop)
- * continue using `buildIsUpstreamCommitted` directly.
- *
- * The two-tier API exists because the original permissive degradation
- * was correct for Rule 3 (no regression vs pre-Rule-3 semantics) but
- * inverted the safety polarity for Phase 10 (which has no Path-B
- * fallback after the commit-count floor was retired).
+ * completed task counted as committed); Phase 6 removed it because it
+ * defeated Rule 3's purpose (distinguishing "marked complete" from "in git
+ * history"). The permissive (`() => true` on failure) variant was removed in
+ * C0: it had no production caller and could not be plan-scoped.
  */
 export interface UpstreamCommittedEvidence {
 	predicate: (taskId: string) => boolean;
-	/** True when the git-log read threw — predicate is the permissive fallback. */
+	/**
+	 * True when the evidence could not be read — no plan, plan-identity
+	 * resolution failed, or `git log` threw. `predicate` is then permissive
+	 * and MUST NOT be used.
+	 */
 	gitFailed: boolean;
+	/** Why the evidence read failed (set iff `gitFailed`). */
+	failureReason?: string;
 }
 
-export function buildIsUpstreamCommittedWithStatus(
+function evidenceFailure(reason: string): UpstreamCommittedEvidence {
+	// Phase 15 (B34): criticalWarn so the operator sees the degraded
+	// predecessor-evidence path during a live run.
+	criticalWarn(
+		`[epic:upstream-commits] plan-scoped marker read failed (callers fail closed): ${reason}`,
+	);
+	return { predicate: () => true, gitFailed: true, failureReason: reason };
+}
+
+/**
+ * Resolve the current plan's marker scope and read every honored marker in
+ * one bounded `git log -z` call (marker `--grep`, `--max-count`); each record
+ * is checked against the plan key and plan root in JS.
+ */
+export async function buildIsUpstreamCommittedWithStatus(
 	directory: string,
+	plan: Plan | null,
 	options?: BuildUpstreamCommitsOptions,
-): UpstreamCommittedEvidence {
-	const max = options?.maxCommits ?? MAX_LOG_COMMITS;
-
-	let subjects: string;
+): Promise<UpstreamCommittedEvidence> {
+	if (!plan) {
+		return evidenceFailure('no valid plan to scope markers to');
+	}
+	let scope: PlanMarkerScope;
 	try {
-		subjects = _internals.readGitLogSubjects(directory, max);
+		scope = await _internals.resolvePlanMarkerScope(directory, plan);
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		// Phase 15 (B34): elevated to criticalWarn. This is the signal
-		// Phase 12 B10 / Phase 13 B22 promised the operator: when git
-		// log fails, the activation gate's predecessor-evidence path
-		// degrades. Silently swallowing this defeats the visibility
-		// the redesign required.
-		criticalWarn(
-			`[epic:upstream-commits] git log scan failed (degrading to permissive predicate, the activation gate may flip fail-closed): ${msg}`,
+		return evidenceFailure(
+			`plan identity unavailable: ${err instanceof Error ? err.message : String(err)}`,
 		);
-		return { predicate: () => true, gitFailed: true };
 	}
-
-	const committed = new Set<string>();
-	for (const line of subjects.split('\n')) {
-		const trimmed = line.trim();
-		if (!trimmed) continue;
-		const match = SWARM_TASK_SUBJECT_RE.exec(trimmed);
-		if (match) {
-			committed.add(match[1]);
-		}
+	let committed: Set<string>;
+	try {
+		committed = _internals.readCommittedTaskIds(
+			directory,
+			scope,
+			options?.maxCommits ?? MAX_LOG_COMMITS,
+		);
+	} catch (err) {
+		return evidenceFailure(
+			`git log scan failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
 	}
-
 	return {
 		predicate: (taskId: string) => committed.has(taskId),
 		gitFailed: false,
@@ -128,19 +120,11 @@ export function buildIsUpstreamCommittedWithStatus(
 }
 
 /**
- * DI seam — production code routes the git-log read through `_internals`
- * so tests can substitute deterministic doubles without `mock.module`
- * (AGENTS.md invariant 7).
+ * DI seam — production code routes the scope resolution and the git-log
+ * read through `_internals` so tests substitute deterministic doubles
+ * without `mock.module` (AGENTS.md invariant 7).
  */
 export const _internals = {
-	readGitLogSubjects: (cwd: string, max: number): string => {
-		// `--pretty=%s` returns just the subject line per commit; with
-		// `--max-count=<n>` the scan is bounded. `--no-merges` is intentional:
-		// task-completion commits are direct (no merge subjects to skip), and
-		// excluding merge subjects keeps the parser simpler.
-		return gitBranchInternals.gitExec(
-			['log', '--no-merges', `--max-count=${max}`, '--pretty=%s'],
-			cwd,
-		);
-	},
+	resolvePlanMarkerScope,
+	readCommittedTaskIds: readPlanScopedCommittedTaskIds,
 };

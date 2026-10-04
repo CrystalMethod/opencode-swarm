@@ -19,6 +19,7 @@ import { loadPluginConfigWithMeta as loadPluginConfigWithMeta_import } from '../
 import { DEFAULT_LEAN_TURBO_CONFIG } from '../config/constants';
 import type { LeanTurboConfig } from '../config/schema';
 import { isGitRepo as isGitRepo_import } from '../git/branch';
+import { loadPlanJsonOnly as loadPlanJsonOnly_import } from '../plan/manager';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
 	isEpicModeConfigEnabled,
@@ -264,16 +265,21 @@ export async function executeEpicPlanWaves(
 		// bypassing Phase 10's safety on the very next call).
 		let isUpstreamCommitted: ((taskId: string) => boolean) | undefined;
 		if (_internals.isGitRepo(directory)) {
-			const evidence = _internals.buildIsUpstreamCommittedWithStatus(directory);
+			// Markers are plan-scoped (Epic v2 C0): the validated plan supplies
+			// the identity/epoch whose `Swarm-Plan:` trailer counts as evidence.
+			const evidence = await _internals.buildIsUpstreamCommittedWithStatus(
+				directory,
+				await _internals.loadPlanJsonOnly(directory),
+			);
 			if (evidence.gitFailed) {
 				criticalWarn(
-					`[epic_plan_waves] wave-planning blocked for directory=${directory} phase=${phase}: git log scan failed. Any prior promote verdict in .swarm/evidence/epic-promotions.jsonl for this phase is not backed by actual parallel execution.`,
+					`[epic_plan_waves] wave-planning blocked for directory=${directory} phase=${phase}: ${evidence.failureReason ?? 'git log scan failed'}. Any prior promote verdict in .swarm/evidence/epic-promotions.jsonl for this phase is not backed by actual parallel execution.`,
 				);
 				return {
 					success: false,
 					reason: 'git-failed',
 					errors: [
-						'epic_plan_waves: cannot verify cross-batch upstream-commit evidence — `git log` read failed. ' +
+						`epic_plan_waves: cannot verify cross-batch upstream-commit evidence — plan-scoped \`git log\` marker read failed (${evidence.failureReason ?? 'unknown'}). ` +
 							'Likely transient: retry once git is healthy (e.g. another process released its lock). ' +
 							'If git is persistently broken (corrupt repo, permission issue, missing `.git`), repair the repository. ' +
 							'Until repaired, complete the phase serially — one task at a time, waiting for each commit to land before dispatching the next — so file-scope conflict detection is not required.',
@@ -331,11 +337,11 @@ export const _internals = {
 	readPlanJson,
 	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	isGitRepo: (cwd: string): boolean => isGitRepo_import(cwd),
-	// Only the status-bearing variant is wired in here. The legacy
-	// permissive `buildIsUpstreamCommitted` is intentionally NOT exposed
-	// via `_internals` so a future refactor can't accidentally substitute
-	// it and re-introduce the fail-open behavior on git-log read failure.
+	// Only the status-bearing, plan-scoped variant exists (the permissive
+	// `buildIsUpstreamCommitted` was removed in Epic v2 C0); callers must
+	// fail closed on `gitFailed`.
 	buildIsUpstreamCommittedWithStatus: buildIsUpstreamCommittedWithStatus_import,
+	loadPlanJsonOnly: loadPlanJsonOnly_import,
 	loadPluginConfigWithMeta: loadPluginConfigWithMeta_import,
 };
 

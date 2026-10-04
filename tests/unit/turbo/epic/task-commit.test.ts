@@ -9,7 +9,8 @@
  *  - `--allow-empty --only` is used so no-op tasks still produce a marker
  *    without sweeping the index (scope/pathspec cases live in
  *    task-commit-scope.test.ts).
- *  - `formatTaskCommitMessage` produces the contract format Rule 3 consumes.
+ *  - The message contract (`formatTaskCommitMessage`, `Swarm-Plan:` trailer)
+ *    and the idempotency-probe argv live in task-commit-format.test.ts.
  *
  * Test isolation: uses the file-scoped `_internals` DI seam per
  * AGENTS.md #7. No `mock.module` — restored in `afterEach`.
@@ -19,75 +20,14 @@ import { _internals as gitBranchInternals } from '../../../../src/git/branch';
 import {
 	_internals,
 	commitTaskCompletion,
-	formatTaskCommitMessage,
 } from '../../../../src/turbo/epic/task-commit';
 
 type Internals = typeof _internals;
 type GitBranchInternals = typeof gitBranchInternals;
 
-describe('formatTaskCommitMessage', () => {
-	test('produces the `swarm(task <id>):` contract format Rule 3 parses', () => {
-		const msg = formatTaskCommitMessage('2.1', 'implement ClinicalDataset');
-		expect(msg).toMatch(/^swarm\(task 2\.1\): /);
-		expect(msg).toContain('implement ClinicalDataset');
-	});
-
-	test('uses default body when description omitted', () => {
-		const msg = formatTaskCommitMessage('3.4');
-		expect(msg).toBe('swarm(task 3.4): completed');
-	});
-
-	test('truncates long descriptions to keep the subject line bounded', () => {
-		const longDescription = 'a'.repeat(200);
-		const msg = formatTaskCommitMessage('5.1', longDescription);
-		// Subject body capped — leaves prefix + truncation indicator
-		expect(msg.length).toBeLessThan(100);
-		expect(msg.endsWith('...')).toBe(true);
-	});
-
-	test('collapses internal whitespace so multi-line descriptions stay one line', () => {
-		const desc = 'first line\n\nsecond line  with  spaces';
-		const msg = formatTaskCommitMessage('1.1', desc);
-		expect(msg).not.toContain('\n');
-		expect(msg).not.toMatch(/ {2}/);
-	});
-
-	test('Phase 18: scrubs `)` from taskId so a typo cannot corrupt the Phase 6 SWARM_TASK_SUBJECT_RE parser (Phase 17 C.H2)', () => {
-		const msg = formatTaskCommitMessage('1.1)evil', 'desc');
-		// The structural `:` and `)` must remain unique delimiters; the
-		// taskId becomes safe-alphabet (alnum + . _ -). A bare ')' in
-		// the taskId would otherwise let the parser regex
-		// /^swarm\(task ([^)]+)\):/ capture only `1.1`, silently marking
-		// task 1.1 as "committed" when the real intent was a different
-		// taskId.
-		expect(msg).toContain('1.1_evil');
-		expect(msg).not.toContain(')evil');
-	});
-
-	test('Phase 18: scrubs newlines from taskId (no subject/body split)', () => {
-		const msg = formatTaskCommitMessage('1.1\n2.1', 'desc');
-		// A literal newline in the taskId would split the git subject
-		// into subject + body, making the body a phantom secondary
-		// commit message. Scrubber replaces it with `_`.
-		expect(msg.split('\n')).toHaveLength(1);
-		expect(msg).toContain('1.1_2.1');
-	});
-
-	test('Phase 18: scrubs backtick from taskId (no markdown rendering surprise)', () => {
-		const msg = formatTaskCommitMessage('1.`bad`.1', 'desc');
-		expect(msg).not.toContain('`');
-	});
-
-	test('Phase 18: numeric dotted taskIds pass through scrubber unchanged (no-op for normal inputs)', () => {
-		expect(formatTaskCommitMessage('1.1', 'a')).toContain('swarm(task 1.1):');
-		expect(formatTaskCommitMessage('2.3.4', 'b')).toContain(
-			'swarm(task 2.3.4):',
-		);
-		expect(formatTaskCommitMessage('10.5.100', 'c')).toContain(
-			'swarm(task 10.5.100):',
-		);
-	});
-});
+/** Epic v2 C0: every marker is bound to a plan via the Swarm-Plan trailer. */
+const TEST_PLAN_KEY = 'feedfacecafebeef';
+const TEST_MARKER_SCOPE = { planKey: TEST_PLAN_KEY, rootTimestampMs: null };
 
 describe('commitTaskCompletion', () => {
 	const originals: Internals = { ..._internals };
@@ -123,9 +63,13 @@ describe('commitTaskCompletion', () => {
 			throw new Error('commitScopedPaths must not be called in no-git path');
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.committed).toBe(false);
 		expect(result.reason).toBe('no-git');
 		expect(calls).toEqual([{ fn: 'isGitRepo', args: ['/tmp/fake'] }]);
@@ -142,10 +86,13 @@ describe('commitTaskCompletion', () => {
 		};
 		_internals.gitHeadSha = () => 'abc1234';
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
-			'src/models/foo.ts',
-			'src/models/bar.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			['src/models/foo.ts', 'src/models/bar.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result.committed).toBe(true);
 		expect(result.reason).toBe('success');
@@ -176,13 +123,20 @@ describe('commitTaskCompletion', () => {
 		};
 		_internals.gitHeadSha = () => 'def5678';
 
-		const undefScope = await commitTaskCompletion('/tmp/fake', '2.1', 'desc');
+		const undefScope = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 		expect(undefScope.committed).toBe(true);
 		const emptyScope = await commitTaskCompletion(
 			'/tmp/fake',
 			'2.2',
 			'desc',
 			[],
+			TEST_MARKER_SCOPE,
 		);
 		expect(emptyScope.committed).toBe(true);
 		// Whitespace-only entries are also filtered out.
@@ -191,6 +145,7 @@ describe('commitTaskCompletion', () => {
 			'2.3',
 			'desc',
 			['', '  '],
+			TEST_MARKER_SCOPE,
 		);
 		expect(whitespaceScope.committed).toBe(true);
 		// Three commit calls; zero stage calls.
@@ -219,7 +174,13 @@ describe('commitTaskCompletion', () => {
 			_internals.gitHeadSha = originals.gitHeadSha;
 			_internals.stageScopedPaths = () => [];
 
-			await commitTaskCompletion('/tmp/fake', '3.1', 'desc');
+			await commitTaskCompletion(
+				'/tmp/fake',
+				'3.1',
+				'desc',
+				undefined,
+				TEST_MARKER_SCOPE,
+			);
 
 			const commitArgv = capturedArgvs.find((a) => a[0] === 'commit');
 			expect(commitArgv).toBeDefined();
@@ -250,9 +211,13 @@ describe('commitTaskCompletion', () => {
 			commitCalled = true;
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '1.1', 'desc', [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'1.1',
+			'desc',
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		// Phase 17 (B.M9): `committed: true` because the marker IS in
 		// git history — pre-Phase-17 this returned `committed: false`
@@ -278,33 +243,16 @@ describe('commitTaskCompletion', () => {
 		};
 		_internals.gitHeadSha = () => 'abc1234';
 
-		const result = await commitTaskCompletion('/tmp/fake', '1.1', 'desc');
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'1.1',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result.committed).toBe(true);
 		expect(commitCalled).toBe(true);
-	});
-
-	test('hasExistingTaskCommit argv escapes regex metacharacters in taskId', () => {
-		// Task IDs like `1.1` contain `.` which is a regex metacharacter;
-		// without escaping, `swarm(task 1.1):` would also match
-		// `swarm(task 1X1):`. Verify the production probe escapes
-		// correctly.
-		const gitOrig = gitBranchInternals.gitExec;
-		let captured: string[] | null = null;
-		gitBranchInternals.gitExec = ((args: string[], _cwd: string) => {
-			if (args[0] === 'log') captured = [...args];
-			return '';
-		}) as typeof gitBranchInternals.gitExec;
-
-		try {
-			originals.hasExistingTaskCommit('/tmp/fake', '1.1');
-			expect(captured).not.toBeNull();
-			const grepArg = captured?.find((a) => a.startsWith('--grep='));
-			// Must contain the escaped dot pattern `1\.1`, not bare `1.1`.
-			expect(grepArg).toBe('--grep=^swarm\\(task 1\\.1\\):');
-		} finally {
-			gitBranchInternals.gitExec = gitOrig;
-		}
 	});
 
 	test('commit failure is non-fatal — returns reason="commit-failed"', async () => {
@@ -314,9 +262,13 @@ describe('commitTaskCompletion', () => {
 			throw new Error('pre-commit hook rejected commit');
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', undefined, [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			undefined,
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.committed).toBe(false);
 		expect(result.reason).toBe('commit-failed');
 		expect(result.error).toContain('pre-commit hook rejected');
@@ -330,9 +282,13 @@ describe('commitTaskCompletion', () => {
 			);
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', undefined, [
-			'src/missing.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			undefined,
+			['src/missing.ts'],
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.committed).toBe(false);
 		expect(result.reason).toBe('commit-failed');
 		expect(result.error).toContain('did not match');
@@ -350,7 +306,13 @@ describe('commitTaskCompletion', () => {
 		// depth means we don't crash, but the contract is "degrade gracefully".
 		let result;
 		try {
-			result = await commitTaskCompletion('/tmp/fake', '2.1');
+			result = await commitTaskCompletion(
+				'/tmp/fake',
+				'2.1',
+				undefined,
+				undefined,
+				TEST_MARKER_SCOPE,
+			);
 		} catch {
 			result = { committed: false, reason: 'no-git' as const };
 		}
@@ -376,9 +338,13 @@ describe('commitTaskCompletion', () => {
 			sleeps.push(ms);
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result.committed).toBe(true);
 		expect(result.reason).toBe('success');
@@ -401,9 +367,13 @@ describe('commitTaskCompletion', () => {
 			sleeps.push(ms);
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result.committed).toBe(false);
 		expect(result.reason).toBe('commit-failed');
@@ -425,7 +395,13 @@ describe('commitTaskCompletion', () => {
 			sleeps.push(ms);
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc');
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.committed).toBe(false);
 		expect(attempt).toBe(1); // no retry
 		expect(sleeps).toEqual([]);
@@ -443,7 +419,13 @@ describe('commitTaskCompletion', () => {
 		// Architect-typo'd dep ID that injects a `)` — pre-Phase-17 this
 		// would corrupt the Phase 6 parser regex and silently mark
 		// unrelated tasks as committed.
-		await commitTaskCompletion('/tmp/fake', '1.1)evil', 'desc');
+		await commitTaskCompletion(
+			'/tmp/fake',
+			'1.1)evil',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(captured).not.toBeNull();
 		// `)` must be replaced with `_` so the formatter's parens stay
@@ -463,12 +445,13 @@ describe('commitTaskCompletion', () => {
 		_internals.gitHeadSha = () => 'sha';
 
 		// Architect-authored scope mixing real paths with pathspec magic.
-		await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
-			'src/foo.ts',
-			':(glob)**',
-			':!**/*.env',
-			'src/bar.ts',
-		]);
+		await commitTaskCompletion(
+			'/tmp/fake',
+			'2.1',
+			'desc',
+			['src/foo.ts', ':(glob)**', ':!**/*.env', 'src/bar.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(captured).toEqual(['src/foo.ts', 'src/bar.ts']);
 	});
@@ -483,9 +466,13 @@ describe('commitTaskCompletion', () => {
 			throw new Error('must not commit');
 		};
 
-		const result = await commitTaskCompletion('/tmp/fake', '1.1', 'desc', [
-			'src/foo.ts',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'1.1',
+			'desc',
+			['src/foo.ts'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result.committed).toBe(true);
 		expect(result.reason).toBe('idempotent-skip');

@@ -27,6 +27,11 @@ import {
 } from '../../../../src/turbo/epic/task-commit';
 import { createSafeTestDir } from '../../../helpers/safe-test-dir';
 
+/** Epic v2 C0: markers carry the plan's Swarm-Plan trailer. */
+const TEST_MARKER_SCOPE = {
+	planKey: 'feedfacecafebeef',
+	rootTimestampMs: null,
+};
 const originals = { ..._internals };
 const gitExecOrig = gitBranchInternals.gitExec;
 
@@ -86,7 +91,13 @@ describe('Rule 2 — regression: marker commit swept the whole index (F-Rule2-pa
 		fs.writeFileSync(path.join(dir, 'src', 'task.ts'), 'export {};\n');
 		fs.writeFileSync(path.join(dir, 'src', '.swarm', 'x.json'), '{}');
 
-		const result = await commitTaskCompletion(dir, '2.1', 'desc', ['src']);
+		const result = await commitTaskCompletion(
+			dir,
+			'2.1',
+			'desc',
+			['src'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(git(['log', '-1', '--pretty=%s'], dir)).toMatch(
@@ -109,7 +120,13 @@ describe('Rule 2 — regression: marker commit swept the whole index (F-Rule2-pa
 		fs.mkdirSync(path.join(dir, 'src', 'generated'), { recursive: true });
 		for (const rel of scope) fs.writeFileSync(path.join(dir, rel), 'x\n');
 
-		const result = await commitTaskCompletion(dir, '2.3', 'big', scope);
+		const result = await commitTaskCompletion(
+			dir,
+			'2.3',
+			'big',
+			scope,
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toHaveLength(700);
@@ -137,10 +154,13 @@ describe('Rule 2 — regression: marker commit swept the whole index (F-Rule2-pa
 		fs.mkdirSync(path.join(dir, 'trk', 'n2', '.swarm'), { recursive: true });
 		fs.writeFileSync(path.join(dir, 'trk', 'n2', '.swarm', 'x.json'), '{}');
 
-		const result = await commitTaskCompletion(dir, '2.4', 'nested', [
-			'trk/n2/n3/f.ts',
-			'trk/n2',
-		]);
+		const result = await commitTaskCompletion(
+			dir,
+			'2.4',
+			'nested',
+			['trk/n2/n3/f.ts', 'trk/n2'],
+			TEST_MARKER_SCOPE,
+		);
 
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual(['trk/n2/n3/f.ts']);
@@ -149,7 +169,13 @@ describe('Rule 2 — regression: marker commit swept the whole index (F-Rule2-pa
 	test('no-scope marker on a .swarm-only dirty tree is an empty commit', async () => {
 		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 		fs.writeFileSync(path.join(dir, '.swarm', 'plan.json'), '{}');
-		const result = await commitTaskCompletion(dir, '2.2', 'verify only');
+		const result = await commitTaskCompletion(
+			dir,
+			'2.2',
+			'verify only',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(headFiles(dir)).toEqual([]);
 	});
@@ -166,7 +192,13 @@ describe('Rule 2 — regression: unresolvable scope wrote a marker over uncommit
 			fs.writeFileSync(path.join(dir, 'README.md'), '# edited by task\n');
 			const head = git(['rev-parse', 'HEAD'], dir).trim();
 
-			const result = await commitTaskCompletion(dir, '3.1', 'desc');
+			const result = await commitTaskCompletion(
+				dir,
+				'3.1',
+				'desc',
+				undefined,
+				TEST_MARKER_SCOPE,
+			);
 
 			expect(result.committed).toBe(false);
 			expect(result.reason).toBe('scope-unresolved');
@@ -189,7 +221,13 @@ describe('Rule 2 — regression: unresolvable scope wrote a marker over uncommit
 		_internals.commitScopedPaths = () => {
 			committed = true;
 		};
-		const result = await commitTaskCompletion('/tmp/fake', '3.2', 'desc');
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'3.2',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.reason).toBe('scope-unresolved');
 		expect(result.error).toContain('status exploded');
 		expect(committed).toBe(false);
@@ -202,9 +240,13 @@ describe('Rule 2 — regression: unresolvable scope wrote a marker over uncommit
 		_internals.commitScopedPaths = () => {
 			throw new Error('must not commit');
 		};
-		const result = await commitTaskCompletion('/tmp/fake', '3.3', 'desc', [
-			':(glob)**',
-		]);
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'3.3',
+			'desc',
+			[':(glob)**'],
+			TEST_MARKER_SCOPE,
+		);
 		expect(result.reason).toBe('scope-unresolved');
 	});
 
@@ -221,7 +263,13 @@ describe('Rule 2 — regression: unresolvable scope wrote a marker over uncommit
 			committedPaths.push(paths);
 		};
 		_internals.gitHeadSha = () => 'sha';
-		const result = await commitTaskCompletion('/tmp/fake', '3.4', 'desc');
+		const result = await commitTaskCompletion(
+			'/tmp/fake',
+			'3.4',
+			'desc',
+			undefined,
+			TEST_MARKER_SCOPE,
+		);
 		expect(result).toMatchObject({ committed: true, reason: 'success' });
 		expect(committedPaths).toEqual([[]]);
 	});
@@ -331,7 +379,13 @@ describe('stageScopedPaths (real) — staging argv', () => {
 			_internals.gitHeadSha = originals.gitHeadSha;
 			_internals.hasExistingTaskCommit = originals.hasExistingTaskCommit;
 
-			await commitTaskCompletion('/tmp/fake', '2.1', 'desc', ['pkg']);
+			await commitTaskCompletion(
+				'/tmp/fake',
+				'2.1',
+				'desc',
+				['pkg'],
+				TEST_MARKER_SCOPE,
+			);
 
 			const lsArgv = capturedArgvs.find((a) => a[0] === 'ls-files');
 			expect(lsArgv).toEqual([
@@ -381,7 +435,13 @@ describe('stageScopedPaths (real) — staging argv', () => {
 
 		try {
 			const manyPaths = Array.from({ length: 450 }, (_, i) => `src/f${i}.ts`);
-			await commitTaskCompletion('/tmp/fake', '3.1', 'desc', manyPaths);
+			await commitTaskCompletion(
+				'/tmp/fake',
+				'3.1',
+				'desc',
+				manyPaths,
+				TEST_MARKER_SCOPE,
+			);
 			// 450 paths / chunk size 200 → 3 invocations (200 + 200 + 50).
 			expect(counts['ls-files']).toEqual([200, 200, 50]);
 			expect(counts.add).toEqual([200, 200, 50]);
