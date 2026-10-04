@@ -14,6 +14,12 @@ import { installActiveScopeBinding } from '../../helpers/active-scope-binding';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const TEST_DIR = canonicalMkdtemp('guardrails-shell-write-null-device-');
+// The authority layer names the resolved target: "/etc/passwd" on POSIX,
+// "C:\etc\passwd" on win32. Anchored at the message start so it cannot match
+// a path echoed elsewhere in the text, and pinned to the root /etc/passwd so
+// a workspace path ending in etc/passwd does not satisfy it.
+const ETC_PASSWD_ROOT_ESCAPE =
+	/^WRITE BLOCKED: Agent "[^"]+" is not authorised to write "(?:[A-Za-z]:)?[\\/]etc[\\/]passwd" \(via shell\)\. Reason: AUTHORITY_ROOT_ESCAPE: /;
 
 function config(): GuardrailsConfig {
 	return {
@@ -47,8 +53,9 @@ function coderWithScope(sessionID: string, files: string[]): void {
 	});
 }
 
+afterAll(() => rmSync(TEST_DIR, { recursive: true, force: true }));
+
 describe('guardrails shell writes: /dev/null redirects', () => {
-	afterAll(() => rmSync(TEST_DIR, { recursive: true, force: true }));
 	beforeEach(() => {
 		resetSwarmState();
 	});
@@ -111,9 +118,7 @@ describe('guardrails shell writes: /dev/null redirects', () => {
 				bashInput('arch-cp-outside'),
 				output('cp a.txt /etc/passwd 2>/dev/null'),
 			),
-		).rejects.toThrow(
-			/not authorised to write "\/etc\/passwd".*AUTHORITY_ROOT_ESCAPE/,
-		);
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
 	});
 
 	it('architect: sed -i 1d on an outside file is a root escape on that file', async () => {
@@ -124,9 +129,7 @@ describe('guardrails shell writes: /dev/null redirects', () => {
 				bashInput('arch-sed-1d'),
 				output('sed -i 1d /etc/passwd 2>/dev/null'),
 			),
-		).rejects.toThrow(
-			/not authorised to write "\/etc\/passwd".*AUTHORITY_ROOT_ESCAPE/,
-		);
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
 	});
 
 	// Read-only roles go through the authority check like the architect.
@@ -198,8 +201,299 @@ describe('guardrails shell writes: /dev/null redirects', () => {
 				bashInput('arch-sed-outside'),
 				output('sed -e s/a/b/ -i 2>/dev/null /etc/passwd'),
 			),
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
+	});
+});
+
+/**
+ * An attached script flag (`-e's/a/b/'`, `-es/a/b/`, `-fs.sed`) once made
+ * the detector take the real file for the implicit script and report no
+ * write, so toolBefore returned early and admitted the edit for every role.
+ */
+describe('guardrails shell writes: in-place edits with attached script flags', () => {
+	beforeEach(() => {
+		resetSwarmState();
+	});
+
+	const attachedForms = [
+		"sed -i -e's/a/b/' /etc/passwd",
+		'sed -i -es/a/b/ /etc/passwd',
+		'sed -i -fs.sed /etc/passwd',
+	];
+
+	it.each(
+		['architect', 'sme', 'critic_sounding_board'].flatMap((role) =>
+			attachedForms.map((command) => [role, command]),
+		),
+	)('%s: %s is a root escape on the real file', async (role, command) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession(`${role}-attached`, role);
+		await expect(
+			hooks.toolBefore(bashInput(`${role}-attached`), output(command)),
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
+	});
+
+	it('architect: perl -i with a dot-prefixed script path is a root escape', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('arch-perl-script', 'architect');
+		await expect(
+			hooks.toolBefore(
+				bashInput('arch-perl-script'),
+				output('perl -i ./s.pl /etc/passwd'),
+			),
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
+	});
+
+	it('coder: an attached script flag on an out-of-scope file is a scope violation', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-attached-out', ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput('coder-attached-out'),
+				output("sed -i -e's/a/b/' outside.txt"),
+			),
 		).rejects.toThrow(
-			/not authorised to write "\/etc\/passwd".*AUTHORITY_ROOT_ESCAPE/,
+			/^WRITE BLOCKED: SCOPE_VIOLATION: shell write target "[^"]*outside\.txt" is outside the active scope/,
+		);
+	});
+
+	it('coder: an attached script flag on an in-scope file is allowed', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-attached-in', ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput('coder-attached-in'),
+				output("sed -i -e's/a/b/' src/ok.ts"),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	it('sme (read-only): an attached script flag on a workspace file is rejected', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('sme-attached-in', 'sme');
+		await expect(
+			hooks.toolBefore(
+				bashInput('sme-attached-in'),
+				output("sed -i -e's/a/b/' src/ok.ts"),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: Agent "sme" is not authorised to write "[^"]*src[\\/]ok\.ts" \(via shell\)\. Reason: /,
+		);
+	});
+
+	// GNU sed runs `''` as an empty script here: with -n the file is truncated.
+	it.each([
+		'architect',
+		'sme',
+	])('%s: sed -i with an empty script word is a write to the file', async (role) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession(`${role}-empty-script`, role);
+		await expect(
+			hooks.toolBefore(
+				bashInput(`${role}-empty-script`),
+				output("sed -i '' /etc/passwd"),
+			),
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
+		// GNU edits every word after '' as a file; the first one is named.
+		await expect(
+			hooks.toolBefore(
+				bashInput(`${role}-empty-script`),
+				output("sed -i '' /etc/passwd x -n"),
+			),
+		).rejects.toThrow(ETC_PASSWD_ROOT_ESCAPE);
+		for (const command of ["sed -n -i '' .env", "sed -n -i '' .env x"]) {
+			await expect(
+				hooks.toolBefore(bashInput(`${role}-empty-script`), output(command)),
+			).rejects.toThrow(
+				new RegExp(
+					`^WRITE BLOCKED: Agent "${role}" is not authorised to write "[^"]*[\\\\/]\\.env" \\(via shell\\)\\. Reason: `,
+				),
+			);
+		}
+	});
+
+	// GNU sed edits every file named; a path holding ; { } next to an
+	// in-scope file must not hide behind it.
+	const MULTI_FILE = [
+		["sed -i -e 1d '../{a}' src/a.ts", '[^"]*[\\\\/]\\{a\\}'],
+		["sed -i 1d '/opt/a;b' src/a.ts", '(?:[A-Za-z]:)?[\\\\/]opt[\\\\/]a;b'],
+	] as const;
+
+	it.each(
+		MULTI_FILE,
+	)('architect: %s is a root escape on the outside file', async (command, target) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('arch-multi-file', 'architect');
+		await expect(
+			hooks.toolBefore(bashInput('arch-multi-file'), output(command)),
+		).rejects.toThrow(
+			new RegExp(
+				`^WRITE BLOCKED: Agent "architect" is not authorised to write "${target}" \\(via shell\\)\\. Reason: AUTHORITY_ROOT_ESCAPE: `,
+			),
+		);
+	});
+
+	it.each(
+		MULTI_FILE,
+	)('scoped coder: %s is rejected on the outside file', async (command, target) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-multi-file', ['src/']);
+		await expect(
+			hooks.toolBefore(bashInput('coder-multi-file'), output(command)),
+		).rejects.toThrow(
+			new RegExp(
+				`^WRITE BLOCKED: Agent "coder" is not authorised to write "${target}" \\(via shell\\)\\. Reason: AUTHORITY_ROOT_ESCAPE: `,
+			),
+		);
+	});
+});
+
+/**
+ * GNU sed edits the file after a script placed before `-i`, and with a
+ * script flag it edits a dot-word after a bare `-i`; only a conventional
+ * backup suffix (`.bak`) is taken as the BSD suffix.
+ */
+describe('guardrails shell writes: sed script and suffix placement', () => {
+	const OUTSIDE_X = '[^"]*[\\\\/]x';
+	const ESCAPES = ['sed 1d -i ../x', 'sed -e 1d -i ../x src/a.ts'];
+
+	it.each(
+		ESCAPES,
+	)('architect: %s is a root escape on ../x', async (command) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession(`arch-placement-${command}`, 'architect');
+		await expect(
+			hooks.toolBefore(bashInput(`arch-placement-${command}`), output(command)),
+		).rejects.toThrow(
+			new RegExp(
+				`^WRITE BLOCKED: Agent "architect" is not authorised to write "${OUTSIDE_X}" \\(via shell\\)\\. Reason: AUTHORITY_ROOT_ESCAPE: `,
+			),
+		);
+	});
+
+	it.each(ESCAPES)('scoped coder: %s is rejected on ../x', async (command) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope(`coder-placement-${command}`, ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput(`coder-placement-${command}`),
+				output(command),
+			),
+		).rejects.toThrow(
+			new RegExp(
+				`^WRITE BLOCKED: Agent "coder" is not authorised to write "${OUTSIDE_X}" \\(via shell\\)\\. Reason: AUTHORITY_ROOT_ESCAPE: `,
+			),
+		);
+	});
+
+	it('sme: sed -e 1d -i .env src/a.ts is rejected on .env', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('sme-placement', 'sme');
+		await expect(
+			hooks.toolBefore(
+				bashInput('sme-placement'),
+				output('sed -e 1d -i .env src/a.ts'),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: Agent "sme" is not authorised to write "[^"]*[\\/]\.env" \(via shell\)\. Reason: /,
+		);
+	});
+
+	it.each([
+		"sed -i .bak -e 's/a/b/' src/f.ts",
+		'sed -i -e 1d src/f.ts',
+	])('scoped coder: %s is allowed', async (command) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope(`coder-placement-in-${command}`, ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput(`coder-placement-in-${command}`),
+				output(command),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	// After `-i ''` GNU sed edits the next word as a file; a word with a `..`
+	// component is never taken for the BSD script, whatever its delimiter.
+	it('architect: a traversal word after -i is a root escape', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('arch-traversal-word', 'architect');
+		await expect(
+			hooks.toolBefore(
+				bashInput('arch-traversal-word'),
+				output("sed -i '' 's-x-/../../victim-1' src/a.ts -n"),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: Agent "architect" is not authorised to write "[^"]*[\\/]victim-1" \(via shell\)\. Reason: AUTHORITY_ROOT_ESCAPE: /,
+		);
+	});
+
+	// A word with an expansion is never the BSD script: it stays a dynamic
+	// write target and is blocked as one.
+	it.each([
+		"D=/etc/passwd; sed -i '' ${D} src/a.ts -n",
+		"D=/etc/passwd; sed -i '' $D src/a.ts -n",
+	])('architect: %s is blocked as a dynamic target', async (command) => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession(`arch-dynamic-${command}`, 'architect');
+		await expect(
+			hooks.toolBefore(bashInput(`arch-dynamic-${command}`), output(command)),
+		).rejects.toThrow(
+			/^BLOCKED: bash\/shell write to a dynamic path target "\$\{?D\}?" that cannot be statically resolved/,
+		);
+	});
+
+	// In the GNU script slot an unquoted expansion can field-split into the
+	// script plus files, so it is never consumed as the script.
+	it('architect: an unquoted expansion in the script slot is blocked', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		startAgentSession('arch-script-slot', 'architect');
+		await expect(
+			hooks.toolBefore(
+				bashInput('arch-script-slot'),
+				output("S='1d ../../x'; sed -i $S src/a.ts"),
+			),
+		).rejects.toThrow(
+			/^BLOCKED: bash\/shell write to a dynamic path target "\$S" that cannot be statically resolved/,
+		);
+	});
+
+	it('scoped coder: a brace word in the script slot is rejected', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-script-slot', ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput('coder-script-slot'),
+				output('sed -i {1d,../../outside/v} src/a.ts'),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: SCOPE_VIOLATION: shell write target "[^"]*outside[\\/]v\}" is outside the active scope/,
+		);
+	});
+
+	it('scoped coder: a brace-expansion word after -i is rejected', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-brace-word', ['src/']);
+		await expect(
+			hooks.toolBefore(
+				bashInput('coder-brace-word'),
+				output("sed -i '' s-x-/{..,a}/{..,b}/outside/victimH-1 src/a.ts -n"),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: SCOPE_VIOLATION: shell write target "[^"]*victimH-1" is outside the active scope/,
+		);
+	});
+
+	it('scoped coder: a traversal word into .swarm after -i is rejected', async () => {
+		const hooks = createGuardrailsHooks(TEST_DIR, undefined, config());
+		coderWithScope('coder-traversal-word', ['src/a.ts']);
+		await expect(
+			hooks.toolBefore(
+				bashInput('coder-traversal-word'),
+				output("sed -i '' 's-x-/../.swarm/plan-1' src/a.ts -n"),
+			),
+		).rejects.toThrow(
+			/^WRITE BLOCKED: Agent "coder" is not authorised to write "[^"]*[\\/]\.swarm[\\/]plan-1" \(via shell\)\. Reason: AUTHORITY_PROTECTED_PATH: /,
 		);
 	});
 });

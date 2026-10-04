@@ -301,6 +301,7 @@ describe('in-place editing', () => {
 	test('multiple files with sed -i', () => {
 		expectWrites('sed -i "s/a/b/" f1.txt f2.txt', [
 			{ category: 'inplace_edit', operator: 'sed -i', path: 'f1.txt' },
+			{ category: 'inplace_edit', operator: 'sed -i', path: 'f2.txt' },
 		]);
 	});
 });
