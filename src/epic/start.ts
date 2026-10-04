@@ -59,7 +59,7 @@ import {
 	readPlanEpochIdentity,
 } from '../plan/ledger.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import { hasActiveTurboMode } from '../state.js';
+import { hasActiveTurboMode, swarmState } from '../state.js';
 import {
 	listRecoveryRecords,
 	recoveryReadErrored,
@@ -127,6 +127,7 @@ import type { EpicSizingVerdict } from './sizing.js';
 
 export type EpicStartRefusal =
 	| 'epic-disabled-by-config'
+	| 'host-unsupported'
 	| 'no-plan'
 	| 'plan-ledger-unreadable'
 	| 'epic-open-for-other-plan'
@@ -175,6 +176,18 @@ const LEGACY_LEAN_STATE_FILE = 'turbo-state.json';
 const MAX_LEGACY_LEAN_STATE_BYTES = 4 * 1024 * 1024;
 /** Non-terminal coder settlement WAL states (same as assertNoUnsettledCoderDispatch). */
 const UNSETTLED_WAL_STATES = new Set(['DISPATCHED', 'PREPARED', 'unreadable']);
+
+/**
+ * Why `/swarm epic start` refuses on a host without an OpenCode SDK client.
+ * Every git-epic coder needs worktree isolation and every phase needs the
+ * `epic_phase_review` dispatch, and both create sessions through that client
+ * (`worktree-isolation.ts` STANDARD_WORKTREE_ISOLATION_UNAVAILABLE,
+ * `src/review/contracts.ts`). The OpenCode 2 adapter initializes the plugin
+ * with `client: undefined` (`src/host/v2/setup.ts`), so an epic there could
+ * neither dispatch a coder nor complete a phase.
+ */
+export const EPIC_HOST_UNSUPPORTED_MESSAGE =
+	'This OpenCode host gives the plugin no SDK client (OpenCode 2 does not yet, see docs/host/v2-hook-inventory.md). Epic needs it for worktree-isolated coders and for the epic_phase_review reviewer/critic, so an epic here could neither run its coders nor complete a phase. Run the plan in Balanced, or use an OpenCode 1.x host (1.18.29+).';
 
 function refused(
 	reason: EpicStartRefusal,
@@ -544,6 +557,12 @@ export async function startEpic(
 		return refused('epic-disabled-by-config', [
 			EPIC_MODE_CONFIG_DISABLED_MESSAGE,
 		]);
+	}
+
+	// 1b. Host capability: Epic dispatches coders and the phase review through
+	// the OpenCode SDK client (see EPIC_HOST_UNSUPPORTED_MESSAGE).
+	if (!_internals.hostProvidesClient()) {
+		return refused('host-unsupported', [EPIC_HOST_UNSUPPORTED_MESSAGE]);
 	}
 
 	// 2. Plan + ledger identity.
@@ -975,6 +994,14 @@ export const _internals = {
 	getCoChangeData,
 	shapeEpicPlan,
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
+	/**
+	 * False only when the plugin was initialized on a host that supplies no
+	 * SDK client: the v1 init stores the host client, the OpenCode 2 adapter
+	 * stores `undefined`, and an uninitialized process (tests, scripts) keeps
+	 * the initial `null` — which is not a host verdict, so it is allowed.
+	 * Capability-based: once a v2 client is wired, Epic starts there too.
+	 */
+	hostProvidesClient: (): boolean => swarmState.opencodeClient !== undefined,
 	findRunningLeanRun,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),

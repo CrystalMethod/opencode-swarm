@@ -153,6 +153,10 @@ Each seam is Epic-gated, and none of them changes non-Epic output. "One `existsS
 
 The rows live in `scripts/retention-registry.data.ts` and are rendered in `docs/observability-retention-registry.md`. Keep the line citations there exact, because `bun run check:registry-citations` verifies them. **Never rename the `turbo.epic.*` coordination namespaces.** They are persisted data names from before the move to `src/epic/`, not config paths.
 
+## Hosts
+
+Epic needs the OpenCode SDK client (`swarmState.opencodeClient`) for worktree-isolated coders (`STANDARD_WORKTREE_ISOLATION_UNAVAILABLE` → `EPIC_ISOLATION_DEGRADED`) and for `epic_phase_review` (`src/review/contracts.ts`). The OpenCode 2 adapter initializes the plugin with `client: undefined` (`src/host/v2/setup.ts`), so `startEpic` refuses `host-unsupported` there (`_internals.hostProvidesClient`; `null` means an uninitialized process such as a test and is allowed). Keep the check capability-based: when the v2 adapter gains a session-capable client (OpenCode 2's plugin API has `session.create`/`prompt`/`wait` and a `worktree` domain), Epic must start working there without an Epic change. Proof: `tests/unit/epic/start-host-unsupported.test.ts`.
+
 ## Config
 
 - The canonical block is top-level `epic` (`EpicConfigSchema` in `src/config/schema.ts`): `mode {enabled, activation_threshold}`, `cochange {enabled, threshold, min_co_changes}`, `learning {enabled, decay_per_epic, half_life_days, hot_excess}`, `sizing {min_tasks, min_scope_coverage, min_effective_speedup, coder_fraction}`, `commit_policy`, and `retain_refs`. All of these are strict, and they need no `turbo` block. Defaults and meanings are in `docs/configuration.md`.
