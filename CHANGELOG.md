@@ -1,5 +1,14 @@
 # Changelog
 
+## [7.188.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.9...v7.188.10) (2026-10-04)
+
+
+### Bug Fixes
+
+* **3050:** close swarm-pr-review findings from both review passes ([88c74ce](https://github.com/ZaxbyHub/opencode-swarm/commit/88c74ce677227ae67271be59b9d6f32e139d1ed7))
+* **3050:** close two reviewer findings on the feedback round ([3fdd501](https://github.com/ZaxbyHub/opencode-swarm/commit/3fdd50187b0f0a45055be39a5a951b459c47d583))
+* **lang,build-check:** route Composer wrappers through the contained launcher; surface spawnError ([#3050](https://github.com/ZaxbyHub/opencode-swarm/issues/3050)) ([3cbff55](https://github.com/ZaxbyHub/opencode-swarm/commit/3cbff55556180ebf81a4e220caa000328e6ecc79))
+
 ## [7.188.9](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.8...v7.188.9) (2026-10-03)
 
 
