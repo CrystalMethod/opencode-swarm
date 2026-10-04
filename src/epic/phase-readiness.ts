@@ -34,6 +34,10 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { RuntimePlan } from '../config/plan-schema';
+import {
+	DEFAULT_READ_ONLY_TOOLS,
+	type ReadOnlyToolDenials,
+} from '../evaluation/ephemeral-agent-dispatcher';
 import { isValidTaskId } from '../gate-evidence';
 import { validateSwarmPath } from '../hooks/utils';
 import { computePlanStructureHash } from '../plan/ledger';
@@ -76,11 +80,36 @@ export const EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS = 300_000;
 /** Recovery tool name advertised in every block message. */
 export const EPIC_PHASE_REVIEW_TOOL = 'epic_phase_review';
 
+/**
+ * Tool map for the one provider-refusal retry: the shared read-only map with
+ * only `bash` left enabled. OpenCode Zen's free tier answers a session whose
+ * request disables `bash` with HTTP 403 ("free tier can only be used from
+ * within OpenCode"); the shared dispatcher surfaces that as a `completed`
+ * response with no text, which would otherwise be recorded as an
+ * unparseable REJECTED and wedge the phase gate on that provider. Every
+ * other tool (write/edit/patch/shell/task/plugin tools) stays denied, so this
+ * profile is still narrower than the standard per-task reviewer agent, which
+ * is configured with only write/edit/patch off (`src/agents/reviewer.ts`).
+ * Like that reviewer's, its bash commands pass the shell guardrails, which
+ * for a scope-less non-coder role block deny-prefixed, unresolvable and
+ * inline-eval writes but are not a full read-only sandbox.
+ */
+export const EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS: ReadOnlyToolDenials =
+	Object.freeze(
+		Object.fromEntries(
+			Object.entries(DEFAULT_READ_ONLY_TOOLS).filter(
+				([name]) => name !== 'bash',
+			),
+		),
+	);
+
 const MAX_REASON_CHARS = 2_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type EpicPhaseVerdict = 'APPROVED' | 'NEEDS_REVISION' | 'REJECTED';
+
+export type EpicReviewToolProfile = 'read-only' | 'read-only-with-bash';
 
 export interface EpicRoleVerdict {
 	role: 'reviewer' | 'critic';
@@ -95,6 +124,13 @@ export interface EpicRoleVerdict {
 	 * outcomes are recorded fail-closed as REJECTED.
 	 */
 	dispatch: 'completed' | 'unparseable' | 'failed';
+	/**
+	 * Tool profile of the dispatch that produced this verdict: `read-only`
+	 * (the shared map) or `read-only-with-bash` (the provider-refusal retry,
+	 * see {@link EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS}). Absent on evidence
+	 * written before the retry existed.
+	 */
+	tool_profile?: EpicReviewToolProfile;
 	model?: string;
 	duration_ms?: number;
 	dispatched_at: string;
@@ -231,6 +267,9 @@ function isRoleVerdict(
 		(v.dispatch === 'completed' ||
 			v.dispatch === 'unparseable' ||
 			v.dispatch === 'failed') &&
+		(v.tool_profile === undefined ||
+			v.tool_profile === 'read-only' ||
+			v.tool_profile === 'read-only-with-bash') &&
 		typeof v.dispatched_at === 'string'
 	);
 }
@@ -651,12 +690,13 @@ async function dispatchRole(
 		options.agentModelRegistry,
 	);
 	const timeoutMs = options.timeoutMs ?? EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS;
+	let toolProfile: EpicReviewToolProfile = 'read-only';
 	try {
 		const { result, modelUsed } = await dispatchWithModelFallback<
 			ReviewDispatchResult & { status: 'completed' }
 		>({
 			dispatch: async (model: ModelOverride | undefined) => {
-				const response = await dispatcher.dispatch({
+				const request = {
 					directory,
 					parentSessionId,
 					agentName,
@@ -665,7 +705,19 @@ async function dispatchRole(
 					prompt,
 					title: `epic_phase_review ${role}`,
 					timeoutMs,
-				});
+				};
+				toolProfile = 'read-only';
+				let response = await dispatcher.dispatch(request);
+				// A provider refusal arrives as `completed` with no text (see
+				// EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS): retry once keeping `bash`.
+				// A model that answers — even without a verdict — is not retried.
+				if (response.status === 'completed' && response.text.trim() === '') {
+					toolProfile = 'read-only-with-bash';
+					response = await dispatcher.dispatch({
+						...request,
+						tools: EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS,
+					});
+				}
 				if (response.status === 'completed') {
 					return response as ReviewDispatchResult & { status: 'completed' };
 				}
@@ -691,6 +743,7 @@ async function dispatchRole(
 			role,
 			agent: agentName,
 			dispatched_at: dispatchedAt,
+			tool_profile: toolProfile,
 			duration_ms: result.durationMs,
 			...((modelUsed ?? result.modelId)
 				? { model: modelUsed ?? result.modelId }
@@ -720,6 +773,7 @@ async function dispatchRole(
 					MAX_REASON_CHARS,
 				),
 			dispatch: 'failed',
+			tool_profile: toolProfile,
 			dispatched_at: dispatchedAt,
 		};
 	}
