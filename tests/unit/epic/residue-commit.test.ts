@@ -167,7 +167,9 @@ describe('commitEpicResidueAfterDelegation (real git)', () => {
 		write('tests/a.test.ts');
 		write('tests/b.test.ts'); // a sibling task's WIP
 		await residue('test_engineer', ['1.1']);
-		expect(subject()).toBe('swarm(task 1.1): test_engineer residue');
+		// Swept from the task's frozen scope, not recorded by the returning
+		// agent: committed under the neutral label (no agent is claimed).
+		expect(subject()).toBe('swarm(task 1.1): residue');
 		expect(git(['log', '-1', '--format=%B'])).toContain(
 			`Swarm-Plan: ${epic.planKey}`,
 		);
@@ -197,10 +199,44 @@ describe('commitEpicResidueAfterDelegation (real git)', () => {
 			recordModifiedFileForTask(child, 'ses_te_child:unknown', file, dir);
 		}
 		await residue('mega_test_engineer', ['1.1'], ['ses_te_child']);
-		expect(committedFiles().sort()).toEqual(['pkg/index.ts', 'src/extra.ts']);
+		// Two commits: the agent's own recorded write under its name, then the
+		// rest of the frozen scope under the neutral label.
+		expect(committedFiles()).toEqual(['pkg/index.ts']);
+		expect(subject()).toBe('swarm(task 1.1): residue');
+		expect(
+			git(['show', '--name-only', '--format=%s', 'HEAD~1']).trim().split('\n'),
+		).toEqual(['swarm(task 1.1): test_engineer residue', '', 'src/extra.ts']);
 		expect(git(['log', '--all', '--name-only', '--format='])).not.toContain(
 			'.swarm',
 		);
+	});
+
+	test('a file a still-running delegation is writing is never swept into another agent residue', async () => {
+		// Live run: Stage B reviewer and test_engineer run concurrently; the
+		// reviewer returned first and its residue swept the test_engineer's
+		// in-progress test file into "reviewer residue".
+		write('tests/a.test.ts', '// half-written by the test engineer\n');
+		const testEngineer = ensureAgentSession(
+			'ses_te_running',
+			'test_engineer',
+			dir,
+		);
+		testEngineer.delegationActive = true;
+		recordModifiedFileForTask(
+			testEngineer,
+			'ses_te_running:unknown',
+			'tests/a.test.ts',
+			dir,
+		);
+		const head = git(['rev-parse', 'HEAD']);
+		await residue('reviewer', ['1.1'], ['ses_rev_child']);
+		expect(git(['rev-parse', 'HEAD'])).toBe(head);
+		expect(git(['status', '--porcelain', 'tests/a.test.ts'])).toStartWith('??');
+		// Once the test engineer returns, its own write lands under its name.
+		testEngineer.delegationActive = false;
+		await residue('test_engineer', ['1.1'], ['ses_te_running']);
+		expect(subject()).toBe('swarm(task 1.1): test_engineer residue');
+		expect(committedFiles()).toEqual(['tests/a.test.ts']);
 	});
 
 	test('--only: a pre-staged unrelated change stays staged and out of the commit', async () => {
@@ -208,7 +244,7 @@ describe('commitEpicResidueAfterDelegation (real git)', () => {
 		git(['add', 'README.md']);
 		write('tests/a.test.ts');
 		await residue('docs', ['1.1']);
-		expect(subject()).toBe('swarm(task 1.1): docs residue');
+		expect(subject()).toBe('swarm(task 1.1): residue');
 		expect(committedFiles()).toEqual(['tests/a.test.ts']);
 		expect(git(['diff', '--cached', '--name-only']).trim()).toBe('README.md');
 	});
@@ -290,7 +326,7 @@ describe('commitEpicResidueAfterDelegation (real git)', () => {
 		);
 		for (const file of files) write(file);
 		await residue('test_engineer', ['1.1']);
-		expect(subject()).toBe('swarm(task 1.1): test_engineer residue');
+		expect(subject()).toBe('swarm(task 1.1): residue');
 		expect(committedFiles()).toHaveLength(400);
 		const gitDir = git(['rev-parse', '--git-dir']).trim();
 		expect(
@@ -317,7 +353,7 @@ describe('commitEpicResidueAfterDelegation (real git)', () => {
 		release();
 		await landing;
 		await pending;
-		expect(subject()).toBe('swarm(task 1.1): test_engineer residue');
+		expect(subject()).toBe('swarm(task 1.1): residue');
 	});
 
 	test('a failing commit is fail-open and restores the index exactly (user-staged state kept)', async () => {

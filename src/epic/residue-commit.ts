@@ -10,10 +10,14 @@
  *   - when a non-coder delegation for a task of the open epic returns —
  *     a foreground Task (the delegation gate's after-hook) or a background
  *     one (the completion observer) — {@link commitEpicResidueAfterDelegation}
- *     commits the agent's ATTRIBUTED main-tree writes that are still
- *     uncommitted on the epic branch with the subject
- *     `swarm(task <id>): <agent> residue` and the plan's `Swarm-Plan:`
- *     trailer;
+ *     commits the main-tree writes still uncommitted on the epic branch:
+ *     the returning agent's own recorded writes as
+ *     `swarm(task <id>): <agent> residue`, then the rest of the task's
+ *     attribution and frozen scope as `swarm(task <id>): residue` (no
+ *     agent is claimed for files it did not record), each with the plan's
+ *     `Swarm-Plan:` trailer. Files another still-running delegation has
+ *     recorded (the concurrent Stage B reviewer/test_engineer) are left
+ *     alone: they belong to that writer and may be half-written;
  *   - `epic_next_wave` runs {@link commitTaskResidue} again for each task of
  *     the closing wave (a missed after-hook, a failed attempt); before a new
  *     wave the remaining dirty paths belong to no task
@@ -44,7 +48,10 @@ import * as path from 'node:path';
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import { _internals as gitBranchInternals } from '../git/branch.js';
 import { runSerializedWithMergeBacks } from '../hooks/delegation-gate/worktree-isolation.js';
-import { getAgentSession as getAgentSession_import } from '../state.js';
+import {
+	getAgentSession as getAgentSession_import,
+	swarmState,
+} from '../state.js';
 import * as logger from '../utils/logger.js';
 import { canonicalAttributionPath } from '../utils/path.js';
 import { checkEpicBranch as checkEpicBranch_import } from './epic-branch.js';
@@ -75,6 +82,8 @@ export const _internals = {
 	checkEpicBranch: checkEpicBranch_import,
 	collectTaskAttribution: collectTaskAttribution_import,
 	getAgentSession: getAgentSession_import,
+	/** Every in-process agent session (id → state), for in-flight writers. */
+	listAgentSessions: () => swarmState.agentSessions.entries(),
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),
 	gitExecOnce,
@@ -378,6 +387,33 @@ export function commitTaskResidue(args: {
 	}
 }
 
+/**
+ * Files written by OTHER delegations that are still running (their session
+ * is `delegationActive` and is not one of `exclude`). The Stage B reviewer and
+ * test_engineer run concurrently: when one returns, the other may still be
+ * writing inside the same task's scope, so those paths must not be swept
+ * into the returning agent's residue (a half-written file, under the wrong
+ * agent's name). They are committed when their own writer returns, or by the
+ * wave-close residue pass.
+ */
+function inFlightWriterFiles(
+	directory: string,
+	exclude: ReadonlySet<string>,
+): Set<string> {
+	const files = new Set<string>();
+	for (const [id, session] of _internals.listAgentSessions()) {
+		if (exclude.has(id) || !session?.delegationActive) continue;
+		if (!(session.modifiedFilesByTask instanceof Map)) continue;
+		for (const entries of session.modifiedFilesByTask.values()) {
+			for (const file of entries) {
+				const canonical = canonicalAttributionPath(file, directory);
+				if (canonical !== null) files.add(caseKey(canonical));
+			}
+		}
+	}
+	return files;
+}
+
 function childSessionFiles(
 	directory: string,
 	ids: Array<string | null | undefined>,
@@ -448,14 +484,25 @@ export async function commitEpicResidueAfterDelegation(
 			);
 			return;
 		}
-		const childFiles = childSessionFiles(
-			request.directory,
-			await request.childSessionIds(),
+		const childIds = await request.childSessionIds();
+		const childFiles = childSessionFiles(request.directory, childIds);
+		const exclude = new Set(
+			[...childIds, request.sessionID].filter(
+				(id): id is string => typeof id === 'string' && id.length > 0,
+			),
 		);
+		const inFlight = inFlightWriterFiles(request.directory, exclude);
 		// Serialized with worktree merge-backs: a landing and a residue commit
 		// never contend for the primary checkout's index.
 		await _internals.serializeWithMergeBacks(() =>
-			commitResidueForTasks(request, epic, agent, taskIds, childFiles),
+			commitResidueForTasks(
+				request,
+				epic,
+				agent,
+				taskIds,
+				childFiles,
+				inFlight,
+			),
 		);
 	} catch (error) {
 		logger.criticalWarn(
@@ -470,41 +517,70 @@ function commitResidueForTasks(
 	agent: string,
 	taskIds: string[],
 	childFiles: string[],
+	inFlight: ReadonlySet<string> = new Set(),
 ): void {
 	try {
-		const dirty = listDirtyEntries(request.directory);
+		// Never touch a path another still-running delegation is writing.
+		const dirty = listDirtyEntries(request.directory).filter(
+			(entry) => !inFlight.has(caseKey(entry.path)),
+		);
 		if (dirty.length === 0) return;
-		const label = `${agent} residue`;
 		let remaining = dirty;
-		for (const [index, taskId] of taskIds.entries()) {
-			const candidates = new Set<string>(
-				_internals.collectTaskAttribution(
-					request.directory,
-					request.sessionID,
-					taskId,
-				),
-			);
-			// The child session's writes cannot be split between the tasks a
-			// multi-task delegation served: they go with the first task.
-			if (index === 0) for (const file of childFiles) candidates.add(file);
+		const commitStep = (
+			taskId: string,
+			label: string,
+			candidates: Iterable<string>,
+			scopes: readonly string[],
+		): boolean => {
 			const result = commitTaskResidue({
 				directory: request.directory,
 				epic,
 				taskId,
 				label,
 				candidates,
-				scopes: declaredScopeOf(epic, taskId),
+				scopes,
 				dirty: remaining,
 			});
 			if (result.status === 'failed') {
 				logger.criticalWarn(
 					`[epic] ${label} for task ${taskId} could not be committed (${result.error}); epic_next_wave retries before the next wave. Files: ${result.files.slice(0, 10).join(', ')}`,
 				);
-				return;
+				return false;
 			}
 			if (result.status === 'committed') {
 				const done = new Set(result.files.map(caseKey));
 				remaining = remaining.filter((entry) => !done.has(caseKey(entry.path)));
+			}
+			return true;
+		};
+		for (const [index, taskId] of taskIds.entries()) {
+			// 1. The returning agent's own writes, under its name. They cannot
+			// be split between the tasks a multi-task delegation served: they
+			// go with the first task.
+			if (
+				index === 0 &&
+				childFiles.length > 0 &&
+				!commitStep(taskId, `${agent} residue`, childFiles, [])
+			) {
+				return;
+			}
+			// 2. The rest of the task's attributed writes and frozen scope (so a
+			// rework coder's worktree, cut from HEAD, sees them), under the
+			// neutral label wave close uses: no agent is claimed for files it
+			// did not record.
+			if (
+				!commitStep(
+					taskId,
+					'residue',
+					_internals.collectTaskAttribution(
+						request.directory,
+						request.sessionID,
+						taskId,
+					),
+					declaredScopeOf(epic, taskId),
+				)
+			) {
+				return;
 			}
 		}
 	} catch (error) {

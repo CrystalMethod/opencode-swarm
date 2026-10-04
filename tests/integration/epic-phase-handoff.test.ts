@@ -201,7 +201,8 @@ describe('Epic handoff — landing + residue commits → wave close refs → pre
 		const SUBJECT_RE = /^swarm\(task ([^)]+)\):/;
 		const marked = subjects.filter((s) => SUBJECT_RE.test(s));
 		expect(marked).toEqual([
-			'swarm(task 1.1): test_engineer residue',
+			// Scope-swept (the simulated test_engineer records no session write).
+			'swarm(task 1.1): residue',
 			'swarm(task 1.1): set up package structure',
 		]);
 		expect(git(['log', '-1', '--format=%B'], dir).stdout).toContain(

@@ -279,7 +279,10 @@ describe('Epic lifecycle contract — final', () => {
 			},
 			{ output: '[TESTED] 1.1 FAIL sum subtracts' },
 		);
-		expect(subject()).toBe('swarm(task 1.1): test_engineer residue');
+		// The simulated test_engineer writes straight to disk (no session-recorded
+		// write), so its files are swept from the task's frozen scope under the
+		// neutral label; a recorded write would read `test_engineer residue`.
+		expect(subject()).toBe('swarm(task 1.1): residue');
 		// The Stage B test gate failed (evidence workflow) → rework.
 		const generation = getTaskWorkflowSnapshot(
 			await readTaskEvidence(dir, '1.1'),
