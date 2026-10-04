@@ -21,6 +21,7 @@ import {
 	TURBO_AGENT_TOOL_MAP,
 } from '../config/constants';
 import { stripKnownSwarmPrefix } from '../config/schema';
+import { isEpicModeConfigEnabled } from '../epic/config.js';
 import { resolvePlanningProfile } from '../plan/planning-profile';
 import {
 	addDeferredWarning,
@@ -508,7 +509,7 @@ function createSwarmAgents(
 					execution_mode: pluginConfig?.execution_mode ?? 'balanced',
 				},
 			}),
-			pluginConfig?.turbo?.epic?.mode?.enabled === true,
+			isEpicModeConfigEnabled(pluginConfig),
 		);
 		architect.name = prefixName('architect');
 
@@ -1442,9 +1443,9 @@ export function getAgentConfigs(
 				}
 			}
 
-			// Feature-gate: Epic Mode tools — only when turbo.epic.mode.enabled
-			// is explicitly true (a bare `turbo` block is not enough).
-			if (config?.turbo?.epic?.mode?.enabled === true) {
+			// Feature-gate: Epic Mode tools — only when epic.mode.enabled
+			// is explicitly true (top-level `epic`, or the legacy `turbo.epic`).
+			if (isEpicModeConfigEnabled(config)) {
 				const epicTools =
 					EPIC_AGENT_TOOL_MAP[
 						baseAgentName as keyof typeof EPIC_AGENT_TOOL_MAP

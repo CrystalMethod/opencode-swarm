@@ -28,6 +28,9 @@ import { handleEpicCommand } from '../../src/commands/epic';
 import type { PluginConfig } from '../../src/config';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { getOpenEpic } from '../../src/epic/lifecycle';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { _internals as startInternals } from '../../src/epic/start';
 import { createDelegationGateHook } from '../../src/hooks/delegation-gate';
 import {
 	finishStandardWorktreeDispatch,
@@ -45,9 +48,6 @@ import {
 	swarmState,
 } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
-import { getOpenEpic } from '../../src/turbo/epic/lifecycle';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { recordPlanCriticApproval } from '../helpers/approved-plan';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
@@ -166,7 +166,7 @@ beforeEach(async () => {
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 	fs.writeFileSync(

@@ -3,7 +3,7 @@
  *
  * Subcommands:
  *   /swarm epic start [--force] — open an epic for the current plan (see
- *                            `src/turbo/epic/start.ts` for the refusals)
+ *                            `src/epic/start.ts` for the refusals)
  *   /swarm epic close [--abandon] [--land squash|merge|none]
  *                          — close the open epic, land its epic branch onto
  *                            the original branch (default squash: staged,
@@ -45,19 +45,19 @@
  */
 
 import { loadPluginConfigWithMeta } from '../config/index.js';
-import { loadPlanJsonOnly } from '../plan/manager.js';
-import { closeEpic, type EpicLandingSummary } from '../turbo/epic/close.js';
-import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../turbo/epic/config-gate.js';
-import { checkEpicBranch } from '../turbo/epic/epic-branch.js';
+import { closeEpic, type EpicLandingSummary } from '../epic/close.js';
+import { resolveEpicConfig } from '../epic/config.js';
+import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../epic/config-gate.js';
+import { checkEpicBranch } from '../epic/epic-branch.js';
 import {
 	type EpicLearningSettings,
 	resolveEpicLearningSettings,
-} from '../turbo/epic/learning.js';
-import { describeEpicPriorMerge } from '../turbo/epic/learning-store.js';
+} from '../epic/learning.js';
+import { describeEpicPriorMerge } from '../epic/learning-store.js';
 import {
 	describeLegacyEpicMigration,
 	retireLegacyEpicSessionState,
-} from '../turbo/epic/legacy-migration.js';
+} from '../epic/legacy-migration.js';
 import {
 	type EpicInspection,
 	type EpicLandMode,
@@ -66,35 +66,33 @@ import {
 	inspectEpic,
 	repairEpicSentinel,
 	updateEpicRecord,
-} from '../turbo/epic/lifecycle.js';
+} from '../epic/lifecycle.js';
 import {
 	epicTaskRef,
 	planEpicTaskRefRepair,
 	readEpicRefs,
 	syncEpicRefs,
 	writeEpicRef,
-} from '../turbo/epic/markers.js';
+} from '../epic/markers.js';
 import {
 	clearMergeFailureCommand,
 	describeMergeFailuresForStatus,
-} from '../turbo/epic/merge-epoch.js';
-import { completedBeforeEpic } from '../turbo/epic/next-wave.js';
-import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
-import {
-	type EpicReportSelection,
-	selectEpicReport,
-} from '../turbo/epic/report.js';
+} from '../epic/merge-epoch.js';
+import { completedBeforeEpic } from '../epic/next-wave.js';
+import { resolvePlanMarkerScope } from '../epic/plan-key.js';
+import { type EpicReportSelection, selectEpicReport } from '../epic/report.js';
 import {
 	type EpicScorecardV1,
 	formatEpicScorecardLines,
-} from '../turbo/epic/scorecard.js';
-import { formatEpicShapingLines } from '../turbo/epic/shaping.js';
+} from '../epic/scorecard.js';
+import { formatEpicShapingLines } from '../epic/shaping.js';
 import {
 	describeEpicSizingReason,
 	type EpicSizingVerdict,
 	summarizeEpicSizing,
-} from '../turbo/epic/sizing.js';
-import { startEpic } from '../turbo/epic/start.js';
+} from '../epic/sizing.js';
+import { startEpic } from '../epic/start.js';
+import { loadPlanJsonOnly } from '../plan/manager.js';
 import {
 	EPIC_PRIOR_USAGE,
 	renderEpicLearning,
@@ -270,7 +268,7 @@ async function renderReport(
 	return lines.join('\n');
 }
 
-/** `turbo.epic.learning.*` (schema defaults when the config is unreadable). */
+/** `epic.learning.*` (schema defaults when the config is unreadable). */
 function learningSettings(directory: string): EpicLearningSettings {
 	try {
 		return resolveEpicLearningSettings(
@@ -372,7 +370,7 @@ function renderStartLearningLine(
 	>['learning'],
 ): string {
 	if (!learning.enabled) {
-		return 'Learning: disabled (`turbo.epic.learning.enabled: false`) — no learned signals.';
+		return 'Learning: disabled (`epic.learning.enabled: false`) — no learned signals.';
 	}
 	const imported = learning.imported
 		? ` (imported once from Epic v1: ${learning.imported.calibrationHotModules} hot module(s), ${learning.imported.divergenceRecords} divergence record(s))`
@@ -529,7 +527,7 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 	let retainRefs = false;
 	try {
 		retainRefs =
-			_internals.loadPluginConfigWithMeta(directory).config.turbo?.epic
+			resolveEpicConfig(_internals.loadPluginConfigWithMeta(directory).config)
 				?.retain_refs === true;
 	} catch {
 		retainRefs = false;
@@ -641,7 +639,7 @@ function renderRefLines(
 	}
 	if (refs.retained) {
 		return [
-			`Epic refs kept (\`turbo.epic.retain_refs\`): ${count} under \`refs/swarm/epics/\` (recorded in the report).`,
+			`Epic refs kept (\`epic.retain_refs\`): ${count} under \`refs/swarm/epics/\` (recorded in the report).`,
 		];
 	}
 	if (refs.deleteFailures.length > 0) {
@@ -809,7 +807,7 @@ function renderRecordLines(
 	if (!inspection.configEnabled) {
 		lines.push(
 			'',
-			'⚠️ `turbo.epic.mode.enabled` is not true: Epic behaviour is OFF while the config gate is closed. Re-enable it, or close the epic.',
+			'⚠️ `epic.mode.enabled` is not true: Epic behaviour is OFF while the config gate is closed. Re-enable it, or close the epic.',
 		);
 	}
 	lines.push(...renderWaveLines(record));

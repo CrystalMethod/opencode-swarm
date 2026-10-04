@@ -21,7 +21,7 @@ import {
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const { importLegacyEpicCalibrationOnce } = await import(
-	'../../../src/turbo/epic/learning-store.js'
+	'../../../src/epic/learning-store.js'
 );
 const { appendTestRun } = await import(
 	'../../../src/test-impact/history-store.js'

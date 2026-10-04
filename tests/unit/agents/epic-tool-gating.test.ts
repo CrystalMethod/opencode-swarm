@@ -1,6 +1,7 @@
 /**
  * Epic v2 — Epic Mode tools are an opt-in tool map (EPIC_AGENT_TOOL_MAP),
- * merged for the architect ONLY when `turbo.epic.mode.enabled === true`.
+ * merged for the architect ONLY when `epic.mode.enabled === true` (top-level
+ * `epic`; the legacy `turbo.epic` path resolves through the same gate).
  *
  * Follows the memory-tool-gating pattern (AGENTS.md §11 "Opt-in tool
  * maps"): (a) absent when the feature is off, (b) present when on, (c) the
@@ -23,18 +24,25 @@ import {
 
 const { resolveAgentCapabilityTools } = policyTestExports;
 
-const EPIC_ON = {
+const EPIC_ON = { epic: { mode: { enabled: true } } };
+/** The legacy path, parsed directly (no loader migration): same gate. */
+const EPIC_ON_LEGACY = {
 	turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 };
 const OFF_CONFIGS: Array<[string, Record<string, unknown> | undefined]> = [
 	['no config', undefined],
 	['empty config', {}],
 	['turbo block without epic', { turbo: { strategy: 'standard' } }],
+	['epic.mode.enabled false', { epic: { mode: { enabled: false } } }],
+	['epic block without mode', { epic: {} }],
 	[
-		'epic.mode.enabled false',
+		'legacy turbo.epic.mode.enabled false',
 		{ turbo: { strategy: 'standard', epic: { mode: { enabled: false } } } },
 	],
-	['epic block without mode', { turbo: { strategy: 'standard', epic: {} } }],
+	[
+		'top-level epic off wins over legacy on',
+		{ ...EPIC_ON_LEGACY, epic: { mode: { enabled: false } } },
+	],
 ];
 const SWARMS = { local: { name: 'Local' }, mega: { name: 'Mega' } };
 
@@ -81,7 +89,7 @@ describe('Epic tool map registry shape', () => {
 	});
 });
 
-describe('getAgentConfigs — Epic tools gated by turbo.epic.mode.enabled', () => {
+describe('getAgentConfigs — Epic tools gated by epic.mode.enabled', () => {
 	test.each(
 		OFF_CONFIGS,
 	)('disabled (%s): architect denies every Epic tool and the prompt omits them', (_label, raw) => {
@@ -94,6 +102,14 @@ describe('getAgentConfigs — Epic tools gated by turbo.epic.mode.enabled', () =
 
 	test('enabled: architect is allowed every Epic tool and the prompt lists them', () => {
 		const agents = getAgentConfigs(parse(EPIC_ON));
+		for (const tool of EPIC_TOOL_NAMES) {
+			expect(agents.architect.permission?.[tool]).not.toBe('deny');
+			expect(agents.architect.prompt).toContain(tool);
+		}
+	});
+
+	test('enabled through the legacy turbo.epic path: same grant', () => {
+		const agents = getAgentConfigs(parse(EPIC_ON_LEGACY));
 		for (const tool of EPIC_TOOL_NAMES) {
 			expect(agents.architect.permission?.[tool]).not.toBe('deny');
 			expect(agents.architect.prompt).toContain(tool);
@@ -165,5 +181,10 @@ describe('full-auto capability derivation — Epic tools gated identically', () 
 			const tools = resolveAgentCapabilityTools(role, config);
 			for (const tool of EPIC_TOOL_NAMES) expect(tools).not.toContain(tool);
 		}
+		const legacy = resolveAgentCapabilityTools(
+			'architect',
+			parse(EPIC_ON_LEGACY) as never,
+		);
+		for (const tool of EPIC_TOOL_NAMES) expect(legacy).toContain(tool);
 	});
 });

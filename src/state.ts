@@ -32,6 +32,7 @@ import {
 	detectEnvironmentProfile,
 	type EnvironmentProfile,
 } from './environment/profile.js';
+import { epicSentinelExists, isEpicOpenForProject } from './epic/lifecycle.js';
 import {
 	clearAllActionCircuits,
 	clearInvocationActionCircuits,
@@ -89,10 +90,6 @@ import {
 import { maybeSuggestWorktreeLink } from './session/worktree-link-suggestion.js';
 import { AgentRunContext } from './state/agent-run-context.js';
 import { telemetry } from './telemetry.js';
-import {
-	epicSentinelExists,
-	isEpicOpenForProject,
-} from './turbo/epic/lifecycle.js';
 import * as logger from './utils/logger';
 import { canonicalAttributionPath } from './utils/path';
 

@@ -5,7 +5,7 @@
  * NOT a real-speed benchmark: it compares the real Balanced / Lean / Epic
  * planners under a fixed simulated cost model (see epic-sim.ts) to catch
  * planner regressions. The regression gate is the normal unit test
- * tests/unit/turbo/epic/epic-bench.test.ts (no separate CI step).
+ * tests/unit/epic/epic-bench.test.ts (no separate CI step).
  *
  *   bun run epic:bench                  # print the table
  *   bun run epic:bench --write-golden   # rewrite golden.json (review the diff!)

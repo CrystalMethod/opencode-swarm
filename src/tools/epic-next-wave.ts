@@ -1,16 +1,16 @@
 /**
  * Epic Mode `epic_next_wave` tool (Epic v2 C2) — architect-only, gated by
- * `turbo.epic.mode.enabled` through `EPIC_AGENT_TOOL_MAP`.
+ * `epic.mode.enabled` through `EPIC_AGENT_TOOL_MAP`.
  *
  * The single way forward while an epic is open: it closes the active wave
  * when every task is resolved (recording outcomes and divergence), keeps
  * phases in order, and issues the next wave with dispatch instructions.
  * Idempotent: calling it again while a wave runs returns `in-progress` for
- * the same wave. See `src/turbo/epic/next-wave.ts` for the full contract.
+ * the same wave. See `src/epic/next-wave.ts` for the full contract.
  */
 
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
-import { runEpicNextWave } from '../turbo/epic/next-wave.js';
+import { runEpicNextWave } from '../epic/next-wave.js';
 import { createSwarmTool } from './create-tool.js';
 
 /**

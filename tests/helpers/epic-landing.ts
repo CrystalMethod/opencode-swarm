@@ -13,7 +13,7 @@
 import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { epicCommitLandingFor } from '../../src/turbo/epic/task-landing';
+import { epicCommitLandingFor } from '../../src/epic/task-landing';
 import { attemptMergeBackFromDirty } from '../../src/worktree/merge';
 import { canonicalMkdtemp } from './tmpdir';
 

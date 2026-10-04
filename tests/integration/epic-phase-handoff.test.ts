@@ -28,16 +28,13 @@ import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { getOpenEpic, markEpicPhaseComplete } from '../../src/epic/lifecycle';
+import { epicTaskRef } from '../../src/epic/markers';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { formatEpicTaskCommitMessage } from '../../src/epic/plan-key';
+import { commitEpicResidueAfterDelegation } from '../../src/epic/residue-commit';
 import { savePlan, updateTaskStatus } from '../../src/plan/manager';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
-import {
-	getOpenEpic,
-	markEpicPhaseComplete,
-} from '../../src/turbo/epic/lifecycle';
-import { epicTaskRef } from '../../src/turbo/epic/markers';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { formatEpicTaskCommitMessage } from '../../src/turbo/epic/plan-key';
-import { commitEpicResidueAfterDelegation } from '../../src/turbo/epic/residue-commit';
 import { mergeLaneBranch } from '../../src/worktree/merge';
 import { openEpicForTest } from '../helpers/epic-lifecycle';
 
@@ -63,11 +60,7 @@ function initGitRepo(dir: string, epicEnabled: boolean): void {
 	fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
-		JSON.stringify(
-			epicEnabled
-				? { turbo: { strategy: 'standard', epic: { mode: { enabled: true } } } }
-				: {},
-		),
+		JSON.stringify(epicEnabled ? { epic: { mode: { enabled: true } } } : {}),
 	);
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');
 	fs.writeFileSync(path.join(dir, 'README.md'), '# test\n');

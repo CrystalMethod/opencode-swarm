@@ -6,24 +6,24 @@
  * reviewer APPROVES, a read-only phase critic through the plugin-owned review
  * dispatcher, parses each verdict from the agent's own response, and records
  * both to `.swarm/evidence/{phase}/epic-phase-review.json` bound to the
- * current plan / phase task state. See `src/turbo/epic/phase-readiness.ts`.
+ * current plan / phase task state. See `src/epic/phase-readiness.ts`.
  */
 
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
-import type { ReviewModelDispatcher } from '../review/contracts.js';
-import type { ReviewAgentModelRegistry } from '../review/runtime.js';
 import {
 	EPIC_PHASE_VERDICTS_KEEP,
 	getOpenEpic,
 	isEpicOpenForProject,
 	updateEpicRecord,
-} from '../turbo/epic/lifecycle.js';
+} from '../epic/lifecycle.js';
 import {
 	describeOpenEpicWaves,
 	type EpicPhaseReviewRunResult,
 	runEpicPhaseReview,
-} from '../turbo/epic/phase-readiness.js';
+} from '../epic/phase-readiness.js';
+import type { ReviewModelDispatcher } from '../review/contracts.js';
+import type { ReviewAgentModelRegistry } from '../review/runtime.js';
 import { createSwarmTool } from './create-tool.js';
 
 export type EpicPhaseReviewToolResult =

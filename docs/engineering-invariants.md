@@ -642,7 +642,7 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   (`canonicaliseAttributionEntry` + `normalizePath` membership) — idempotent,
   kept as defense-in-depth; `src/full-auto/severe-result.ts` (resolve →
   relative → `normalizePath`, `..`-escape drop) — idempotent;
-  Epic wave-close divergence (`src/turbo/epic/wave-close.ts`, re-canonicalized
+  Epic wave-close divergence (`src/epic/wave-close.ts`, re-canonicalized
   via `canonicalAttributionPath`, then `normalizePath` on both sides) —
   idempotent;
   `review-receipt-scope` (`path.resolve` + containment + `canonicalPath`) and

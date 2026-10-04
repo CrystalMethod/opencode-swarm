@@ -19,6 +19,11 @@ import {
 	SkillImproverConfigSchema,
 	stripKnownSwarmPrefix,
 } from '../config/schema';
+import { isEpicOpenForProject, markEpicPhaseComplete } from '../epic/lifecycle';
+import {
+	EPIC_PHASE_REVIEW_TOOL,
+	verifyEpicPhaseReadiness,
+} from '../epic/phase-readiness';
 import { appendCoreEventSync } from '../events/core-events.js';
 import { listEvidenceTaskIds, loadEvidence } from '../evidence/manager';
 import {
@@ -55,7 +60,6 @@ import {
 	evaluatePhaseCriticalDirectives,
 	formatDirectiveBlockMessage,
 } from '../hooks/phase-complete-directive-gate.js';
-
 import {
 	buildApprovedReceipt,
 	buildRejectedReceipt,
@@ -87,14 +91,6 @@ import {
 	swarmState,
 } from '../state';
 import { telemetry } from '../telemetry';
-import {
-	isEpicOpenForProject,
-	markEpicPhaseComplete,
-} from '../turbo/epic/lifecycle';
-import {
-	EPIC_PHASE_REVIEW_TOOL,
-	verifyEpicPhaseReadiness,
-} from '../turbo/epic/phase-readiness';
 import { _internals as leanPhaseInternals } from '../turbo/lean/phase-ready';
 import { pushAdvisory } from '../utils/advisory-queue';
 import * as logger from '../utils/logger';

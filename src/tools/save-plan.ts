@@ -24,6 +24,11 @@ import {
 	getOrCreateProfileForIdentity,
 	getProfileLookupForIdentity,
 } from '../db/qa-gate-profile.js';
+import { isEpicModeConfigEnabled } from '../epic/config-gate.js';
+import {
+	computeSavePlanEpicShaping,
+	type EpicSavePlanShaping,
+} from '../epic/plan-shaping-seam.js';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { writeCheckpoint } from '../plan/checkpoint';
 import {
@@ -40,11 +45,6 @@ import {
 } from '../plan/manager';
 import { resolvePlanningProfile } from '../plan/planning-profile';
 import { derivePlanId } from '../plan/utils.js';
-import { isEpicModeConfigEnabled } from '../turbo/epic/config-gate.js';
-import {
-	computeSavePlanEpicShaping,
-	type EpicSavePlanShaping,
-} from '../turbo/epic/plan-shaping-seam.js';
 
 /**
  * DI seam for hermetic config-load substitution in tests (AGENTS.md invariant 7).
@@ -173,7 +173,7 @@ export interface SavePlanResult {
 	execution_profile?: ExecutionProfile;
 	/**
 	 * Epic v2 C7 plan-shaping advisory — present only when
-	 * `turbo.epic.mode.enabled` is true and no epic is open.
+	 * `epic.mode.enabled` is true and no epic is open.
 	 */
 	epic_shaping?: EpicSavePlanShaping;
 }

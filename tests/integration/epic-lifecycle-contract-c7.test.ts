@@ -21,13 +21,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { getOpenEpic } from '../../src/epic/lifecycle';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { _internals as startInternals } from '../../src/epic/start';
 import { loadPlanJsonOnly } from '../../src/plan/manager';
 import { resetSwarmState } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeSavePlan } from '../../src/tools/save-plan';
-import { getOpenEpic } from '../../src/turbo/epic/lifecycle';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -98,7 +98,7 @@ beforeEach(() => {
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');

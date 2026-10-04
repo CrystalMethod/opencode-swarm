@@ -1,11 +1,12 @@
 /**
- * Epic v2 C5 — `turbo.epic.mode.min_commits_for_signal` is retired by
- * accept-and-strip: a config carrying the key loads every turbo setting with
+ * Epic v2 C5 — `epic.mode.min_commits_for_signal` is retired by
+ * accept-and-strip: a config carrying the key loads every Epic setting with
  * NO recovery (not an "unrecognized key" `stripped_keys` recovery), the key
  * is gone from the parsed config, the loader warns once with a precise
  * "retired" message, `/swarm config doctor` reports it (BOM-tolerant, and a
  * non-Epic doctor run reads no extra file), and the generated JSON schema
- * keeps it marked `deprecated`.
+ * keeps it marked `deprecated` — under top-level `epic` and the legacy
+ * `turbo.epic` path alike.
  */
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
@@ -44,18 +45,17 @@ function writeProjectConfig(config: Record<string, unknown>): void {
 	);
 }
 
-const RETIRED_CONFIG = {
-	turbo: {
-		strategy: 'standard',
-		epic: {
-			mode: {
-				enabled: true,
-				activation_threshold: 0.45,
-				min_commits_for_signal: 20,
-			},
-			sizing: { min_tasks: 3 },
-		},
+const RETIRED_EPIC = {
+	mode: {
+		enabled: true,
+		activation_threshold: 0.45,
+		min_commits_for_signal: 20,
 	},
+	sizing: { min_tasks: 3 },
+};
+const RETIRED_CONFIG = { epic: RETIRED_EPIC };
+const RETIRED_LEGACY_CONFIG = {
+	turbo: { strategy: 'standard', epic: RETIRED_EPIC },
 };
 
 function retiredWarnings(): string[] {
@@ -95,20 +95,26 @@ describe('schema — accept-and-strip', () => {
 		).toBe(false);
 	});
 
-	it('a config with the retired key keeps the whole turbo block', () => {
+	it('a config with the retired key keeps the whole epic block', () => {
 		const parsed = PluginConfigSchema.parse(RETIRED_CONFIG);
-		expect(parsed.turbo?.strategy).toBe('standard');
-		expect(parsed.turbo?.epic?.mode).toEqual({
+		expect(parsed.epic?.mode).toEqual({
 			enabled: true,
 			activation_threshold: 0.45,
 		});
-		expect(parsed.turbo?.epic?.sizing?.min_tasks).toBe(3);
+		expect(parsed.epic?.sizing?.min_tasks).toBe(3);
+		const legacy = PluginConfigSchema.parse(RETIRED_LEGACY_CONFIG);
+		expect(legacy.turbo?.strategy).toBe('standard');
+		expect(legacy.turbo?.epic?.mode).toEqual(parsed.epic?.mode);
 	});
 
 	it('findRetiredEpicConfigKeys names each present retired key', () => {
 		expect(findRetiredEpicConfigKeys(RETIRED_CONFIG)).toEqual([
+			'epic.mode.min_commits_for_signal',
+		]);
+		expect(findRetiredEpicConfigKeys(RETIRED_LEGACY_CONFIG)).toEqual([
 			'turbo.epic.mode.min_commits_for_signal',
 		]);
+		expect(findRetiredEpicConfigKeys({ epic: { mode: {} } })).toEqual([]);
 		expect(
 			findRetiredEpicConfigKeys({ turbo: { epic: { mode: {} } } }),
 		).toEqual([]);
@@ -117,35 +123,40 @@ describe('schema — accept-and-strip', () => {
 	});
 });
 
-describe('loader — loads the turbo block and warns once', () => {
-	it('loads every other turbo setting with no recovery, warning once', () => {
+describe('loader — loads the epic block and warns once', () => {
+	it('loads every other Epic setting with no recovery, warning once', () => {
 		writeProjectConfig(RETIRED_CONFIG);
 		const first = loadPluginConfigWithMeta(projectDir);
 		expect(first.recovery).toBe('none');
 		expect(first.removedKeys).toEqual([]);
-		expect(first.config.turbo?.epic?.mode?.enabled).toBe(true);
-		expect(first.config.turbo?.epic?.mode?.activation_threshold).toBe(0.45);
-		expect(first.config.turbo?.epic?.sizing?.min_tasks).toBe(3);
+		expect(first.config.epic?.mode?.enabled).toBe(true);
+		expect(first.config.epic?.mode?.activation_threshold).toBe(0.45);
+		expect(first.config.epic?.sizing?.min_tasks).toBe(3);
 		expect(
-			Object.hasOwn(
-				first.config.turbo?.epic?.mode ?? {},
-				'min_commits_for_signal',
-			),
+			Object.hasOwn(first.config.epic?.mode ?? {}, 'min_commits_for_signal'),
 		).toBe(false);
 		loadPluginConfigWithMeta(projectDir);
 		const warnings = retiredWarnings();
 		expect(warnings).toHaveLength(1);
-		expect(warnings[0]).toContain('turbo.epic.mode.min_commits_for_signal');
+		expect(warnings[0]).toContain('epic.mode.min_commits_for_signal');
 		// A new session (advisory dedup reset) warns again.
 		resetConfigAdvisoryDedup();
 		loadPluginConfigWithMeta(projectDir);
 		expect(retiredWarnings()).toHaveLength(2);
 	});
 
+	it('legacy path: migrated, and the warning names the path the user wrote', () => {
+		writeProjectConfig(RETIRED_LEGACY_CONFIG);
+		const loaded = loadPluginConfigWithMeta(projectDir);
+		expect(loaded.recovery).toBe('none');
+		expect(loaded.config.epic?.mode?.activation_threshold).toBe(0.45);
+		expect(retiredWarnings()[0]).toContain(
+			'turbo.epic.mode.min_commits_for_signal',
+		);
+	});
+
 	it('no warning without the retired key', () => {
-		writeProjectConfig({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
-		});
+		writeProjectConfig({ epic: { mode: { enabled: true } } });
 		loadPluginConfigWithMeta(projectDir);
 		expect(retiredWarnings()).toEqual([]);
 	});
@@ -161,7 +172,7 @@ describe('config doctor — reports the retired key', () => {
 		);
 		expect(retired).toHaveLength(1);
 		expect(retired[0]).toMatchObject({
-			path: 'turbo.epic.mode.min_commits_for_signal',
+			path: 'epic.mode.min_commits_for_signal',
 			severity: 'warn',
 			autoFixable: false,
 		});
@@ -182,10 +193,10 @@ describe('config doctor collector — BOM and no extra reads', () => {
 		const config = PluginConfigSchema.parse(RETIRED_CONFIG);
 		expect(
 			collectRawRetiredEpicKeyFindings(config, projectDir).map((f) => f.path),
-		).toEqual(['turbo.epic.mode.min_commits_for_signal']);
+		).toEqual(['epic.mode.min_commits_for_signal']);
 	});
 
-	it('without turbo.epic in the parsed config it reads no file', () => {
+	it('without an Epic block in the parsed config it reads no file', () => {
 		writeProjectConfig(RETIRED_CONFIG);
 		const spy = spyOn(fs, 'readFileSync');
 		try {
@@ -199,9 +210,9 @@ describe('config doctor collector — BOM and no extra reads', () => {
 });
 
 describe('generated JSON schema', () => {
-	it('keeps the retired key, marked deprecated, in both turbo branches', () => {
+	it('keeps the retired key, marked deprecated, at top level and in both legacy turbo branches', () => {
 		const text = JSON.stringify(buildConfigJsonSchema());
 		const marked = text.match(/"min_commits_for_signal":\{"deprecated":true/g);
-		expect(marked?.length).toBe(2);
+		expect(marked?.length).toBe(3);
 	});
 });

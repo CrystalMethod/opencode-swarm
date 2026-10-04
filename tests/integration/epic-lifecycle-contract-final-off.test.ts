@@ -5,8 +5,8 @@
  * twice on identical real git repositories with an identical frozen clock
  * (commit dates pinned, so SHAs are comparable):
  *
- *   A. no `turbo.epic` block at all (the upstream-equivalent baseline);
- *   B. a full `turbo.epic` block with `mode.enabled: false`, and every Epic
+ *   A. no `epic` block at all (the upstream-equivalent baseline);
+ *   B. a full `epic` block with `mode.enabled: false`, and every Epic
  *      entry point invoked along the way (`/swarm epic start`, `status`,
  *      `report`, `epic_next_wave`) — each refusing or reporting nothing.
  *
@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import type { PluginConfig } from '../../src/config';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { runEpicNextWave } from '../../src/epic/next-wave';
 import { createDelegationGateHook } from '../../src/hooks/delegation-gate';
 import {
 	resetStandardWorktreeIsolationState,
@@ -40,7 +41,6 @@ import {
 } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeSavePlan } from '../../src/tools/save-plan';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import { recordPlanCriticApproval } from '../helpers/approved-plan';
 import {
 	createFinalContractRepo,

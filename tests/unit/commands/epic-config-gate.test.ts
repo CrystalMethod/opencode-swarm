@@ -3,17 +3,17 @@
  *
  *  - `start` renders the start refusal `epic-disabled-by-config` as
  *    EPIC_MODE_CONFIG_DISABLED_MESSAGE (the gate itself is tested in
- *    tests/unit/turbo/epic/start-refusals.test.ts).
+ *    tests/unit/epic/start-refusals.test.ts).
  *  - `close`, `status`, `learning`, `prior` keep working with the mode gate off —
  *    a user can always inspect or close an epic. (The co-change gate and
  *    v2 declared scopes are exercised through `epic_next_wave`:
- *    tests/unit/turbo/epic/next-wave-*.test.ts.)
+ *    tests/unit/epic/next-wave-*.test.ts.)
  *
  * Uses the `_internals` DI seam (AGENTS.md invariant 7).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { _internals, handleEpicCommand } from '../../../src/commands/epic';
-import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../../../src/turbo/epic/config-gate';
+import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../../../src/epic/config-gate';
 
 const realInternals = { ..._internals };
 let config: Record<string, unknown>;

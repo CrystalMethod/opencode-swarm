@@ -15,12 +15,12 @@ import * as path from 'node:path';
 import type { ConfigLoadResult } from '../../../src/config/loader';
 import { PluginConfigSchema } from '../../../src/config/schema';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
+import { _internals as seamInternals } from '../../../src/epic/plan-shaping-seam';
 import { loadPlanJsonOnly } from '../../../src/plan/manager';
 import {
 	executeSavePlan,
 	_internals as savePlanInternals,
 } from '../../../src/tools/save-plan';
-import { _internals as seamInternals } from '../../../src/turbo/epic/plan-shaping-seam';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const realSavePlan = { ...savePlanInternals };
@@ -167,7 +167,7 @@ const t = (id: string, files: string[], depends: string[] = []): TaskArg => ({
 beforeEach(() => {
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
 	const config = PluginConfigSchema.parse({
-		turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+		epic: { mode: { enabled: true } },
 	});
 	savePlanInternals.loadPluginConfigWithMeta = (() =>
 		({

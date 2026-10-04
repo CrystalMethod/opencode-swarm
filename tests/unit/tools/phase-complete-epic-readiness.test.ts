@@ -22,6 +22,8 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
+import { deleteEpicState } from '../../../src/epic/lifecycle';
+import { runEpicPhaseReview } from '../../../src/epic/phase-readiness';
 import type { ReviewModelDispatcher } from '../../../src/review/contracts';
 import {
 	ensureAgentSession,
@@ -29,8 +31,6 @@ import {
 	resetSwarmState,
 	swarmState,
 } from '../../../src/state';
-import { deleteEpicState } from '../../../src/turbo/epic/lifecycle';
-import { runEpicPhaseReview } from '../../../src/turbo/epic/phase-readiness';
 import {
 	_internals as phaseReadyInternals,
 	type verifyLeanTurboPhaseReady,
@@ -83,7 +83,7 @@ function setupProject(dir: string): void {
 			},
 			curator: { enabled: false },
 			// Epic Mode config master gate (activation also needs a live session row).
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 	fs.writeFileSync(

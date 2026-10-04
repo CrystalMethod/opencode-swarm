@@ -352,13 +352,13 @@ export const TURBO_AGENT_TOOL_MAP: Partial<Record<AgentName, ToolName[]>> = {
 };
 
 // ---------------------------------------------------------------------------
-// Epic Mode tools — opt-in, gated by turbo.epic.mode.enabled === true
+// Epic Mode tools — opt-in, gated by epic.mode.enabled === true
 // ---------------------------------------------------------------------------
 
 /**
  * Every Epic Mode tool. They stay registered in the plugin (TOOL_METADATA +
  * TOOL_MANIFEST + barrel) but carry `agents: []`, so no agent sees them
- * unless `turbo.epic.mode.enabled === true`, in which case they are merged
+ * unless `epic.mode.enabled === true`, in which case they are merged
  * into the architect's tool set at every opt-in merge site
  * (`getAgentConfigs`, the architect prompt tool lists, the full-auto
  * capability derivation).

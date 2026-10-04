@@ -153,7 +153,8 @@ export function createFinalContractRepo(
 				policy: 'enforce',
 			},
 			curator: { enabled: false },
-			turbo: { strategy: 'standard', ...(epic ? { epic } : {}) },
+			turbo: { strategy: 'standard' },
+			...(epic ? { epic } : {}),
 		}),
 	);
 	// The config stays untracked (ignored) so both twins' commits — and so

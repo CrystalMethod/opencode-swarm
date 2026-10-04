@@ -8,19 +8,19 @@
  *     `EPIC_PHASE_WAVES_OPEN`, and fails closed on an unreadable record.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { updateEpicRecord } from '../../../src/epic/lifecycle';
+import {
+	_internals as readinessInternals,
+	verifyEpicPhaseReadiness,
+} from '../../../src/epic/phase-readiness';
 import {
 	_internals,
 	executeEpicPhaseReview,
 } from '../../../src/tools/epic-phase-review';
-import { updateEpicRecord } from '../../../src/turbo/epic/lifecycle';
-import {
-	_internals as readinessInternals,
-	verifyEpicPhaseReadiness,
-} from '../../../src/turbo/epic/phase-readiness';
 import {
 	type NextWaveProject,
 	openNextWaveProject,
-} from '../turbo/epic/next-wave-fixture';
+} from '../epic/next-wave-fixture';
 
 const original = { ..._internals };
 const originalReadiness = { ...readinessInternals };

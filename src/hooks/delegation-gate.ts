@@ -45,6 +45,10 @@ import {
 	getProfileForIdentity,
 	type QaGates,
 } from '../db/qa-gate-profile.js';
+import { resolveEpicDispatchPolicy } from '../epic/gate-policy.js';
+import { epicSentinelExists, isEpicOpenForProject } from '../epic/lifecycle.js';
+import { commitEpicResidueAfterDelegation } from '../epic/residue-commit.js';
+import { epicIsolationDegradedMessage } from '../epic/task-landing.js';
 import {
 	appendCoreEventSync,
 	CORE_EVENT_LOCKED,
@@ -123,13 +127,6 @@ import {
 	updateTaskWorkflowCache,
 } from '../state';
 import { telemetry } from '../telemetry.js';
-import { resolveEpicDispatchPolicy } from '../turbo/epic/gate-policy.js';
-import {
-	epicSentinelExists,
-	isEpicOpenForProject,
-} from '../turbo/epic/lifecycle.js';
-import { commitEpicResidueAfterDelegation } from '../turbo/epic/residue-commit.js';
-import { epicIsolationDegradedMessage } from '../turbo/epic/task-landing.js';
 import type {
 	DelegationEnvelope,
 	EnvelopeValidationResult,

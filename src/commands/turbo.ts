@@ -1,6 +1,6 @@
 import { loadPluginConfigWithMeta } from '../config';
+import { isEpicOpenForProject } from '../epic/lifecycle';
 import { getAgentSession } from '../state';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle';
 import {
 	emptyRunState,
 	isStateUnreadable,

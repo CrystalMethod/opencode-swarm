@@ -90,7 +90,7 @@ describe('rehydration × open epic (Epic v2 seam)', () => {
 		fs.writeFileSync(
 			path.join(dir, '.opencode', 'opencode-swarm.json'),
 			JSON.stringify({
-				turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+				epic: { mode: { enabled: true } },
 			}),
 		);
 		fs.writeFileSync(

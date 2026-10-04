@@ -84,11 +84,7 @@ async function setup(waveTasks: string[] | null, epic = true): Promise<void> {
 	fs.mkdirSync(path.join(directory, '.opencode'), { recursive: true });
 	fs.writeFileSync(
 		path.join(directory, '.opencode', 'opencode-swarm.json'),
-		JSON.stringify(
-			epic
-				? { turbo: { strategy: 'standard', epic: { mode: { enabled: true } } } }
-				: {},
-		),
+		JSON.stringify(epic ? { epic: { mode: { enabled: true } } } : {}),
 	);
 	await writeApprovedPlan(
 		directory,

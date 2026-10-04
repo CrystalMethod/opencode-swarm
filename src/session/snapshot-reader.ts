@@ -8,6 +8,7 @@ import {
 	getOverrideForSession,
 	sweepOrphanOverrides,
 } from '../db/qa-gate-session-override.js';
+import { isEpicOpenForProject } from '../epic/lifecycle.js';
 import { loadFullAutoRunState } from '../full-auto/state';
 import { validateSwarmPath } from '../hooks/utils';
 import type { AgentSessionState, TaskWorkflowState } from '../state';
@@ -17,7 +18,6 @@ import {
 	MAX_TRACKED_TASK_FILE_ATTRIBUTIONS,
 	swarmState,
 } from '../state';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import { pushAdvisory } from '../utils/advisory-queue.js';
 import { bunFile } from '../utils/bun-compat';
 import { log } from '../utils/logger.js';

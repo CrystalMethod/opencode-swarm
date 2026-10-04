@@ -8,11 +8,11 @@ import * as fs from 'node:fs';
 import { handleEpicCommand } from '../../../src/commands/epic';
 import { handleResetSessionCommand } from '../../../src/commands/reset-session';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
+import { isEpicOpenForProject } from '../../../src/epic/lifecycle';
+import { _internals as startInternals } from '../../../src/epic/start';
 import { resetSwarmState } from '../../../src/state';
-import { isEpicOpenForProject } from '../../../src/turbo/epic/lifecycle';
-import { _internals as startInternals } from '../../../src/turbo/epic/start';
 import { freezeClock, type Restore } from '../../helpers/test-clock';
-import { createStartProject, sizedPlan } from '../turbo/epic/start-fixture';
+import { createStartProject, sizedPlan } from '../epic/start-fixture';
 
 const realStart = { ...startInternals };
 let dir: string;

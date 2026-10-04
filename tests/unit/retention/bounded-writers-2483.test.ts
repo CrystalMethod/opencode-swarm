@@ -26,6 +26,7 @@ import {
 	writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import * as learningStore from '../../../src/epic/learning-store';
 import * as delegateAckCollector from '../../../src/hooks/delegate-ack-collector';
 import * as receiptLedger from '../../../src/hooks/knowledge-receipt-ledger';
 import * as knowledgeStore from '../../../src/hooks/knowledge-store';
@@ -40,7 +41,6 @@ import * as compactionServiceMod from '../../../src/services/compaction-service'
 import * as skillChangelog from '../../../src/services/skill-changelog';
 import * as state from '../../../src/state';
 import * as historyStore from '../../../src/test-impact/history-store';
-import * as learningStore from '../../../src/turbo/epic/learning-store';
 import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 

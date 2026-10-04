@@ -3174,12 +3174,13 @@ export const LeanTurboConfigSchema = z.object({
 export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
 
 /**
- * Epic config keys retired by Epic v2: `turbo.epic.mode` keys (C5:
+ * Epic config keys retired by Epic v2: `epic.mode` keys (C5:
  * `min_commits_for_signal`, read by nothing since the activation gate was
- * removed) and whole `turbo.epic` blocks (C6: `calibration` — the Epic v1
- * self-calibration knobs, replaced by `turbo.epic.learning`). A retired key
- * is accepted and stripped before the strict object validates, and never
- * read. (Without this, the loader's unknown-key recovery would also drop
+ * removed) and whole `epic` blocks (C6: `calibration` — the Epic v1
+ * self-calibration knobs, replaced by `epic.learning`). A retired key is
+ * accepted and stripped before the strict object validates, and never read —
+ * under the top-level `epic` block and under the legacy `turbo.epic` path
+ * alike. (Without this, the loader's unknown-key recovery would also drop
  * it, but as an "unrecognized key" with a `stripped_keys` recovery.)
  * Instead the loader warns once per distinct set with a precise "retired"
  * message, `/swarm config doctor` reports each one (`retired-config-key`),
@@ -3190,11 +3191,23 @@ export const RETIRED_EPIC_MODE_KEYS: readonly string[] = [
 ];
 export const RETIRED_EPIC_KEYS: readonly string[] = ['calibration'];
 
-/** What replaced a retired Epic key, for the warning / doctor finding. */
+/**
+ * What replaced a retired Epic key, for the warning / doctor finding. Keyed by
+ * the key's path relative to the Epic block (`calibration`, `mode.<key>`), so
+ * the same hint serves `epic.*` and the legacy `turbo.epic.*` path.
+ */
 export const RETIRED_EPIC_KEY_REPLACEMENTS: Readonly<Record<string, string>> = {
-	'turbo.epic.calibration':
-		'Epic learning replaced it — see turbo.epic.learning.* (enabled, decay_per_epic, half_life_days, hot_excess).',
+	calibration:
+		'Epic learning replaced it — see epic.learning.* (enabled, decay_per_epic, half_life_days, hot_excess).',
 };
+
+/** The replacement hint for a dotted retired-key path from {@link findRetiredEpicConfigKeys}. */
+export function retiredEpicKeyReplacement(dotted: string): string | undefined {
+	const relative = dotted.replace(/^(?:turbo\.)?epic\./, '');
+	return Object.hasOwn(RETIRED_EPIC_KEY_REPLACEMENTS, relative)
+		? RETIRED_EPIC_KEY_REPLACEMENTS[relative]
+		: undefined;
+}
 
 function stripKeys(keys: readonly string[]): (value: unknown) => unknown {
 	return (value) => {
@@ -3214,8 +3227,9 @@ const stripRetiredEpicKeys = stripKeys(RETIRED_EPIC_KEYS);
 
 /**
  * Dotted paths of retired Epic keys present in a raw (pre-parse) config
- * object, e.g. `turbo.epic.mode.min_commits_for_signal`,
- * `turbo.epic.calibration`.
+ * object, under the top-level `epic` block and the legacy `turbo.epic` path,
+ * as the user wrote them — e.g. `epic.mode.min_commits_for_signal`,
+ * `epic.calibration`.
  */
 export function findRetiredEpicConfigKeys(raw: unknown): string[] {
 	const at = (node: unknown, key: string): unknown =>
@@ -3225,26 +3239,35 @@ export function findRetiredEpicConfigKeys(raw: unknown): string[] {
 		Object.hasOwn(node, key)
 			? (node as Record<string, unknown>)[key]
 			: undefined;
-	const epic = at(at(raw, 'turbo'), 'epic');
-	const mode = at(epic, 'mode');
-	return [
-		...RETIRED_EPIC_MODE_KEYS.filter((key) => at(mode, key) !== undefined).map(
-			(key) => `turbo.epic.mode.${key}`,
-		),
-		...RETIRED_EPIC_KEYS.filter((key) => at(epic, key) !== undefined).map(
-			(key) => `turbo.epic.${key}`,
-		),
-	];
+	const found: string[] = [];
+	for (const [prefix, epic] of [
+		['epic', at(raw, 'epic')],
+		['turbo.epic', at(at(raw, 'turbo'), 'epic')],
+	] as const) {
+		const mode = at(epic, 'mode');
+		found.push(
+			...RETIRED_EPIC_MODE_KEYS.filter(
+				(key) => at(mode, key) !== undefined,
+			).map((key) => `${prefix}.mode.${key}`),
+			...RETIRED_EPIC_KEYS.filter((key) => at(epic, key) !== undefined).map(
+				(key) => `${prefix}.${key}`,
+			),
+		);
+	}
+	return found;
 }
 
 /**
- * Epic Mode settings (`turbo.epic`).
+ * Epic Mode settings — the top-level `epic` block (legacy path: `turbo.epic`,
+ * accepted permanently and migrated by the loader; see `src/epic/config.ts`).
+ * Every Epic reader resolves them through `resolveEpicConfig`
+ * (`src/epic/config.ts`); Epic needs no `turbo` block.
  *
  * Epic Mode reuses Lean Turbo's conflict predicates (it never modifies Lean
  * Turbo) and dispatches promoted waves itself via visible `Task` calls.
  *
  * Two independent opt-in master gates, both default `false` and both read
- * through `src/turbo/epic/config-gate.ts`:
+ * through `src/epic/config-gate.ts`:
  *   - `mode.enabled` gates Epic Mode itself: `/swarm epic start`, the Epic
  *     tools (`epic_next_wave`, `epic_phase_review`), and the
  *     project-scoped open-epic probe (required worktree isolation and
@@ -3255,11 +3278,6 @@ export function findRetiredEpicConfigKeys(raw: unknown): string[] {
  *     signal. With it off, `epic_next_wave` keeps a wave's tasks apart on
  *     declared-path conflicts only, and `/swarm coupling` records
  *     `cochangeSignal: 'disabled-by-config'`.
- *
- * This block lives under `turbo`, whose schema is a discriminated union on
- * `strategy`: a `turbo` block without a valid `strategy` (and, for
- * `strategy: 'lean'`, a `lean` object) fails validation and is dropped
- * whole, taking `turbo.epic` with it.
  */
 export const EpicConfigSchema = z.preprocess(
 	stripRetiredEpicKeys,
@@ -3328,17 +3346,17 @@ export const EpicConfigSchema = z.preprocess(
 				.optional(),
 			/**
 			 * Retired (Epic v2 C6) — see `RETIRED_EPIC_KEYS`. The Epic v1
-			 * self-calibration block; `turbo.epic.learning` replaced it. Declared
+			 * self-calibration block; `epic.learning` replaced it. Declared
 			 * only so the JSON schema marks it `deprecated`; the preprocess strips
 			 * it before validation, so the parsed config never has it.
 			 */
 			calibration: z.record(z.string(), z.unknown()).optional().meta({
 				deprecated: true,
 				description:
-					'Retired (Epic v2): accepted and ignored with a warning — Epic learning replaced it (turbo.epic.learning). Remove it.',
+					'Retired (Epic v2): accepted and ignored with a warning — Epic learning replaced it (epic.learning). Remove it.',
 			}),
 			/**
-			 * Epic learning (Epic v2 C6, `src/turbo/epic/learning.ts`). Every wave
+			 * Epic learning (Epic v2 C6, `src/epic/learning.ts`). Every wave
 			 * close teaches the epic's posterior from its task outcomes: learned
 			 * co-writes (a task that declared D but also wrote f makes later tasks
 			 * declaring D conflict with tasks on f — planner analysis only, never
@@ -3410,13 +3428,28 @@ export const EpicConfigSchema = z.preprocess(
 
 export type EpicConfig = z.infer<typeof EpicConfigSchema>;
 
+/**
+ * `turbo.epic` — the legacy Epic Mode path, accepted PERMANENTLY. The loader
+ * moves it to the file's top-level `epic` before the files are merged and
+ * parsed (per-key merge, the file's top-level `epic` wins; project over user
+ * across files; one advisory warning, a `legacy-epic-config-path` doctor
+ * finding), so a
+ * loaded config never carries it; it stays in the schema so a config parsed
+ * directly keeps validating and the JSON schema marks it `deprecated`.
+ */
+export const LegacyTurboEpicConfigSchema = EpicConfigSchema.optional().meta({
+	deprecated: true,
+	description:
+		'Deprecated (still accepted): move this block to top-level `epic` — Epic Mode no longer needs a `turbo` block. Within a file, top-level `epic` wins per key when both are set.',
+});
+
 export const StandardTurboConfigSchema = z.object({
 	/** Turbo execution strategy. standard = current behavior, lean = constrained parallel. */
 	strategy: z.literal('standard'),
 	/** Lean-mode configuration. Only used when strategy is 'lean'. */
 	lean: LeanTurboConfigSchema.optional(),
-	/** Epic-mode configuration. Additive overlay — composes Lean Turbo without modifying it. */
-	epic: EpicConfigSchema.optional(),
+	/** Legacy Epic Mode path — use top-level `epic` (see `LegacyTurboEpicConfigSchema`). */
+	epic: LegacyTurboEpicConfigSchema,
 });
 
 export const LeanTurboStrategyConfigSchema = z.object({
@@ -3424,8 +3457,8 @@ export const LeanTurboStrategyConfigSchema = z.object({
 	strategy: z.literal('lean'),
 	/** Lean-mode configuration. Only used when strategy is 'lean'. */
 	lean: LeanTurboConfigSchema,
-	/** Epic-mode configuration. Additive overlay — composes Lean Turbo without modifying it. */
-	epic: EpicConfigSchema.optional(),
+	/** Legacy Epic Mode path — use top-level `epic` (see `LegacyTurboEpicConfigSchema`). */
+	epic: LegacyTurboEpicConfigSchema,
 });
 
 export const TurboConfigSchema = z.discriminatedUnion('strategy', [
@@ -4325,6 +4358,14 @@ export const PluginConfigSchema = z.object({
 	// Backward compatible: no turbo key means current behavior unchanged.
 	turbo: TurboConfigSchema.optional().describe(
 		'Turbo execution strategy block (Phase 1). Absent means current behavior unchanged.',
+	),
+
+	// Epic Mode — one plan = one epic, delivered in conflict-free parallel
+	// waves (src/epic/README.md). Opt-in via `epic.mode.enabled`; needs no
+	// `turbo` block. The legacy `turbo.epic` path is migrated into it by the
+	// loader (src/epic/config.ts).
+	epic: EpicConfigSchema.optional().describe(
+		'Epic Mode block: one plan = one epic delivered in conflict-free parallel waves. Opt in with `mode.enabled: true`, then `/swarm epic start`. Needs no `turbo` block (legacy `turbo.epic` is still accepted and migrated here).',
 	),
 
 	// Turbo mode — bypasses reviewer/test gates for rapid iteration (v6.40);

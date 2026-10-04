@@ -38,7 +38,7 @@ const BASE_CONFIG = {
 };
 const EPIC_CONFIG = {
 	...BASE_CONFIG,
-	turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+	epic: { mode: { enabled: true } },
 };
 
 let tempDir: string;

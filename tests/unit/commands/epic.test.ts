@@ -15,7 +15,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { _internals, handleEpicCommand } from '../../../src/commands/epic';
-import type { EpicInspection } from '../../../src/turbo/epic/lifecycle';
+import type { EpicInspection } from '../../../src/epic/lifecycle';
 import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 
 const realInternals = { ..._internals };
@@ -260,7 +260,7 @@ describe('handleEpicCommand — status', () => {
 		expect(out).toContain('— **orphaned**');
 		expect(out).toContain('the plan was renamed or replaced');
 		expect(out).toContain('`/swarm epic close --abandon`');
-		expect(out).toContain('`turbo.epic.mode.enabled` is not true');
+		expect(out).toContain('`epic.mode.enabled` is not true');
 	});
 
 	test('reports a sentinel repair and the legacy v1 retirement', async () => {

@@ -39,17 +39,17 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { type Plan, PlanSchema } from '../config/plan-schema.js';
+import {
+	type CoChangeThreshold,
+	type EpicPairVerdict,
+	epicPairConflict,
+} from '../epic/cochange-conflict.js';
 import type { ScopeBinding } from '../scope/scope-binding.js';
 import {
 	readAuthoritativeScopeBindingSet,
 	readDeclaredScopeFilesFromBindings,
 } from '../scope/scope-persistence.js';
 import type { CoChangeEntry } from '../tools/co-change-analyzer.js';
-import {
-	type CoChangeThreshold,
-	type EpicPairVerdict,
-	epicPairConflict,
-} from '../turbo/epic/cochange-conflict.js';
 
 /**
  * Per-pair conflict classification. Mirrors `EpicPairVerdict`'s signal

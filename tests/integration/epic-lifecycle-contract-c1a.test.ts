@@ -26,6 +26,9 @@ import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { getOpenEpic, isEpicOpenForProject } from '../../src/epic/lifecycle';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { _internals as startInternals } from '../../src/epic/start';
 import { savePlan, updateTaskStatus } from '../../src/plan/manager';
 import type { ReviewModelDispatcher } from '../../src/review/contracts';
 import {
@@ -35,12 +38,6 @@ import {
 } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeEpicPhaseReview } from '../../src/tools/epic-phase-review';
-import {
-	getOpenEpic,
-	isEpicOpenForProject,
-} from '../../src/turbo/epic/lifecycle';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { landEpicTaskForTest } from '../helpers/epic-landing';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
@@ -190,10 +187,7 @@ beforeEach(async () => {
 			curator: { enabled: false },
 			// C1a contract pins the `current-branch` policy; the epic-branch
 			// default (C1b) is pinned by epic-lifecycle-contract-c1b.
-			turbo: {
-				strategy: 'standard',
-				epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
-			},
+			epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
 		}),
 	);
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');

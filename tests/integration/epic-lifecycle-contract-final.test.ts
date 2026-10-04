@@ -31,6 +31,9 @@ import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import type { PluginConfig } from '../../src/config';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { getOpenEpic, isEpicOpenForProject } from '../../src/epic/lifecycle';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { _internals as startInternals } from '../../src/epic/start';
 import {
 	getTaskWorkflowSnapshot,
 	readTaskEvidence,
@@ -51,12 +54,6 @@ import {
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeEpicPhaseReview } from '../../src/tools/epic-phase-review';
 import { executeSavePlan } from '../../src/tools/save-plan';
-import {
-	getOpenEpic,
-	isEpicOpenForProject,
-} from '../../src/turbo/epic/lifecycle';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { recordPlanCriticApproval } from '../helpers/approved-plan';
 import {
 	approvingReviewDispatcher,

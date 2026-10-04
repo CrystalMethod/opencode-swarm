@@ -88,10 +88,7 @@ describe('Epic v2 C3 — epic coders must be worktree-isolated', () => {
 			JSON.stringify(
 				epic
 					? {
-							turbo: {
-								strategy: 'standard',
-								epic: { mode: { enabled: true } },
-							},
+							epic: { mode: { enabled: true } },
 						}
 					: {},
 			),

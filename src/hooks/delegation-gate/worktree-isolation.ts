@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import type { PluginConfig, WorktreeIsolationConfig } from '../../config';
 import { DEFAULT_WORKTREE_ISOLATION_CONFIG } from '../../config/constants';
 import { closeProjectDb } from '../../db/project-db';
+import { epicCommitLandingFor } from '../../epic/task-landing.js';
 import { tryAcquireLock } from '../../parallel/file-locks';
 import { recordLiveLaneOwner } from '../../parallel/lane-owners';
 import { isUntrustedEnvKey, isValidEnvKey } from '../../sandbox/executor';
@@ -24,7 +25,6 @@ import {
 	recordSessionWorkspaceRoot,
 	swarmState,
 } from '../../state';
-import { epicCommitLandingFor } from '../../turbo/epic/task-landing.js';
 import { pushAdvisory } from '../../utils/advisory-queue';
 import { bunSpawn } from '../../utils/bun-compat';
 import { sameProjectRoot } from '../../utils/canonical-root.js';

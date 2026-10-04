@@ -37,6 +37,7 @@ import {
 	isKnownCanonicalRole,
 	resolveGeneratedAgentRole,
 } from '../config/schema';
+import { isEpicModeConfigEnabled } from '../epic/config.js';
 import {
 	isTaskToolId,
 	normalizeToolNameLowerCase,
@@ -104,6 +105,7 @@ export interface FullAutoClassifierInput {
 		external_skills?: { curation_enabled?: boolean };
 		council?: { enabled?: boolean; general?: { enabled?: boolean } };
 		turbo?: { epic?: { mode?: { enabled?: boolean } } };
+		epic?: { mode?: { enabled?: boolean } };
 		skills?: { enabled?: boolean };
 		tool_filter?: { overrides?: Record<string, string[]> };
 	};
@@ -599,7 +601,7 @@ function resolveAgentCapabilityTools(
 			]),
 		);
 	}
-	if (pluginConfig?.turbo?.epic?.mode?.enabled === true) {
+	if (isEpicModeConfigEnabled(pluginConfig)) {
 		tools = Array.from(
 			new Set([
 				...tools,

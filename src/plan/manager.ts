@@ -88,12 +88,12 @@ import {
 	advanceTaskCheckpointReceiptGeneration,
 	repairTaskCheckpointReceiptForCompletion,
 } from '../db/task-checkpoint-receipt.js';
+import { epicMergeFailureSkipsCheckpoint } from '../epic/merge-epoch.js';
 import { appendCoreEventSync } from '../events/core-events.js';
 import { readSwarmFileAsync } from '../hooks/utils';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { recordTaskAttempt } from '../services/run-memory.js';
 import { emit } from '../telemetry.js';
-import { epicMergeFailureSkipsCheckpoint } from '../turbo/epic/merge-epoch.js';
 import type { SpecStaleDetectedEvent } from '../types/events';
 import { criticalWarn, warn } from '../utils';
 import { bunHash, bunWrite } from '../utils/bun-compat';

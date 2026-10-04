@@ -18,11 +18,11 @@ import {
 	renderEpicLearning,
 	renderEpicPrior,
 } from '../../../src/commands/epic-learning';
-import { DEFAULT_EPIC_LEARNING_SETTINGS } from '../../../src/turbo/epic/learning';
+import { DEFAULT_EPIC_LEARNING_SETTINGS } from '../../../src/epic/learning';
 import {
 	EPIC_PRIOR_LEARNING_RELATIVE_PATH,
 	readEpicPrior,
-} from '../../../src/turbo/epic/learning-store';
+} from '../../../src/epic/learning-store';
 import { stubEpicRecord } from '../../helpers/epic-lifecycle';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 

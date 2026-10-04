@@ -26,8 +26,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Plan } from '../../src/config/plan-schema';
+import { runEpicNextWave } from '../../src/epic/next-wave';
 import { savePlan, updateTaskStatus } from '../../src/plan/manager';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
@@ -149,12 +149,12 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 		// the protected-path classifier — would degrade tasks for unrelated reasons.
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'epic-wave-'));
 		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
-		// Epic Mode is opt-in: `turbo.epic.mode.enabled` must be true.
+		// Epic Mode is opt-in: `epic.mode.enabled` must be true.
 		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
 		fs.writeFileSync(
 			path.join(dir, '.opencode', 'opencode-swarm.json'),
 			JSON.stringify({
-				turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+				epic: { mode: { enabled: true } },
 			}),
 		);
 		await savePlan(dir, makePhase2Plan());

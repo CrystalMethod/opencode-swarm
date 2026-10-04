@@ -132,10 +132,7 @@ describe('/swarm coupling --suggest', () => {
 
 	test('co-change enabled: shaping reads fresh co-change data', async () => {
 		useConfig({
-			turbo: {
-				strategy: 'standard',
-				epic: { mode: { enabled: true }, cochange: { enabled: true } },
-			},
+			epic: { mode: { enabled: true }, cochange: { enabled: true } },
 		});
 		await handleCouplingCommand(dir, ['--suggest']);
 		expect(coChangeCalls).toBe(1);

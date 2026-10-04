@@ -8,6 +8,8 @@
  */
 
 import { createHash } from 'node:crypto';
+import { epicSentinelExists } from '../epic/lifecycle.js';
+import { commitEpicResidueAfterDelegation } from '../epic/residue-commit.js';
 import { completeBackgroundPhaseParticipation } from '../evidence/phase-participation.js';
 import { transitionTaskWorkflowEvidence } from '../gate-evidence.js';
 import {
@@ -23,8 +25,6 @@ import {
 	discardReviewerScopeGenerationForCoderCall,
 	swarmState,
 } from '../state.js';
-import { epicSentinelExists } from '../turbo/epic/lifecycle.js';
-import { commitEpicResidueAfterDelegation } from '../turbo/epic/residue-commit.js';
 import { pushAdvisory } from '../utils/advisory-queue';
 import { sameProjectRoot } from '../utils/canonical-root.js';
 import * as logger from '../utils/logger.js';

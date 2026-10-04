@@ -9,7 +9,7 @@
  *  - Phase scoping (default = whole plan; --phase N = single phase).
  *  - Format switching (markdown / json).
  *  - --persist writes structured JSON under .swarm/epic/.
- *  - Co-change signal honors `turbo.epic.cochange.enabled` (default off).
+ *  - Co-change signal honors `epic.cochange.enabled` (default off).
  *  - Declared scopes resolve from real `declare_scope` v2 bindings.
  *  - Uses _internals DI seam (no mock.module).
  */
@@ -352,7 +352,7 @@ describe('handleCouplingCommand — --persist', () => {
 	});
 });
 
-describe('handleCouplingCommand — co-change signal honors turbo.epic.cochange.enabled', () => {
+describe('handleCouplingCommand — co-change signal honors epic.cochange.enabled', () => {
 	const twoTaskPlan = () => ({
 		phases: [
 			{

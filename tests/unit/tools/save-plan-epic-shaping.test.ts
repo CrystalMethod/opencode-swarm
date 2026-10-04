@@ -14,20 +14,20 @@ import * as path from 'node:path';
 import type { ConfigLoadResult } from '../../../src/config/loader';
 import { PluginConfigSchema } from '../../../src/config/schema';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
+import { _internals as seamInternals } from '../../../src/epic/plan-shaping-seam';
 import { tryAcquireLock } from '../../../src/parallel/file-locks';
 import { loadPlanJsonOnly } from '../../../src/plan/manager';
 import {
 	executeSavePlan,
 	_internals as savePlanInternals,
 } from '../../../src/tools/save-plan';
-import { _internals as seamInternals } from '../../../src/turbo/epic/plan-shaping-seam';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const realFs = { ...fs };
 const realSavePlan = { ...savePlanInternals };
 const realSeam = { ...seamInternals };
 const EPIC_ON = {
-	turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+	epic: { mode: { enabled: true } },
 };
 
 let dir: string;

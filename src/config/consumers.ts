@@ -519,15 +519,20 @@ export const CONFIG_CONSUMERS: Record<
 	turbo: {
 		consumers: [
 			'src/agents/index.ts:createSwarmAgents',
-			'src/commands/epic.ts:handleEpicCommand',
 			'src/commands/turbo.ts:handleTurboCommand',
 			'src/config/worktree-isolation-config.ts:resolveWorktreeIsolationConfig',
-			'src/turbo/epic/close.ts:finalizeOpenEpicOnSwarmClose',
-			'src/turbo/epic/config-gate.ts:isEpicModeConfigEnabled',
-			'src/turbo/epic/epic-branch.ts:resolveEpicCommitPolicy',
-			'src/turbo/epic/learning.ts:resolveEpicLearningSettings',
-			'src/turbo/epic/planning-signals.ts:loadEpicPlanningSignals',
-			'src/turbo/epic/shaping-sizing.ts:epicSizingContextFor',
+			// Epic: the legacy `turbo.epic` fallback + the Lean wave width
+			'src/epic/config.ts:resolveEpicConfig',
+			'src/epic/shaping-sizing.ts:epicWaveWidth',
+		],
+	},
+	// Epic Mode (top-level `epic`): every reader resolves it through
+	// resolveEpicConfig; migrateLegacyEpicConfig folds the legacy `turbo.epic`
+	// path into it in the loader (src/epic/README.md, "Config").
+	epic: {
+		consumers: [
+			'src/epic/config.ts:resolveEpicConfig',
+			'src/epic/config.ts:migrateLegacyEpicConfig',
 		],
 	},
 	turbo_mode: {

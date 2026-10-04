@@ -30,6 +30,7 @@ import {
 	RepoGraphConfigSchema,
 	stripKnownSwarmPrefix,
 } from '../config/schema';
+import { isEpicOpenForProject } from '../epic/lifecycle';
 import { listEvidenceTaskIds, loadEvidence } from '../evidence/manager';
 import { getProfileForFile } from '../lang/detector';
 import { loadPlan } from '../plan/manager';
@@ -47,7 +48,6 @@ import {
 	setSessionBudget,
 	swarmState,
 } from '../state';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle';
 import {
 	readCachedParsedFileSync,
 	readCachedTextFileSync,

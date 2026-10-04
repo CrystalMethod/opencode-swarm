@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { epicMergeFailureSkipsCheckpoint } from '../../src/epic/merge-epoch';
 import type { StandardWorktreeDispatch } from '../../src/hooks/delegation-gate/worktree-isolation';
 import {
 	finishStandardWorktreeDispatch,
@@ -15,7 +16,6 @@ import {
 	_internals as mergeStatus,
 } from '../../src/hooks/delegation-gate/worktree-merge-status';
 import { savePlan } from '../../src/plan/manager';
-import { epicMergeFailureSkipsCheckpoint } from '../../src/turbo/epic/merge-epoch';
 import type { DirtyMergeOptions } from '../../src/worktree/merge';
 import { openEpicForTest } from '../helpers/epic-lifecycle';
 
@@ -112,7 +112,7 @@ describe('Epic Mode × worktree isolation — landing seam and merge-back guard 
 		fs.writeFileSync(
 			path.join(tempDir, '.opencode', 'opencode-swarm.json'),
 			JSON.stringify({
-				turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+				epic: { mode: { enabled: true } },
 			}),
 		);
 		// A real repository: the epic landing seam reads the primary index.

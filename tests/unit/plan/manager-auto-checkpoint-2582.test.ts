@@ -13,6 +13,7 @@ import * as child_process from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeProjectDb } from '../../../src/db/project-db.js';
+import { _internals as mergeEpochInternals } from '../../../src/epic/merge-epoch.js';
 import {
 	_internals as autoCheckpointInternals,
 	buildAutoCheckpointLabel,
@@ -20,7 +21,6 @@ import {
 } from '../../../src/plan/auto-checkpoint.js';
 import { _internals as managerInternals } from '../../../src/plan/manager.js';
 import { executeSavePlan } from '../../../src/tools/save-plan.js';
-import { _internals as mergeEpochInternals } from '../../../src/turbo/epic/merge-epoch.js';
 import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
@@ -351,7 +351,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		gitInit(tempDir);
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		});
 		gitRun(tempDir, ['add', '.opencode/opencode-swarm.json']);
 		gitRun(tempDir, ['commit', '-m', 'config']);
@@ -388,7 +388,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		gitInit(tempDir);
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		});
 		await savePlanWithTasks(['1.1']);
 		openEpicForTest(tempDir);

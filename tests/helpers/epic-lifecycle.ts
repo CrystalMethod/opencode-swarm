@@ -1,5 +1,5 @@
 /**
- * Test helpers for the Epic v2 lifecycle (`src/turbo/epic/lifecycle.ts`).
+ * Test helpers for the Epic v2 lifecycle (`src/epic/lifecycle.ts`).
  *
  * `openEpicForTest` writes a REAL lifecycle row + sentinel through the
  * production `createEpicRecord` (CAS + lifecycle lock), bound to the plan
@@ -20,8 +20,8 @@ import {
 	type EpicWaveRecord,
 	readCurrentPlanIdentity,
 	readLedgerRootDigest,
-} from '../../src/turbo/epic/lifecycle.js';
-import { evaluateEpicSizing } from '../../src/turbo/epic/sizing.js';
+} from '../../src/epic/lifecycle.js';
+import { evaluateEpicSizing } from '../../src/epic/sizing.js';
 
 export function stubEpicRecord(
 	overrides: Partial<EpicRecordV1> = {},

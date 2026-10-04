@@ -14,8 +14,8 @@ import {
 	_internals as observerInternals,
 } from '../../../src/background/completion-observer';
 import { recordPendingDelegation } from '../../../src/background/pending-delegations';
+import type { EpicResidueRequest } from '../../../src/epic/residue-commit';
 import { resetSwarmState } from '../../../src/state';
-import type { EpicResidueRequest } from '../../../src/turbo/epic/residue-commit';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 

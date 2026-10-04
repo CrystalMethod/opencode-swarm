@@ -20,7 +20,7 @@
  *     lane and serializes the rest, so it never yields two lanes — Lean then
  *     runs one coder at a time: no conflicts, a serial makespan.)
  *   - Epic: the real Epic component planner (`planNextEpicWave`,
- *     src/turbo/epic/components.ts) wave after wave, per phase, with the
+ *     src/epic/components.ts) wave after wave, per phase, with the
  *     real learning model (`learning.ts`): every wave's outcomes update the
  *     epic's posterior (used by its next wave) and every epoch merges into
  *     the prior the next epoch inherits — `decay_per_epic` applied when the
@@ -40,7 +40,7 @@
  * wave close records — so learning sees it.
  *
  * Lives under scripts/ (outside the plugin bundle): the plugin never imports
- * it; the regression test (tests/unit/turbo/epic/epic-bench.test.ts) and
+ * it; the regression test (tests/unit/epic/epic-bench.test.ts) and
  * `bun run epic:bench` do.
  */
 
@@ -55,7 +55,7 @@ import {
 	type EpicWaveHistoryEntry,
 	planNextEpicWave,
 	toWaveComponents,
-} from '../../src/turbo/epic/components';
+} from '../../src/epic/components';
 import {
 	boundEpicLearning,
 	DEFAULT_EPIC_LEARNING_SETTINGS,
@@ -67,8 +67,8 @@ import {
 	mergeEpicLearning,
 	scaleEpicLearning,
 	undeclaredFiles,
-} from '../../src/turbo/epic/learning';
-import type { EpicTaskOutcome } from '../../src/turbo/epic/lifecycle';
+} from '../../src/epic/learning';
+import type { EpicTaskOutcome } from '../../src/epic/lifecycle';
 import { normalizePath, pathsConflict } from '../../src/turbo/lean/conflicts';
 import type { PlanTask } from '../../src/turbo/lean/partition-common';
 import { planLeanTurboLanes } from '../../src/turbo/lean/planner';

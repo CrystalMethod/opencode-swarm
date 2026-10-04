@@ -33,6 +33,16 @@ import * as path from 'node:path';
 import { handleEpicCommand } from '../../src/commands/epic';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeAllProjectDbs } from '../../src/db/project-db';
+import { resolveEpicDispatchPolicy } from '../../src/epic/gate-policy';
+import { resolveEpicLearningSettings } from '../../src/epic/learning';
+import {
+	loadEpicLearningView,
+	readEpicPosterior,
+	readEpicPrior,
+} from '../../src/epic/learning-store';
+import { getOpenEpic } from '../../src/epic/lifecycle';
+import { runEpicNextWave } from '../../src/epic/next-wave';
+import { _internals as startInternals } from '../../src/epic/start';
 import {
 	loadPlanJsonOnly,
 	savePlan,
@@ -44,16 +54,6 @@ import {
 	resetSwarmState,
 } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
-import { resolveEpicDispatchPolicy } from '../../src/turbo/epic/gate-policy';
-import { resolveEpicLearningSettings } from '../../src/turbo/epic/learning';
-import {
-	loadEpicLearningView,
-	readEpicPosterior,
-	readEpicPrior,
-} from '../../src/turbo/epic/learning-store';
-import { getOpenEpic } from '../../src/turbo/epic/lifecycle';
-import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
-import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { landEpicTaskForTest } from '../helpers/epic-landing';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
@@ -159,7 +159,7 @@ beforeEach(async () => {
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');

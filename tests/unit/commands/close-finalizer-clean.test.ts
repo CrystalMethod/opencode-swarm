@@ -10,8 +10,8 @@ import path from 'node:path';
 import { listCoordinationStates } from '../../../src/db/coordination-store.js';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { loadDatabaseCtor } from '../../../src/db/sqlite-loader.js';
+import { EPIC_LIFECYCLE_NAMESPACE } from '../../../src/epic/lifecycle.js';
 import { derivePlanId } from '../../../src/plan/utils.js';
-import { EPIC_LIFECYCLE_NAMESPACE } from '../../../src/turbo/epic/lifecycle.js';
 import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { freezeClock } from '../../helpers/test-clock';
 import { initializeCloseFinalizerHarness } from './close-finalizer.shared.ts';
@@ -156,7 +156,7 @@ function writeEpicConfig(dir: string): void {
 	writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 }

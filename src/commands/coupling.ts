@@ -8,7 +8,7 @@
  * programmatic consumption.
  *
  * The report itself always runs (it is a diagnostic), but the co-change
- * signal honors the `turbo.epic.cochange.enabled` master gate (default
+ * signal honors the `epic.cochange.enabled` master gate (default
  * false): when it is not `true`, no git history is scanned, `p` reflects
  * declared-path conflicts only, and the report states that the co-change
  * signal is disabled by config (`cochangeSignal: 'disabled-by-config'` in
@@ -23,7 +23,7 @@
  *   --persist               Also write JSON to .swarm/epic/coupling-report.json.
  *   --suggest               Also shape the whole plan (Epic v2 C7): the same
  *                           ranked advisory `save_plan` returns as
- *                           `epic_shaping` (`src/turbo/epic/shaping.ts`), with
+ *                           `epic_shaping` (`src/epic/shaping.ts`), with
  *                           the start's inputs (live declared scopes, learned
  *                           signals of the project prior, co-change when
  *                           enabled, the epic's wave width). Read-only.
@@ -34,34 +34,31 @@ import * as path from 'node:path';
 import { loadPluginConfigWithMeta } from '../config/index.js';
 import type { Plan } from '../config/plan-schema.js';
 import type { PluginConfig } from '../config/schema.js';
-import { isGitRepo } from '../git/branch.js';
-import { loadPlanJsonOnly } from '../plan/manager.js';
-import {
-	getCoChangeData,
-	getCoChangePairs,
-} from '../turbo/epic/cochange-source.js';
-import { isEpicCochangeConfigEnabled } from '../turbo/epic/config-gate.js';
+import { getCoChangeData, getCoChangePairs } from '../epic/cochange-source.js';
+import { isEpicCochangeConfigEnabled } from '../epic/config-gate.js';
 import {
 	type CouplingReport,
 	type CouplingTask,
 	computeCouplingReport,
 	type EpicCochangeSignalState,
 	formatCouplingReportMarkdown,
-} from '../turbo/epic/coupling-report.js';
-import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
-import { loadEpicLearningView } from '../turbo/epic/learning-store.js';
-import { loadEpicPlanningSignals } from '../turbo/epic/planning-signals.js';
+} from '../epic/coupling-report.js';
+import { resolveEpicDeclaredScopes } from '../epic/declared-scopes.js';
+import { loadEpicLearningView } from '../epic/learning-store.js';
+import { loadEpicPlanningSignals } from '../epic/planning-signals.js';
 import {
 	type EpicShapingReport,
 	formatEpicShapingLines,
 	shapeEpicPlan,
-} from '../turbo/epic/shaping.js';
+} from '../epic/shaping.js';
 import {
 	epicSizingContextFor,
 	epicWaveWidth,
 	isDirectoryOnDisk,
 	isEpicPendingStatus,
-} from '../turbo/epic/shaping-sizing.js';
+} from '../epic/shaping-sizing.js';
+import { isGitRepo } from '../git/branch.js';
+import { loadPlanJsonOnly } from '../plan/manager.js';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write';
 
 interface CouplingCliArgs {
@@ -318,7 +315,7 @@ export async function handleCouplingCommand(
 	}
 	const signalTrailer =
 		cochangeSignal === 'disabled-by-config'
-			? '\n\n_Co-change signal: disabled by config (`turbo.epic.cochange.enabled` is not true) — p reflects declared-path conflicts only._'
+			? '\n\n_Co-change signal: disabled by config (`epic.cochange.enabled` is not true) — p reflects declared-path conflicts only._'
 			: '\n\n_Co-change signal: enabled._';
 	const shapingSection = shaping
 		? `\n\n## Plan shaping (whole plan)\n\n${formatEpicShapingLines(shaping).join('\n')}`

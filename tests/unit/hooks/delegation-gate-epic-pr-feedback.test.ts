@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
+import { isEpicOpenForProject } from '../../../src/epic/lifecycle.js';
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate.js';
 import {
 	activatePrWorkflow,
@@ -17,7 +18,6 @@ import {
 } from '../../../src/hooks/pr-workflow-gate.js';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state.js';
 import { executePreparePrFeedbackScope } from '../../../src/tools/prepare-pr-feedback-scope.js';
-import { isEpicOpenForProject } from '../../../src/turbo/epic/lifecycle.js';
 import { writeApprovedPlan } from '../../helpers/approved-plan.js';
 import { openEpicForTest } from '../../helpers/epic-lifecycle.js';
 import { makeConfig } from './_delegation-gate-helpers.js';
@@ -53,7 +53,7 @@ test('open epic, no active wave: plan coder refused, PR-feedback coder admitted'
 	fs.writeFileSync(
 		path.join(tempDir, '.opencode', 'opencode-swarm.json'),
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			epic: { mode: { enabled: true } },
 		}),
 	);
 	await writeApprovedPlan(tempDir, [

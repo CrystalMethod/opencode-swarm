@@ -321,7 +321,7 @@ per row.
 | `dashboard-status` | .swarm/dashboard-status.json | operational | single rewritten 4-field snapshot (status/port/url/startedAt; capability token never persisted) (global) | indexed: single small JSON | rewritten to status=stopped on listener close; never deleted | not a defect — #2509 |
 | `locks-dir` | .swarm/locks/{sha256|.base64}.lock + .meta sidecars | operational | LOCK_TIMEOUT_MS 5 min stale expiry; cleanupExpiredLocks sweep (:250-297) (global) | directory-scan: live locks only (expired filtered) | untouched — deliberately excluded from close (`src/commands/close/constants.ts:253-268` omits `locks`) | not a defect — #2035 (merged) |
 
-### Category 3 — Evidence trajectories, PRM, insight, observability sink, postmortems, consensus, epic/turbo, #2486 training vault (16 rows)
+### Category 3 — Evidence trajectories, PRM, insight, observability sink, postmortems, consensus, epic/turbo, #2486 training vault (17 rows)
 
 | Row id | Path grammar | State class | Write limit (scope) | Read bound | Close policy | Disposition → owner |
 |---|---|---|---|---|---|---|

@@ -3,8 +3,8 @@
  * — read-only views of what epics learned, and the one destructive action
  * (`prior reset`, two-step through the shared destructive-confirm
  * primitive: preview + token, then `--confirm=<token>`). See
- * `src/turbo/epic/learning.ts` (the model) and
- * `src/turbo/epic/learning-store.ts` (prior + posterior). Both work
+ * `src/epic/learning.ts` (the model) and
+ * `src/epic/learning-store.ts` (prior + posterior). Both work
  * regardless of the Epic config gate, like `status` and `close`.
  */
 
@@ -14,7 +14,7 @@ import {
 	type EpicLearningStats,
 	epicHotEvidence,
 	summarizeEpicLearning,
-} from '../turbo/epic/learning.js';
+} from '../epic/learning.js';
 import {
 	EPIC_PRIOR_LEARNING_DISPLAY_PATH,
 	EPIC_PRIOR_LEARNING_RELATIVE_PATH,
@@ -22,8 +22,8 @@ import {
 	loadEpicLearningView,
 	readEpicPrior,
 	resetEpicPrior,
-} from '../turbo/epic/learning-store.js';
-import { getOpenEpic } from '../turbo/epic/lifecycle.js';
+} from '../epic/learning-store.js';
+import { getOpenEpic } from '../epic/lifecycle.js';
 import { consumeConfirmToken, issueConfirmToken } from './destructive-purge.js';
 
 /** DI seam (AGENTS.md invariant 7). Restore in `afterEach`. */
@@ -141,7 +141,7 @@ export function renderEpicLearning(
 ): string {
 	const lines = ['## Epic Mode — Learning', ''];
 	lines.push(
-		`Settings: ${settings.enabled ? 'enabled' : '**disabled**'}; decay_per_epic ${settings.decayPerEpic}; half_life_days ${settings.halfLifeDays}; hot_excess ${settings.hotExcess} (\`turbo.epic.learning.*\`).`,
+		`Settings: ${settings.enabled ? 'enabled' : '**disabled**'}; decay_per_epic ${settings.decayPerEpic}; half_life_days ${settings.halfLifeDays}; hot_excess ${settings.hotExcess} (\`epic.learning.*\`).`,
 	);
 	if (!settings.enabled) {
 		lines.push(

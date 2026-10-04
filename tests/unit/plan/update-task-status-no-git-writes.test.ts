@@ -151,7 +151,7 @@ afterEach(() => {
 });
 
 const EPIC = {
-	turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+	epic: { mode: { enabled: true } },
 };
 
 describe('update_task_status performs no git write', () => {

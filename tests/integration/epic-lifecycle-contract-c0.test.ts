@@ -24,12 +24,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plan } from '../../src/config/plan-schema';
 import { closeProjectDb } from '../../src/db/project-db.js';
+import { closeEpic } from '../../src/epic/close.js';
+import { getOpenEpic } from '../../src/epic/lifecycle.js';
+import { findTaskCommits } from '../../src/epic/markers.js';
+import { formatEpicTaskCommitMessage } from '../../src/epic/plan-key';
+import { startEpic } from '../../src/epic/start.js';
 import { savePlan, updateTaskStatus } from '../../src/plan/manager';
-import { closeEpic } from '../../src/turbo/epic/close.js';
-import { getOpenEpic } from '../../src/turbo/epic/lifecycle.js';
-import { findTaskCommits } from '../../src/turbo/epic/markers.js';
-import { formatEpicTaskCommitMessage } from '../../src/turbo/epic/plan-key';
-import { startEpic } from '../../src/turbo/epic/start.js';
 import { mergeLaneBranch } from '../../src/worktree/merge';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
@@ -148,10 +148,7 @@ beforeEach(() => {
 		// consecutive plans on ONE branch (the epic-branch default would put
 		// each plan's markers on its own `swarm/epic/*` branch — C1b).
 		JSON.stringify({
-			turbo: {
-				strategy: 'standard',
-				epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
-			},
+			epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
 		}),
 	);
 	// `.swarm/` is runtime state (AGENTS.md #4), never committed.
