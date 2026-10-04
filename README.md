@@ -1300,7 +1300,7 @@ All binaries optional. Missing tools produce soft warnings, never hard-fail.
 bun test
 ```
 
-Epic Mode's planner regression harness: `bun run epic:bench`.
+Epic Mode's planner regression harness: `bun scripts/epic-bench.ts`.
 
 ---
 

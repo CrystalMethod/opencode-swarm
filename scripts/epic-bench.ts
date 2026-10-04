@@ -1,5 +1,5 @@
 /**
- * `bun run epic:bench` — print the Epic PLANNER REGRESSION HARNESS table
+ * `bun scripts/epic-bench.ts` — print the Epic PLANNER REGRESSION HARNESS table
  * (scripts/lib/epic-sim.ts over tests/fixtures/epic-bench/*.json).
  *
  * NOT a real-speed benchmark: it compares the real Balanced / Lean / Epic
@@ -7,8 +7,8 @@
  * planner regressions. The regression gate is the normal unit test
  * tests/unit/epic/epic-bench.test.ts (no separate CI step).
  *
- *   bun run epic:bench                  # print the table
- *   bun run epic:bench --write-golden   # rewrite golden.json (review the diff!)
+ *   bun scripts/epic-bench.ts                  # print the table
+ *   bun scripts/epic-bench.ts --write-golden   # rewrite golden.json (review the diff!)
  */
 
 import * as fs from 'node:fs';

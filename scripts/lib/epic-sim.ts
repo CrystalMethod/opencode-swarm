@@ -41,7 +41,7 @@
  *
  * Lives under scripts/ (outside the plugin bundle): the plugin never imports
  * it; the regression test (tests/unit/epic/epic-bench.test.ts) and
- * `bun run epic:bench` do.
+ * `bun scripts/epic-bench.ts` do.
  */
 
 import * as os from 'node:os';

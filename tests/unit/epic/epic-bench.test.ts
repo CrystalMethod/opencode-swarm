@@ -16,7 +16,7 @@
  *     counterfactual without it is worse — while a single explained
  *     co-write causes no needless serialization;
  *   - no metric regresses more than 5% against golden.json (regenerate it
- *     with `bun run epic:bench --write-golden` and review the diff).
+ *     with `bun scripts/epic-bench.ts --write-golden` and review the diff).
  */
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -235,7 +235,7 @@ describe('golden regression guard (≤ 5%)', () => {
 				const actual = current[strategy][metric];
 				if (actual > allowed) {
 					throw new Error(
-						`${name}/${strategy}/${metric} regressed: ${actual} > ${golden[name][strategy][metric]} (+5%). If intended, run \`bun run epic:bench --write-golden\` and justify the diff.`,
+						`${name}/${strategy}/${metric} regressed: ${actual} > ${golden[name][strategy][metric]} (+5%). If intended, run \`bun scripts/epic-bench.ts --write-golden\` and justify the diff.`,
 					);
 				}
 				expect(actual).toBeLessThanOrEqual(allowed);

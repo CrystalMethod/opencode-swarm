@@ -170,7 +170,7 @@ The rows live in `scripts/retention-registry.data.ts` and are rendered in `docs/
 
 - **Unit:** `tests/unit/epic/` holds one area per file, with fixtures `*-fixture.ts`. Epic tests in shared directories: `tests/unit/agents/epic-tool-gating.test.ts`; `tests/unit/commands/{epic*,coupling*,turbo-epic-redirect}.test.ts`; `tests/unit/config/{epic-config-path,epic-config-path-doctor,epic-retired-config-keys,epic-learning-config,turbo-mode-seeding-epic-sentinel}.test.ts`; `tests/unit/hooks/{delegation-gate-epic-*,system-enhancer-epic-*}.test.ts`; `tests/unit/tools/{epic-*,phase-complete-epic-readiness,save-plan-epic-shaping*}.test.ts`; `tests/unit/background/completion-observer-epic-residue.test.ts`; and `tests/unit/state/task-modified-files.test.ts`.
 - **Contracts** (`tests/integration/`): `epic-lifecycle-contract-c0` … `c7` each pin the behaviour one commit introduced. `epic-lifecycle-contract-final` is the full lifecycle on real git. `epic-lifecycle-contract-final-off` is the config-off twin and must stay byte-identical to the no-Epic baseline. Scenario tests: `epic-phase-fix-wave`, `epic-phase-handoff`, `epic-wave-planning`, and `epic-worktree-merge-guard`. Helpers: `tests/helpers/epic-{final-contract,landing,lifecycle}.ts`.
-- **Planner regression harness:** `bun run epic:bench` prints the table (`scripts/epic-bench.ts` over `tests/fixtures/epic-bench/*.json`, simulated by `scripts/lib/epic-sim.ts`). The gate itself is the normal unit test `tests/unit/epic/epic-bench.test.ts`. After an **intended** planner or learning change, run `bun run epic:bench --write-golden`, review the `tests/fixtures/epic-bench/golden.json` diff line by line, and explain it in the commit. A golden change that nobody can explain is a regression.
+- **Planner regression harness:** `bun scripts/epic-bench.ts` prints the table (`scripts/epic-bench.ts` over `tests/fixtures/epic-bench/*.json`, simulated by `scripts/lib/epic-sim.ts`). The gate itself is the normal unit test `tests/unit/epic/epic-bench.test.ts`. After an **intended** planner or learning change, run `bun scripts/epic-bench.ts --write-golden`, review the `tests/fixtures/epic-bench/golden.json` diff line by line, and explain it in the commit. A golden change that nobody can explain is a regression.
 - **Running:** run one file per process (AGENTS.md §6). Never use broad `test_runner` scopes.
   ```bash
   for f in tests/unit/epic/*.test.ts; do bun --smol test "$f" || echo "FAIL $f"; done
@@ -195,7 +195,7 @@ The rows live in `scripts/retention-registry.data.ts` and are rendered in `docs/
 
 **Change a learning weight or threshold**
 1. Edit `EPIC_LEARNING_INCIDENT_WEIGHTS` / the constants in `learning.ts`, or the defaults in `EpicConfigSchema.learning` together with `DEFAULT_EPIC_LEARNING_SETTINGS` (they must agree).
-2. Update `learning.test.ts`, then `bun run epic:bench --write-golden` and explain the golden diff. The harness guards the hot set and density demotion.
+2. Update `learning.test.ts`, then `bun scripts/epic-bench.ts --write-golden` and explain the golden diff. The harness guards the hot set and density demotion.
 3. Update the formula in the `learning.ts` header and in `docs/modes.md` (Learning) and `docs/configuration.md`.
 
 **Add an Epic config key**
