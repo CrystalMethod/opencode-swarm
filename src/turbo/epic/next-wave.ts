@@ -297,7 +297,7 @@ export async function runEpicNextWave(
 		return withClosed({
 			status: 'epic-complete',
 			message:
-				'Every phase is complete. Tell the user the epic can be closed with `/swarm epic close` (it lands the epic branch and writes the report).',
+				'Every phase is complete. Tell the user the epic can be closed with `/swarm epic close` (it lands the epic branch and writes the report with the epic scorecard; `/swarm epic report` shows the scorecard before closing).',
 		});
 	}
 	if ((current.tasks ?? []).every((task) => isTaskResolved(task.status))) {

@@ -137,7 +137,8 @@
 		"check:path-identity": "bun run scripts/check-path-identity.ts",
 		"check:registry-citations": "bun run scripts/check-registry-citations.ts",
 		"check:memory-recall": "bun run scripts/memory-recall-regression.ts",
-		"check:retrieval-quality": "bun run scripts/retrieval-quality-regression.ts"
+		"check:retrieval-quality": "bun run scripts/retrieval-quality-regression.ts",
+		"epic:bench": "bun run scripts/epic-bench.ts"
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.30.0",

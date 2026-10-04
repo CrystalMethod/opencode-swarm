@@ -9,9 +9,11 @@
  *   `/swarm epic start` (neutral: no project prior yet)
  *   → wave 1 = [1.1, 1.3, 1.4, 1.5]; 1.1 lands a.ts + the undeclared b.ts
  *   → the wave close records `undeclared: ['src/b.ts']` for 1.1 and the
- *     epic's posterior learns it AT ONCE: b.ts is hot (one incident, no
- *     exposure), so 1.2 runs ALONE in wave 2 (exclusive `hot-file`)
- *   → wave 3 = [1.6] → `/swarm epic close --land merge` merges the posterior
+ *     epic's posterior learns it AT ONCE: the co-write a.ts → b.ts. One
+ *     declarer's undeclared write is scope expansion, not heat (the
+ *     strongest-co-writer discount, C8): b.ts is NOT hot, so 1.2 is not
+ *     serialized needlessly — wave 2 = [1.2, 1.6], in parallel
+ *   → `/swarm epic close --land merge` merges the posterior
  *     into the project prior (".swarm/epic-prior/learning.json"; "Project
  *     prior kept"): co-write a.ts → b.ts weight 1; b.ts no longer hot
  *     (1.2's clean exposure).
@@ -199,34 +201,33 @@ describe('Epic lifecycle contract v6 — a learned co-write serializes the next 
 			await completeTask(id, scopeOf(id, 'A'));
 		}
 
-		// The close records the divergence; the posterior learns it at once:
-		// b.ts is hot, so 1.2 (declaring it) runs alone.
+		// The close records the divergence; the posterior learns the co-write
+		// at once. One declarer's undeclared write is expansion, not heat: b.ts
+		// is not hot, so 1.2 (declaring it) is not serialized needlessly.
 		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
 			status: 'dispatch',
 			closedWave: { seq: 1 },
-			wave: { seq: 2, kind: 'exclusive', taskIds: ['1.2'] },
+			wave: { seq: 2, kind: 'parallel', taskIds: ['1.2', '1.6'] },
 		});
 		const epic1 = getOpenEpic(dir);
 		expect(epic1?.tasks['1.1']).toMatchObject({
 			undeclared: ['src/b.ts'],
 			attribution: 'session',
 		});
-		expect(epic1?.waves[1].components?.exclusive).toEqual({
-			'1.2': 'hot-file',
-		});
-		expect(readEpicPosterior(dir)).toMatchObject({
+		expect(epic1?.waves[1].components?.exclusive).toEqual({});
+		const posterior = readEpicPosterior(dir);
+		expect(posterior).toMatchObject({
 			epicKey: epic1?.epicKey,
 			lastAppliedWaveSeq: 1,
 		});
+		expect(posterior?.increments.edges.get('src/a.ts')?.get('src/b.ts')).toBe(
+			1,
+		);
 		await completeTask('1.2', ['src/b.ts']);
-		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
-			status: 'dispatch',
-			wave: { seq: 3, taskIds: ['1.6'] },
-		});
 		await completeTask('1.6', scopeOf('1.6', 'A'));
 		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
 			status: 'phase-ready-for-review',
-			closedWave: { seq: 3 },
+			closedWave: { seq: 2 },
 		});
 
 		const closed = await handleEpicCommand(

@@ -130,12 +130,22 @@ describe('successful close', () => {
 		if (result.status !== 'closed') return;
 		const key = `${epic.epicKey}-20260501T070000Z`;
 		expect(result.report).toMatchObject({
-			schema: 'epic-report-v1',
+			schema: 'epic-report-v2',
 			reportKey: key,
 			outcome: 'completed',
 			closedAt: '2026-05-01T08:00:00.000Z',
 			tasks: { total: 6, completed: 6, closed: 0, pending: [] },
+			// v2 embeds the scorecard (the start facts moved into it).
+			scorecard: {
+				schema: 'epic-scorecard-v1',
+				epicKey: epic.epicKey,
+				outcome: 'completed',
+				closedAt: '2026-05-01T08:00:00.000Z',
+				forced: false,
+				tasks: { total: 6, completedInEpic: 0 },
+			},
 		});
+		expect(result.report).not.toHaveProperty('sizingAtStart');
 		expect(reportFiles(['.swarm', 'epic', 'reports'])).toEqual([`${key}.json`]);
 		expect(reportFiles(['.swarm', 'epic-prior', 'reports'])).toEqual([
 			`${key}.json`,

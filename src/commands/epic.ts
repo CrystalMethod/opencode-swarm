@@ -20,6 +20,11 @@
  *                            `epic_next_wave`);
  *                            `--repair-refs` re-adopts task commits a rebase
  *                            or amend made unreachable (Epic v2 C3)
+ *   /swarm epic report [<key>|last] [--format json]
+ *                          — the epic scorecard (Epic v2 C8): live for the
+ *                            open epic, else from a past epic's close report
+ *                            in `.swarm/epic-prior/reports/` (`last` = the
+ *                            newest; `<key>` = a report or epic key)
  *   /swarm epic learning   — what the Epic planner learned (hot files,
  *                            learned co-writes) and uses now (Epic v2 C6)
  *   /swarm epic prior [show|reset [--confirm=<token>]]
@@ -36,7 +41,7 @@
  * Epic v2 C2 with the activation gate: `epic_next_wave` plans every wave and
  * `status` shows what it recorded. `calibration` was renamed `learning` in
  * Epic v2 C6 (the v1 self-calibration was replaced). `close`, `status`,
- * `learning`, and `prior` work regardless of the config gate.
+ * `report`, `learning`, and `prior` work regardless of the config gate.
  */
 
 import { loadPluginConfigWithMeta } from '../config/index.js';
@@ -75,6 +80,14 @@ import {
 } from '../turbo/epic/merge-epoch.js';
 import { completedBeforeEpic } from '../turbo/epic/next-wave.js';
 import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
+import {
+	type EpicReportSelection,
+	selectEpicReport,
+} from '../turbo/epic/report.js';
+import {
+	type EpicScorecardV1,
+	formatEpicScorecardLines,
+} from '../turbo/epic/scorecard.js';
 import { formatEpicShapingLines } from '../turbo/epic/shaping.js';
 import {
 	describeEpicSizingReason,
@@ -111,10 +124,11 @@ export const _internals = {
 	readEpicRefs,
 	writeEpicRef,
 	completedBeforeEpic,
+	selectEpicReport,
 };
 
 const USAGE =
-	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | learning | prior [show|reset [--confirm=<token>]] | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
+	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | report [<key>|last] [--format json] | learning | prior [show|reset [--confirm=<token>]] | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
 
 export async function handleEpicCommand(
 	directory: string,
@@ -150,6 +164,8 @@ export async function handleEpicCommand(
 		case 'decide':
 		case 'last':
 			return `\`/swarm epic ${arg0}\` was removed in Epic v2: the activation gate is gone and the architect's \`epic_next_wave\` plans every wave. Run \`/swarm epic status\` to see the epic's waves, phases and recorded divergence.\n\n${USAGE}`;
+		case 'report':
+			return renderReport(directory, args.slice(1));
 		case 'learning': {
 			if (args.length > 1) {
 				return `\`/swarm epic learning\` takes no options.\n\n${USAGE}`;
@@ -172,6 +188,86 @@ export async function handleEpicCommand(
 		default:
 			return `Unknown subcommand '${arg0}'.\n\n${USAGE}`;
 	}
+}
+
+/** Parse `report` options: one optional selector, `--format json|markdown`. */
+export function parseReportOptions(
+	args: string[],
+):
+	| { selector: string | null; format: 'markdown' | 'json' }
+	| { error: string } {
+	let selector: string | null = null;
+	let format: 'markdown' | 'json' = 'markdown';
+	for (let i = 0; i < args.length; i += 1) {
+		const arg = args[i];
+		let value: string | undefined;
+		if (arg.toLowerCase() === '--format') {
+			value = args[i + 1]?.toLowerCase();
+			i += 1;
+		} else if (arg.toLowerCase().startsWith('--format=')) {
+			value = arg.slice('--format='.length).toLowerCase();
+		} else if (arg.startsWith('--')) {
+			return {
+				error: `Unknown option(s) for \`/swarm epic report\`: ${arg}.`,
+			};
+		} else if (selector === null) {
+			selector = arg;
+			continue;
+		} else {
+			return {
+				error: `\`/swarm epic report\` takes at most one report or epic key (got \`${selector}\` and \`${arg}\`).`,
+			};
+		}
+		if (value !== 'json' && value !== 'markdown') {
+			return {
+				error: `\`--format\` takes json or markdown (got ${value ? `\`${value}\`` : 'nothing'}).`,
+			};
+		}
+		format = value;
+	}
+	return { selector, format };
+}
+
+async function renderReport(
+	directory: string,
+	args: string[],
+): Promise<string> {
+	const parsed = parseReportOptions(args);
+	if ('error' in parsed) return `${parsed.error}\n\n${USAGE}`;
+	let selection: EpicReportSelection;
+	try {
+		selection = await _internals.selectEpicReport(
+			directory,
+			parsed.selector,
+			learningSettings(directory),
+		);
+	} catch (error) {
+		return `Error reading the epic report: ${error instanceof Error ? error.message : String(error)}`;
+	}
+	if (selection.status !== 'ok') return selection.message;
+	if (parsed.format === 'json') {
+		return JSON.stringify(
+			{
+				source: selection.source,
+				reportKey: selection.reportKey,
+				notes: selection.notes ?? [],
+				scorecard: selection.scorecard,
+			},
+			null,
+			2,
+		);
+	}
+	// A past report's scorecard was validated group by group (report.ts),
+	// a live one computed from the record: formatting cannot fail.
+	const lines = formatEpicScorecardLines(selection.scorecard);
+	for (const note of selection.notes ?? []) lines.push(`- ⚠️ ${note}`);
+	lines.push(
+		'',
+		selection.source === 'live'
+			? 'Live scorecard of the open epic: time counts closed waves only; the wave and task counts include the wave still open. The close report embeds the final one.'
+			: `From the close report \`.swarm/epic-prior/reports/${selection.reportKey}.json\`.`,
+	);
+	return lines.join('\n');
 }
 
 /** `turbo.epic.learning.*` (schema defaults when the config is unreadable). */
@@ -479,10 +575,26 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 				...(result.report.learning
 					? [describeEpicPriorMerge(result.report.learning)]
 					: []),
+				renderScorecardSummary(
+					result.report.scorecard,
+					result.report.reportKey,
+				),
 				`Report: \`.swarm/epic/reports/${result.report.reportKey}.json\` (kept across /swarm close at \`.swarm/epic-prior/reports/${result.report.reportKey}.json\`).`,
 			].join('\n');
 		}
 	}
+}
+
+/** One close-output line pointing at the full scorecard. */
+function renderScorecardSummary(
+	card: EpicScorecardV1,
+	reportKey: string,
+): string {
+	const factor =
+		card.time.concurrencyFactor === null
+			? 'concurrency factor n/a'
+			: `concurrency factor ×${card.time.concurrencyFactor} (not a speedup)`;
+	return `Scorecard: ${card.waves.count} wave(s) (${card.waves.parallel} with 2+ tasks), ${card.tasks.completedInEpic} task(s) completed in the epic, ${factor}, ${card.rework.tasksWithRework} reworked, ${card.conflicts.undeclaredWriteTasks} with undeclared writes — full scorecard: \`/swarm epic report ${reportKey}\`.`;
 }
 
 /**

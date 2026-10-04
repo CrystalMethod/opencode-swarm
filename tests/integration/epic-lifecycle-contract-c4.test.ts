@@ -276,9 +276,24 @@ describe('Epic lifecycle contract v4 — the gate enforces the active wave', () 
 			await updateTaskStatus(dir, taskId, 'completed');
 		}
 		expect(git(['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe(epicBranch);
-		expect(git(['log', '--format=%s', '-2']).trim().split('\n').sort()).toEqual(
-			['swarm(task 1.1): implement 1.1', 'swarm(task 1.2): implement 1.2'],
-		);
+		// Each landing is a --no-ff merge commit on the epic branch whose
+		// SECOND parent is the lane's own commit (`swarm-lane: auto-commit
+		// before cleanup`). The epic branch's history is its first-parent
+		// line: a plain `git log -2` orders by commit date, so whenever the
+		// second lane's commit falls in a later second than the first merge,
+		// that lane commit would sort between the two merges (the old flake).
+		const landings = git(['log', '--first-parent', '--format=%P%x09%s', '-2'])
+			.trim()
+			.split('\n')
+			.map((line) => {
+				const [parents, subject] = line.split('\t');
+				return { parents: parents.split(' ').length, subject };
+			});
+		expect(landings.map((l) => l.subject).sort()).toEqual([
+			'swarm(task 1.1): implement 1.1',
+			'swarm(task 1.2): implement 1.2',
+		]);
+		expect(landings.map((l) => l.parents)).toEqual([2, 2]);
 
 		// Wave 1 closes; wave 2 = [1.3] (its dependency 1.1 is committed).
 		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({

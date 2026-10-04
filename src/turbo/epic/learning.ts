@@ -35,7 +35,10 @@
  *     outcome was already learned.
  *     Beta prior with mean m0 = 0.1 and strength 2 (a0 = 0.2, b0 = 1.8):
  *       r(f) = (a0 + α_f) / (a0 + b0 + α_f + β_f).
- *     f is HOT ⇔ α_f ≥ 1 ∧ r(f) − m0 > hot_excess (default 0.25). A task
+ *     Strongest-co-writer discount: α'_f = α_f − m_f when the strongest
+ *     learned co-writer m_f = max_d w(d → f) ≥ 1 (an active expansion edge
+ *     already keeps that declarer apart from f's owners), else α'_f = α_f.
+ *     f is HOT ⇔ α'_f ≥ 1 ∧ r(α'_f, β_f) − m0 > hot_excess (default 0.25). A task
  *     whose declared scope lists a hot file (exact normalized path) runs
  *     alone (exclusive). Hot
  *     needs EXCESS evidence: an empty or clean history has no hot file and
@@ -416,12 +419,83 @@ export function isEpicHotFile(
 	);
 }
 
-/** Hot files, hottest first (ties by path). */
+/** Per file, its strongest learned co-writer: max_d w(d → f). */
+function strongestCoWriteInto(stats: EpicLearningStats): Map<string, number> {
+	const strongest = new Map<string, number>();
+	for (const targets of stats.edges.values()) {
+		for (const [to, weight] of targets) {
+			if (weight > (strongest.get(to) ?? 0)) strongest.set(to, weight);
+		}
+	}
+	return strongest;
+}
+
+/**
+ * The incident mass the hot predicate judges (the strongest-co-writer
+ * discount): α' = max(0, α − m) when the file's strongest learned co-writer
+ * m = max_d w(d → f) is an ACTIVE scope-expansion edge (m ≥
+ * {@link EPIC_EXPANSION_MIN_WEIGHT}), else α. Undeclared writes that one
+ * declared file keeps explaining are already handled by scope expansion
+ * (the declarer now conflicts with the file's owners), so they must not
+ * ALSO make the file hot and serialize everyone declaring it; writes from
+ * several different declarers (a file that attracts undeclared writes
+ * from all over) and the other incidents still count.
+ */
+export function epicHotIncidentMass(
+	stats: EpicFileStats,
+	strongestCoWriter: number,
+): number {
+	return strongestCoWriter >= EPIC_EXPANSION_MIN_WEIGHT
+		? Math.max(0, stats.alpha - strongestCoWriter)
+		: stats.alpha;
+}
+
+/** The hot predicate's evidence for one file (`/swarm epic learning`). */
+export interface EpicHotEvidence {
+	/** Raw incident mass α. */
+	alpha: number;
+	/** α' after the strongest-co-writer discount. */
+	countedAlpha: number;
+	beta: number;
+	/** r(α', β). */
+	rate: number;
+}
+
+export function epicHotEvidence(
+	stats: EpicLearningStats,
+	file: string,
+): EpicHotEvidence {
+	const s = stats.files.get(file) ?? { alpha: 0, beta: 0 };
+	const countedAlpha = epicHotIncidentMass(
+		s,
+		strongestCoWriteInto(stats).get(file) ?? 0,
+	);
+	return {
+		alpha: s.alpha,
+		countedAlpha,
+		beta: s.beta,
+		rate: epicIncidentRate({ alpha: countedAlpha, beta: s.beta }),
+	};
+}
+
+/**
+ * Hot files, hottest first (ties by path) — THE hot predicate (planner,
+ * sizing, shaping, report and commands all use it): {@link isEpicHotFile}
+ * over the discounted incident mass ({@link epicHotIncidentMass}).
+ */
 export function epicHotFiles(
 	stats: EpicLearningStats,
 	hotExcess: number,
 ): string[] {
+	const strongest = strongestCoWriteInto(stats);
 	return [...stats.files]
+		.map(([file, s]): [string, EpicFileStats] => [
+			file,
+			{
+				alpha: epicHotIncidentMass(s, strongest.get(file) ?? 0),
+				beta: s.beta,
+			},
+		])
 		.filter(([, s]) => isEpicHotFile(s, hotExcess))
 		.sort(
 			([fa, a], [fb, b]) =>

@@ -10,9 +10,12 @@
  *      `epic-branch-missing`, `landing-git-failed`; detect an
  *      already-landed state so a resumed close is idempotent;
  *   3. CAS the row to `closing` (an interrupted close resumes from here);
- *   4. write the close report to `.swarm/epic/reports/<reportKey>.json` and
+ *   4. write the close report (`epic-report-v2`: lifecycle facts + the
+ *      epic's scorecard, `scorecard.ts`) to
+ *      `.swarm/epic/reports/<reportKey>.json` and
  *      `.swarm/epic-prior/reports/<reportKey>.json` (newest 50 kept —
- *      `epic-prior/` survives `/swarm close`);
+ *      `epic-prior/` survives `/swarm close`; `/swarm epic report` reads
+ *      them);
  *   5. land (`--land squash|merge|none`, default squash; see
  *      `epic-branch.ts`). A conflict or failure is rolled back, recorded on
  *      the row, and the close STOPS with the row still `closing` — rerunning
@@ -51,12 +54,14 @@ import {
 import {
 	DEFAULT_EPIC_LEARNING_SETTINGS,
 	type EpicLearningSettings,
+	epicHotFiles,
 	resolveEpicLearningSettings,
 } from './learning.js';
 import {
 	describeEpicPriorMerge,
 	EPIC_PRIOR_LEARNING_DISPLAY_PATH,
 	type EpicPriorMergeResult,
+	loadEpicLearningView,
 	mergeEpicPosteriorIntoPrior,
 } from './learning-store.js';
 import {
@@ -71,6 +76,8 @@ import {
 	repairEpicSentinel,
 } from './lifecycle.js';
 import { deleteEpicRefs, readEpicRefs } from './markers.js';
+import { completedBeforeEpic } from './next-wave.js';
+import { computeEpicScorecard, type EpicScorecardV1 } from './scorecard.js';
 
 /** Newest close reports kept under `.swarm/epic-prior/reports/`. */
 export const EPIC_PRIOR_REPORTS_KEEP = 50;
@@ -80,7 +87,10 @@ export const EPIC_PRIOR_REPORTS_RELATIVE_DIR = path.join(
 	'epic-prior',
 	'reports',
 );
-const REPORT_NAME_RE = /^[A-Za-z0-9_-]+-\d{8}T\d{6}Z\.json$/;
+/** File names of close reports (`<reportKey>.json`). */
+export const EPIC_REPORT_NAME_RE = /^[A-Za-z0-9_-]+-\d{8}T\d{6}Z\.json$/;
+/** Close-report schema (`report.ts` reads only this version). */
+export const EPIC_REPORT_SCHEMA = 'epic-report-v2';
 
 export interface EpicTaskSummary {
 	total: number;
@@ -114,8 +124,15 @@ export interface EpicLandingSummary {
 	after: EpicLandingAfterState | null;
 }
 
+/**
+ * The close report (`epic-report-v2`): lifecycle facts, the raw waves /
+ * outcomes / phases, the landing, refs and learning outcome, and the
+ * epic's {@link EpicScorecardV1} (which carries `forced`, `sizingAtStart`
+ * and the inherited `priorDigest`). Epic v2 C8 superseded the C1 report of
+ * this unreleased branch in place; no earlier version was ever shipped.
+ */
 export interface EpicCloseReport {
-	schema: 'epic-report-v1';
+	schema: typeof EPIC_REPORT_SCHEMA;
 	reportKey: string;
 	epicKey: string;
 	planId: string;
@@ -124,10 +141,8 @@ export interface EpicCloseReport {
 	startedAt: string;
 	closedAt: string;
 	startedBySession: string;
-	forced: boolean;
-	sizingAtStart: EpicRecordV1['sizing'];
-	/** sha256 of the project prior the epic inherited at start (null: none). */
-	priorDigest: string | null;
+	/** The epic's scorecard at close (`scorecard.ts`). */
+	scorecard: EpicScorecardV1;
 	config: EpicRecordV1['config'];
 	git: EpicRecordV1['git'] & { headAtClose: string | null };
 	/** Null when the plan is gone or no longer the epic's plan (orphaned). */
@@ -254,7 +269,9 @@ export function pruneEpicPriorReports(directory: string): number {
 	const dir = path.join(directory, EPIC_PRIOR_REPORTS_RELATIVE_DIR);
 	let names: string[];
 	try {
-		names = fs.readdirSync(dir).filter((name) => REPORT_NAME_RE.test(name));
+		names = fs
+			.readdirSync(dir)
+			.filter((name) => EPIC_REPORT_NAME_RE.test(name));
 	} catch {
 		return 0;
 	}
@@ -410,19 +427,26 @@ export async function closeEpic(
 		conflictFiles: [] as string[],
 		after: null,
 	};
+	const closedAt = new Date(_internals.now()).toISOString();
 	const report: EpicCloseReport = {
-		schema: 'epic-report-v1',
+		schema: EPIC_REPORT_SCHEMA,
 		reportKey: epicReportKey(closing),
 		epicKey: closing.epicKey,
 		planId: closing.planId,
 		planKey: closing.planKey,
 		outcome,
 		startedAt: closing.startedAt,
-		closedAt: new Date(_internals.now()).toISOString(),
+		closedAt,
 		startedBySession: closing.startedBySession,
-		forced: closing.forced,
-		sizingAtStart: closing.sizing,
-		priorDigest: closing.priorDigest ?? null,
+		scorecard: await closeScorecard(
+			directory,
+			closing,
+			outcome,
+			closedAt,
+			plan && inspection.orphanReason === null ? plan : null,
+			tasks,
+			options.learning ?? DEFAULT_EPIC_LEARNING_SETTINGS,
+		),
 		config: closing.config,
 		git: { ...closing.git, headAtClose: readHead(directory, closing) },
 		tasks,
@@ -517,6 +541,49 @@ export async function closeEpic(
 		reportPaths,
 		sentinelDeleted: deleted.sentinelDeleted,
 	};
+}
+
+/**
+ * The scorecard written into the close report: the record at close, the
+ * plan's task count and its tasks completed before the epic started (when
+ * the plan is still the epic's), and the hot files of the epic's learned
+ * state (posterior, else prior — read BEFORE the close merges the
+ * posterior into the prior). Learning reads never throw; a failing ledger
+ * read leaves `adoptedAtStart` unknown.
+ */
+async function closeScorecard(
+	directory: string,
+	record: EpicRecordV1,
+	outcome: EpicCloseOutcome,
+	closedAt: string,
+	plan: Plan | null,
+	tasks: EpicTaskSummary | null,
+	learning: EpicLearningSettings,
+): Promise<EpicScorecardV1> {
+	let adoptedAtStart: number | undefined;
+	if (plan) {
+		try {
+			adoptedAtStart = (
+				await _internals.completedBeforeEpic(directory, record, plan)
+			).size;
+		} catch {
+			adoptedAtStart = undefined;
+		}
+	}
+	const view = _internals.loadEpicLearningView(
+		directory,
+		record,
+		learning,
+		_internals.now(),
+	);
+	return computeEpicScorecard({
+		record,
+		outcome,
+		closedAt,
+		planTaskTotal: tasks?.total ?? null,
+		adoptedAtStart,
+		hotFiles: epicHotFiles(view.stats, learning.hotExcess),
+	});
 }
 
 function captureEpicRefs(
@@ -639,6 +706,8 @@ export const _internals = {
 	readEpicRefs,
 	deleteEpicRefs,
 	mergeEpicPosteriorIntoPrior,
+	loadEpicLearningView,
+	completedBeforeEpic,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),
 	now: (): number => Date.now(),

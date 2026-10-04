@@ -12,7 +12,7 @@ import * as path from 'node:path';
 import {
 	type EpicLearningSettings,
 	type EpicLearningStats,
-	epicIncidentRate,
+	epicHotEvidence,
 	summarizeEpicLearning,
 } from '../turbo/epic/learning.js';
 import {
@@ -88,13 +88,17 @@ function statsLines(
 	];
 	if (summary.hotFiles.length === 0) {
 		lines.push(
-			'_None._ A file becomes hot only on excess evidence: at least one full incident (undeclared write, merge conflict, or accumulated Stage B failures / rework / reopens) and an incident rate above the prior mean by more than `hot_excess`.',
+			'_None._ A file becomes hot only on excess evidence: at least one full incident (undeclared write, merge conflict, or accumulated Stage B failures / rework / reopens) and an incident rate above the prior mean by more than `hot_excess`. Undeclared writes its strongest learned co-writer explains are discounted (that co-write already keeps the writer apart from the file).',
 		);
 	} else {
 		for (const file of summary.hotFiles.slice(0, SHOWN)) {
-			const s = stats.files.get(file) ?? { alpha: 0, beta: 0 };
+			const e = epicHotEvidence(stats, file);
+			const discount =
+				e.countedAlpha < e.alpha
+					? ` (${fmt(e.countedAlpha)} counted after its strongest co-writer)`
+					: '';
 			lines.push(
-				`- \`${file}\` — incidents ${fmt(s.alpha)}, exposures ${fmt(s.beta)}, rate ${fmt(epicIncidentRate(s))}`,
+				`- \`${file}\` — incidents ${fmt(e.alpha)}${discount}, exposures ${fmt(e.beta)}, rate ${fmt(e.rate)}`,
 			);
 		}
 		if (summary.hotFiles.length > SHOWN) {

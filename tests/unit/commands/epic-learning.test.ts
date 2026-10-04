@@ -51,7 +51,7 @@ const PRIOR = {
 	},
 	mergedEpics: ['plan-abc-20260901T000000Z'],
 	files: [
-		{ path: 'src/hot.ts', alpha: 2, beta: 1 },
+		{ path: 'src/hot.ts', alpha: 3, beta: 1 },
 		{ path: 'src/cold.ts', alpha: 0, beta: 5 },
 	],
 	edges: [{ from: 'src/a.ts', to: 'src/hot.ts', weight: 1.5 }],
@@ -88,7 +88,8 @@ describe('/swarm epic learning', () => {
 			'Source: the project prior (`.swarm/epic-prior/learning.json`)',
 		);
 		expect(out).toContain(
-			'- `src/hot.ts` — incidents 2, exposures 1, rate 0.44',
+			// α' = 3 − 1.5 (strongest co-writer) ⇒ r = 1.7 / 4.5.
+			'- `src/hot.ts` — incidents 3 (1.5 counted after its strongest co-writer), exposures 1, rate 0.38',
 		);
 		expect(out).not.toContain('`src/cold.ts` —');
 		expect(out).toContain('- `src/a.ts` → `src/hot.ts` (weight 1.5)');

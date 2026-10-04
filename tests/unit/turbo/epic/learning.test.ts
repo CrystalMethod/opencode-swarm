@@ -19,6 +19,7 @@ import {
 	type EpicLearningStats,
 	emptyEpicLearning,
 	epicHotFiles,
+	epicHotIncidentMass,
 	epicIncidentRate,
 	epicLearningFromOutcomes,
 	epicTimeDecayFactor,
@@ -184,31 +185,72 @@ describe('hot set (excess evidence)', () => {
 		expect(epicIncidentRate({ alpha: 0, beta: 0 })).toBeCloseTo(0.1, 10);
 	});
 
-	test('one undeclared write makes a file hot; clean exposures shrink it', () => {
+	test('the hot rate: α ≥ 1 and an excess over m0; clean exposures shrink it', () => {
 		// α = 1, β = 0 ⇒ r = 1.2 / 3 = 0.4 ⇒ excess 0.3 > 0.25.
 		expect(isEpicHotFile({ alpha: 1, beta: 0 }, HOT_EXCESS)).toBe(true);
 		// Two clean exposures: r = 1.2 / 5 = 0.24 ⇒ excess 0.14 — not hot.
 		expect(isEpicHotFile({ alpha: 1, beta: 2 }, HOT_EXCESS)).toBe(false);
 		// Excess rate without a full incident is not hot (α ≥ 1 required).
 		expect(isEpicHotFile({ alpha: 0.9, beta: 0 }, 0)).toBe(false);
-		const hot = epicLearningFromOutcomes([
+	});
+
+	test('strongest-co-writer discount: writes one declarer explains are expansion, not heat', () => {
+		// One undeclared write from a.ts: α = 1, but w(a → b) = 1 is an active
+		// expansion edge ⇒ α' = 0 — not hot (expansion already separates them).
+		const one = epicLearningFromOutcomes([
 			outcome({ undeclared: ['src/b.ts'] }),
 		]);
-		expect(epicHotFiles(hot, HOT_EXCESS)).toEqual(['src/b.ts']);
+		expect(edgeWeights(one)).toEqual({ 'src/a.ts->src/b.ts': 1 });
+		expect(epicHotIncidentMass({ alpha: 1, beta: 0 }, 1)).toBe(0);
+		expect(epicHotFiles(one, HOT_EXCESS)).toEqual([]);
+		// The same declarer again: α = 2, m = 2 ⇒ α' = 0 — still not hot.
+		const same = mergeEpicLearning(one, one);
+		expect(epicHotFiles(same, HOT_EXCESS)).toEqual([]);
+		// Two DIFFERENT declarers (a file attracting writes from all over):
+		// α = 2, m = 1 ⇒ α' = 1, r = 0.4 ⇒ hot; clean exposures cool it.
+		const magnet = mergeEpicLearning(
+			one,
+			epicLearningFromOutcomes([
+				outcome({
+					taskId: '1.2',
+					declared: ['src/c.ts'],
+					undeclared: ['src/b.ts'],
+				}),
+			]),
+		);
+		expect(epicHotFiles(magnet, HOT_EXCESS)).toEqual(['src/b.ts']);
 		const exposed = mergeEpicLearning(
-			hot,
+			magnet,
 			epicLearningFromOutcomes([
 				outcome({ taskId: '2.1', declared: ['src/b.ts'] }),
 				outcome({ taskId: '2.2', declared: ['src/b.ts'] }),
 			]),
 		);
 		expect(epicHotFiles(exposed, HOT_EXCESS)).toEqual([]);
+		// Below an active edge (w < 1) nothing is discounted; incidents with
+		// no co-writer (merge failure + rework on the declared file) count fully.
+		expect(epicHotIncidentMass({ alpha: 1, beta: 0 }, 0.6)).toBe(1);
+		const troubled = epicLearningFromOutcomes([
+			outcome({
+				declared: ['src/r.ts'],
+				mergeFailure: { outcome: 'conflict', stage: 'merge' },
+				generation: 3,
+			}),
+		]);
+		// α = 0.5 + 0.5 = 1, β = 1 ⇒ r = 1.2 / 4 = 0.3 — excess 0.2 (≤ 0.25).
+		expect(epicHotFiles(troubled, 0.19)).toEqual(['src/r.ts']);
 	});
 
 	test('hot_excess is the threshold', () => {
 		const stats = epicLearningFromOutcomes([
 			outcome({ undeclared: ['src/b.ts'] }),
+			outcome({
+				taskId: '1.2',
+				declared: ['src/c.ts'],
+				undeclared: ['src/b.ts'],
+			}),
 		]);
+		// α' = 2 − 1 = 1, β = 0 ⇒ r = 0.4, excess 0.3.
 		expect(epicHotFiles(stats, 0.29)).toEqual(['src/b.ts']);
 		expect(epicHotFiles(stats, 0.31)).toEqual([]);
 	});
