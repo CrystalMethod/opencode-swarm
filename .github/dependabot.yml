@@ -9,6 +9,11 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    # The host contract is pinned deliberately: tests/helpers/host-contract-v1_18_3.ts
+    # asserts the exact installed version, and a bump requires re-verifying the
+    # v1 message-converter contract by hand. Auto-PRs for these are red by design.
+    ignore:
+      - dependency-name: "@opencode-ai/*"
     groups:
       dev-dependencies:
         dependency-type: development

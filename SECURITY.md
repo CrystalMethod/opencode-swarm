@@ -9,9 +9,14 @@ Report it privately through GitHub's coordinated disclosure flow:
 1. Go to <https://github.com/ZaxbyHub/opencode-swarm/security/advisories/new>
 2. Choose the affected version and severity, and describe the issue.
 
-You should receive an acknowledgement within a few days. If a report is
-accepted, we will agree a disclosure timeline with you and credit you in the
-advisory unless you prefer to stay anonymous.
+If that form is unavailable to you (for example it asks you to sign in and you
+do not have an account), open a regular issue titled `security report` with no
+reproduction details and a note that a private channel is needed — we will move
+it off the public board. Do not post exploit details in the public issue.
+
+We aim to acknowledge reports within a few days. If a report is accepted, we
+will agree a disclosure timeline with you and credit you in the advisory unless
+you prefer to stay anonymous.
 
 ## What counts as a vulnerability in this project
 
@@ -27,7 +32,10 @@ these as security-relevant:
   `src/hooks/shell-write-detect.ts`).
 - **Command execution.** Any path where a shell command, argument, or
   environment value reaches a subprocess without the documented sanitization,
-  or where a guardrail meant to block a destructive command fails open.
+  or where a guardrail meant to block a destructive command fails open. The
+  subprocess surface is in `src/utils/` (`bun-compat.ts`,
+  `external-tool-runner.ts`) behind the guardrails in
+  `src/hooks/guardrails/`.
 - **Secret exposure.** Leaking a credential from the environment, from project
   configuration, or from `.swarm/` runtime state into a transcript, log, issue,
   or PR body. Redaction on those egress paths lives in `src/memory/redaction.ts`
@@ -44,8 +52,12 @@ these as security-relevant:
 
 ## Out of scope
 
-- Findings that require an attacker who already has write access to the
-  repository or to the user's machine.
+- Findings that require an attacker who already has write access to *this*
+  repository (ZaxbyHub/opencode-swarm) or to the user's machine. Note that
+  attacker-controlled **project content** — a malicious repository, issue, or
+  file the agent reads while working — is not out of scope; steering the agent
+  into a write-scope escape or a credential leak through project content is
+  exactly the class we want to hear about.
 - Issues in third-party dependencies with no reachable path through this
   project's own code. Please report those upstream as well, but let us know so
   we can record the reachability assessment.

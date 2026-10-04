@@ -17,6 +17,9 @@ Adds the two repository-hygiene files the project was missing:
   is used rather than `npm` because this project is Bun-managed (`bun.lock`, no
   `package-lock.json`); the `npm` ecosystem cannot update a `bun.lock`, and CI
   runs `bun install --frozen-lockfile`, so an npm-ecosystem update would fail.
+  `@opencode-ai/*` is excluded: the host contract is pinned on purpose
+  (`tests/helpers/host-contract-v1_18_3.ts` asserts the exact installed
+  version), so those bumps require a manual host-contract re-verification.
 
 ## Why
 
