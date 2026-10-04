@@ -20,6 +20,7 @@ import {
 import {
 	describeOpenEpicWaves,
 	type EpicPhaseReviewRunResult,
+	resolveEpicPhaseReviewTimeoutMs,
 	runEpicPhaseReview,
 } from '../epic/phase-readiness.js';
 import type { ReviewModelDispatcher } from '../review/contracts.js';
@@ -45,6 +46,7 @@ export type EpicPhaseReviewToolResult =
  */
 export const _internals = {
 	runEpicPhaseReview,
+	resolveEpicPhaseReviewTimeoutMs,
 	isEpicOpenForProject,
 	describeOpenEpicWaves,
 	getOpenEpic,
@@ -144,7 +146,10 @@ export async function executeEpicPhaseReview(
 		directory,
 		phase,
 		sessionID,
-		options,
+		{
+			...options,
+			timeoutMs: _internals.resolveEpicPhaseReviewTimeoutMs(directory),
+		},
 	);
 	recordReviewRun(directory, phase, result);
 	return result;

@@ -3422,6 +3422,24 @@ export const EpicConfigSchema = z.preprocess(
 			 * them).
 			 */
 			retain_refs: z.boolean().optional(),
+			/**
+			 * `epic_phase_review` (the `epic_phase_readiness` gate's producer).
+			 * `timeout_ms` bounds each role's dispatch (reviewer, then critic);
+			 * an empty-response retry shares the same budget. Same bounds and
+			 * default as `auto_review.timeout_ms`. A timed-out role is recorded
+			 * fail-closed as REJECTED and the review is re-run.
+			 */
+			phase_review: z
+				.object({
+					timeout_ms: z
+						.number()
+						.int()
+						.min(10_000)
+						.max(1_800_000)
+						.default(300_000),
+				})
+				.strict()
+				.optional(),
 		})
 		.strict(),
 );

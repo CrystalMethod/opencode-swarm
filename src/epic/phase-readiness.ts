@@ -33,6 +33,7 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadPluginConfigWithMeta } from '../config/loader';
 import type { RuntimePlan } from '../config/plan-schema';
 import {
 	DEFAULT_READ_ONLY_TOOLS,
@@ -60,6 +61,7 @@ import {
 } from '../utils/model-dispatch-fallback';
 import { isTransientProviderError } from '../utils/provider-error-classification';
 import { invalidateCachedArtifact } from '../utils/swarm-artifact-cache';
+import { resolveEpicConfig } from './config';
 import {
 	type EpicRecordV1,
 	type EpicTaskOutcome,
@@ -75,8 +77,26 @@ export const EPIC_PHASE_REVIEW_FILENAME = 'epic-phase-review.json';
 export const EPIC_PHASE_REVIEW_TTL_MS = 24 * 60 * 60 * 1000;
 /** Tolerated forward clock skew before a timestamp is treated as forged. */
 export const EPIC_PHASE_REVIEW_FORWARD_SKEW_MS = 5 * 60 * 1000;
-/** Bounded per-role dispatch timeout. */
+/** Default per-role dispatch timeout (`epic.phase_review.timeout_ms`). */
 export const EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS = 300_000;
+
+/**
+ * The configured per-role timeout (`epic.phase_review.timeout_ms`), or the
+ * default when it is unset or the config cannot be read (fail-open to the
+ * default: a timeout is a budget, not a safety gate).
+ */
+export function resolveEpicPhaseReviewTimeoutMs(directory: string): number {
+	try {
+		const configured = resolveEpicConfig(
+			loadPluginConfigWithMeta(directory).config,
+		)?.phase_review?.timeout_ms;
+		return typeof configured === 'number'
+			? configured
+			: EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS;
+	} catch {
+		return EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS;
+	}
+}
 /** Recovery tool name advertised in every block message. */
 export const EPIC_PHASE_REVIEW_TOOL = 'epic_phase_review';
 

@@ -4668,6 +4668,18 @@
                 },
                 "retain_refs": {
                   "type": "boolean"
+                },
+                "phase_review": {
+                  "type": "object",
+                  "properties": {
+                    "timeout_ms": {
+                      "default": 300000,
+                      "type": "integer",
+                      "minimum": 10000,
+                      "maximum": 1800000
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -4911,6 +4923,18 @@
                 },
                 "retain_refs": {
                   "type": "boolean"
+                },
+                "phase_review": {
+                  "type": "object",
+                  "properties": {
+                    "timeout_ms": {
+                      "default": 300000,
+                      "type": "integer",
+                      "minimum": 10000,
+                      "maximum": 1800000
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -5044,6 +5068,18 @@
         },
         "retain_refs": {
           "type": "boolean"
+        },
+        "phase_review": {
+          "type": "object",
+          "properties": {
+            "timeout_ms": {
+              "default": 300000,
+              "type": "integer",
+              "minimum": 10000,
+              "maximum": 1800000
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
