@@ -22,6 +22,7 @@
  * admission).
  */
 
+import * as path from 'node:path';
 import type { Plan } from '../config/plan-schema.js';
 import {
 	type ComputeParallelVerdictOptions,
@@ -264,5 +265,76 @@ export function resolveEpicDispatchPolicy(
 		parallel,
 		isolate,
 		maxConcurrent: Math.max(1, epic.config.maxParallel),
+	};
+}
+
+// ─── Stage A attribution in a parallel wave ──────────────────────────────────
+
+export type EpicGateAttribution =
+	/** No open epic, no active wave, or a single-task wave: upstream behaviour. */
+	| { kind: 'none' }
+	/** Exactly one task of the active wave owns every checked file. */
+	| { kind: 'task'; taskId: string }
+	/** Fail closed: credit no task, and tell the architect why. */
+	| { kind: 'unattributable'; message: string };
+
+/**
+ * The wave task a gate-tool run (`pre_check_batch`, …) belongs to while an
+ * epic is open.
+ *
+ * Upstream credits a gate run to the session's single `currentTaskId`, which
+ * holds whichever coder returned last. In a multi-task wave every Stage A run
+ * would then be credited to that one task: the task whose files were checked
+ * never reaches Stage B, and another task gets credit for a check it never
+ * had. Epic knows each wave task's frozen scope, so it credits the run to the
+ * ONE active-wave task whose frozen scope contains every checked file
+ * (containment as the write gates enforce it: a frozen directory covers the
+ * files beneath it). No files, no owner, several owners, or unreadable epic
+ * state credit nothing (fail closed). Sentinel-first: one `existsSync` when
+ * Epic is off.
+ */
+export function resolveEpicGateTaskAttribution(
+	directory: string,
+	files: readonly string[] | null,
+): EpicGateAttribution {
+	if (!_internals.epicSentinelExists(directory)) return { kind: 'none' };
+	let epic: EpicRecordV1 | null;
+	try {
+		epic = _internals.getOpenEpic(directory);
+	} catch (error) {
+		return {
+			kind: 'unattributable',
+			message: `EPIC STAGE A ATTRIBUTION: the epic's lifecycle state is unreadable (${errorText(error)}), so this gate run cannot be credited to a wave task. Ask the user to run \`/swarm epic status\` (diagnose) or \`/swarm epic close --abandon\` (repair).`,
+		};
+	}
+	if (!epic || epic.activeWaveSeq === null) return { kind: 'none' };
+	const wave = epic.waves.find(
+		(w) => w.seq === epic.activeWaveSeq && w.status === 'issued',
+	);
+	if (!wave || wave.taskIds.length < 2) return { kind: 'none' };
+
+	const scopes = wave.taskIds
+		.map((id) => `${id}: ${list(wave.files[id] ?? [])}`)
+		.join('; ');
+	const checked = (files ?? []).filter((file) => file.trim() !== '');
+	if (checked.length === 0) {
+		return {
+			kind: 'unattributable',
+			message: `EPIC STAGE A ATTRIBUTION: wave ${wave.seq} runs ${wave.taskIds.length} tasks at once, and this gate run names no files, so it cannot be credited to one task. Re-run it with \`files\` set to ONE task's changed files (frozen scopes — ${scopes}).`,
+		};
+	}
+	const relative = checked.map((file) =>
+		path.isAbsolute(file) ? path.relative(directory, file) : file,
+	);
+	const owners = wave.taskIds.filter((id) =>
+		relative.every((file) => scopeContains(wave.files[id] ?? [], file)),
+	);
+	if (owners.length === 1) return { kind: 'task', taskId: owners[0] };
+	return {
+		kind: 'unattributable',
+		message:
+			owners.length === 0
+				? `EPIC STAGE A ATTRIBUTION: no task of wave ${wave.seq} owns every checked file (${list(relative)}), so this gate run is credited to no task. Run the gate once per task, with \`files\` limited to that task's frozen scope (${scopes}).`
+				: `EPIC STAGE A ATTRIBUTION: the checked files (${list(relative)}) fall inside the frozen scope of several wave-${wave.seq} tasks (${list(owners)}), so this gate run is credited to no task. Run it with files only one task owns (${scopes}).`,
 	};
 }

@@ -776,6 +776,8 @@ An admitted coder runs **isolated** in a git worktree in a git project (see [Req
 
 **Carve-outs.** A **PR-feedback** coder (authenticated PR-feedback scope, no plan task) is admitted before this check by construction and is never wave-gated. Reviewer, test_engineer and other agents are never routed through coder admission. With no epic open the gate is exactly the non-Epic gate (one `existsSync` on the sentinel).
 
+**Stage A attribution in a wave.** `pre_check_batch` takes no task id; upstream credits its result to the session's single `currentTaskId`, which in a wave is whichever coder returned last. While an epic runs a multi-task wave, a gate run is instead credited by its `files` to the one wave task whose frozen scope contains every checked file; with no files, files of several tasks, or no owner it is credited to none and the architect gets an `EPIC STAGE A ATTRIBUTION` advisory naming each task's frozen scope. So run Stage A once per task, with `files` set to that task's files (the wave's dispatch instructions say so). Single-task waves keep the upstream behaviour.
+
 ### Commits: landing, residue, refs
 
 In a git project every task's work is **committed on the epic branch before the task completes**, so a rework coder — whose worktree is cut from HEAD — always starts from the first attempt and from the tests written for it, and its own landing never overlaps uncommitted bytes:
