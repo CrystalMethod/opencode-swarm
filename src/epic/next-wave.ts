@@ -305,7 +305,7 @@ export async function runEpicNextWave(
 		return withClosed({
 			status: 'phase-ready-for-review',
 			phase: current.id,
-			message: `Every task of phase ${current.id} is resolved and all its waves are closed. Call epic_phase_review({ phase: ${current.id} }) ONCE — it dispatches the phase reviewer, then (if it approves) the phase critic. Both APPROVED → write the retrospective → phase_complete({ phase: ${current.id} }) → epic_next_wave. Otherwise: ${epicPhaseFixPath(current.id)}`,
+			message: `Every task of phase ${current.id} is resolved and all its waves are closed. Call epic_phase_review({ phase: ${current.id} }) ONCE — it dispatches the phase reviewer, then (if it approves) the phase critic. Both APPROVED → run the normal PHASE-WRAP (load the phase-wrap skill: dispatch the docs agent, write the retrospective with write_retro, …) → phase_complete({ phase: ${current.id} }) → epic_next_wave. Otherwise: ${epicPhaseFixPath(current.id)}`,
 		});
 	}
 

@@ -954,7 +954,7 @@ export async function runEpicPhaseReview(
 		: '';
 	const message =
 		(ready
-			? `Phase ${phase} reviewer and critic both APPROVED. Evidence recorded at ${rel}; phase_complete may proceed.`
+			? `Phase ${phase} reviewer and critic both APPROVED. Evidence recorded at ${rel}. Now run the normal PHASE-WRAP (load the phase-wrap skill: dispatch the docs agent, write the retrospective with write_retro, …), then phase_complete({ phase: ${phase} }), then epic_next_wave.`
 			: reviewer.verdict !== 'APPROVED'
 				? `Phase reviewer returned ${reviewer.verdict}${reviewer.reason ? `: ${reviewer.reason}` : ''}. The critic was not dispatched. ${epicPhaseFixPath(phase)}`
 				: `Phase critic returned ${critic?.verdict}${critic?.reason ? `: ${critic.reason}` : ''}. ${epicPhaseFixPath(phase)}`) +

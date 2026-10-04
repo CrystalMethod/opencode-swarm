@@ -196,6 +196,10 @@ describe('runEpicPhaseReview provider-refusal retry', () => {
 		expect((await verifyEpicPhaseReadiness(dir, 1, FROZEN_NOW_MS)).ok).toBe(
 			true,
 		);
+		// An approved review hands off to the normal PHASE-WRAP (docs agent)
+		// before phase_complete, which requires the docs role.
+		expect(result.success && result.message).toContain('PHASE-WRAP');
+		expect(result.success && result.message).toContain('docs agent');
 	});
 
 	test('a whitespace-only response counts as empty and is retried', async () => {

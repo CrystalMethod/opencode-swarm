@@ -44,6 +44,13 @@ describe('phases are iterations', () => {
 		});
 		if (ready.status === 'phase-ready-for-review') {
 			expect(ready.message).toContain('epic_phase_review({ phase: 1 })');
+			// Hand-off to the normal PHASE-WRAP, which dispatches the docs agent
+			// that phase_complete requires (REQUIRED_AGENTS_MISSING otherwise).
+			expect(ready.message).toContain('PHASE-WRAP');
+			expect(ready.message).toContain('docs agent');
+			expect(ready.message.indexOf('docs agent')).toBeLessThan(
+				ready.message.indexOf('phase_complete('),
+			);
 		}
 		expect(project.record().phases['1']?.status).toBe('review');
 		// Idempotent; phase 2 is NOT issued before phase_complete.

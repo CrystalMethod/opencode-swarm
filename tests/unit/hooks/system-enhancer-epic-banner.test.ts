@@ -101,6 +101,18 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(EPIC_MODE_BANNER).toContain('never go silent');
 	});
 
+	test('after an approved phase review it hands off to the normal PHASE-WRAP (docs agent) before phase_complete', () => {
+		const line = EPIC_MODE_BANNER.split('\n').find((l) =>
+			l.includes('phase-ready-for-review'),
+		);
+		expect(line).toBeDefined();
+		expect(line).toContain('PHASE-WRAP');
+		expect(line).toContain('docs agent');
+		expect(line?.indexOf('docs agent')).toBeLessThan(
+			line?.indexOf('phase_complete') ?? -1,
+		);
+	});
+
 	test('stays within the pre-v2 injection budget and shrank with C2 (≤ 1000 tokens)', () => {
 		// The banner competes for the system-enhancer injection budget. C2
 		// moved all procedure into epic_next_wave's responses, so the banner
