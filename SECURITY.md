@@ -26,21 +26,33 @@ subprocesses, and makes model-driven decisions about what may be changed. Treat
 these as security-relevant:
 
 - **Write-scope escape.** Bypassing the declared working-directory scope, the
-  temp-file quarantine that `src/utils/atomic-write.ts` gates on its
-  `readonly token: 'instance' | 'constant'` discriminator, or a guardrail that
-  is supposed to block a write (see `src/hooks/guardrails/tool-before.ts` and
+  temp-file quarantine decision in `src/services/swarm-residue.ts` (a grammar's
+  `readonly quarantineEligible` flag in `src/utils/atomic-write.ts`, plus the
+  staleness, git-tracked, symlink, active-lock, oversize, and target-absent
+  checks that must also pass), or a guardrail that is supposed to block a write
+  (see `src/hooks/guardrails/tool-before.ts` and
   `src/hooks/shell-write-detect.ts`).
 - **Command execution.** Any path where a shell command, argument, or
   environment value reaches a subprocess without the documented sanitization,
   or where a guardrail meant to block a destructive command fails open. The
-  subprocess surface is in `src/utils/` (`bun-compat.ts`,
-  `external-tool-runner.ts`) behind the guardrails in
-  `src/hooks/guardrails/`.
+  shared spawn wrappers are in `src/utils/` (`bun-compat.ts`,
+  `external-tool-runner.ts`, `gh-executable.ts`, `git-executable.ts`,
+  `glab-executable.ts`, `windows-batch.ts`), but dozens of other non-test
+  files under `src/` — `src/git/`, `src/tools/`, `src/hooks/`, `src/commands/`
+  and more — reach `node:child_process` directly, so treat the wrapper layer
+  as one entry point rather than the boundary. The highest-value surface is
+  the sandbox executor family — `src/sandbox/linux/bubblewrap-executor.ts`,
+  `src/sandbox/macos/sandbox-exec-executor.ts`,
+  `src/sandbox/win32/restricted-environment-executor.ts`,
+  `src/sandbox/win32/runner-client.ts` — plus `src/hooks/spawn-helper.ts`.
+  Guardrails live in `src/hooks/guardrails/`.
 - **Secret exposure.** Leaking a credential from the environment, from project
   configuration, or from `.swarm/` runtime state into a transcript, log, issue,
-  or PR body. Redaction on those egress paths lives in `src/memory/redaction.ts`
-  (`redactSecrets`) and `src/hooks/guardrails/audit-log.ts`; the pre-commit
-  secret scanner is separate, in `src/tools/secretscan.ts`.
+  or PR body. Redaction on those egress paths is defined in
+  `src/memory/redaction.ts` (`redactSecrets`) and
+  `src/hooks/guardrails/helpers.ts` (`redactShellCommand`, used by the
+  guardrail audit log). The opt-in in-session secret scanner, which runs as a
+  pre-check gate rather than a git hook, is separate: `src/tools/secretscan.ts`.
 - **Untrusted input.** A weakness in the external-skill or external-content
   ingestion path that allows prompt injection, unsafe instructions, or a
   provenance bypass to be promoted past its validation gate. The gates are in

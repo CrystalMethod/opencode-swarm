@@ -39,11 +39,17 @@ touched.
 
 - This does **not** clear the catalog's required scan gate. The project's
   current scan is 52/100 against a required 80, and these two files take it to
-  65. The remaining 104 HIGH findings are false positives in the scanner's
+  65. The 104 HIGH findings are false positives in the scanner's
   heuristics — matched against string literals, regex source, and TypeScript type
   annotations in a static-analysis plugin — and are reported upstream in
   [hashgraph-online/hol-guard#3531](https://github.com/hashgraph-online/hol-guard/issues/3531).
-  No repo-owned suppression file is added, because the catalog's scan runs with
-  `trust_repository_policy: false` and would ignore it.
+  The count is unchanged from base: an intermediate revision of SECURITY.md
+  tripped one extra match of the same class, and the wording now shipped does
+  not. No repo-owned suppression file is added, because the catalog's scan runs
+  with `trust_repository_policy: false` and would ignore it.
 - Dependabot will open PRs against a repository with a merge queue. Expect the
   first few to be reviewed like any other change rather than auto-merged.
+- `@opencode-ai/*` is excluded from Dependabot entirely, so no version PR — and
+  no advisory-driven PR — opens for those two production packages. Dependabot
+  security *alerts* still surface on the repository's Security tab; the weekly
+  `host-contract-check` job is the re-verification trigger for a host bump.
