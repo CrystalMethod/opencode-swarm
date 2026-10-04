@@ -61,6 +61,7 @@ import {
 	readDivergenceHistory,
 } from './divergence-recorder';
 import { type EpicRecordV1, getOpenEpic } from './lifecycle';
+import { epicPhaseFixPath } from './next-wave-format';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -385,7 +386,7 @@ export async function verifyEpicPhaseReadiness(
 		return {
 			ok: false,
 			code: 'EPIC_PHASE_REVIEWER_NOT_APPROVED',
-			reason: `Epic phase reviewer (${evidence.reviewer.agent}) returned ${evidence.reviewer.verdict} for phase ${phase}${evidence.reviewer.reason ? `: ${evidence.reviewer.reason}` : ''}. Fix the findings (dispatch coders for the affected tasks through the normal flow), then ${rerunHint(phase)}`,
+			reason: `Epic phase reviewer (${evidence.reviewer.agent}) returned ${evidence.reviewer.verdict} for phase ${phase}${evidence.reviewer.reason ? `: ${evidence.reviewer.reason}` : ''}. ${epicPhaseFixPath(phase)} Then retry phase_complete.`,
 		};
 	}
 	if (!evidence.critic) {
@@ -399,7 +400,7 @@ export async function verifyEpicPhaseReadiness(
 		return {
 			ok: false,
 			code: 'EPIC_PHASE_CRITIC_NOT_APPROVED',
-			reason: `Epic phase critic (${evidence.critic.agent}) returned ${evidence.critic.verdict} for phase ${phase}${evidence.critic.reason ? `: ${evidence.critic.reason}` : ''}. Address the critic's concerns, then ${rerunHint(phase)}`,
+			reason: `Epic phase critic (${evidence.critic.agent}) returned ${evidence.critic.verdict} for phase ${phase}${evidence.critic.reason ? `: ${evidence.critic.reason}` : ''}. ${epicPhaseFixPath(phase)} Then retry phase_complete.`,
 		};
 	}
 
@@ -871,8 +872,8 @@ export async function runEpicPhaseReview(
 	const message = ready
 		? `Phase ${phase} reviewer and critic both APPROVED. Evidence recorded at ${rel}; phase_complete may proceed.`
 		: reviewer.verdict !== 'APPROVED'
-			? `Phase reviewer returned ${reviewer.verdict}${reviewer.reason ? `: ${reviewer.reason}` : ''}. The critic was not dispatched. Fix the findings, then re-run ${EPIC_PHASE_REVIEW_TOOL}({ phase: ${phase} }).`
-			: `Phase critic returned ${critic?.verdict}${critic?.reason ? `: ${critic.reason}` : ''}. Address the concerns, then re-run ${EPIC_PHASE_REVIEW_TOOL}({ phase: ${phase} }).`;
+			? `Phase reviewer returned ${reviewer.verdict}${reviewer.reason ? `: ${reviewer.reason}` : ''}. The critic was not dispatched. ${epicPhaseFixPath(phase)}`
+			: `Phase critic returned ${critic?.verdict}${critic?.reason ? `: ${critic.reason}` : ''}. ${epicPhaseFixPath(phase)}`;
 	return {
 		success: true,
 		phase,

@@ -86,6 +86,21 @@ export type EpicNextWaveResult =
 	| ({ status: 'epic-complete'; message: string } & WithClosed)
 	| { status: 'refused'; reason: EpicNextWaveRefusal; message: string };
 
+/**
+ * How review findings are fixed while an epic is open (C4): coders run only
+ * through waves, so a fix is a NEW pending task of the phase — `epic_next_wave`
+ * then runs it as a fix wave (scopes, landing commit, refs, outcomes) and
+ * returns `phase-ready-for-review` again.
+ */
+export function epicPhaseFixPath(phase: number): string {
+	return `While an epic is open, coders run only through epic waves, so do NOT re-dispatch coders for completed tasks: ${epicPhaseFixSteps(phase)}`;
+}
+
+/** The fix-task steps of {@link epicPhaseFixPath} on their own. */
+export function epicPhaseFixSteps(phase: number): string {
+	return `add each fix as a NEW pending task of phase ${phase} with save_plan (a description and its files_touched; get plan-critic approval if your project requires it after a plan change), then call epic_next_wave — it asks you to declare_scope the new task(s) and issues a fix wave. When the fix wave is done, epic_next_wave returns phase-ready-for-review again; then re-run epic_phase_review({ phase: ${phase} }).`;
+}
+
 export function refused(
 	reason: EpicNextWaveRefusal,
 	message: string,
@@ -130,7 +145,7 @@ export function buildDispatchInstructions(wave: EpicWaveView): string {
 			? '2. Dispatch ONE Task(subagent_type="coder") for it.'
 			: `2. Dispatch ${n} SEPARATE Task(subagent_type="coder") calls, ALL in ONE assistant message (one per taskId) so they run concurrently. Never bundle several task ids into one Task; never split the wave across messages.`,
 		'   Each coder prompt: the task id, its description and acceptance criteria, and its declared scope (`wave.tasks[].files`) — the coder writes only inside that scope.',
-		"   Before dispatching, make sure each task's declared scope also lists the test files the test_engineer will write for it; if not, re-declare it now with `declare_scope` (`replace_existing: true`). Declared files written in the main tree (tests, docs) are committed on the epic branch as the task's residue; each coder runs in its own git worktree and its work lands as a commit when it returns.",
+		"   The scopes are FROZEN for this wave: the gate admits a coder only for a task of this wave whose declared scope stays inside its `wave.tasks[].files` (otherwise EPIC_WAVE_SCOPE_DRIFT) — do not widen a scope now. Declared files written in the main tree (tests, docs) are committed on the epic branch as the task's residue; each coder runs in its own git worktree and its work lands as a commit when it returns.",
 		"3. As each coder returns, run that task's per-task QA — Stage A `pre_check_batch`, then Stage B `reviewer` + `test_engineer` (per its tier) — then `update_task_status(<taskId>, completed)`. Per-task QA is never waived. A returned coder's work is already committed on the epic branch (`swarm(task <id>): …`), so the working tree stays clean: point the reviewer and test_engineer at the task's declared files and that commit, not at uncommitted changes. If QA fails, send the task back to its coder (it starts from the committed work and the tests) and repeat the QA. If a task cannot be finished, tell the user and mark it blocked (or closed if the user drops it).",
 		'4. When every task of this wave is completed (or closed), call `epic_next_wave` again — it closes the wave (records outcomes and divergence) and issues the next one.',
 	].join('\n');

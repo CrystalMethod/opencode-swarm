@@ -28,7 +28,10 @@ import {
 } from '../../../src/hooks/delegation-gate/worktree-isolation';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import { writeApprovedPlan } from '../../helpers/approved-plan';
-import { openEpicForTest } from '../../helpers/epic-lifecycle';
+import {
+	issuedWaveForTest,
+	openEpicForTest,
+} from '../../helpers/epic-lifecycle';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 const baseConfig = {
@@ -98,7 +101,11 @@ describe('Epic v2 C3 — epic coders must be worktree-isolated', () => {
 			[{ id: '1.1', files: ['src/feature.ts'] }],
 			{ executionProfile: profile },
 		);
-		if (epic) openEpicForTest(directory);
+		if (epic) {
+			// Epic v2 C4: coders are admitted only for the active wave.
+			const wave = issuedWaveForTest({ '1.1': ['src/feature.ts'] });
+			openEpicForTest(directory, { waves: [wave], activeWaveSeq: wave.seq });
+		}
 		const session = ensureAgentSession('parent', 'architect', directory);
 		session.currentTaskId = '1.1';
 	}

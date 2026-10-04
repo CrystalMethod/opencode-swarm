@@ -1537,9 +1537,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'src/turbo/lean/evidence.ts:216 writeLaneEvidence / :269 writePhaseEvidence — atomic',
 			'src/turbo/lean/integration.ts:404 writeCriticEvidence / src/turbo/lean/reviewer.ts:381 writeReviewerEvidence — atomic',
-			'src/turbo/epic/phase-readiness.ts:747 runEpicPhaseReview — one atomic evidence/{phase}/epic-phase-review.json per phase, overwritten on re-review',
+			'src/turbo/epic/phase-readiness.ts:748 runEpicPhaseReview — one atomic evidence/{phase}/epic-phase-review.json per phase, overwritten on re-review',
 		],
-		readerCitations: ['src/turbo/lean/evidence.ts:234,284,320 — per-file + directory listing, sync; integration.ts:249 compileCriticPackage', 'src/turbo/epic/phase-readiness.ts:347 verifyEpicPhaseReadiness — single per-phase file read by phase_complete'],
+		readerCitations: ['src/turbo/lean/evidence.ts:234,284,320 — per-file + directory listing, sync; integration.ts:249 compileCriticPackage', 'src/turbo/epic/phase-readiness.ts:348 verifyEpicPhaseReadiness — single per-phase file read by phase_complete'],
 		schemaVersion: 'none',
 		stateClass: 'governed-content',
 		privacyClass: 'content',

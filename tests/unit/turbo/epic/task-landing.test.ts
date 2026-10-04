@@ -1,8 +1,8 @@
 /**
- * Epic v2 C3 — `src/turbo/epic/task-landing.ts`: the two hot-path seams'
- * Epic side. No open epic costs exactly one sentinel check (nothing else is
+ * Epic v2 C3 — `src/turbo/epic/task-landing.ts`: the landing seam's Epic
+ * side. No open epic costs exactly one sentinel check (nothing else is
  * read); a task of the open git epic lands as a commit with the Epic task
- * message (only on the epic branch) and must be worktree-isolated; non-git
+ * message (only on the epic branch); non-git
  * epics, tasks outside the plan and unreadable state fall back to the
  * caller's own behaviour. `_internals` DI only (AGENTS.md #7).
  */
@@ -12,7 +12,6 @@ import {
 	_internals,
 	epicCommitLandingFor,
 	epicIsolationDegradedMessage,
-	epicRequiresWorktreeIsolation,
 	resolveEpicTaskContext,
 } from '../../../../src/turbo/epic/task-landing';
 import { stubEpicRecord } from '../../../helpers/epic-lifecycle';
@@ -75,8 +74,7 @@ describe('no open epic', () => {
 		};
 		expect(resolveEpicTaskContext('/p', '1.1')).toBeNull();
 		expect(epicCommitLandingFor('/p', '1.1')).toBeUndefined();
-		expect(epicRequiresWorktreeIsolation('/p', '1.1')).toBe(false);
-		expect(calls).toEqual(['sentinel', 'sentinel', 'sentinel']);
+		expect(calls).toEqual(['sentinel', 'sentinel']);
 	});
 });
 
@@ -124,17 +122,10 @@ describe('open git epic', () => {
 		expect(epicCommitLandingFor('/p', undefined)).toBeUndefined();
 		expect(epicCommitLandingFor('/p', '  ')).toBeUndefined();
 	});
-
-	test('isolation is required for plan tasks only', () => {
-		withEpic(stubEpicRecord());
-		expect(epicRequiresWorktreeIsolation('/p', '1.1')).toBe(true);
-		expect(epicRequiresWorktreeIsolation('/p', '9.9')).toBe(false);
-		expect(epicRequiresWorktreeIsolation('/p', null)).toBe(false);
-	});
 });
 
 describe('non-git, orphaned or unreadable epics fall back', () => {
-	test('non-git epic: no committed landing, no forced isolation (main-tree serial)', () => {
+	test('non-git epic: no committed landing (main-tree serial)', () => {
 		const nonGit = stubEpicRecord({
 			config: {
 				commitPolicy: 'current-branch',
@@ -150,7 +141,6 @@ describe('non-git, orphaned or unreadable epics fall back', () => {
 		});
 		const calls = withEpic(nonGit);
 		expect(epicCommitLandingFor('/p', '1.1')).toBeUndefined();
-		expect(epicRequiresWorktreeIsolation('/p', '1.1')).toBe(false);
 		expect(calls).not.toContain('branch');
 	});
 
@@ -162,7 +152,6 @@ describe('non-git, orphaned or unreadable epics fall back', () => {
 			throw new Error('multiple Epic lifecycle rows present');
 		}) as never;
 		expect(epicCommitLandingFor('/p', '1.1')).toBeUndefined();
-		expect(epicRequiresWorktreeIsolation('/p', '1.1')).toBe(false);
 	});
 });
 

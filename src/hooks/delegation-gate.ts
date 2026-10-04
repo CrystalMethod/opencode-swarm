@@ -123,15 +123,13 @@ import {
 	updateTaskWorkflowCache,
 } from '../state';
 import { telemetry } from '../telemetry.js';
+import { resolveEpicDispatchPolicy } from '../turbo/epic/gate-policy.js';
 import {
 	epicSentinelExists,
 	isEpicOpenForProject,
 } from '../turbo/epic/lifecycle.js';
 import { commitEpicResidueAfterDelegation } from '../turbo/epic/residue-commit.js';
-import {
-	epicIsolationDegradedMessage,
-	epicRequiresWorktreeIsolation,
-} from '../turbo/epic/task-landing.js';
+import { epicIsolationDegradedMessage } from '../turbo/epic/task-landing.js';
 import type {
 	DelegationEnvelope,
 	EnvelopeValidationResult,
@@ -3414,8 +3412,8 @@ const maintainBackgroundDelegationsForDispatch: typeof import('../background/pen
  */
 export const _internals = {
 	isEpicOpenForProject,
-	/** Epic v2 C3 (M-b): epic coders must be worktree-isolated. */
-	epicRequiresWorktreeIsolation,
+	/** Epic v2 C4: wave-only coder admission + the wave's parallel/isolation policy. */
+	resolveEpicDispatchPolicy,
 	/** Epic v2 C3 (X1): commit a non-coder writer's residue for an epic task. */
 	commitEpicResidueAfterDelegation,
 	/** Epic sentinel probe (one existsSync) gating the residue seam. */
@@ -5310,39 +5308,60 @@ export function createDelegationGateHook(
 			return;
 		}
 		const plan = preparedScope.plan;
+		// Epic v2 C4: while an epic is open for this plan, its ACTIVE WAVE is
+		// the dispatch authority — a coder is admitted only for a wave task
+		// whose declared scope stays inside the scope frozen at issue, and the
+		// wave (not the execution profile) decides parallelism, isolation and
+		// the slot cap. PR-feedback coders returned above (bypass by
+		// construction). Gated synchronously: with no open epic this is one
+		// existsSync and `null`, and every expression below is the original.
+		const epicPolicy = _internals.epicSentinelExists(directory)
+			? _internals.resolveEpicDispatchPolicy(
+					directory,
+					plan,
+					incomingCoderTaskId,
+					preparedScope.declaredFiles,
+				)
+			: null;
+		if (epicPolicy?.kind === 'reject') {
+			throw new Error(`${epicPolicy.code}: ${epicPolicy.message}`);
+		}
+		const epicWave = epicPolicy?.kind === 'allow' ? epicPolicy : null;
 		const profile = plan.execution_profile;
 		const parallelEnabled = profile?.parallelization_enabled === true;
 		const maxConcurrent = profile?.max_concurrent_tasks ?? 10;
-		const effectiveMaxConcurrent =
-			session.maxConcurrencyOverride ?? maxConcurrent;
+		const effectiveMaxConcurrent = epicWave
+			? epicWave.maxConcurrent
+			: (session.maxConcurrencyOverride ?? maxConcurrent);
 		// #1674 v8 AUTOMATIC FALLBACK (acceptance criterion 4): parallel mode
 		// additionally requires the active phase's pending tasks to be PROVABLY
 		// file-disjoint. The gate computes the verdict inline via the same pure
 		// helper the architect's `plan_conflict_check` tool uses; conflicts or
 		// unknown scopes → serial by default, with no architect discretion.
-		const scopeAllowsParallel = scopeVerdictAllowsParallel(directory, plan);
+		// (An epic wave carries its own verdict from its frozen scopes.)
+		const scopeAllowsParallel =
+			epicWave === null && scopeVerdictAllowsParallel(directory, plan);
 		// Standard worktree isolation remains active even when the concurrency
 		// verdict falls back to serial. F-014: coupling isolation to
 		// `scopeAllowsParallel` made overlapping/unknown scopes run in the project
 		// root, defeating the safety boundary that serial fallback is meant to keep.
 		const parallelWorktreeIsolationActive =
+			epicWave === null &&
 			parallelEnabled &&
 			effectiveMaxConcurrent > 1 &&
 			!hasActiveLeanTurbo(input.sessionID);
-		// Epic v2 C3 (M-b): a coder for a task of the open git epic is always
-		// isolated in a worktree (degradation refused below). With no open
-		// epic this is one existsSync and `false`, so isolation is exactly the
-		// parallel-mode expression above.
-		const epicIsolationRequired = _internals.epicRequiresWorktreeIsolation(
-			directory,
-			incomingCoderTaskId,
-		);
-		const standardWorktreeIsolationActive =
-			parallelWorktreeIsolationActive || epicIsolationRequired;
+		// Epic v2 C3 (M-b): a coder of an open git epic is always isolated in a
+		// worktree (degradation refused below), whatever the profile says.
+		const epicIsolationRequired = epicWave?.isolate === true;
+		const standardWorktreeIsolationActive = epicWave
+			? epicWave.isolate
+			: parallelWorktreeIsolationActive;
 		// Parallel gate exemptions and slot accounting additionally require the
-		// pending tasks to be provably disjoint.
-		const parallelModeActive =
-			parallelWorktreeIsolationActive && scopeAllowsParallel;
+		// pending tasks (an epic: the wave's unresolved tasks) to be provably
+		// disjoint.
+		const parallelModeActive = epicWave
+			? epicWave.parallel
+			: parallelWorktreeIsolationActive && scopeAllowsParallel;
 		const criticPolicy = resolvePlanCriticPolicyForExecution(
 			directory,
 			plan,

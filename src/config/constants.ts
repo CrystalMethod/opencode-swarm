@@ -875,7 +875,7 @@ It plans every wave, closes finished waves, and keeps phases in order. Never pla
 - \`declare-scopes\` → \`declare_scope\` once per listed \`taskId\` (start from \`suggestedFiles\`), then call again.
 - \`in-progress\` → finish the listed tasks, then call again.
 - \`blocked\` → relay \`message\` to the user and apply its remedy.
-- \`phase-ready-for-review\` → \`epic_phase_review(phase)\` ONCE (phase reviewer, then critic). Both APPROVED → retrospective → \`phase_complete\` → \`epic_next_wave\`; otherwise fix the findings and re-run it.
+- \`phase-ready-for-review\` → \`epic_phase_review(phase)\` ONCE (phase reviewer, then critic). Both APPROVED → retrospective → \`phase_complete\` → \`epic_next_wave\`; otherwise add each fix as a NEW pending task of that phase (\`save_plan\`) and call \`epic_next_wave\` (it runs them as a fix wave), then re-run it. Never re-dispatch a coder outside a wave.
 - \`epic-complete\` → tell the user to close the epic with \`/swarm epic close\`.
 - \`refused\` → relay \`message\`; run tasks per-task serially.
 

@@ -1,7 +1,7 @@
 /**
  * Epic v2 C3 — how an epic task's coder work reaches the epic branch.
  *
- * Two seams in shared code consult this module, both Epic-gated and both
+ * Two seams in shared code rely on this module, both Epic-gated and both
  * costing exactly one `existsSync` (the epic sentinel) when no epic is open:
  *
  *   - `finishStandardWorktreeDispatch` (worktree-isolation.ts) asks
@@ -13,16 +13,16 @@
  *     The work is therefore COMMITTED before `update_task_status(completed)`,
  *     so a rework coder (whose worktree is cut from HEAD) starts from it and
  *     its own landing no longer overlaps uncommitted bytes (critic B2).
- *   - the delegation gate asks {@link epicRequiresWorktreeIsolation}: a
- *     coder for a task of an open git epic is ALWAYS isolated in a worktree
- *     (policy treated as `required`), whatever `parallelization_enabled`, the
- *     session's concurrency override or the preset say; when isolation cannot
- *     be provided the dispatch is refused with
+ *   - the delegation gate's Epic dispatch policy (`gate-policy.ts`, C4)
+ *     isolates every coder of an open git epic in a worktree (policy treated
+ *     as `required`), whatever `parallelization_enabled`, the session's
+ *     concurrency override or the preset say; when isolation cannot be
+ *     provided the dispatch is refused with
  *     {@link epicIsolationDegradedMessage} instead of running un-isolated in
  *     the main tree (M-b).
  *
  * Non-git epics run serially in the main tree (one task per wave, M-i) and
- * never reach either seam's Epic branch.
+ * never reach the landing seam's Epic branch.
  */
 
 import * as logger from '../../utils/logger.js';
@@ -155,21 +155,6 @@ export function epicCommitLandingFor(
 			context.task.description,
 		),
 	};
-}
-
-/**
- * True when a coder for `taskId` must run in an isolated worktree: the task
- * belongs to the open epic and the epic is a git epic isolated by worktree.
- */
-export function epicRequiresWorktreeIsolation(
-	directory: string,
-	taskId: string | null | undefined,
-): boolean {
-	const context = resolveEpicTaskContext(directory, taskId);
-	if (!context) return false;
-	return (
-		context.epic.git.isRepo && context.epic.config.isolation === 'worktree'
-	);
 }
 
 /**

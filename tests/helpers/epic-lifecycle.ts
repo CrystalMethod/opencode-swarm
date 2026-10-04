@@ -8,13 +8,16 @@
  * open epic exactly as after `/swarm epic start`. It skips start's
  * preconditions on purpose — tests of those use `startEpic` itself.
  *
- * `stubEpicRecord` builds a record for `_internals` DI doubles.
+ * `stubEpicRecord` builds a record for `_internals` DI doubles;
+ * `issuedWaveForTest` an issued (active) wave with the given frozen scopes —
+ * pass it as `{ waves: [wave], activeWaveSeq: wave.seq }`.
  */
 
 import {
 	computeEpicKey,
 	createEpicRecord,
 	type EpicRecordV1,
+	type EpicWaveRecord,
 	readCurrentPlanIdentity,
 	readLedgerRootDigest,
 } from '../../src/turbo/epic/lifecycle.js';
@@ -108,4 +111,23 @@ export function wideOpenEpic(): EpicRecordV1 {
 			maxParallel: 64,
 		},
 	});
+}
+
+/** An issued wave whose frozen scopes are `files` (task id → files). */
+export function issuedWaveForTest(
+	files: Record<string, string[]>,
+	overrides: Partial<EpicWaveRecord> = {},
+): EpicWaveRecord {
+	return {
+		seq: 1,
+		phase: 1,
+		kind: 'parallel',
+		taskIds: Object.keys(files),
+		files,
+		cochange: null,
+		baseHead: null,
+		issuedAt: '2026-01-01T00:00:00.000Z',
+		status: 'issued',
+		...overrides,
+	};
 }

@@ -96,11 +96,19 @@ describe('phases are iterations', () => {
 		await runEpicNextWave(project.dir, SESSION);
 		markEpicPhaseComplete(project.dir, 1);
 		project.setStatus('1.1', 'pending');
-		expect(await runEpicNextWave(project.dir, SESSION)).toMatchObject({
+		const reopened = await runEpicNextWave(project.dir, SESSION);
+		expect(reopened).toMatchObject({
 			status: 'blocked',
 			reason: 'task-reopened',
 			details: { taskIds: ['1.1'] },
 		});
+		// No coder can run outside a wave: close it, or re-add the work as a
+		// NEW task of the current phase.
+		if (reopened.status === 'blocked') {
+			expect(reopened.message).toContain('update_task_status closed');
+			expect(reopened.message).toContain('NEW task in the current phase');
+			expect(reopened.message).not.toContain('per-task flow');
+		}
 		project.setStatus('1.1', 'completed');
 		project.plan.phases[0].tasks.push({
 			...project.plan.phases[0].tasks[0],

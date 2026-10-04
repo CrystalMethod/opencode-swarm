@@ -26,9 +26,11 @@
  *      `epic-complete`;
  *   6. otherwise selects the next wave (`wave-select.ts`): `declare-scopes`,
  *      `blocked` (`predecessor-missing`, `task-blocked`, `git-failed`,
- *      `dirty-baseline`), or `dispatch` — the wave (frozen declared scopes,
- *      base HEAD) is CAS-written into the epic record (token-guarded) and
- *      returned with dispatch instructions.
+ *      `dirty-baseline`), or `dispatch` — a multi-task wave must pass THE
+ *      wave verdict (`gate-policy.ts`, the call the delegation gate repeats
+ *      at dispatch); the wave (frozen declared scopes, base HEAD) is
+ *      CAS-written into the epic record (token-guarded) and returned with
+ *      dispatch instructions.
  *
  * Git epics (Epic v2 C3): every task's work is committed before the task
  * completes (its coder's worktree lands as a merge commit; non-coder writes
@@ -60,6 +62,7 @@ import {
 } from './config-gate.js';
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from './declared-scopes.js';
 import { checkEpicBranch as checkEpicBranch_import } from './epic-branch.js';
+import { computeEpicWaveVerdict as computeEpicWaveVerdict_import } from './gate-policy.js';
 import {
 	type EpicRecordV1,
 	type EpicWaveRecord,
@@ -79,6 +82,7 @@ import {
 	type EpicClosedWaveSummary,
 	type EpicNextWaveResult,
 	type EpicWaveView,
+	epicPhaseFixPath,
 	predecessorMessage,
 	refused,
 	summarizeClosedWave,
@@ -136,6 +140,7 @@ export const _internals = {
 	computeWaveClose: computeWaveClose_import,
 	feedEpicCalibration: feedEpicCalibration_import,
 	releaseWaveAttribution: releaseWaveAttribution_import,
+	computeEpicWaveVerdict: computeEpicWaveVerdict_import,
 	now: (): number => Date.now(),
 };
 
@@ -272,7 +277,7 @@ export async function runEpicNextWave(
 			status: 'blocked',
 			reason: 'task-reopened',
 			details: { taskIds: reopened },
-			message: `Task(s) ${reopened.join(', ')} were completed in an already-complete phase and are now open again. Epic runs phases in order, so they cannot join a new wave. Tell the user, then either finish each one again through the per-task flow (coder → Stage A → Stage B → update_task_status(completed)) or close it (update_task_status closed) if the user drops it; then call epic_next_wave.`,
+			message: `Task(s) ${reopened.join(', ')} were completed in an already-complete phase and are now open again. Epic runs phases in order, so they cannot join a new wave. Coders cannot be dispatched for them (no wave can contain them). Tell the user, then close each one (update_task_status closed) — or close it and re-add the remaining work as a NEW task in the current phase (save_plan), which the next wave runs; then call epic_next_wave.`,
 		});
 	}
 	if (revised.length > 0) {
@@ -298,7 +303,7 @@ export async function runEpicNextWave(
 		return withClosed({
 			status: 'phase-ready-for-review',
 			phase: current.id,
-			message: `Every task of phase ${current.id} is resolved and all its waves are closed. Call epic_phase_review({ phase: ${current.id} }) ONCE — it dispatches the phase reviewer, then (if it approves) the phase critic. Both APPROVED → write the retrospective → phase_complete({ phase: ${current.id} }) → epic_next_wave. Otherwise fix the findings and re-run epic_phase_review.`,
+			message: `Every task of phase ${current.id} is resolved and all its waves are closed. Call epic_phase_review({ phase: ${current.id} }) ONCE — it dispatches the phase reviewer, then (if it approves) the phase critic. Both APPROVED → write the retrospective → phase_complete({ phase: ${current.id} }) → epic_next_wave. Otherwise: ${epicPhaseFixPath(current.id)}`,
 		});
 	}
 
@@ -839,6 +844,16 @@ async function issueNextWave(
 		case 'wave':
 			break;
 	}
+	const waveCochange = cochange
+		? { pairs: selection.cochangePairs, threshold: cochange.threshold }
+		: null;
+	const waveTaskIds = assertWaveDisjoint(
+		directory,
+		plan,
+		selection.taskIds,
+		selection.files,
+		waveCochange,
+	);
 
 	let untrackedNote = '';
 	if (epic.git.isRepo) {
@@ -867,11 +882,9 @@ async function issueNextWave(
 				seq,
 				phase: phaseId,
 				kind: selection.waveKind,
-				taskIds: selection.taskIds,
-				files: selection.files,
-				cochange: cochange
-					? { pairs: selection.cochangePairs, threshold: cochange.threshold }
-					: null,
+				taskIds: waveTaskIds,
+				files: pickFiles(selection.files, waveTaskIds),
+				cochange: waveCochange,
 				baseHead,
 				issuedAt: nowIso,
 				status: 'issued',
@@ -907,6 +920,55 @@ async function issueNextWave(
 		wave: view,
 		instructions: `${buildDispatchInstructions(view)}${untrackedNote}`,
 	};
+}
+
+/**
+ * Epic v2 C4 — the issue-time half of the gate's single source of truth: a
+ * multi-task wave is issued only when THE wave verdict
+ * (`computeEpicWaveVerdict`, the exact call the delegation gate repeats at
+ * dispatch over the wave's frozen scopes) is `all_disjoint`. The selection
+ * already excludes path and co-change conflicts, so a failure here is a
+ * planner bug: the wave is narrowed to its first task in the verdict's
+ * serial order (the others return in a later wave) — never issued as a
+ * parallel wave the gate would then serialize. Returns the task ids to issue.
+ */
+function assertWaveDisjoint(
+	directory: string,
+	plan: Plan,
+	taskIds: string[],
+	files: Record<string, string[]>,
+	cochange: EpicWaveRecord['cochange'],
+): string[] {
+	if (taskIds.length < 2) return taskIds;
+	let verdict: ReturnType<typeof computeEpicWaveVerdict_import>;
+	try {
+		verdict = _internals.computeEpicWaveVerdict(
+			directory,
+			plan,
+			{ files, cochange },
+			taskIds,
+		);
+	} catch (error) {
+		logger.criticalWarn(
+			`[epic/next-wave] wave verdict failed (${errorText(error)}); issuing ${taskIds[0]} alone`,
+		);
+		return [taskIds[0]];
+	}
+	if (verdict.verdict === 'all_disjoint') return taskIds;
+	const first = verdict.suggestedSerialOrder[0] ?? taskIds[0];
+	logger.criticalWarn(
+		`[epic/next-wave] wave selection [${taskIds.join(', ')}] is not provably disjoint (${verdict.verdict}); issuing ${first} alone`,
+	);
+	return [first];
+}
+
+function pickFiles(
+	files: Record<string, string[]>,
+	taskIds: readonly string[],
+): Record<string, string[]> {
+	const picked: Record<string, string[]> = Object.create(null);
+	for (const id of taskIds) picked[id] = files[id] ?? [];
+	return picked;
 }
 
 /**
