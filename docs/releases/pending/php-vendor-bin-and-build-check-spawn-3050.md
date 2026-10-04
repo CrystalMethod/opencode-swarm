@@ -18,9 +18,12 @@ same path the Maven and Gradle wrappers already use; when that launcher declines
 (missing shim, a wrapper symlink resolving outside the project directory, a
 test-file path carrying a `cmd.exe` metacharacter, an argument ending in a
 backslash that the launcher's quoting would mangle, an unresolvable `ComSpec`)
-the command falls back to running the PHP interpreter against the
-extensionless Composer proxy instead of re-emitting the batch file.
-Non-Windows behaviour is unchanged.
+the command falls back to the extensionless Composer proxy rather than
+re-emitting the batch file. If that proxy is present it is run through the PHP
+interpreter; if the vendor directory is missing entirely there is nothing to
+run, and the command is the bare proxy so the launch itself fails and is reported
+as a launch error rather than a test regression. Non-Windows behaviour is
+unchanged.
 
 Separately, `build_check` now reports the `spawnError` value from its process
 launch as a `spawn_error` field on the run record. Previously a command that

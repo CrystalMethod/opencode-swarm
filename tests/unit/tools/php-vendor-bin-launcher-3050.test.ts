@@ -431,7 +431,7 @@ describe('#3050: decline paths beyond the shim-missing case', () => {
 		// as a launch error instead.
 		Object.defineProperty(process, 'platform', { value: 'win32' });
 		process.env.ComSpec = cmdExePath;
-		const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'c3-empty-'));
+		const empty = canonicalMkdtemp('c3-empty-');
 		try {
 			expect(buildPhpVendorCommand(empty, 'phpunit', [])).toEqual([
 				path.join('vendor', 'bin', 'phpunit'),
