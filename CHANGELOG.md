@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.188.12](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.11...v7.188.12) (2026-10-04)
+
+
+### Bug Fixes
+
+* **commands:** review-round corrections for harness/skill-opt config wiring ([8c5b7a3](https://github.com/ZaxbyHub/opencode-swarm/commit/8c5b7a3a42b778ed4accd34e08f46341da5be754))
+* **commands:** wire ctx.config into harness-opt/skill-opt registry closures ([1c52e55](https://github.com/ZaxbyHub/opencode-swarm/commit/1c52e555f6ab7e5270b1f3a94e764b0db3321f74))
+
 ## [7.188.11](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.10...v7.188.11) (2026-10-04)
 
 
