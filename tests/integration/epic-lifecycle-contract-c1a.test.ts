@@ -182,7 +182,12 @@ beforeEach(async () => {
 				policy: 'enforce',
 			},
 			curator: { enabled: false },
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			// C1a contract pins the `current-branch` policy; the epic-branch
+			// default (C1b) is pinned by epic-lifecycle-contract-c1b.
+			turbo: {
+				strategy: 'standard',
+				epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
+			},
 		}),
 	);
 	fs.writeFileSync(path.join(dir, '.gitignore'), '.swarm/\n');

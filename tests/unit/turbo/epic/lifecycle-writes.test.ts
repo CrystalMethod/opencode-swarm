@@ -247,11 +247,20 @@ describe('record updates', () => {
 		expect(closing?.closing).toEqual({
 			requestedAt: '2026-03-01T00:00:00.000Z',
 			outcome: 'completed',
+			land: null,
+			lastLandingAttempt: null,
 		});
-		// Idempotent: a second close request keeps the first outcome.
+		// Idempotent: a second completed request changes nothing.
+		expect(markEpicClosing(dir, epic.epicKey, 'completed')).toEqual(closing);
+		// C1b: an explicit abandon of a close whose landing never finished
+		// upgrades the outcome (it will not land); the request time is kept.
+		const abandoned = markEpicClosing(dir, epic.epicKey, 'abandoned');
+		expect(abandoned?.closing?.outcome).toBe('abandoned');
+		expect(abandoned?.closing?.requestedAt).toBe('2026-03-01T00:00:00.000Z');
+		// …and is never downgraded back to completed.
 		expect(
-			markEpicClosing(dir, epic.epicKey, 'abandoned')?.closing?.outcome,
-		).toBe('completed');
+			markEpicClosing(dir, epic.epicKey, 'completed')?.closing?.outcome,
+		).toBe('abandoned');
 		const raw = getCoordinationStateRaw(
 			dir,
 			EPIC_LIFECYCLE_NAMESPACE,

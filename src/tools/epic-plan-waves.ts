@@ -29,6 +29,7 @@ import {
 	resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import,
 	toEpicPlanIdentity,
 } from '../turbo/epic/declared-scopes';
+import { checkEpicBranch as checkEpicBranch_import } from '../turbo/epic/epic-branch';
 import {
 	type EpicRecordV1,
 	getOpenEpic as getOpenEpic_import,
@@ -70,6 +71,7 @@ export interface EpicPlanWavesResult {
 		| 'epic-disabled-by-config'
 		| 'epic-mode-not-active'
 		| 'epic-state-unreadable'
+		| 'epic-branch-mismatch'
 		| 'no-plan'
 		| 'no-phase'
 		| 'phase-empty'
@@ -98,6 +100,7 @@ function readPlanJson(directory: string): { phases: PlanPhase[] } | null {
  *   0. `epic-disabled-by-config` — `turbo.epic.mode.enabled !== true`
  *      `epic-mode-not-active` — no epic open for the current plan
  *      `epic-state-unreadable` — the Epic lifecycle row is unreadable
+ *      `epic-branch-mismatch` — HEAD is not the epic's branch (EPIC_BRANCH_MISMATCH)
  *   1. `no-plan` — `.swarm/plan.json` missing / unparseable
  *   2. `no-phase` — phase number not in `plan.json`
  *   3. `phase-empty` — phase exists but has zero tasks
@@ -154,6 +157,16 @@ export async function executeEpicPlanWaves(
 			errors: [
 				'No epic is open for the current plan. Ask the user to run `/swarm epic start`; until then execute the phase per-task serially.',
 			],
+		};
+	}
+	// Branch-drift guard (Epic v2 C1b, M-e): waves are planned against HEAD
+	// (Rule 3 markers), which must still be the epic branch.
+	const branch = _internals.checkEpicBranch(directory, epic);
+	if (!branch.ok) {
+		return {
+			success: false,
+			reason: 'epic-branch-mismatch',
+			errors: [branch.message],
 		};
 	}
 
@@ -384,6 +397,7 @@ export const _internals = {
 	loadPlanJsonOnly: loadPlanJsonOnly_import,
 	loadPluginConfigWithMeta: loadPluginConfigWithMeta_import,
 	getOpenEpic: getOpenEpic_import,
+	checkEpicBranch: checkEpicBranch_import,
 };
 
 /** Tool definition for `epic_plan_waves`. */

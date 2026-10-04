@@ -10,11 +10,21 @@
  *                                 session with Turbo on, or a running durable
  *                                 Lean run (read without migrating Lean state)
  *   5. dirty-baseline             git only: changes outside `.swarm/`
+ *      detached-head              git + epic-branch policy: HEAD is detached
+ *                                 (or the branch has no commit yet)
+ *      epic-branch-exists         git + epic-branch policy:
+ *                                 `swarm/epic/<epicKey>` already exists (left
+ *                                 by an earlier, abandoned epic of this plan)
  *   6. in-flight-coders           project-wide (see `findInFlightCoderWork`)
  *   7. not-epic-sized             sizing verdict (`--force` overrides; recorded)
+ *   8. branch-create-failed       `git checkout -b` failed after the row was
+ *                                 created — row and sentinel rolled back
  *
- * Non-git projects may open an epic but run it serially (maxParallel 1, M-i).
- * C1a records `commitPolicy: 'current-branch'` (the epic branch is C1b).
+ * Commit policy (`turbo.epic.commit_policy`, default `epic-branch`): after
+ * the CAS create a git epic checks out `swarm/epic/<epicKey>` and records it
+ * (`git.epicBranch`) only once the checkout succeeded (M-e). Non-git
+ * projects (always `current-branch`) may open an epic but run it serially
+ * (maxParallel 1, M-i).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -52,12 +62,23 @@ import {
 } from './config-gate.js';
 import { resolveEpicDeclaredScopes } from './declared-scopes.js';
 import {
+	checkoutNewEpicBranch,
+	epicBranchName,
+	listDirtyPathsOutsideSwarm,
+	localBranchExists,
+	readCurrentBranch,
+	resolveEpicCommitPolicy,
+	undoEpicBranchCreate,
+} from './epic-branch.js';
+import {
 	computeEpicKey,
 	createEpicRecord,
+	deleteEpicState,
 	type EpicRecordV1,
 	inspectEpic,
 	planIdentityOf,
 	readLedgerRootDigest,
+	recordEpicBranch,
 } from './lifecycle.js';
 import { computePlanKey, PLAN_SCOPE_RESOLVE_TIMEOUT_MS } from './plan-key.js';
 import {
@@ -75,8 +96,11 @@ export type EpicStartRefusal =
 	| 'epic-state-unreadable'
 	| 'turbo-active'
 	| 'dirty-baseline'
+	| 'detached-head'
+	| 'epic-branch-exists'
 	| 'in-flight-coders'
-	| 'not-epic-sized';
+	| 'not-epic-sized'
+	| 'branch-create-failed';
 
 export type EpicStartResult =
 	| { status: 'started'; record: EpicRecordV1 }
@@ -163,24 +187,7 @@ export function findTurboActivity(
 
 /** Changes outside `.swarm/` (git only). Throws when git fails. */
 export function findDirtyBaseline(directory: string): string[] {
-	const output = _internals.gitExec(
-		['status', '--porcelain=v1', '-z', '--untracked-files=normal'],
-		directory,
-	);
-	const dirty: string[] = [];
-	const records = output.split('\0');
-	for (let i = 0; i < records.length; i += 1) {
-		const record = records[i];
-		if (record.length < 4) continue;
-		const code = record.slice(0, 2);
-		const file = record.slice(3);
-		// Renames/copies carry the source path in the next NUL record.
-		if (code.includes('R') || code.includes('C')) i += 1;
-		const normalized = file.replace(/\\/g, '/');
-		if (normalized === '.swarm' || normalized.startsWith('.swarm/')) continue;
-		dirty.push(normalized);
-	}
-	return dirty;
+	return listDirtyPathsOutsideSwarm(directory, _internals.gitExec);
 }
 
 /**
@@ -396,7 +403,12 @@ export function computeEpicSizing(
 
 function readGitFacts(directory: string): EpicRecordV1['git'] {
 	if (!_internals.getGitRepositoryStatus(directory).isRepo) {
-		return { isRepo: false, baseCommit: null, originalBranch: null };
+		return {
+			isRepo: false,
+			baseCommit: null,
+			originalBranch: null,
+			epicBranch: null,
+		};
 	}
 	let baseCommit: string | null = null;
 	let originalBranch: string | null = null;
@@ -412,7 +424,9 @@ function readGitFacts(directory: string): EpicRecordV1['git'] {
 	} catch {
 		originalBranch = null;
 	}
-	return { isRepo: true, baseCommit, originalBranch };
+	// `rev-parse --abbrev-ref` prints the literal `HEAD` when detached.
+	if (originalBranch === 'HEAD' || originalBranch === '') originalBranch = null;
+	return { isRepo: true, baseCommit, originalBranch, epicBranch: null };
 }
 
 export async function startEpic(
@@ -522,6 +536,10 @@ export async function startEpic(
 
 	// 5. Clean baseline (git only).
 	const git = readGitFacts(directory);
+	const commitPolicy = git.isRepo
+		? resolveEpicCommitPolicy(config)
+		: 'current-branch';
+	let epicBranch: string | null = null;
 	if (git.isRepo) {
 		let dirty: string[];
 		try {
@@ -536,6 +554,31 @@ export async function startEpic(
 				`${dirty.length} uncommitted change(s) outside .swarm/: ${dirty.slice(0, 10).join(', ')}${dirty.length > 10 ? ', …' : ''}`,
 				'Commit or stash them, then retry.',
 			]);
+		}
+		if (commitPolicy === 'epic-branch') {
+			if (git.originalBranch === null || git.baseCommit === null) {
+				return refused('detached-head', [
+					git.baseCommit === null
+						? 'The current branch has no commit yet, so there is nothing to branch the epic from.'
+						: 'HEAD is detached, so there is no branch to land the epic back onto at close.',
+					'Check out (or create) a branch with at least one commit, then retry — or set `turbo.epic.commit_policy: "current-branch"`.',
+				]);
+			}
+			epicBranch = epicBranchName(epicKey);
+			let exists: boolean;
+			try {
+				exists = _internals.localBranchExists(directory, epicBranch);
+			} catch (error) {
+				return refused('branch-create-failed', [
+					`git could not check for the epic branch \`${epicBranch}\`: ${errorText(error)}`,
+				]);
+			}
+			if (exists) {
+				return refused('epic-branch-exists', [
+					`The epic branch \`${epicBranch}\` already exists (left by an earlier epic of this plan that was abandoned or not landed).`,
+					`Land or inspect what you need from it, delete it with \`git branch -D ${epicBranch}\`, then retry.`,
+				]);
+			}
 		}
 	}
 
@@ -586,7 +629,7 @@ export async function startEpic(
 		forced: !sizing.epicSized,
 		structureHashAtStart: computePlanStructureHash(plan),
 		config: {
-			commitPolicy: 'current-branch',
+			commitPolicy,
 			isolation: git.isRepo ? 'worktree' : 'main-tree-nogit',
 			maxParallel,
 		},
@@ -606,7 +649,98 @@ export async function startEpic(
 			`Another epic was opened concurrently (${created.existingKeys.join(', ')}).`,
 		]);
 	}
-	return { status: 'started', record: created.record };
+	if (epicBranch === null || git.originalBranch === null) {
+		return { status: 'started', record: created.record };
+	}
+	return switchToEpicBranch(
+		directory,
+		created.record,
+		git.originalBranch,
+		epicBranch,
+	);
+}
+
+/**
+ * Epic-branch policy, after the CAS create: `git checkout -b` the epic
+ * branch (one attempt, no transient retry), then record it (M-e — never
+ * before HEAD is verified on it). A `checkout -b` that reports failure is
+ * judged by the ACTUAL state: when HEAD is on the epic branch anyway (for
+ * example a post-checkout hook exited non-zero after the switch, or the
+ * command timed out after switching) the start proceeds — `checkout -b`
+ * from HEAD changes no files, only the ref. Otherwise, and on a record
+ * failure, the start is rolled back: the branch is undone when it still
+ * points at the start commit (HEAD switched back first), and the row +
+ * sentinel are compare-and-deleted on this start's token.
+ */
+function switchToEpicBranch(
+	directory: string,
+	record: EpicRecordV1,
+	originalBranch: string,
+	epicBranch: string,
+): EpicStartResult {
+	const baseCommit = record.git.baseCommit ?? '';
+	const rollbackState = (): string[] => {
+		try {
+			_internals.deleteEpicState(directory, record.epicKey, record.token);
+			return [];
+		} catch (error) {
+			return [
+				`rolling back the epic record failed: ${errorText(error)} — run \`/swarm epic close --abandon\``,
+			];
+		}
+	};
+	let checkoutError: string | null = null;
+	try {
+		_internals.checkoutNewEpicBranch(directory, epicBranch);
+	} catch (error) {
+		checkoutError = errorText(error);
+	}
+	if (checkoutError !== null) {
+		let current: string | null = null;
+		try {
+			current = _internals.readCurrentBranch(directory);
+		} catch {
+			current = null;
+		}
+		if (current !== epicBranch) {
+			return refused('branch-create-failed', [
+				`git checkout -b ${epicBranch} failed: ${checkoutError}`,
+				..._internals.undoEpicBranchCreate(
+					directory,
+					originalBranch,
+					epicBranch,
+					baseCommit,
+				),
+				...rollbackState(),
+				'The epic was not opened; fix the git problem and retry.',
+			]);
+		}
+		// HEAD is on the new branch: the switch happened despite the error.
+	}
+	let updated: EpicRecordV1 | null = null;
+	let updateError: string | null = null;
+	try {
+		updated = _internals.recordEpicBranch(
+			directory,
+			record.epicKey,
+			record.token,
+			epicBranch,
+		);
+	} catch (error) {
+		updateError = errorText(error);
+	}
+	if (updated) return { status: 'started', record: updated };
+	return refused('branch-create-failed', [
+		`the epic branch \`${epicBranch}\` was created but could not be recorded${updateError ? `: ${updateError}` : ' (the epic row vanished)'}`,
+		..._internals.undoEpicBranchCreate(
+			directory,
+			originalBranch,
+			epicBranch,
+			baseCommit,
+		),
+		...rollbackState(),
+		'The epic was not opened; retry `/swarm epic start`.',
+	]);
 }
 
 /**
@@ -619,6 +753,12 @@ export const _internals = {
 	readPlanEpochIdentity,
 	inspectEpic,
 	createEpicRecord,
+	deleteEpicState,
+	recordEpicBranch,
+	localBranchExists,
+	checkoutNewEpicBranch,
+	readCurrentBranch,
+	undoEpicBranchCreate,
 	resolveEpicDeclaredScopes,
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
 	findRunningLeanRun,

@@ -1,15 +1,25 @@
 /**
- * `/swarm epic close` and `/swarm close` finalization (Epic v2 C1a).
+ * `/swarm epic close` and `/swarm close` finalization (Epic v2 C1a + C1b).
  *
- * C1a closes WITHOUT landing (the epic branch and squash landing are C1b):
  *   1. refuse `epic-incomplete` (pending tasks) / `epic-orphaned` /
  *      `epic-state-unreadable` unless `--abandon`;
- *   2. CAS the row to `closing` (an interrupted close resumes from here);
- *   3. write the minimal close report to `.swarm/epic/reports/<reportKey>.json`
- *      and `.swarm/epic-prior/reports/<reportKey>.json` (newest 50 kept —
+ *   2. epic-branch epics (C1b), not abandoning: landing preflight BEFORE any
+ *      mutation (M-f) — refuse `dirty-worktree` (changes outside `.swarm/`),
+ *      `original-branch-missing`, `detached-head` (a detached commit that
+ *      switching would orphan),
+ *      `epic-branch-missing`, `landing-git-failed`; detect an
+ *      already-landed state so a resumed close is idempotent;
+ *   3. CAS the row to `closing` (an interrupted close resumes from here);
+ *   4. write the close report to `.swarm/epic/reports/<reportKey>.json` and
+ *      `.swarm/epic-prior/reports/<reportKey>.json` (newest 50 kept —
  *      `epic-prior/` survives `/swarm close`);
- *   4. delete the row, then compare-and-delete the sentinel, under the
- *      lifecycle lock.
+ *   5. land (`--land squash|merge|none`, default squash; see
+ *      `epic-branch.ts`). A conflict or failure is rolled back, recorded on
+ *      the row, and the close STOPS with the row still `closing` — rerunning
+ *      `/swarm epic close` resumes. `--abandon` never lands: it switches back
+ *      to the original branch when the tree is clean and keeps the branch;
+ *   6. rewrite the report with the landing outcome, delete the row, then
+ *      compare-and-delete the sentinel, under the lifecycle lock.
  * `--abandon` on unreadable state deletes every lifecycle row without
  * parsing it, then the sentinel.
  */
@@ -24,12 +34,22 @@ import { loadPlanJsonOnly } from '../../plan/manager.js';
 import { atomicWriteSwarmFileSync } from '../../utils/atomic-write.js';
 import { isEpicModeConfigEnabled } from './config-gate.js';
 import {
+	DEFAULT_EPIC_LAND_MODE,
+	type EpicLandingAfterState,
+	epicBranchPair,
+	leaveEpicBranchOnAbandon,
+	performEpicLanding,
+	preflightEpicLanding,
+} from './epic-branch.js';
+import {
 	deleteEpicState,
 	type EpicCloseOutcome,
+	type EpicLandMode,
 	type EpicRecordV1,
 	epicSentinelExists,
 	inspectEpic,
 	markEpicClosing,
+	recordEpicLandingAttempt,
 	repairEpicSentinel,
 } from './lifecycle.js';
 
@@ -50,6 +70,31 @@ export interface EpicTaskSummary {
 	pending: string[];
 }
 
+/** What close did with the epic branch. */
+export interface EpicLandingSummary {
+	/** Requested mode; null when abandoning (never lands). */
+	mode: EpicLandMode | null;
+	status:
+		| 'not-applicable'
+		| 'pending'
+		| 'landed'
+		| 'already-landed'
+		| 'nothing-to-land'
+		| 'checked-out-original'
+		| 'left-in-place'
+		| 'conflict'
+		| 'failed';
+	epicBranch: string | null;
+	originalBranch: string | null;
+	conflictFiles: string[];
+	detail: string;
+	/**
+	 * Where the repository actually ended up after a landing attempt (null
+	 * when no landing git command ran).
+	 */
+	after: EpicLandingAfterState | null;
+}
+
 export interface EpicCloseReport {
 	schema: 'epic-report-v1';
 	reportKey: string;
@@ -67,14 +112,30 @@ export interface EpicCloseReport {
 	/** Null when the plan is gone or no longer the epic's plan (orphaned). */
 	tasks: EpicTaskSummary | null;
 	lastDecision: EpicRecordV1['lastDecision'];
+	landing: EpicLandingSummary;
 }
 
 export type EpicCloseResult =
 	| { status: 'no-epic'; repairedSentinel: boolean }
 	| {
 			status: 'refused';
-			reason: 'epic-incomplete' | 'epic-orphaned' | 'epic-state-unreadable';
+			reason:
+				| 'epic-incomplete'
+				| 'epic-orphaned'
+				| 'epic-state-unreadable'
+				| 'dirty-worktree'
+				| 'epic-branch-missing'
+				| 'original-branch-missing'
+				| 'detached-head'
+				| 'landing-git-failed';
 			details: string[];
+	  }
+	| {
+			/** Landing conflicted / failed: rolled back, row stays `closing`. */
+			status: 'landing-failed';
+			report: EpicCloseReport;
+			reportPaths: string[];
+			landing: EpicLandingSummary;
 	  }
 	| {
 			status: 'repaired-unreadable';
@@ -91,6 +152,11 @@ export type EpicCloseResult =
 export interface EpicCloseOptions {
 	directory: string;
 	abandon: boolean;
+	/**
+	 * `--land` (epic-branch epics). Absent ⇒ the mode a resumed close
+	 * recorded, else `squash`. Ignored with `abandon`.
+	 */
+	land?: EpicLandMode;
 	/** Overrides the outcome label (swarm-close finalization). */
 	outcome?: EpicCloseOutcome;
 }
@@ -252,6 +318,31 @@ export async function closeEpic(
 		}
 	}
 
+	// Landing preflight (C1b, M-f): read-only, BEFORE the row is marked
+	// closing, so a dirty tree is refused before anything changes.
+	const pair = epicBranchPair(record);
+	// A resumed close that was decided as an abandon never lands, even when
+	// rerun without `--abandon`.
+	const abandoning =
+		abandon || (resuming && record.closing?.outcome !== 'completed');
+	const landMode: EpicLandMode | null = abandoning
+		? null
+		: (options.land ?? record.closing?.land ?? DEFAULT_EPIC_LAND_MODE);
+	let preflight: ReturnType<typeof preflightEpicLanding> | null = null;
+	if (landMode !== null) {
+		preflight = _internals.preflightEpicLanding(directory, record, landMode);
+		if (preflight.kind === 'refused') {
+			return {
+				status: 'refused',
+				reason:
+					preflight.reason === 'git-failed'
+						? 'landing-git-failed'
+						: preflight.reason,
+				details: preflight.details,
+			};
+		}
+	}
+
 	const requestedOutcome: EpicCloseOutcome =
 		options.outcome ?? (abandon ? 'abandoned' : 'completed');
 	const closing = _internals.markEpicClosing(
@@ -259,10 +350,18 @@ export async function closeEpic(
 		record.epicKey,
 		requestedOutcome,
 		record.token,
+		pair ? landMode : null,
 	);
 	if (!closing) return { status: 'no-epic', repairedSentinel: false };
 	const outcome = closing.closing?.outcome ?? requestedOutcome;
 
+	const baseLanding = {
+		mode: landMode,
+		epicBranch: pair?.epicBranch ?? null,
+		originalBranch: pair?.originalBranch ?? null,
+		conflictFiles: [] as string[],
+		after: null,
+	};
 	const report: EpicCloseReport = {
 		schema: 'epic-report-v1',
 		reportKey: epicReportKey(closing),
@@ -279,14 +378,96 @@ export async function closeEpic(
 		git: { ...closing.git, headAtClose: readHead(directory, closing) },
 		tasks,
 		lastDecision: closing.lastDecision,
+		landing:
+			preflight?.kind === 'ready'
+				? { ...baseLanding, status: 'pending', detail: 'landing not done yet' }
+				: landingWithoutGitWork(baseLanding, preflight, pair !== null),
 	};
-	const reportPaths = _internals.writeReport(directory, report);
-	const deleted = deleteEpicState(directory, closing.epicKey, closing.token);
+	let reportPaths = _internals.writeReport(directory, report);
+
+	// Land (or, abandoning, step off the epic branch without landing).
+	if (abandoning) {
+		const left = _internals.leaveEpicBranchOnAbandon(directory, closing);
+		report.landing = {
+			...baseLanding,
+			status: pair ? left.status : 'not-applicable',
+			detail: pair ? left.detail : report.landing.detail,
+		};
+	} else if (preflight?.kind === 'ready' && landMode !== null) {
+		const landed = _internals.performEpicLanding(
+			directory,
+			closing,
+			landMode,
+			preflight,
+		);
+		report.landing = {
+			...baseLanding,
+			status: landed.status,
+			conflictFiles: landed.conflictFiles,
+			detail: landed.detail,
+			after: landed.after,
+		};
+		if (landed.status === 'conflict' || landed.status === 'failed') {
+			report.git.headAtClose = readHead(directory, closing);
+			reportPaths = _internals.writeReport(directory, report);
+			try {
+				_internals.recordEpicLandingAttempt(
+					directory,
+					closing.epicKey,
+					closing.token,
+					{
+						mode: landMode,
+						status: landed.status,
+						at: new Date(_internals.now()).toISOString(),
+						conflictFiles: landed.conflictFiles.slice(0, 50),
+						detail: landed.detail.slice(0, 2000),
+					},
+				);
+			} catch {
+				// The report and the result carry the failure; the row is
+				// already `closing`, so a rerun resumes either way.
+			}
+			return {
+				status: 'landing-failed',
+				report,
+				reportPaths,
+				landing: report.landing,
+			};
+		}
+	}
+	report.git.headAtClose = readHead(directory, closing);
+	reportPaths = _internals.writeReport(directory, report);
+	const deleted = _internals.deleteEpicState(
+		directory,
+		closing.epicKey,
+		closing.token,
+	);
 	return {
 		status: 'closed',
 		report,
 		reportPaths,
 		sentinelDeleted: deleted.sentinelDeleted,
+	};
+}
+
+function landingWithoutGitWork(
+	base: Omit<EpicLandingSummary, 'status' | 'detail'>,
+	preflight: ReturnType<typeof preflightEpicLanding> | null,
+	hasBranch: boolean,
+): EpicLandingSummary {
+	if (preflight?.kind === 'already-landed') {
+		return { ...base, status: 'already-landed', detail: preflight.detail };
+	}
+	if (preflight?.kind === 'not-applicable') {
+		return { ...base, status: 'not-applicable', detail: preflight.detail };
+	}
+	if (preflight?.kind === 'nothing-to-land') {
+		return { ...base, status: 'nothing-to-land', detail: preflight.detail };
+	}
+	return {
+		...base,
+		status: hasBranch ? 'pending' : 'not-applicable',
+		detail: hasBranch ? 'abandoned — not landed' : 'nothing to land',
 	};
 }
 
@@ -323,14 +504,21 @@ export async function finalizeOpenEpicOnSwarmClose(
 			outcome: 'abandoned-by-swarm-close',
 		});
 		switch (result.status) {
-			case 'closed':
-				return `Open epic ${result.report.epicKey} was closed as abandoned-by-swarm-close (report: .swarm/epic-prior/reports/${result.report.reportKey}.json).`;
+			case 'closed': {
+				const closedLine = `Open epic ${result.report.epicKey} was closed as abandoned-by-swarm-close (report: .swarm/epic-prior/reports/${result.report.reportKey}.json).`;
+				const landing = result.report.landing;
+				if (!landing.epicBranch) return closedLine;
+				return `${closedLine} Its branch \`${landing.epicBranch}\` was kept and NOT landed (${landing.detail}); merge it yourself if you need its work, then delete it with \`git branch -D ${landing.epicBranch}\`.`;
+			}
 			case 'repaired-unreadable':
 				return `Unreadable Epic lifecycle state was removed (${result.rowsDeleted.length} row(s)).`;
 			case 'no-epic':
 				return result.repairedSentinel
 					? 'A stale Epic sentinel (no open epic) was removed.'
 					: null;
+			case 'landing-failed':
+				// Unreachable: abandoning never lands.
+				return `Open epic was not finalized: ${result.landing.detail}`;
 			default:
 				return `Open epic was not finalized: ${result.details.join(' ')}`;
 		}
@@ -346,6 +534,11 @@ export const _internals = {
 	loadPlanJsonOnly,
 	inspectEpic,
 	markEpicClosing,
+	recordEpicLandingAttempt,
+	deleteEpicState,
+	preflightEpicLanding,
+	performEpicLanding,
+	leaveEpicBranchOnAbandon,
 	writeReport,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),

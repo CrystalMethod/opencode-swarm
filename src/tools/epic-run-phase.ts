@@ -51,6 +51,7 @@ import {
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory as readDivergenceHistory_import } from '../turbo/epic/divergence-recorder.js';
+import { checkEpicBranch as checkEpicBranch_import } from '../turbo/epic/epic-branch.js';
 import {
 	type EpicRecordV1,
 	getOpenEpic as getOpenEpic_import,
@@ -131,6 +132,7 @@ export const _internals = {
 	appendPromotionEvidence: appendPromotionEvidence_import,
 	recordEpicLastDecision: recordEpicLastDecision_import,
 	getOpenEpic: getOpenEpic_import,
+	checkEpicBranch: checkEpicBranch_import,
 	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	loadCalibrationState: loadCalibrationState_import,
 	saveCalibrationState: saveCalibrationState_import,
@@ -155,6 +157,8 @@ export const _internals = {
  * Error / non-decision reasons (all set success: false):
  *  - 'epic-disabled-by-config' — `turbo.epic.mode.enabled !== true`.
  *  - 'epic-mode-not-active' — no epic is open for the current plan.
+ *  - 'epic-branch-mismatch' — the epic uses the epic-branch commit policy
+ *    and HEAD is not its branch (EPIC_BRANCH_MISMATCH, fail closed).
  *  - 'no-plan' — `.swarm/plan.json` is missing.
  *  - 'no-phase' (Phase 12 B11) — the requested phase number isn't in the plan.
  *  - 'phase-empty' (Phase 17 E.1) — phase exists but has zero tasks.
@@ -207,6 +211,16 @@ export async function executeEpicDecidePhase(
 			reason: 'epic-mode-not-active',
 			message:
 				'No epic is open for the current plan. Ask the user to run `/swarm epic start`, then retry; until then execute the phase per-task serially.',
+		};
+	}
+	// Branch-drift guard (Epic v2 C1b, M-e): the epic's commits must land on
+	// its epic branch, so HEAD must still be that branch.
+	const branch = _internals.checkEpicBranch(directory, epic);
+	if (!branch.ok) {
+		return {
+			success: false,
+			reason: 'epic-branch-mismatch',
+			message: branch.message,
 		};
 	}
 

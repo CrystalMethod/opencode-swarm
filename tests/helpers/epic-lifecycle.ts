@@ -44,7 +44,12 @@ export function stubEpicRecord(
 			isolation: 'worktree',
 			maxParallel: 4,
 		},
-		git: { isRepo: true, baseCommit: null, originalBranch: 'main' },
+		git: {
+			isRepo: true,
+			baseCommit: null,
+			originalBranch: 'main',
+			epicBranch: null,
+		},
 		sizing: evaluateEpicSizing({
 			pendingTasks: 6,
 			scopedTasks: 6,

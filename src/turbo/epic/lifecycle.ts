@@ -78,9 +78,19 @@ export interface EpicLastDecision {
 	blockingReasons: string[];
 }
 
+/**
+ * Where an epic's commits go (`turbo.epic.commit_policy`, default
+ * `epic-branch`): a dedicated `swarm/epic/<epicKey>` branch checked out at
+ * start and landed at close, or the branch that was current at start.
+ */
+export type EpicCommitPolicy = 'epic-branch' | 'current-branch';
+
+/** How `/swarm epic close` lands the epic branch (default `squash`). */
+export type EpicLandMode = 'squash' | 'merge' | 'none';
+
 export interface EpicRecordConfig {
-	/** C1a records only 'current-branch'; the epic-branch policy is C1b. */
-	commitPolicy: 'current-branch';
+	/** Non-git epics always record 'current-branch' (nothing to branch). */
+	commitPolicy: EpicCommitPolicy;
 	isolation: 'worktree' | 'main-tree-nogit';
 	/** Wave width cap honoured by `epic_plan_waves` (1 for non-git, M-i). */
 	maxParallel: number;
@@ -90,11 +100,29 @@ export interface EpicRecordGit {
 	isRepo: boolean;
 	baseCommit: string | null;
 	originalBranch: string | null;
+	/**
+	 * `swarm/epic/<epicKey>` — written ONLY after `git checkout -b` succeeded
+	 * (M-e); null for current-branch / non-git epics.
+	 */
+	epicBranch: string | null;
+}
+
+/** A landing attempt that did not land (close stays resumable). */
+export interface EpicLandingAttempt {
+	mode: EpicLandMode;
+	status: 'conflict' | 'failed';
+	at: string;
+	conflictFiles: string[];
+	detail: string;
 }
 
 export interface EpicClosingInfo {
 	requestedAt: string;
 	outcome: EpicCloseOutcome;
+	/** Landing mode of the latest close request (null: abandon / no branch). */
+	land: EpicLandMode | null;
+	/** Last landing attempt that failed; null until one fails. */
+	lastLandingAttempt: EpicLandingAttempt | null;
 }
 
 export type EpicCloseOutcome =
@@ -166,7 +194,7 @@ const recordSchema = z
 		structureHashAtStart: z.string(),
 		config: z
 			.object({
-				commitPolicy: z.literal('current-branch'),
+				commitPolicy: z.enum(['epic-branch', 'current-branch']),
 				isolation: z.enum(['worktree', 'main-tree-nogit']),
 				maxParallel: z.number().int().min(1),
 			})
@@ -176,6 +204,7 @@ const recordSchema = z
 				isRepo: z.boolean(),
 				baseCommit: z.string().nullable(),
 				originalBranch: z.string().nullable(),
+				epicBranch: z.string().nullable().default(null),
 			})
 			.passthrough(),
 		sizing: sizingSchema,
@@ -192,6 +221,17 @@ const recordSchema = z
 			.object({
 				requestedAt: z.string(),
 				outcome: z.enum(['completed', 'abandoned', 'abandoned-by-swarm-close']),
+				land: z.enum(['squash', 'merge', 'none']).nullable().default(null),
+				lastLandingAttempt: z
+					.object({
+						mode: z.enum(['squash', 'merge', 'none']),
+						status: z.enum(['conflict', 'failed']),
+						at: z.string(),
+						conflictFiles: z.array(z.string()),
+						detail: z.string(),
+					})
+					.nullable()
+					.default(null),
 			})
 			.nullable(),
 	})
@@ -697,27 +737,88 @@ export function recordEpicLastDecision(
 	}
 }
 
-/** CAS the row to `closing` (first close step; idempotent). */
+/**
+ * CAS the row to `closing` (first close step; idempotent). A resumed close
+ * keeps the original request time and outcome — except that an explicit
+ * abandon upgrades a `completed` close whose landing never finished — and
+ * records the landing mode of the latest request.
+ */
 export function markEpicClosing(
 	directory: string,
 	epicKey: string,
 	outcome: EpicCloseOutcome,
 	expectedToken: string | null = null,
+	land: EpicLandMode | null = null,
 ): EpicRecordV1 | null {
 	return updateEpicRecord(
 		directory,
 		epicKey,
 		(record) =>
 			record.status === 'closing' && record.closing
-				? record
+				? resumeClosing(record, record.closing, outcome, land)
 				: {
 						...record,
 						status: 'closing',
 						closing: {
 							requestedAt: new Date(_internals.now()).toISOString(),
 							outcome,
+							land,
+							lastLandingAttempt: null,
 						},
 					},
+		expectedToken,
+	);
+}
+
+function resumeClosing(
+	record: EpicRecordV1,
+	closing: EpicClosingInfo,
+	outcome: EpicCloseOutcome,
+	land: EpicLandMode | null,
+): EpicRecordV1 {
+	const nextOutcome =
+		closing.outcome === 'completed' && outcome !== 'completed'
+			? outcome
+			: closing.outcome;
+	if (closing.land === land && closing.outcome === nextOutcome) return record;
+	return { ...record, closing: { ...closing, land, outcome: nextOutcome } };
+}
+
+/**
+ * Record the epic branch once `git checkout -b` succeeded (M-e). Returns the
+ * updated record, or null when the row vanished / belongs to another start.
+ */
+export function recordEpicBranch(
+	directory: string,
+	epicKey: string,
+	expectedToken: string,
+	epicBranch: string,
+): EpicRecordV1 | null {
+	return updateEpicRecord(
+		directory,
+		epicKey,
+		(record) => ({ ...record, git: { ...record.git, epicBranch } }),
+		expectedToken,
+	);
+}
+
+/** Record a failed landing attempt on a `closing` row (close stays resumable). */
+export function recordEpicLandingAttempt(
+	directory: string,
+	epicKey: string,
+	expectedToken: string,
+	attempt: EpicLandingAttempt,
+): EpicRecordV1 | null {
+	return updateEpicRecord(
+		directory,
+		epicKey,
+		(record) =>
+			record.closing
+				? {
+						...record,
+						closing: { ...record.closing, lastLandingAttempt: attempt },
+					}
+				: record,
 		expectedToken,
 	);
 }

@@ -125,7 +125,7 @@ describe('handleEpicCommand — subcommand routing', () => {
 		expect(out).toContain(`\`/swarm epic ${arg}\` was removed in Epic v2`);
 		expect(out).toContain('Use `/swarm epic start`');
 		expect(out).toContain(
-			'/swarm epic start [--force] | close [--abandon] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]',
+			'/swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]',
 		);
 		expect(out).not.toMatch(/\bon \| off\b/);
 		expect(startCalls).toBe(0);

@@ -4655,6 +4655,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "commit_policy": {
+                  "type": "string",
+                  "enum": [
+                    "epic-branch",
+                    "current-branch"
+                  ]
                 }
               },
               "additionalProperties": false
@@ -4885,6 +4892,13 @@
                     }
                   },
                   "additionalProperties": false
+                },
+                "commit_policy": {
+                  "type": "string",
+                  "enum": [
+                    "epic-branch",
+                    "current-branch"
+                  ]
                 }
               },
               "additionalProperties": false

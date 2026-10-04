@@ -239,7 +239,7 @@ describe('refusals in order', () => {
 });
 
 describe('success record', () => {
-	test('git: sentinel + row, current-branch policy, worktree isolation, sizing', async () => {
+	test('git: sentinel + row, epic-branch policy (default), worktree isolation, sizing', async () => {
 		const dir = await project({ git: true });
 		const result = await start(dir);
 		expect(result.status).toBe('started');
@@ -252,12 +252,16 @@ describe('success record', () => {
 			startedBySession: 'ses_start',
 			forced: false,
 			config: {
-				commitPolicy: 'current-branch',
+				commitPolicy: 'epic-branch',
 				isolation: 'worktree',
 				maxParallel: 4,
 			},
 		});
 		expect(record.git.isRepo).toBe(true);
+		expect(record.git.epicBranch).toBe(`swarm/epic/${record.epicKey}`);
+		expect(git(dir, ['rev-parse', '--abbrev-ref', 'HEAD']).trim()).toBe(
+			`swarm/epic/${record.epicKey}`,
+		);
 		expect(record.git.baseCommit).toMatch(/^[0-9a-f]{40}$/);
 		expect(record.sizing.epicSized).toBe(true);
 		expect(record.sizing.serialSteps).toBe(2); // 6 disjoint tasks, width 4
@@ -288,6 +292,7 @@ describe('success record', () => {
 				isRepo: false,
 				baseCommit: null,
 				originalBranch: null,
+				epicBranch: null,
 			});
 		}
 	});

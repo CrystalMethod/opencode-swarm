@@ -94,6 +94,7 @@ import { readSwarmFileAsync } from '../hooks/utils';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { recordTaskAttempt } from '../services/run-memory.js';
 import { emit } from '../telemetry.js';
+import { describeEpicBranchMismatchForProject } from '../turbo/epic/epic-branch.js';
 import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import { relevantMergeFailure } from '../turbo/epic/merge-epoch.js';
 import {
@@ -201,6 +202,7 @@ export const _internals: {
 	regeneratePlanMarkdown: typeof regeneratePlanMarkdown;
 	isGitRepo: typeof isGitRepo;
 	isEpicOpenForProject: typeof isEpicOpenForProject;
+	describeEpicBranchMismatchForProject: typeof describeEpicBranchMismatchForProject;
 	commitTaskCompletion: typeof commitTaskCompletion;
 	relevantMergeFailure: typeof relevantMergeFailure;
 	resolvePlanMarkerScope: typeof resolvePlanMarkerScope;
@@ -229,6 +231,7 @@ export const _internals: {
 	regeneratePlanMarkdown,
 	isGitRepo,
 	isEpicOpenForProject,
+	describeEpicBranchMismatchForProject,
 	// (#2532) readTaskScopes seam removed: the Rule 2 scope lookup now resolves
 	// from the authoritative v2 binding store (see readDeclaredScopeFilesFromBindings).
 	commitTaskCompletion,
@@ -3014,7 +3017,19 @@ export async function updateTaskStatus(
 					);
 					return updatedPlan;
 				}
-				if (markerScope) {
+				// Epic v2 C1b (M-e): under the epic-branch commit policy the
+				// marker must land on the epic branch. When HEAD is anywhere
+				// else (the user checked out another branch mid-epic) or the
+				// branch cannot be verified, skip the marker — fail closed: a
+				// marker on a foreign branch would be landed nowhere and would
+				// pollute that branch.
+				const branchMismatch =
+					_internals.describeEpicBranchMismatchForProject(directory);
+				if (branchMismatch) {
+					criticalWarn(
+						`[plan/manager] Rule 2 auto-commit SKIPPED for ${taskId}: ${branchMismatch} No completion marker is written, so Rule 3 treats the task as uncommitted; check out the epic branch and commit the task's work there.`,
+					);
+				} else if (markerScope) {
 					try {
 						let taskDescription: string | undefined;
 						for (const phase of updatedPlan.phases) {

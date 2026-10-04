@@ -2608,6 +2608,7 @@ Epic Mode is an optional, coupling-aware execution mode: per phase it decides wh
 | `sizing.min_scope_coverage` | number | `0.8` | Minimum share (0–1) of pending tasks with a live declared scope or `files_touched` (`insufficient-scope-coverage`). |
 | `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a wave-planner dry run (`insufficient-parallelism`). Must be ≥ 1. |
 | `sizing.coder_fraction` | number | `0.6` | Share (0–1) of a task's time that parallel coders overlap; QA and architect turns stay serial. |
+| `commit_policy` | `"epic-branch"` \| `"current-branch"` | `"epic-branch"` | Git projects. `epic-branch`: `/swarm epic start` checks out `swarm/epic/<epicKey>` (refusing a detached HEAD or a leftover branch of the same name), every Epic commit goes there, Epic tools refuse with `EPIC_BRANCH_MISMATCH` while HEAD is elsewhere, and `/swarm epic close` lands it onto the original branch (`--land squash` default — staged, uncommitted; `merge`; `none`). `current-branch`: commits stay on the branch current at start; close lands nothing. See [Epic branch and landing](modes.md#epic-branch-and-landing). |
 
 `/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced. The `sizing` block is `.strict()` like the rest of `turbo.epic`: an unknown key fails validation.
 

@@ -3320,6 +3320,15 @@ export const EpicConfigSchema = z
 			})
 			.strict()
 			.optional(),
+		/**
+		 * Where an epic's commits go (git projects). `epic-branch` (default):
+		 * `/swarm epic start` checks out `swarm/epic/<epicKey>` and
+		 * `/swarm epic close` lands it back onto the original branch
+		 * (`--land squash|merge|none`, default squash — staged, uncommitted).
+		 * `current-branch`: commits stay on the branch that was current at
+		 * start and close does not land anything. Absent ⇒ `epic-branch`.
+		 */
+		commit_policy: z.enum(['epic-branch', 'current-branch']).optional(),
 	})
 	.strict();
 

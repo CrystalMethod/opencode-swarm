@@ -125,8 +125,14 @@ beforeEach(() => {
 	fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
 	fs.writeFileSync(
 		path.join(dir, '.opencode', 'opencode-swarm.json'),
+		// `current-branch`: this contract pins marker scoping across two
+		// consecutive plans on ONE branch (the epic-branch default would put
+		// each plan's markers on its own `swarm/epic/*` branch — C1b).
 		JSON.stringify({
-			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			turbo: {
+				strategy: 'standard',
+				epic: { mode: { enabled: true }, commit_policy: 'current-branch' },
+			},
 		}),
 	);
 	// `.swarm/` is runtime state (AGENTS.md #4); keep the tree clean so the
