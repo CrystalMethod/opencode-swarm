@@ -248,7 +248,12 @@ async function executeCommand(command: BuildCommand): Promise<BuildRun> {
 			duration_ms,
 			stdout_tail: truncateOutput(stdout),
 			stderr_tail: truncateOutput(stderr),
-			...(spawnErrorMessage ? { spawn_error: spawnErrorMessage } : {}),
+			// Bounded like the stream tails. Launch errors are short OS strings in
+			// practice, but nothing upstream caps them, and an unbounded field here
+			// would contribute to the evidence-bundle size ceiling like any other.
+			...(spawnErrorMessage
+				? { spawn_error: truncateOutput(spawnErrorMessage) }
+				: {}),
 		};
 	} finally {
 		try {

@@ -43,7 +43,13 @@ function sourceFiles(dir: string): string[] {
 
 /**
  * A project-local batch wrapper being CONSTRUCTED: a `path.join('vendor',
- * 'bin', …)` whose argument list appends a batch extension.
+ * 'bin', …)` whose own ARGUMENT LIST appends a batch extension.
+ *
+ * `[^)]*` rather than a character-count window: a bounded window can run past
+ * the closing paren into unrelated prose (a doc comment mentioning `.bat` is
+ * enough) and flag a correct file, which is the false-positive mode an earlier
+ * revision of this pattern had. Constraining the match to the argument list
+ * makes the shape — not the surrounding text — the discriminator.
  *
  * Scoped to that exact shape on purpose. A looser `${name}.bat` rule also
  * matches `src/hooks/spawn-helper.ts` (`${rawCmd}.cmd`, a package-manager shim
@@ -52,7 +58,7 @@ function sourceFiles(dir: string): string[] {
  * and a guard red on them would be weakened until it proved nothing.
  */
 const BATCH_CONSTRUCTION =
-	/path\.join\(\s*'vendor',\s*'bin',[\s\S]{0,120}?\.(?:bat|cmd)\b/g;
+	/path\.join\(\s*'vendor',\s*'bin',[^)]*\.(?:bat|cmd)\b/g;
 
 /**
  * A CALL to the resolver. The negative lookbehind skips the helper's own

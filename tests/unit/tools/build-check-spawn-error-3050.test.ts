@@ -168,4 +168,41 @@ describe('#3050: build_check does not overcorrect', () => {
 		expect('spawn_error' in run).toBe(false);
 		expect(run.exit_code).toBe(SPAWN_CREATION_FAILURE_EXIT_CODE);
 	});
+
+	test('a contract-violating spawnError with exitCode 0 is still recorded', async () => {
+		// The bunSpawn contract makes spawnError and exitCode mutually exclusive —
+		// its getter forces `exitCode` null whenever an error was observed — so
+		// this shape is unreachable in practice. Asserting the verdict flipped
+		// would be wrong: a process that genuinely exited 0 should not be
+		// reported as a failed build. What IS worth pinning is that the reason
+		// survives into the record rather than being silently dropped.
+		const result = await runWith(
+			fakeProc({
+				exitCode: 0,
+				exited: 0,
+				spawnError: new Error(FAKE_REASON),
+			}),
+		);
+
+		const run = result.runs[0]!;
+		expect(run.spawn_error).toContain('ENOENT');
+		expect(run.exit_code).toBe(0);
+	});
+
+	test('a non-Error spawnError does not crash the record', async () => {
+		// Defensive: the type says Error, but a thrown string must not take the
+		// whole build-check down.
+		const result = await runWith(
+			fakeProc({
+				exitCode: null,
+				exited: SPAWN_CREATION_FAILURE_EXIT_CODE,
+				spawnError: 'plain string failure' as unknown as Error,
+			}),
+		);
+
+		const run = result.runs[0]!;
+		expect('spawn_error' in run).toBe(false);
+		expect(run.exit_code).toBe(SPAWN_CREATION_FAILURE_EXIT_CODE);
+		expect(result.verdict).toBe('fail');
+	});
 });

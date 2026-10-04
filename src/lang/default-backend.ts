@@ -182,18 +182,31 @@ export function buildPhpVendorCommand(
 ): string[] {
 	const proxy = path.join('vendor', 'bin', name);
 	if (process.platform !== 'win32') return [proxy, ...args];
+
+	// When neither the `.bat` shim nor the extensionless proxy exists there is
+	// nothing to launch. Emitting the bare proxy makes the spawn fail with a
+	// launch error (`bunSpawn`'s `spawnError`), which the runner reports as
+	// `outcome: 'error'` — "the process could not be started", not "your tests
+	// regressed". Returning `['php', proxy]` instead would let `php` start
+	// successfully and then exit 1 on the missing file, which reads as a
+	// regression with 0/0 tests run. The `.bat` is never re-emitted either way.
+	const interpreterFallback = (): string[] =>
+		fs.existsSync(path.join(dir, proxy))
+			? ['php', proxy, ...args]
+			: [proxy, ...args];
+
 	// The win32 launcher quotes every token inside one cmd.exe command string,
 	// so a token ending in a backslash would turn its closing quote into `\"`
 	// and be mangled. Same guard `buildGradleTestCommand` and
 	// `buildMavenTestCommand` carry; the interpreter fallback is immune to the
 	// launcher quoting, which makes it the right target here.
-	if (args.some((arg) => arg.endsWith('\\'))) return ['php', proxy, ...args];
+	if (args.some((arg) => arg.endsWith('\\'))) return interpreterFallback();
 	return (
 		resolveContainedWindowsBatchCommand(
 			dir,
 			path.join('vendor', 'bin', `${name}.bat`),
 			args,
-		) ?? ['php', proxy, ...args]
+		) ?? interpreterFallback()
 	);
 }
 

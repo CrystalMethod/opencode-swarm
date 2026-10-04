@@ -18,10 +18,15 @@
  * CI no coverage at all; this suite closes that hole deliberately.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildPhpBackend } from '../../../src/lang/backends/php';
-import { defaultBuildTestCommand } from '../../../src/lang/default-backend';
+import {
+	buildPhpVendorCommand,
+	defaultBuildTestCommand,
+} from '../../../src/lang/default-backend';
 import { LANGUAGE_REGISTRY } from '../../../src/lang/profiles';
 import {
 	_internals as runnerInternals,
@@ -119,7 +124,6 @@ async function captureLegacyArgv(
 	}
 	return captured;
 }
-
 beforeEach(() => {
 	tempDir = canonicalMkdtemp('php-vendor-bin-3050-');
 	// A temp path carrying a cmd.exe metacharacter (e.g. a Windows username
@@ -140,7 +144,11 @@ beforeEach(() => {
 
 afterEach(() => {
 	runnerInternals.bunSpawn = realBunSpawn;
-	process.env.SWARM_LANG_BACKEND = realLangBackend;
+	// Assigning `undefined` to a process.env key stores the STRING "undefined"
+	// rather than unsetting it, so the restore must delete explicitly. The
+	// ComSpec restore beside it does the same thing, correctly.
+	if (realLangBackend === undefined) delete process.env.SWARM_LANG_BACKEND;
+	else process.env.SWARM_LANG_BACKEND = realLangBackend;
 	if (realComSpec === undefined) delete process.env.ComSpec;
 	else process.env.ComSpec = realComSpec;
 	Object.defineProperty(process, 'platform', { value: realPlatform });
@@ -323,5 +331,113 @@ describe('#3050: the files gate is preserved on both routes', () => {
 		expect(
 			await captureLegacyArgv('phpunit', 'all', ['tests/Unit/FooTest.php']),
 		).toEqual([path.join('vendor', 'bin', 'phpunit')]);
+	});
+});
+
+describe('#3050: the emitted argv is actually spawnable', () => {
+	// A REAL `node` process, not this test process. `bun test` runs under Bun,
+	// and Bun's `node:child_process` tolerates a bare `.bat` that Node refuses
+	// to start -- so measuring the spawn from inside the test grades Bun's
+	// leniency and proves nothing. This is the in-repo, durable form of the
+	// trace's frozen check C4, which reaches the same verdict by handing the
+	// argv to a `node` child.
+	function spawnUnderRealNode(
+		argv: string[],
+		cwd: string,
+		verbatim: boolean,
+	): { error?: string; status: number | null; stdout: string } {
+		const runner = path.join(
+			cwd,
+			`node-runner-${argv.length}-${verbatim ? 'verbatim' : 'plain'}.cjs`,
+		);
+		fs.writeFileSync(
+			runner,
+			[
+				"const { spawnSync } = require('node:child_process');",
+				'const argv = JSON.parse(process.argv[2]);',
+				'const r = spawnSync(argv[0], argv.slice(1), {',
+				`  cwd: process.argv[3], timeout: 30000,${verbatim ? ' windowsVerbatimArguments: true,' : ''}`,
+				'});',
+				'console.log(JSON.stringify({',
+				'  error: r.error ? r.error.code : undefined,',
+				'  status: r.status,',
+				'  stdout: String(r.stdout || "").slice(0, 200),',
+				'}));',
+			].join('\n'),
+		);
+		const out = spawnSync('node', [runner, JSON.stringify(argv), cwd], {
+			cwd,
+			timeout: 60_000,
+			encoding: 'utf8',
+		});
+		const line = (out.stdout ?? '')
+			.split(/\r?\n/)
+			.find((l) => l.trim().startsWith('{'));
+		if (!line) {
+			throw new Error(
+				`node runner produced no verdict (stdout=${out.stdout} stderr=${out.stderr})`,
+			);
+		}
+		return JSON.parse(line);
+	}
+
+	test.skipIf(process.platform !== 'win32')(
+		'Node starts the launcher argv but rejects the bare .bat it replaced',
+		() => {
+			const argv = buildPhpVendorCommand(tempDir, 'phpunit', [
+				'tests/Unit/FooTest.php',
+			]);
+			const launched = spawnUnderRealNode(argv, tempDir, true);
+			expect(
+				launched.error,
+				`launcher argv failed to spawn under Node: ${launched.error ?? ''} (stdout: ${launched.stdout})`,
+			).toBeUndefined();
+
+			// The shape this PR replaced: a bare batch file handed to Node.
+			const bare = spawnUnderRealNode(
+				[path.join(tempDir, 'vendor', 'bin', 'phpunit.bat')],
+				tempDir,
+				false,
+			);
+			expect(bare.error, 'bare .bat must still be unspawnable by Node').toBe(
+				'EINVAL',
+			);
+		},
+	);
+});
+
+describe('#3050: decline paths beyond the shim-missing case', () => {
+	test('an unresolvable ComSpec falls back instead of failing', () => {
+		fakeWin32();
+		// Point ComSpec at a real path whose canonical basename is not cmd.exe,
+		// which is exactly what resolveWindowsCommandInterpreter rejects.
+		const notCmdExe = path.join(tempDir, 'not-cmd.exe');
+		fs.writeFileSync(notCmdExe, 'MZ\r\n');
+		process.env.ComSpec = notCmdExe;
+		expect(
+			buildPhpVendorCommand(tempDir, 'phpunit', ['tests/Unit/FooTest.php']),
+		).toEqual([
+			'php',
+			path.join('vendor', 'bin', 'phpunit'),
+			'tests/Unit/FooTest.php',
+		]);
+	});
+
+	test('a missing vendor directory yields a bare proxy, not a php invocation', () => {
+		// Review finding F-001: emitting `['php', proxy]` when nothing exists lets
+		// php start and then exit 1 on the missing file, which the runner reports
+		// as a REGRESSION with 0/0 tests. Emitting the bare proxy makes the spawn
+		// itself fail, which surfaces as `bunSpawn`'s `spawnError` and is reported
+		// as a launch error instead.
+		Object.defineProperty(process, 'platform', { value: 'win32' });
+		process.env.ComSpec = cmdExePath;
+		const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'c3-empty-'));
+		try {
+			expect(buildPhpVendorCommand(empty, 'phpunit', [])).toEqual([
+				path.join('vendor', 'bin', 'phpunit'),
+			]);
+		} finally {
+			fs.rmSync(empty, { recursive: true, force: true });
+		}
 	});
 });
