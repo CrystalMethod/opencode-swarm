@@ -211,4 +211,25 @@ describe('harness_opt registry config wiring (issue #2949)', () => {
 		expect(output).not.toMatch(/disabled/);
 		expect(output).toMatch(/--tasks/);
 	});
+
+	test('injected config wins over the on-disk block (wiring-discriminating arm)', async () => {
+		// Disk says disabled; the dispatch injects enabled:true. With the
+		// closure wiring intact the handler sees the injected block and passes
+		// the gate; if the wiring were removed the fallback would re-read the
+		// on-disk enabled:false block and refuse.
+		writeSwarmConfig(root, { enabled: false });
+		const cfg = loadPluginConfig(root);
+		expect(cfg.harness_opt?.enabled).toBe(false);
+		const injected = {
+			...cfg,
+			harness_opt: { ...cfg.harness_opt, enabled: true },
+		};
+		const output = await dispatch(
+			root,
+			['harness-opt', 'run', '--confirm'],
+			injected,
+		);
+		expect(output).not.toMatch(/"status":\s*"disabled"/);
+		expect(output).toMatch(/--tasks/);
+	});
 });

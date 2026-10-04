@@ -86,7 +86,7 @@ describe('skill_opt registry config wiring (issue #2949)', () => {
 			path.resolve(import.meta.dir, '../../../src/commands/registry.ts'),
 			'utf8',
 		);
-		for (const key of ['skill-opt', 'skill-opt plan']) {
+		for (const key of ['skill-opt', 'skill-opt plan', 'skill-opt run']) {
 			const anchor = `\n\t'${key}': {`;
 			const start = src.indexOf(anchor);
 			expect(start, `${key} entry must exist`).toBeGreaterThanOrEqual(0);
@@ -100,5 +100,26 @@ describe('skill_opt registry config wiring (issue #2949)', () => {
 				`${key} closure must pass ctx.config?.skill_opt into the handler runtime`,
 			).toBe(true);
 		}
+	});
+
+	test('injected config wins over the on-disk block (wiring-discriminating arm)', async () => {
+		// Disk says disabled; the dispatch injects enabled:true. With the
+		// closure wiring intact the handler sees the injected block and passes
+		// the gate (landing on needs-confirm); if the wiring were removed the
+		// fallback would re-read the on-disk enabled:false block and refuse —
+		// so this arm FAILS on exactly the mutation the ratchet text pins.
+		writeSwarmConfig({ enabled: false });
+		const cfg = loadPluginConfig(root);
+		expect(cfg.skill_opt?.enabled).toBe(false);
+		const injected = {
+			...cfg,
+			skill_opt: { ...cfg.skill_opt, enabled: true },
+		};
+		const output = await dispatch(
+			['skill-opt', 'run', 'wiring-slug'],
+			injected,
+		);
+		expect(output).not.toMatch(/"status":\s*"disabled"/);
+		expect(output).toMatch(/pass --confirm/);
 	});
 });

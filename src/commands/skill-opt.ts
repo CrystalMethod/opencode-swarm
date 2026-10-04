@@ -187,7 +187,7 @@ export async function handleSkillOptRun(
 				status: 'disabled',
 				error: resolved.blockPresent
 					? 'skill_opt.enabled is false — set to true to execute rounds (proposal-only by default)'
-					: 'skill_opt block not found in opencode-swarm.json (project or user config) — set skill_opt.enabled: true there to execute rounds',
+					: 'skill_opt block not found in .opencode/opencode-swarm.json (project) or the user-level config — set skill_opt.enabled: true there to execute rounds',
 			},
 			parsed.json,
 		);

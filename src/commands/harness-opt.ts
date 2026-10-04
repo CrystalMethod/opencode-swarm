@@ -263,7 +263,7 @@ export async function handleHarnessOptRun(
 				status: 'disabled',
 				error: resolved.blockPresent
 					? 'harness_opt.enabled is false — set to true to execute governed rounds (proposal-only by default)'
-					: 'harness_opt block not found in opencode-swarm.json (project or user config) — set harness_opt.enabled: true there to execute governed rounds',
+					: 'harness_opt block not found in .opencode/opencode-swarm.json (project) or the user-level config — set harness_opt.enabled: true there to execute governed rounds',
 			},
 			parsed.json,
 		);
@@ -492,7 +492,7 @@ export async function handleHarnessOptCompare(
 	);
 	// Arm toggles resolve the same way the run handler resolves budgets:
 	// the registry injects ctx.config's harness_opt block; a dispatch without
-	// one falls back to the project's opencode-swarm.json harness_opt block
+	// one falls back to the project or user opencode-swarm.json harness_opt block
 	// (issue #2949) — never opencode.json.
 	const config = (
 		runtime.config
