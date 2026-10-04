@@ -69,14 +69,100 @@ const LIFECYCLE_ROW_LIST_LIMIT = 8;
 
 export type EpicLifecycleStatus = 'open' | 'closing';
 
-/** Last `epic_decide_phase` verdict, mirrored for `/swarm epic status`. */
-export interface EpicLastDecision {
-	decidedAt: string;
-	phase?: number;
-	decision: 'promote' | 'demote';
-	p: number;
-	blockingReasons: string[];
+/** One co-change pair recorded with a wave (threshold-passing, in-wave). */
+export interface EpicCochangePair {
+	fileA: string;
+	fileB: string;
+	npmi: number;
+	coChangeCount: number;
 }
+
+/** Snapshot of a worktree merge-back failure observed for a wave task. */
+export interface EpicMergeFailureSnapshot {
+	outcome: string;
+	stage: string;
+	message: string;
+	at: number | null;
+}
+
+/**
+ * One wave issued by `epic_next_wave` (Epic v2 C2). `files` are the FROZEN
+ * declared scopes of the wave's tasks at issue time; later commits compare
+ * against them (divergence now, the dispatch gate in C4).
+ */
+export interface EpicWaveRecord {
+	seq: number;
+	phase: number;
+	/** `parallel` (planner wave) or `exclusive` (a task that runs alone). */
+	kind: 'parallel' | 'exclusive' | 'serial-component';
+	taskIds: string[];
+	files: Record<string, string[]>;
+	/** ≤ 256 threshold-passing pairs within the wave's files; null = co-change off. */
+	cochange: {
+		pairs: EpicCochangePair[];
+		threshold: { npmi: number; minCoChanges: number };
+	} | null;
+	/** HEAD when the wave was issued (null: non-git / unborn). */
+	baseHead: string | null;
+	issuedAt: string;
+	closedAt?: string;
+	closeHead?: string | null;
+	status: 'issued' | 'closed' | 'aborted';
+	abortReason?: string;
+	/** Merge-back failures observed while the wave was blocked (snapshots). */
+	mergeFailures?: Record<string, EpicMergeFailureSnapshot>;
+	/**
+	 * Wave-level undeclared files from the git fallback (changed since
+	 * `baseHead`, not declared by any wave task, not attributed to a task).
+	 */
+	undeclared?: string[];
+}
+
+/** How one wave task was resolved, recorded when its wave closes. */
+export interface EpicTaskOutcome {
+	taskId: string;
+	phase: number;
+	waveSeq: number;
+	resolution: 'completed' | 'closed' | 'removed';
+	resolvedAt: string;
+	/** Evidence workflow generation (uncapped; 0 = no evidence). */
+	generation: number;
+	/**
+	 * LOWER BOUNDS: `stage_a_failed` / `stage_b_failed` entries in the
+	 * evidence workflow `retryHistory`, which keeps only the last 3 entries.
+	 */
+	stageAFailures: number;
+	stageBFailures: number;
+	mergeFailure: {
+		outcome: string;
+		stage: string;
+		conflictFiles: string[];
+	} | null;
+	declared: string[];
+	undeclared: string[];
+	/** Where `undeclared` came from. */
+	attribution: 'session' | 'git-single-task' | 'unavailable' | 'no-git';
+	/** Ledger transitions out of `completed` for this task since the epic started. */
+	reopened: number;
+	marker: {
+		ref: string | null;
+		sha: string | null;
+		provenance: 'wave-close-head' | 'no-git';
+	} | null;
+}
+
+/** Per-phase lifecycle as seen by `epic_next_wave` / `epic_phase_review`. */
+export interface EpicPhaseRecord {
+	status: 'active' | 'review' | 'complete';
+	/** True when the phase was already finished when the epic started. */
+	completeAtStart?: boolean;
+	reviewRuns: number;
+	/** Newest last; at most {@link EPIC_PHASE_VERDICTS_KEEP}. */
+	verdicts: string[];
+}
+
+/** Phase-review verdict strings kept per phase in the record. */
+export const EPIC_PHASE_VERDICTS_KEEP = 20;
 
 /**
  * Where an epic's commits go (`turbo.epic.commit_policy`, default
@@ -92,7 +178,7 @@ export interface EpicRecordConfig {
 	/** Non-git epics always record 'current-branch' (nothing to branch). */
 	commitPolicy: EpicCommitPolicy;
 	isolation: 'worktree' | 'main-tree-nogit';
-	/** Wave width cap honoured by `epic_plan_waves` (1 for non-git, M-i). */
+	/** Wave width cap honoured by `epic_next_wave` (1 for non-git, M-i). */
 	maxParallel: number;
 }
 
@@ -149,8 +235,15 @@ export interface EpicRecordV1 {
 	config: EpicRecordConfig;
 	git: EpicRecordGit;
 	sizing: EpicSizingVerdict;
-	lastDecision: EpicLastDecision | null;
 	closing: EpicClosingInfo | null;
+	/** Waves issued by `epic_next_wave`, in issue order (Epic v2 C2). */
+	waves: EpicWaveRecord[];
+	/** Seq of the wave currently issued and not yet closed. */
+	activeWaveSeq: number | null;
+	/** Outcome of every task resolved through a closed wave, by task id. */
+	tasks: Record<string, EpicTaskOutcome>;
+	/** Phase lifecycle keyed by phase id (string). */
+	phases: Record<string, EpicPhaseRecord>;
 }
 
 /** Sentinel projection: enough to identify the row it mirrors. */
@@ -174,6 +267,96 @@ const sizingSchema = z
 	.object({
 		epicSized: z.boolean(),
 		reasons: z.array(z.string()),
+	})
+	.passthrough();
+
+const waveSchema = z
+	.object({
+		seq: z.number().int().min(1),
+		phase: z.number().int(),
+		kind: z.enum(['parallel', 'exclusive', 'serial-component']),
+		taskIds: z.array(z.string()),
+		files: z.record(z.string(), z.array(z.string())),
+		cochange: z
+			.object({
+				pairs: z.array(
+					z
+						.object({
+							fileA: z.string(),
+							fileB: z.string(),
+							npmi: z.number(),
+							coChangeCount: z.number(),
+						})
+						.passthrough(),
+				),
+				threshold: z.object({ npmi: z.number(), minCoChanges: z.number() }),
+			})
+			.nullable(),
+		baseHead: z.string().nullable(),
+		issuedAt: z.string(),
+		closedAt: z.string().optional(),
+		closeHead: z.string().nullable().optional(),
+		status: z.enum(['issued', 'closed', 'aborted']),
+		abortReason: z.string().optional(),
+		mergeFailures: z
+			.record(
+				z.string(),
+				z
+					.object({
+						outcome: z.string(),
+						stage: z.string(),
+						message: z.string(),
+						at: z.number().nullable(),
+					})
+					.passthrough(),
+			)
+			.optional(),
+		undeclared: z.array(z.string()).optional(),
+	})
+	.passthrough();
+
+const taskOutcomeSchema = z
+	.object({
+		taskId: z.string(),
+		phase: z.number().int(),
+		waveSeq: z.number().int(),
+		resolution: z.enum(['completed', 'closed', 'removed']),
+		resolvedAt: z.string(),
+		generation: z.number(),
+		stageAFailures: z.number(),
+		stageBFailures: z.number(),
+		mergeFailure: z
+			.object({
+				outcome: z.string(),
+				stage: z.string(),
+				conflictFiles: z.array(z.string()),
+			})
+			.nullable(),
+		declared: z.array(z.string()),
+		undeclared: z.array(z.string()),
+		attribution: z.enum([
+			'session',
+			'git-single-task',
+			'unavailable',
+			'no-git',
+		]),
+		reopened: z.number(),
+		marker: z
+			.object({
+				ref: z.string().nullable(),
+				sha: z.string().nullable(),
+				provenance: z.enum(['wave-close-head', 'no-git']),
+			})
+			.nullable(),
+	})
+	.passthrough();
+
+const phaseRecordSchema = z
+	.object({
+		status: z.enum(['active', 'review', 'complete']),
+		completeAtStart: z.boolean().optional(),
+		reviewRuns: z.number().int().min(0),
+		verdicts: z.array(z.string()),
 	})
 	.passthrough();
 
@@ -208,15 +391,6 @@ const recordSchema = z
 			})
 			.passthrough(),
 		sizing: sizingSchema,
-		lastDecision: z
-			.object({
-				decidedAt: z.string(),
-				phase: z.number().optional(),
-				decision: z.enum(['promote', 'demote']),
-				p: z.number(),
-				blockingReasons: z.array(z.string()),
-			})
-			.nullable(),
 		closing: z
 			.object({
 				requestedAt: z.string(),
@@ -234,6 +408,10 @@ const recordSchema = z
 					.default(null),
 			})
 			.nullable(),
+		waves: z.array(waveSchema).default([]),
+		activeWaveSeq: z.number().int().nullable().default(null),
+		tasks: z.record(z.string(), taskOutcomeSchema).default({}),
+		phases: z.record(z.string(), phaseRecordSchema).default({}),
 	})
 	.passthrough();
 
@@ -382,7 +560,13 @@ export function parseEpicRecord(payload: string): EpicRecordV1 {
 				.join('; ')}`,
 		);
 	}
-	return parsed.data as unknown as EpicRecordV1;
+	// Pre-C2 rows carried `lastDecision` (the removed epic_decide_phase
+	// verdict); drop it so a later update does not carry it forward.
+	const { lastDecision: _retired, ...record } = parsed.data as Record<
+		string,
+		unknown
+	>;
+	return record as unknown as EpicRecordV1;
 }
 
 /** Read and validate the sentinel; null when absent, invalid, or oversized. */
@@ -719,22 +903,119 @@ export function updateEpicRecord(
 	throw new Error(`Epic record update failed: contention on ${epicKey}`);
 }
 
-/** Record the latest `epic_decide_phase` verdict on the open epic. */
-export function recordEpicLastDecision(
+/** A phase as the Epic phase order sees it (id + plan status). */
+export interface EpicPhaseRef {
+	id: number;
+	status?: string;
+}
+
+/**
+ * Whether `phase` is done for Epic: recorded complete on the epic (by
+ * `phase_complete`, or finished before the epic started), or closed in the
+ * plan. The plan's own `complete` status is NOT used: it turns `complete`
+ * as soon as every task completes, before the phase review ran.
+ */
+export function isEpicPhaseDone(
+	record: Pick<EpicRecordV1, 'phases'>,
+	phase: EpicPhaseRef,
+): boolean {
+	return (
+		record.phases[String(phase.id)]?.status === 'complete' ||
+		phase.status === 'closed'
+	);
+}
+
+/** The epic's current phase: the first phase (plan order) not done. */
+export function epicCurrentPhase(
+	record: Pick<EpicRecordV1, 'phases'>,
+	phases: readonly EpicPhaseRef[],
+): number | null {
+	return phases.find((phase) => !isEpicPhaseDone(record, phase))?.id ?? null;
+}
+
+/** Bounded read of the plan's phase order from `.swarm/plan.json`. */
+export function readPlanPhaseRefs(directory: string): EpicPhaseRef[] | null {
+	const planPath = path.join(directory, PLAN_JSON_RELATIVE_PATH);
+	try {
+		const stat = fs.statSync(planPath);
+		if (!stat.isFile() || stat.size > MAX_PLAN_JSON_BYTES) return null;
+		const parsed = JSON.parse(fs.readFileSync(planPath, 'utf-8')) as {
+			phases?: unknown;
+		};
+		if (!Array.isArray(parsed?.phases)) return null;
+		return parsed.phases
+			.filter(
+				(phase): phase is { id: number; status?: unknown } =>
+					typeof phase === 'object' &&
+					phase !== null &&
+					typeof (phase as { id?: unknown }).id === 'number',
+			)
+			.map((phase) => ({
+				id: phase.id,
+				status: typeof phase.status === 'string' ? phase.status : undefined,
+			}));
+	} catch {
+		return null;
+	}
+}
+
+export type EpicPhaseCompleteOutcome =
+	| { outcome: 'recorded' | 'already-complete'; record: EpicRecordV1 }
+	| { outcome: 'no-open-epic' }
+	| { outcome: 'not-current-phase'; currentPhase: number | null };
+
+/**
+ * Record `phase` complete on the open epic (Epic v2 C2; called by
+ * `phase_complete` on success while an epic is open). Phases are
+ * iterations: only the epic's CURRENT phase can be completed — completing
+ * another phase out of order is refused (`not-current-phase`) so it cannot
+ * skip the current phase's waves. Idempotent for an already-complete phase.
+ * Throws on unreadable state / contention.
+ */
+export function markEpicPhaseComplete(
 	directory: string,
-	epicKey: string,
-	decision: EpicLastDecision,
-	expectedToken: string | null = null,
-): void {
+	phase: number,
+	planPhases?: readonly EpicPhaseRef[],
+): EpicPhaseCompleteOutcome {
+	const epic = getOpenEpic(directory);
+	if (!epic) return { outcome: 'no-open-epic' };
+	if (epic.phases[String(phase)]?.status === 'complete') {
+		return { outcome: 'already-complete', record: epic };
+	}
+	const phases = planPhases ?? readPlanPhaseRefs(directory);
+	const current = phases ? epicCurrentPhase(epic, phases) : null;
+	if (current !== phase) {
+		return { outcome: 'not-current-phase', currentPhase: current };
+	}
+	let changed = false;
 	const updated = updateEpicRecord(
 		directory,
-		epicKey,
-		(record) => ({ ...record, lastDecision: decision }),
-		expectedToken,
+		epic.epicKey,
+		(record) => {
+			const key = String(phase);
+			const prior = record.phases[key];
+			changed = false;
+			if (prior?.status === 'complete') return record;
+			changed = true;
+			return {
+				...record,
+				phases: {
+					...record.phases,
+					[key]: {
+						status: 'complete',
+						reviewRuns: prior?.reviewRuns ?? 0,
+						verdicts: prior?.verdicts ?? [],
+					},
+				},
+			};
+		},
+		epic.token,
 	);
-	if (!updated) {
-		throw new Error(`No Epic lifecycle row for ${epicKey}`);
-	}
+	if (!updated) return { outcome: 'no-open-epic' };
+	return {
+		outcome: changed ? 'recorded' : 'already-complete',
+		record: updated,
+	};
 }
 
 /**

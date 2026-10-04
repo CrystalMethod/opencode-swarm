@@ -27,13 +27,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { loadPluginConfigWithMeta } from '../config/index.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import type { EpicCochangeSignalState } from '../turbo/epic/activation.js';
 import { getCoChangePairs } from '../turbo/epic/cochange-source.js';
 import { isEpicCochangeConfigEnabled } from '../turbo/epic/config-gate.js';
 import {
 	type CouplingReport,
 	type CouplingTask,
 	computeCouplingReport,
+	type EpicCochangeSignalState,
 	formatCouplingReportMarkdown,
 } from '../turbo/epic/coupling-report.js';
 import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';

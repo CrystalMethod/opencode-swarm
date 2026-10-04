@@ -2,228 +2,109 @@
  * Tests for the Epic Mode banner constant.
  * File: tests/unit/hooks/system-enhancer-epic-banner.test.ts
  *
- * `EPIC_MODE_BANNER` instructs the architect to use the visible decide →
- * plan-waves → Task flow instead of `lean_turbo_run_phase`, with per-task
- * Stage A/B and the `epic_phase_review` phase gate. Delivery (driven by the
- * project's open epic) is covered by system-enhancer-epic-open-banner.test.ts.
+ * Epic v2 C2: the banner is narration only — the user comes first, an open
+ * epic is not a start signal, talk to the user, and "call `epic_next_wave`
+ * and do exactly what its `status` says". All procedure (wave composition,
+ * dispatch steps, remedies) lives in the tool's responses. Delivery (driven
+ * by the project's open epic) is covered by
+ * system-enhancer-epic-open-banner.test.ts.
  */
 import { describe, expect, test } from 'bun:test';
 import { EPIC_MODE_BANNER } from '../../../src/config/constants';
 import { estimateTokens } from '../../../src/hooks/utils';
 
 describe('EPIC_MODE_BANNER content', () => {
-	test('describes the SINGLE sanctioned phase-execution flow', () => {
-		// The banner describes ONE flow:
-		//   declare_scope → epic_decide_phase → epic_plan_waves
-		//     → Task dispatch (per wave) → epic_record_divergence
-		// All five tool names appear; the opaque alternatives are
-		// explicitly forbidden. 2026-06-05 compression: text was condensed
-		// to fit the 4000-token injection budget — assert semantic anchors,
-		// not verbatim prose.
-		expect(EPIC_MODE_BANNER).toContain('declare_scope');
-		expect(EPIC_MODE_BANNER).toContain('epic_decide_phase');
-		expect(EPIC_MODE_BANNER).toContain('epic_plan_waves');
-		expect(EPIC_MODE_BANNER).toContain('Task');
-		expect(EPIC_MODE_BANNER).toContain('epic_record_divergence');
-		expect(EPIC_MODE_BANNER).toContain('Seven-step flow');
-		expect(EPIC_MODE_BANNER).not.toContain('Six-step flow');
-	});
-
-	test('forbids the opaque lean_turbo_run_phase dispatch and no longer names the removed epic_run_phase', () => {
-		// lean_turbo_run_phase dispatches coders via opencodeClient internally
-		// (outside opencode's Task tracking). The banner must block it so the
-		// transparent Task-based dispatch is the only flow the architect can
-		// take.
+	test('routes the whole flow through epic_next_wave and names every status', () => {
 		expect(EPIC_MODE_BANNER).toContain(
-			'Do NOT call `lean_turbo_run_phase` directly',
+			'call `epic_next_wave` and do exactly what its `status` says',
 		);
-		expect(EPIC_MODE_BANNER).toContain("Don't use `lean_turbo_run_phase`");
-		// The legacy epic_run_phase execution path was removed outright, so the
-		// banner must not advertise it (even as "deprecated").
-		expect(EPIC_MODE_BANNER).not.toContain('epic_run_phase');
+		for (const status of [
+			'dispatch',
+			'declare-scopes',
+			'in-progress',
+			'blocked',
+			'phase-ready-for-review',
+			'epic-complete',
+			'refused',
+		]) {
+			expect(EPIC_MODE_BANNER).toContain(`\`${status}\``);
+		}
 	});
 
-	test('step 6 requires per-task Stage A/B before completion + divergence', () => {
-		// Runtime truth: update_task_status(completed) requires Stage B in every
-		// mode (Turbo/Lean bypass branches are legacy-caller-only). The banner
-		// previously said Epic "doesn't change Stage B" without ever telling
-		// the architect to run it between dispatch and completion.
-		const step6 = EPIC_MODE_BANNER.slice(
-			EPIC_MODE_BANNER.indexOf('**6. '),
-			EPIC_MODE_BANNER.indexOf('**7. '),
+	test('names none of the removed tools or subcommands', () => {
+		for (const removed of [
+			'epic_decide_phase',
+			'epic_plan_waves',
+			'epic_record_divergence',
+			'epic_run_phase',
+			'/swarm epic decide',
+			'| last',
+			'Seven-step flow',
+			'promote',
+			'demote',
+		]) {
+			expect(EPIC_MODE_BANNER).not.toContain(removed);
+		}
+	});
+
+	test('per-task QA is never waived and dispatch is one Task per taskId in ONE message', () => {
+		expect(EPIC_MODE_BANNER).toContain(
+			'Per-task QA (Stage A + Stage B) is NEVER waived in Epic',
 		);
-		expect(step6).toContain('`pre_check_batch`');
-		expect(step6).toContain('`reviewer` + `test_engineer`');
-		expect(step6).toContain('never skipped');
-		expect(step6.indexOf('pre_check_batch')).toBeLessThan(
-			step6.indexOf('update_task_status(completed)'),
+		const dispatch = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('- `dispatch`'),
+			EPIC_MODE_BANNER.indexOf('- `declare-scopes`'),
 		);
-		expect(step6.indexOf('update_task_status(completed)')).toBeLessThan(
-			step6.indexOf('epic_record_divergence'),
+		expect(dispatch).toContain('one `Task` per `taskId`, ALL in ONE message');
+		expect(dispatch.indexOf('`pre_check_batch`')).toBeLessThan(
+			dispatch.indexOf('`update_task_status(completed)`'),
+		);
+		expect(dispatch).toContain('`reviewer` + `test_engineer`');
+	});
+
+	test('phase-ready-for-review routes through epic_phase_review then phase_complete', () => {
+		const review = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('- `phase-ready-for-review`'),
+		);
+		expect(review).toContain('`epic_phase_review(phase)`');
+		expect(review.indexOf('epic_phase_review')).toBeLessThan(
+			review.indexOf('`phase_complete`'),
 		);
 	});
 
-	test('step 7 routes phase completion through epic_phase_review', () => {
-		const step7 = EPIC_MODE_BANNER.slice(EPIC_MODE_BANNER.indexOf('**7. '));
-		expect(step7).toContain('`epic_phase_review(phase=N)`');
-		expect(step7).toContain('phase critic');
-		expect(step7).toContain('`EPIC_PHASE_*`');
-		expect(step7.indexOf('epic_phase_review')).toBeLessThan(
-			step7.lastIndexOf('`phase_complete`'),
-		);
-		expect(EPIC_MODE_BANNER).not.toContain("doesn't change Stage B");
+	test('forbids the opaque Lean dispatch paths', () => {
+		expect(EPIC_MODE_BANNER).toContain('`lean_turbo_run_phase`');
+		expect(EPIC_MODE_BANNER).toContain('never call');
 	});
 
-	test('step 2 explains scope expiry and the config opt-in reason', () => {
-		const step2 = EPIC_MODE_BANNER.slice(
-			EPIC_MODE_BANNER.indexOf('**2. '),
-			EPIC_MODE_BANNER.indexOf('**3. '),
-		);
-		expect(step2).toContain('`scopes-missing`');
-		expect(step2).toContain('expired');
-		expect(step2).toContain('plan revised');
-		expect(step2).toContain('`epic-disabled-by-config`');
-		expect(step2).toContain('turbo.epic.mode.enabled: true');
-	});
-
-	test('step 1: re-declare needs replace_existing; a phase advance voids bindings (declare per phase)', () => {
-		const step1 = EPIC_MODE_BANNER.slice(
-			EPIC_MODE_BANNER.indexOf('**1. '),
-			EPIC_MODE_BANNER.indexOf('**2. '),
-		);
-		expect(step1).toContain('every pending task of phase N');
-		expect(step1).toContain('start of EVERY phase');
-		expect(step1).toContain('replace_existing: true');
-		expect(step1).toContain('phase advance');
-	});
-
-	test('stays within the pre-v2 injection budget (≤ 1976 tokens)', () => {
-		// The banner competes for the system-enhancer injection budget; the
-		// Epic v2 lifecycle text (start/close, no-open-epic outcome) was paid
-		// for by tightening prose — it may not grow past the catch-up size.
-		expect(estimateTokens(EPIC_MODE_BANNER)).toBeLessThanOrEqual(1976);
-	});
-
-	test('v2 lifecycle: the user opens/closes the epic; no Turbo; no stale toggles', () => {
-		const intro = EPIC_MODE_BANNER.slice(
-			0,
-			EPIC_MODE_BANNER.indexOf('Seven-step flow'),
-		);
-		expect(intro).toContain('`/swarm epic start`');
-		expect(intro).toContain('Only the user opens or closes an epic');
-		expect(intro).toContain('Epic enables neither Turbo nor Lean');
-		expect(EPIC_MODE_BANNER).not.toContain('/swarm turbo epic');
-		expect(EPIC_MODE_BANNER).not.toContain('/swarm epic on');
-		expect(EPIC_MODE_BANNER).toContain('`/swarm epic close`');
-	});
-
-	test('step 2 handles a missing / unreadable epic by falling back to serial', () => {
-		const step2 = EPIC_MODE_BANNER.slice(
-			EPIC_MODE_BANNER.indexOf('**2. '),
-			EPIC_MODE_BANNER.indexOf('**3. '),
-		);
-		expect(step2).toContain('`epic-mode-not-active`');
-		expect(step2).toContain('`epic-state-unreadable`');
-		expect(step2).toContain('per-task serially');
-	});
-
-	test('explains both promote and demote outcomes', () => {
-		expect(EPIC_MODE_BANNER).toContain('promote');
-		expect(EPIC_MODE_BANNER).toContain('demote');
-	});
-
-	test('preserves the Stage B / phase-reviewer requirement', () => {
-		expect(EPIC_MODE_BANNER.toLowerCase()).toContain('phase reviewer');
-	});
-
-	test('puts a user-interrupt-priority rule FIRST, overriding the protocol', () => {
-		// Live failure (Kimi K2.6, Phase 3, 2026-06-05): mid-phase, the
-		// architect tunnel-visioned on a coder retry loop and ignored direct
-		// user messages — even an explicit `/swarm epic status` slash
-		// command. Root cause: nothing told it user input overrides the
-		// flow, and the protocol banner is re-injected every turn. This rule
-		// is the antidote and MUST appear before the six-step flow so it
-		// outranks it.
+	test('the user always comes first, before the flow', () => {
 		expect(EPIC_MODE_BANNER).toContain('THE USER ALWAYS COMES FIRST');
 		expect(EPIC_MODE_BANNER).toContain('STOP advancing the flow');
 		expect(EPIC_MODE_BANNER.toLowerCase()).toContain('slash command');
-		// It must come BEFORE the step-flow header to outrank it.
 		expect(
 			EPIC_MODE_BANNER.indexOf('THE USER ALWAYS COMES FIRST'),
-		).toBeLessThan(EPIC_MODE_BANNER.indexOf('Seven-step flow'));
+		).toBeLessThan(EPIC_MODE_BANNER.indexOf('epic_next_wave'));
 	});
 
-	test('asks the architect to tell the user the verdict and wave plan', () => {
-		// Without this, weaker models (Kimi K2.6 observed) dispatched
-		// silently and the user had no signal Epic was doing anything.
-		// The 2026-06-05 v2 wording dropped the heavy "MANDATORY SURFACE /
-		// copy VERBATIM" compliance scaffolding (which made the architect
-		// robotic) in favor of a natural "tell the user … in your own
-		// words" nudge for BOTH the verdict and the wave plan.
-		// 2026-06-05 v3: reverted to the 06-03 plain "surface immediately"
-		// phrasing that empirically worked, after the MANDATORY/VERBATIM
-		// surface-block cascade (622aa1da etc.) regressed natural talking.
-		expect(EPIC_MODE_BANNER).toContain(
-			'Surface the verdict to the user immediately',
-		);
-		expect(EPIC_MODE_BANNER).toContain('Surface the wave plan to the user');
-		// Natural narration is still framed as conversation, not a script.
-		expect(EPIC_MODE_BANNER).toContain('in your own words');
-		expect(EPIC_MODE_BANNER).toContain('in your own voice');
-		// The robotic-era scaffolding must be gone — no MANDATORY SURFACE and
-		// no "copy VERBATIM" surface-block phrasing (those tool-result
-		// functions were deleted). NOTE: a legitimate "surface its output
-		// VERBATIM" remains on the slash-command line (echo status output) —
-		// that's not the robotic phrasing, so we target the specific strings.
-		expect(EPIC_MODE_BANNER).not.toContain('MANDATORY SURFACE');
-		expect(EPIC_MODE_BANNER).not.toContain('copy them VERBATIM');
-		expect(EPIC_MODE_BANNER).not.toContain('COPIED VERBATIM');
+	test('v2 lifecycle: the user opens/closes the epic; no Turbo; no stale toggles', () => {
+		expect(EPIC_MODE_BANNER).toContain('`/swarm epic start`');
+		expect(EPIC_MODE_BANNER).toContain('Only the user opens or closes an epic');
+		expect(EPIC_MODE_BANNER).toContain('Epic enables neither Turbo nor Lean');
+		expect(EPIC_MODE_BANNER).not.toContain('/swarm turbo epic');
+		expect(EPIC_MODE_BANNER).not.toContain('/swarm epic on');
+		expect(EPIC_MODE_BANNER).toContain('`/swarm epic close`');
+		expect(EPIC_MODE_BANNER).toContain('/swarm epic status | calibration');
 	});
 
-	test('lists the /swarm epic visibility commands', () => {
-		// After 2026-06-05 compression these are listed as a single
-		// pipe-joined line for token efficiency, not four separate lines.
-		expect(EPIC_MODE_BANNER).toContain('/swarm epic status');
-		expect(EPIC_MODE_BANNER).toContain('last');
-		expect(EPIC_MODE_BANNER).toContain('decide');
-		expect(EPIC_MODE_BANNER).toContain('calibration');
+	test('narration: talk to the user before each step', () => {
+		expect(EPIC_MODE_BANNER).toContain('Talk to the user as you work');
+		expect(EPIC_MODE_BANNER).toContain('never go silent');
 	});
 
-	test('mandates surfacing divergence when a task wrote outside its declared scope', () => {
-		// Without this, per-task divergence is silent — the user only sees
-		// the activation decision, not the scope-discipline signal that
-		// drives the next threshold tightening.
-		expect(EPIC_MODE_BANNER).toContain('summary.isClean: false');
-		expect(EPIC_MODE_BANNER).toContain('Divergence: task');
-	});
-
-	test('mandates declaring scope upfront BEFORE the decision call', () => {
-		// Discovered live: without upfront scope declaration the wave
-		// planner has no graph and falls back to serial dispatch silently.
-		// After 2026-06-05 compression the rule is expressed compactly:
-		// "declare ALL pending scopes UP FRONT (step 1), BEFORE step 2."
-		expect(EPIC_MODE_BANNER).toContain('declare_scope');
-		expect(EPIC_MODE_BANNER).toContain('UP FRONT');
-		expect(EPIC_MODE_BANNER).toContain('BEFORE step 2');
-		// Supersedes Rule 1a/3a's declare-as-you-go cadence.
-		expect(EPIC_MODE_BANNER).toContain('Just-in-time declaration');
-	});
-
-	test('mandates Task dispatch (with all calls in ONE message per wave for parallel execution)', () => {
-		// The point of the architect-led dispatch is opencode-tracked
-		// subagents the user can click into for live visibility. Each wave
-		// is one assistant message containing wave.taskIds.length separate
-		// Task calls. After 2026-06-05 compression these are stated as
-		// "SEPARATE Task calls in ONE assistant message".
-		expect(EPIC_MODE_BANNER).toContain(
-			'SEPARATE `Task` calls in ONE assistant message',
-		);
-		expect(EPIC_MODE_BANNER).toContain('subagent_type="coder"');
-		expect(EPIC_MODE_BANNER).toContain('only sanctioned dispatch path');
-		// Defects-to-avoid block must call out bundling and splitting
-		// explicitly (these were observed live failure modes).
-		expect(EPIC_MODE_BANNER).toContain('Bundling');
-		expect(EPIC_MODE_BANNER).toContain('Splitting across messages');
-		expect(EPIC_MODE_BANNER).toContain('Skipping single-task waves');
+	test('stays within the pre-v2 injection budget and shrank with C2 (≤ 1000 tokens)', () => {
+		// The banner competes for the system-enhancer injection budget. C2
+		// moved all procedure into epic_next_wave's responses, so the banner
+		// must stay well under the C1 size (1976 tokens).
+		expect(estimateTokens(EPIC_MODE_BANNER)).toBeLessThanOrEqual(1000);
 	});
 });

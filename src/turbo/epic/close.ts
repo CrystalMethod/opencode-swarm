@@ -111,7 +111,12 @@ export interface EpicCloseReport {
 	git: EpicRecordV1['git'] & { headAtClose: string | null };
 	/** Null when the plan is gone or no longer the epic's plan (orphaned). */
 	tasks: EpicTaskSummary | null;
-	lastDecision: EpicRecordV1['lastDecision'];
+	/** Waves issued by `epic_next_wave` (frozen scopes, heads, status). */
+	waves: EpicRecordV1['waves'];
+	/** Per-task outcomes recorded at wave close. */
+	taskOutcomes: EpicRecordV1['tasks'];
+	/** Phase lifecycle (review runs, verdicts). */
+	phases: EpicRecordV1['phases'];
 	landing: EpicLandingSummary;
 }
 
@@ -377,7 +382,9 @@ export async function closeEpic(
 		config: closing.config,
 		git: { ...closing.git, headAtClose: readHead(directory, closing) },
 		tasks,
-		lastDecision: closing.lastDecision,
+		waves: closing.waves,
+		taskOutcomes: closing.tasks,
+		phases: closing.phases,
 		landing:
 			preflight?.kind === 'ready'
 				? { ...baseLanding, status: 'pending', detail: 'landing not done yet' }

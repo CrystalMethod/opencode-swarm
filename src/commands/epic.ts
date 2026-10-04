@@ -13,41 +13,29 @@
  *   /swarm epic status    — lifecycle state, orphan detection, sentinel/row
  *                            repair, recorded worktree merge failures, and
  *                            the one-time retirement of Epic v1 session state
- *   /swarm epic last      — most recent decision from the durable evidence log
+ *                            (including the epic's waves, phases and
+ *                            divergence recorded by `epic_next_wave`)
  *   /swarm epic calibration — Capability D calibration state
  *   /swarm epic clear-merge-failure <taskId> [--confirm]
  *                          — clear a recorded worktree merge failure that
  *                            blocks Rule 2 (read-only without --confirm)
- *   /swarm epic decide    — run the activation decision once and print the
- *                            verdict without dispatching execution
- *                            (read-only what-if; does NOT write to
- *                             `.swarm/evidence/epic-promotions.jsonl`)
  *
  * The Epic v1 `on` / `off` per-session toggles were removed: an epic is
  * bound to one plan and every Epic behaviour is driven by the sentinel-first
- * project probe (`isEpicOpenForProject`). `close`, `status`, `last`,
- * `decide`, and `calibration` work regardless of the config gate.
+ * project probe (`isEpicOpenForProject`). `decide` / `last` were removed in
+ * Epic v2 C2 with the activation gate: `epic_next_wave` plans every wave and
+ * `status` shows what it recorded. `close`, `status`, and `calibration` work
+ * regardless of the config gate.
  */
 
 import { loadPluginConfigWithMeta } from '../config/index.js';
-import { isGitRepo } from '../git/branch.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import {
-	decideEpicActivation,
-	type EpicActivationVerdict,
-} from '../turbo/epic/activation.js';
 import {
 	isCalibrationStateUnreadable,
 	loadCalibrationState,
 } from '../turbo/epic/calibration.js';
 import { closeEpic, type EpicLandingSummary } from '../turbo/epic/close.js';
-import { getCoChangeData } from '../turbo/epic/cochange-source.js';
-import {
-	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
-	isEpicCochangeConfigEnabled,
-} from '../turbo/epic/config-gate.js';
-import type { CouplingTask } from '../turbo/epic/coupling-report.js';
-import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
+import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../turbo/epic/config-gate.js';
 import { readDivergenceHistory } from '../turbo/epic/divergence-recorder.js';
 import { checkEpicBranch } from '../turbo/epic/epic-branch.js';
 import {
@@ -66,7 +54,6 @@ import {
 	describeMergeFailuresForStatus,
 } from '../turbo/epic/merge-epoch.js';
 import { resolvePlanMarkerScope } from '../turbo/epic/plan-key.js';
-import { readPromotionEvidence } from '../turbo/epic/promotion-evidence.js';
 import {
 	describeEpicSizingReason,
 	type EpicSizingVerdict,
@@ -81,14 +68,9 @@ import { startEpic } from '../turbo/epic/start.js';
 export const _internals = {
 	loadPluginConfigWithMeta,
 	loadPlanJsonOnly,
-	getCoChangeData,
-	decideEpicActivation,
-	resolveEpicDeclaredScopes,
-	readPromotionEvidence,
 	loadCalibrationState,
 	isCalibrationStateUnreadable,
 	readDivergenceHistory,
-	isGitRepo,
 	resolvePlanMarkerScope,
 	describeMergeFailuresForStatus,
 	clearMergeFailureCommand,
@@ -101,7 +83,7 @@ export const _internals = {
 };
 
 const USAGE =
-	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status | decide | last | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
+	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
 
 export async function handleEpicCommand(
 	directory: string,
@@ -127,9 +109,8 @@ export async function handleEpicCommand(
 			// [command=epic]` without args to "check state".
 			return await renderStatus(directory);
 		case 'decide':
-			return renderDecide(directory);
 		case 'last':
-			return renderLast(directory);
+			return `\`/swarm epic ${arg0}\` was removed in Epic v2: the activation gate is gone and the architect's \`epic_next_wave\` plans every wave. Run \`/swarm epic status\` to see the epic's waves, phases and recorded divergence.\n\n${USAGE}`;
 		case 'calibration':
 			return renderCalibration(directory);
 		case 'clear-merge-failure':
@@ -467,16 +448,57 @@ function renderRecordLines(
 			'⚠️ `turbo.epic.mode.enabled` is not true: Epic behaviour is OFF while the config gate is closed. Re-enable it, or close the epic.',
 		);
 	}
-	if (record.lastDecision) {
-		const ld = record.lastDecision;
-		lines.push('', '### Last activation decision');
-		lines.push(`- **Decision:** ${ld.decision}`);
-		lines.push(`- **p:** ${ld.p.toFixed(3)}`);
-		if (ld.phase !== undefined) lines.push(`- Phase: ${ld.phase}`);
-		lines.push(`- Decided at: ${ld.decidedAt}`);
-		if (ld.blockingReasons.length > 0) {
-			lines.push('- Blocking reasons:');
-			for (const r of ld.blockingReasons) lines.push(`  - ${r}`);
+	lines.push(...renderWaveLines(record));
+	return lines;
+}
+
+/** Waves, phases and divergence recorded by `epic_next_wave` (Epic v2 C2). */
+function renderWaveLines(record: EpicRecordV1): string[] {
+	const lines: string[] = [];
+	const waves = record.waves ?? [];
+	const closed = waves.filter((w) => w.status === 'closed').length;
+	const aborted = waves.filter((w) => w.status === 'aborted').length;
+	lines.push(
+		'',
+		'### Waves',
+		waves.length === 0
+			? '- None issued yet — the architect calls `epic_next_wave` to issue the first wave.'
+			: `- ${waves.length} issued: ${closed} closed${aborted > 0 ? `, ${aborted} aborted` : ''}.`,
+	);
+	const active =
+		record.activeWaveSeq === null
+			? undefined
+			: waves.find((w) => w.seq === record.activeWaveSeq);
+	if (active) {
+		lines.push(
+			`- **Active:** wave ${active.seq} (phase ${active.phase}, ${active.kind}) — ${active.taskIds.join(', ')} — issued ${active.issuedAt}`,
+		);
+	}
+	const phases = Object.entries(record.phases ?? {}).sort(
+		([a], [b]) => Number(a) - Number(b),
+	);
+	for (const [phase, info] of phases) {
+		const last = info.verdicts[info.verdicts.length - 1];
+		lines.push(
+			`- Phase ${phase}: ${info.status}; ${info.reviewRuns} phase review run(s)${last ? ` (last: ${last})` : ''}`,
+		);
+	}
+	const divergent = Object.values(record.tasks ?? {}).filter(
+		(o) => o.undeclared.length > 0,
+	);
+	const waveLevel = waves.filter((w) => (w.undeclared ?? []).length > 0);
+	if (divergent.length > 0 || waveLevel.length > 0) {
+		lines.push('', '### Divergence (undeclared writes)');
+		for (const o of divergent.slice(-10)) {
+			lines.push(
+				`- ${o.taskId} (wave ${o.waveSeq}): ${o.undeclared.slice(0, 5).join(', ')}${o.undeclared.length > 5 ? `, +${o.undeclared.length - 5} more` : ''}`,
+			);
+		}
+		for (const w of waveLevel.slice(-5)) {
+			const files = w.undeclared ?? [];
+			lines.push(
+				`- wave ${w.seq} (unattributed): ${files.slice(0, 5).join(', ')}${files.length > 5 ? `, +${files.length - 5} more` : ''}`,
+			);
 		}
 	}
 	return lines;
@@ -528,155 +550,6 @@ async function renderStatus(directory: string): Promise<string> {
 	return lines.join('\n');
 }
 
-/**
- * Phase 14 (B26): shared detail string for the greenfield-check line in
- * both `/swarm epic last` and `/swarm epic decide` outputs. Pre-Phase-14
- * both renderers branched on `passed` alone and rendered `missing
- * upstreams: <list>` for any failure — which printed an EMPTY list when
- * the gate failed purely on phantom deps (a Phase-13-B20 typo case),
- * leaving the architect with no clue why the gate demoted. This helper
- * surfaces phantom deps explicitly, with their own remediation hint.
- */
-function formatGreenfieldDetail(input: {
-	bypassedNoGit: boolean;
-	passed: boolean;
-	crossPhaseUpstreams: readonly string[];
-	missingUpstreams: readonly string[];
-	phantomDeps: readonly string[];
-}): string {
-	if (input.bypassedNoGit) {
-		return 'bypassed — non-git project';
-	}
-	if (input.passed) {
-		return input.crossPhaseUpstreams.length === 0
-			? 'vacuous — no cross-phase upstreams to verify'
-			: `cross-phase upstreams in git: ${input.crossPhaseUpstreams.join(', ')}`;
-	}
-	const parts: string[] = [];
-	if (input.phantomDeps.length > 0) {
-		const sample = input.phantomDeps.slice(0, 3).join(', ');
-		const more =
-			input.phantomDeps.length > 3
-				? `, +${input.phantomDeps.length - 3} more`
-				: '';
-		parts.push(`phantom dep ids (fix the typo): ${sample}${more}`);
-	}
-	if (input.missingUpstreams.length > 0) {
-		const sample = input.missingUpstreams.slice(0, 3).join(', ');
-		const more =
-			input.missingUpstreams.length > 3
-				? `, +${input.missingUpstreams.length - 3} more`
-				: '';
-		parts.push(`missing upstreams (wait for commit): ${sample}${more}`);
-	}
-	return parts.length > 0
-		? parts.join('; ')
-		: 'fail — no diagnostic fields present (legacy record?)';
-}
-
-/**
- * Render whether the co-change signal fed `p`. Returns `null` for legacy
- * records that predate the field (nothing to say).
- */
-function formatCochangeSignal(
-	signal: EpicActivationVerdict['rationale']['pCheck']['cochangeSignal'],
-): string | null {
-	if (signal === 'disabled-by-config') {
-		return 'co-change signal: disabled by config (`turbo.epic.cochange.enabled` is not true) — p reflects declared-path conflicts only';
-	}
-	if (signal === 'enabled') {
-		return 'co-change signal: enabled';
-	}
-	return null;
-}
-
-function renderLast(directory: string): string {
-	// `/swarm epic last` — shows the most recent decision from the durable
-	// evidence log. Complements `/swarm epic status` (which reads in-memory
-	// session state and only sees decisions made by this session) and
-	// `/swarm epic decide` (a what-if that never writes evidence). `last`
-	// is the user's escape hatch when the architect (e.g. Kimi K2.6) runs
-	// `epic_decide_phase` but doesn't surface the verdict — they can pull
-	// it from the log explicitly.
-	let records: ReturnType<typeof _internals.readPromotionEvidence>;
-	try {
-		records = _internals.readPromotionEvidence(directory);
-	} catch (err) {
-		return `Error reading epic-promotions.jsonl: ${err instanceof Error ? err.message : String(err)}`;
-	}
-	if (records.length === 0) {
-		return [
-			'## Epic Mode — Last Decision',
-			'',
-			'No decisions recorded yet at `.swarm/evidence/epic-promotions.jsonl`.',
-			'',
-			'A record is appended every time the architect calls `epic_decide_phase`.',
-			"If you expected one and there isn't, the architect likely didn't invoke it for this phase — run `/swarm epic decide` to preview what Epic Mode would decide right now.",
-		].join('\n');
-	}
-	const last = records[records.length - 1]!;
-	const lines: string[] = ['## Epic Mode — Last Decision', ''];
-	lines.push(`- Decided at: ${last.timestamp}`);
-	lines.push(`- Session: ${last.sessionID}`);
-	if (last.phase !== undefined) lines.push(`- Phase: ${last.phase}`);
-	lines.push(`- Decision: **${last.verdict.decision}**`);
-	lines.push(`- p: ${last.verdict.p.toFixed(3)}`);
-	if (last.verdict.blockingReasons.length > 0) {
-		lines.push('- Blocking reasons:');
-		for (const r of last.verdict.blockingReasons) lines.push(`  - ${r}`);
-	}
-	lines.push('');
-	lines.push('### Gate-by-gate');
-	const r = last.verdict.rationale;
-	lines.push(
-		`- **p-threshold**: ${r.pCheck.passed ? 'pass' : 'fail'} (p=${r.pCheck.p.toFixed(3)} vs threshold ${r.pCheck.threshold.toFixed(3)})`,
-	);
-	{
-		const signalLine = formatCochangeSignal(r.pCheck.cochangeSignal);
-		if (signalLine) lines.push(`- ${signalLine}`);
-	}
-	const hot = r.hotModuleCheck.touchedHotModules;
-	lines.push(
-		`- **hot-module**: ${r.hotModuleCheck.passed ? 'pass' : `fail — touched ${hot.slice(0, 3).join(', ')}${hot.length > 3 ? `, +${hot.length - 3} more` : ''}`}`,
-	);
-	// Phase 12 (B12): post-Phase-10 the greenfield gate decides via
-	// predecessor evidence (cross-phase upstreams in git) rather than the
-	// commit-count floor. The old "X commits observed, Y required" label
-	// is meaningless under that model. Render the actual decision basis:
-	// missing upstreams when failing, "vacuous" when there were no
-	// cross-phase deps to check, or "bypassed (no git)" when Rule 1 fired.
-	//
-	// Phase 13 (B18): legacy records on disk (written before Phase 10
-	// landed) lack `crossPhaseUpstreams` / `missingUpstreams`. Default to
-	// `[]` so the renderer doesn't TypeError when surfacing them via
-	// `/swarm epic last`. We don't try to reconstruct intent from those
-	// records — just treat empty as "no upstream info recorded".
-	{
-		const g = r.greenfieldCheck;
-		const crossPhaseUpstreams = g.crossPhaseUpstreams ?? [];
-		const missingUpstreams = g.missingUpstreams ?? [];
-		const phantomDeps = g.phantomDeps ?? [];
-		lines.push(
-			`- **greenfield (predecessor evidence)**: ${g.passed ? 'pass' : 'fail'} — ${formatGreenfieldDetail(
-				{
-					bypassedNoGit: g.bypassedNoGit === true,
-					passed: g.passed,
-					crossPhaseUpstreams,
-					missingUpstreams,
-					phantomDeps,
-				},
-			)}`,
-		);
-	}
-	if (records.length > 1) {
-		lines.push('');
-		lines.push(
-			`(History: ${records.length} decisions total in this directory's epic-promotions.jsonl)`,
-		);
-	}
-	return lines.join('\n');
-}
-
 function renderCalibration(directory: string): string {
 	// `/swarm epic calibration` — surfaces the full M4 self-calibration
 	// state: the learned threshold override (vs. the static config), the
@@ -723,7 +596,7 @@ function renderCalibration(directory: string): string {
 			'',
 			`Static activation threshold: ${staticThreshold.toFixed(3)} (from \`turbo.epic.mode.activation_threshold\`)`,
 			'',
-			'The calibration engine writes state on the first `epic_decide_phase` call that consumes a divergence record. Until then, the static threshold and an empty hot-module list are in effect.',
+			'The calibration engine writes state when `epic_next_wave` closes a wave that recorded divergence. Until then, no hot modules are learned.',
 		].join('\n');
 	}
 
@@ -797,130 +670,5 @@ function renderCalibration(directory: string): string {
 		}
 	}
 
-	return lines.join('\n');
-}
-
-async function renderDecide(directory: string): Promise<string> {
-	const plan = await _internals.loadPlanJsonOnly(directory);
-	if (!plan) {
-		return 'No plan found at `.swarm/plan.json`. Run `/swarm plan` first.';
-	}
-	const { config } = _internals.loadPluginConfigWithMeta(directory);
-	const modeCfg = config.turbo?.epic?.mode;
-	const cochangeCfg = config.turbo?.epic?.cochange;
-	const activationThreshold = modeCfg?.activation_threshold ?? 0.3;
-	const minCommitsForSignal = modeCfg?.min_commits_for_signal ?? 20;
-	const cochangeNpmiThreshold = cochangeCfg?.threshold ?? 0.6;
-	const cochangeMinCoChanges = cochangeCfg?.min_co_changes ?? 5;
-	const cochangeEnabled = isEpicCochangeConfigEnabled(config);
-
-	// ONE plan-identity + v2 binding-set read for every task (declared
-	// scopes live only in the v2 binding store `declare_scope` writes).
-	const declaredScopes = _internals.resolveEpicDeclaredScopes(
-		directory,
-		plan,
-		plan.phases.flatMap((phase) => (phase.tasks ?? []).map((task) => task.id)),
-	);
-	const tasks: CouplingTask[] = [];
-	for (const phase of plan.phases) {
-		for (const task of phase.tasks) {
-			const scopeFiles = declaredScopes[task.id] ?? [];
-			const scope: string[] =
-				scopeFiles.length > 0 ? scopeFiles : (task.files_touched ?? []);
-			tasks.push({ id: task.id, scope });
-		}
-	}
-
-	// Co-change signal only when `turbo.epic.cochange.enabled === true`;
-	// otherwise path-only conflicts, recorded as `disabled-by-config`.
-	const { pairs, commitsObserved } = cochangeEnabled
-		? await _internals.getCoChangeData(directory)
-		: { pairs: [], commitsObserved: 0 };
-
-	// Phase 16 (C4.H2): include the Phase 10/13 gate inputs that the
-	// real `epic_decide_phase` tool computes — `isGitProject` (Rule 1
-	// bypass) and the calibration-extended hot-module set. Without
-	// these, the what-if's verdict diverges from the actual tool: a
-	// non-git project would show "demote (greenfield)" here but
-	// "promote (bypassed)" from the tool. The plan-wide what-if can NOT
-	// simulate per-phase cross-phase predecessor-evidence
-	// (`crossPhaseUpstreams` / `phantomDeps`) because those depend on
-	// which phase the architect intends to decide — for accurate
-	// per-phase previews the user should invoke the `epic_decide_phase`
-	// tool directly with a phase number. We surface this caveat in the
-	// output so the what-if's scope is unambiguous.
-	const isGitProject = (() => {
-		try {
-			return _internals.isGitRepo(directory);
-		} catch {
-			return false;
-		}
-	})();
-
-	const verdict = _internals.decideEpicActivation(
-		tasks,
-		pairs,
-		commitsObserved,
-		{
-			activationThreshold,
-			minCommitsForSignal,
-			cochangeNpmiThreshold,
-			cochangeMinCoChanges,
-			isGitProject,
-			cochangeSignal: cochangeEnabled ? 'enabled' : 'disabled-by-config',
-		},
-	);
-	const caveat =
-		'\n\n_Note: `/swarm epic decide` is a plan-wide what-if. It does NOT simulate the per-phase predecessor-evidence check (Phase 10) or phantom-dep detection — for accurate per-phase decisions, call `epic_decide_phase(phase=N)` directly._';
-	return formatVerdict(verdict) + caveat;
-}
-
-function formatVerdict(verdict: EpicActivationVerdict): string {
-	const lines: string[] = ['## Epic Mode — Activation Decision', ''];
-	lines.push(`**Decision:** \`${verdict.decision}\``);
-	lines.push(`**p:** ${verdict.p.toFixed(3)}`);
-	lines.push('');
-	lines.push('### Gates');
-	lines.push(
-		`- p-threshold: **${verdict.rationale.pCheck.passed ? 'pass' : 'fail'}** (p=${verdict.rationale.pCheck.p.toFixed(3)}, threshold=${verdict.rationale.pCheck.threshold.toFixed(3)})`,
-	);
-	{
-		const signalLine = formatCochangeSignal(
-			verdict.rationale.pCheck.cochangeSignal,
-		);
-		if (signalLine) lines.push(`- ${signalLine}`);
-	}
-	lines.push(
-		`- hot-module: **${verdict.rationale.hotModuleCheck.passed ? 'pass' : 'fail'}** (${verdict.rationale.hotModuleCheck.touchedHotModules.length} hot module(s) touched)`,
-	);
-	// Phase 12 (B12) / Phase 13 (B18) / Phase 14 (B26): same rendering
-	// rationale, legacy-tolerance guard, AND phantom-dep surfacing as
-	// the `renderLast` path above.
-	{
-		const g = verdict.rationale.greenfieldCheck;
-		const crossPhaseUpstreams = g.crossPhaseUpstreams ?? [];
-		const missingUpstreams = g.missingUpstreams ?? [];
-		const phantomDeps = g.phantomDeps ?? [];
-		lines.push(
-			`- greenfield (predecessor evidence): **${g.passed ? 'pass' : 'fail'}** — ${formatGreenfieldDetail(
-				{
-					bypassedNoGit: g.bypassedNoGit === true,
-					passed: g.passed,
-					crossPhaseUpstreams,
-					missingUpstreams,
-					phantomDeps,
-				},
-			)}`,
-		);
-	}
-	if (verdict.blockingReasons.length > 0) {
-		lines.push('');
-		lines.push('### Blocking reasons');
-		for (const r of verdict.blockingReasons) lines.push(`- ${r}`);
-	}
-	lines.push('');
-	lines.push(
-		'_This was a read-only `/swarm epic decide` call — no execution was dispatched and no evidence file was written. To act on this verdict, the architect should declare scopes for all pending tasks, then call `epic_decide_phase` → `epic_plan_waves` → for each wave, dispatch one `Task` per `taskId` in a single message → per-task Stage A/B + `update_task_status(completed)` + `epic_record_divergence` → `epic_phase_review` → `phase_complete`._',
-	);
 	return lines.join('\n');
 }

@@ -11,9 +11,9 @@
  *                                                 ↓
  *                                          SWARM_TASK_SUBJECT_RE
  *                                                 ↓
- *                                          buildIsUpstreamCommitted
+ *                                  readPlanScopedCommittedTaskIds
  *                                                 ↓
- *                                          planLeanTurboLanes
+ *                                          epic_next_wave
  *
  * If any contract between modules drifts (commit-message format change,
  * regex tightening, predicate signature, planner argument order), the
@@ -32,8 +32,8 @@ import * as path from 'node:path';
 import type { Plan } from '../../src/config/plan-schema';
 import { savePlan, updateTaskStatus } from '../../src/plan/manager';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
-import { executeEpicPlanWaves } from '../../src/tools/epic-plan-waves';
-import { executeEpicDecidePhase } from '../../src/tools/epic-run-phase';
+import { markEpicPhaseComplete } from '../../src/turbo/epic/lifecycle';
+import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import { openEpicForTest } from '../helpers/epic-lifecycle';
 
 function git(args: string[], cwd: string): { status: number; stdout: string } {
@@ -137,7 +137,7 @@ async function declareScope(
 	}
 }
 
-describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate → planner', () => {
+describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predecessor evidence → epic_next_wave', () => {
 	let dir: string;
 
 	beforeEach(async () => {
@@ -186,21 +186,17 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		const showLog = git(['log', '-1', '--name-only', '--pretty='], dir).stdout;
 		expect(showLog).toContain('src/foo.ts');
 
-		// Now plan Phase 2 via Epic's wave planner (the tool that owns
-		// Rule 3 — `lean_turbo_plan_lanes` is the maintainer's tool and
-		// deliberately carries NO Rule-3 predicate). Rule 3's predicate
-		// should see 1.1 in git history → 2.1 lands in a wave.
-		const result = await executeEpicPlanWaves({
-			directory: dir,
-			phase: 2,
-			scopes: { '2.1': ['src/bar.ts'] },
+		// Phase 1 is done (phase_complete records it on the epic); declare
+		// 2.1 AFTER the phase advance (a declaration is pinned to the plan
+		// revision). epic_next_wave's predecessor evidence (Rule 3: the
+		// plan-scoped marker in git) sees 1.1 → 2.1 is issued in a wave.
+		markEpicPhaseComplete(dir, 1);
+		await declareScope(dir, '2.1', ['src/bar.ts']);
+		const result = await runEpicNextWave(dir, 'epic-handoff-architect');
+		expect(result).toMatchObject({
+			status: 'dispatch',
+			wave: { phase: 2, taskIds: ['2.1'] },
 		});
-		expect(result.success).toBe(true);
-		expect(result.degradedTasks ?? []).toEqual([]);
-		expect((result.waves ?? []).length).toBeGreaterThan(0);
-		// 2.1 must be in a wave.
-		const allWaveTasks = (result.waves ?? []).flatMap((w) => w.taskIds);
-		expect(allWaveTasks).toContain('2.1');
 	});
 
 	test('without a scope, a CLEAN tree: completing 1.1 produces an empty marker-only commit', async () => {
@@ -343,20 +339,27 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		}
 	});
 
-	test('Rule 3 blocks Phase 2 when 1.1 is NOT yet committed (predicate returns false)', async () => {
-		// Don't complete 1.1. Plan phase 2 via Epic's wave planner (the
-		// tool that owns Rule 3). The predicate looks at git log, finds no
-		// swarm(task 1.1) marker, returns false, the planner degrades 2.1.
-		const result = await executeEpicPlanWaves({
-			directory: dir,
-			phase: 2,
-			scopes: { '2.1': ['src/bar.ts'] },
-		});
-		expect(result.success).toBe(true);
-		const degraded = (result.degradedTasks ?? []).map(
-			(d: { taskId: string }) => d.taskId,
+	test('Rule 3 blocks Phase 2 when completed 1.1 has NO marker in git (predecessor-missing)', async () => {
+		fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, 'src', 'foo.ts'),
+			'export const FOO = 1;\n',
 		);
-		expect(degraded).toContain('2.1');
+		await declareScope(dir, '1.1', ['src/foo.ts']);
+		await updateTaskStatus(dir, '1.1', 'completed');
+		// Drop the marker commit: 1.1 is completed in the plan but its work is
+		// not in git history (what a skipped Rule 2 leaves behind).
+		expect(git(['reset', '-q', '--hard', 'HEAD~1'], dir).status).toBe(0);
+		markEpicPhaseComplete(dir, 1);
+		await declareScope(dir, '2.1', ['src/bar.ts']);
+		const result = await runEpicNextWave(dir, 'epic-handoff-architect');
+		expect(result).toMatchObject({
+			status: 'blocked',
+			reason: 'predecessor-missing',
+			details: {
+				problems: [{ taskId: '2.1', dependency: '1.1', why: 'not-committed' }],
+			},
+		});
 	});
 
 	test('AGENTS.md #4: .swarm/ contents never enter git history across multiple completions', async () => {
@@ -408,60 +411,5 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		const match = SUBJECT_RE.exec(subjects[0]);
 		expect(match).not.toBeNull();
 		expect(match?.[1]).toBe('1.1');
-	});
-
-	test('Phase 10 end-to-end: small project, 1 commit observed, Phase 1 dep committed → Phase 2 PROMOTES (the user-reported bug)', async () => {
-		// The legacy `commitsObserved >= 20` floor would have demoted
-		// every phase of this project forever. Phase 10 instead checks
-		// that the cross-phase upstream (1.1) is in git. After Rule 2
-		// commits 1.1 via update_task_status, executeEpicDecidePhase
-		// for phase 2 must promote.
-		await updateTaskStatus(dir, '1.1', 'completed');
-		// Declare AFTER completion: closing Phase 1 advances current_phase,
-		// so a declaration made before it would be pinned to a stale plan
-		// revision. The decide preflight needs 2.1's live v2 binding.
-		await declareScope(dir, '2.1', ['src/thing.ts']);
-
-		// At this point: 1 swarm commit observed (well under any
-		// historical floor), 1.1 marker in git history.
-		const verdict = await executeEpicDecidePhase({
-			directory: dir,
-			phase: 2,
-			sessionID: 'test-session',
-		});
-
-		// Verdict shape: { success, verdict: { decision, rationale, ... } }
-		expect(verdict.success).toBe(true);
-		expect(verdict.verdict?.decision).toBe('promote');
-		const greenfield = verdict.verdict?.rationale.greenfieldCheck;
-		expect(greenfield?.passed).toBe(true);
-		// Cross-phase upstreams for Phase 2 = { 1.1 } per the plan (2.1
-		// depends on 1.1, declared in makePlanWithCrossBatchDep). The
-		// predicate reports 1.1 as committed → missingUpstreams is empty.
-		expect(greenfield?.crossPhaseUpstreams).toEqual(['1.1']);
-		expect(greenfield?.missingUpstreams).toEqual([]);
-	});
-
-	test('Phase 10 negative: small project, Phase 1 NOT committed → Phase 2 DEMOTES with named missing upstream', async () => {
-		// Symmetric to the above. Without Rule 2 firing, the predicate
-		// reports 1.1 missing → predecessor evidence fails → demote.
-		// The blocking reason must name 1.1 specifically so the architect
-		// knows what to do to unblock.
-		await declareScope(dir, '2.1', ['src/thing.ts']); // preflight needs this
-		const verdict = await executeEpicDecidePhase({
-			directory: dir,
-			phase: 2,
-			sessionID: 'test-session',
-		});
-
-		expect(verdict.success).toBe(true);
-		expect(verdict.verdict?.decision).toBe('demote');
-		const greenfield = verdict.verdict?.rationale.greenfieldCheck;
-		expect(greenfield?.passed).toBe(false);
-		expect(greenfield?.missingUpstreams).toEqual(['1.1']);
-		const reason = verdict.verdict?.blockingReasons.find((r) =>
-			r.includes('predecessor evidence'),
-		);
-		expect(reason).toContain('1.1');
 	});
 });

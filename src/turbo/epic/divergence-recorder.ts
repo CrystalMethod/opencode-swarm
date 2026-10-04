@@ -1,20 +1,20 @@
 /**
  * Divergence recorder for Epic Mode Capability D (self-calibration).
  *
- * After every task transitions to `completed`, this module:
- *   1. Compares the task's DECLARED scope (latest `declare_scope` binding for
- *      the task under the current plan id, via the calibration-only reader in
- *      `declared-scopes.ts`) against the ACTUAL files attributed to that exact
- *      task (unioned across the architect and same-project child sessions by
- *      `epic_record_divergence`, which records nothing without attribution).
+ * When `epic_next_wave` closes a wave (`wave-close.ts`), for every
+ * completed task with known actual files this module:
+ *   1. Compares the task's DECLARED scope (frozen into the wave record at
+ *      issue) against the ACTUAL files attributed to that exact task
+ *      (unioned across same-project sessions, or the git fallback for a
+ *      single-task wave; nothing is recorded without actual files).
  *   2. Computes divergence — undeclared writes (actual − declared), unused
  *      declarations (declared − actual), and a per-task divergence ratio
  *      (undeclared / max(1, actual)). A declared directory covers descendants.
  *   3. Appends one record to `.swarm/epic/divergence.jsonl`, idempotently.
  *
- * The calibration engine (`./calibration-engine.ts`) reads this history on
- * the next `epic_decide_phase` invocation and uses it to adjust the
- * activation threshold and hot-module list. This module just records.
+ * The calibration engine (`./calibration-engine.ts`) is rolled forward over
+ * this history right after the wave close records it (hot-module list +
+ * threshold override). This module just records.
  *
  * Pure I/O: never throws to the caller. Failures are logged and swallowed
  * so the task-completion path is never blocked by an audit write.

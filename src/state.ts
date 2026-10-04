@@ -3414,10 +3414,11 @@ export function resetModifiedFilesForTask(
  * Apply task-completion retention rules.
  *
  * Attribution is released at the workflow-complete boundary, except while an
- * epic is open for the session's project: then it is retained until
- * `epic_record_divergence` consumes the entry. The project comes from the
- * session's owning project key (a canonical root path); an unowned session
- * is treated as non-Epic. With no epic the probe costs one `existsSync`.
+ * epic is open for the session's project: then it is retained until its
+ * wave closes (`epic_next_wave` → `wave-close.ts` reads it for divergence
+ * and releases it). The project comes from the session's owning project key
+ * (a canonical root path); an unowned session is treated as non-Epic. With
+ * no epic the probe costs one `existsSync`.
  */
 export function completeModifiedFilesForTask(
 	session: AgentSessionState,

@@ -2582,24 +2582,24 @@ The execution profile controls plan-scoped execution preferences. MODE: PLAN dra
 
 ### `turbo.epic` — Epic Mode settings
 
-Epic Mode is an optional, coupling-aware execution mode: per phase it decides whether the plan's tasks can run in parallel and, when promoted, the architect dispatches them as concurrent waves of visible coder `Task` calls. Every key defaults to off; see [Epic Mode](modes.md#epic-mode-preview) for the design.
+Epic Mode is an optional, coupling-aware execution mode: once an epic is opened for an epic-sized plan, `epic_next_wave` issues the plan's tasks as concurrent waves (disjoint declared scopes, phases in order) that the architect dispatches as visible coder `Task` calls. Every key defaults to off; see [Epic Mode](modes.md#epic-mode-preview) for the design.
 
 **Two independent opt-in master gates:**
 
-- `turbo.epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic start`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config` (`epic_record_divergence` returns the same reason as a no-op), and the project-scoped Epic behaviours of an open epic (Rule 2 per-task commit markers, the `epic_phase_readiness` gate in `phase_complete`, the Epic banner) never run. `/swarm epic close|status|decide|last|calibration` keep working. Epic itself is opened per plan with `/swarm epic start` (the former `/swarm epic on|off` toggles were removed).
-- `turbo.epic.cochange.enabled` gates only the git co-change conflict signal. Without it, `p` is computed from declared-path conflicts alone and the decision rationale (and `/swarm coupling`) records `cochangeSignal: 'disabled-by-config'`.
+- `turbo.epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic start` and `epic_next_wave` refuse with reason `epic-disabled-by-config`, the architect is not granted the Epic tools (`epic_next_wave`, `epic_phase_review`), and the project-scoped Epic behaviours of an open epic (Rule 2 per-task commit markers, the `epic_phase_readiness` gate in `phase_complete`, the Epic banner) never run. `/swarm epic close|status|calibration` keep working. Epic itself is opened per plan with `/swarm epic start` (the former `/swarm epic on|off` toggles were removed).
+- `turbo.epic.cochange.enabled` gates only the git co-change conflict signal. Without it, `epic_next_wave` keeps wave members apart on declared-path conflicts only (with it, co-changing tasks also go to different waves), and `/swarm coupling` records `cochangeSignal: 'disabled-by-config'`.
 
 **`strategy` is required.** `turbo` is a discriminated union on `strategy`. A `turbo` block without `"strategy": "standard"` — or `"strategy": "lean"` together with a `"lean"` object — fails validation and is **dropped whole**, silently taking `turbo.epic` with it (other top-level keys are unaffected). The `epic` block is accepted under either strategy.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `mode.enabled` | boolean | `false` | Master gate for Epic Mode (see above). |
-| `mode.activation_threshold` | number | `0.3` | Plan-wide `p` ceiling. Plans with `p ≤` the effective threshold (static value, possibly tightened by calibration) are eligible for parallel promotion. |
-| `mode.min_commits_for_signal` | number | `20` | Legacy greenfield floor. Recorded in the decision rationale for telemetry only; it no longer affects promotion. The greenfield gate passes on a non-git project (Rule 1) or when every cross-phase upstream task has a `swarm(task <id>):` commit marker. |
+| `mode.activation_threshold` | number | `0.3` | Static ceiling of the calibration threshold override reported by `/swarm epic calibration`. The plan-wide `p` activation gate was removed (sizing at `/swarm epic start` replaced it); this value no longer forces serial execution. |
+| `mode.min_commits_for_signal` | number | `20` | Retired: read by nothing (the activation gate was removed); still accepted so existing configs stay valid. |
 | `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal (see above). |
 | `cochange.threshold` | number | `0.6` | NPMI floor (range `[-1, 1]`) for a file pair to be treated as historically co-changing. Stricter than `co_change_analyzer`'s discovery default (`0.5`). |
 | `cochange.min_co_changes` | number | `5` | Minimum raw co-change count required before NPMI is considered, to suppress small-sample noise. Stricter than the analyzer's discovery default (`3`). |
-| `calibration.enabled` | boolean | `true` | Outcome-based self-calibration (Capability D). Runs only inside `epic_decide_phase`, so it is inert unless `mode.enabled` is true. |
+| `calibration.enabled` | boolean | `true` | Outcome-based self-calibration (Capability D). Runs when `epic_next_wave` closes a wave (learned hot modules make later tasks touching them run alone), so it is inert unless `mode.enabled` is true. |
 | `calibration.floor_threshold` | number | `0.05` | Calibration never tightens the threshold below this. |
 | `calibration.tighten_step` | number | `0.02` | Per-divergent-task tightening step. |
 | `calibration.loosen_step` | number | `0.01` | Per-loosening-event step toward the static threshold. |
@@ -2608,7 +2608,7 @@ Epic Mode is an optional, coupling-aware execution mode: per phase it decides wh
 | `sizing.min_scope_coverage` | number | `0.8` | Minimum share (0–1) of pending tasks with a live declared scope or `files_touched` (`insufficient-scope-coverage`). |
 | `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a wave-planner dry run (`insufficient-parallelism`). Must be ≥ 1. |
 | `sizing.coder_fraction` | number | `0.6` | Share (0–1) of a task's time that parallel coders overlap; QA and architect turns stay serial. |
-| `commit_policy` | `"epic-branch"` \| `"current-branch"` | `"epic-branch"` | Git projects. `epic-branch`: `/swarm epic start` checks out `swarm/epic/<epicKey>` (refusing a detached HEAD or a leftover branch of the same name), every Epic commit goes there, Epic tools refuse with `EPIC_BRANCH_MISMATCH` while HEAD is elsewhere, and `/swarm epic close` lands it onto the original branch (`--land squash` default — staged, uncommitted; `merge`; `none`). `current-branch`: commits stay on the branch current at start; close lands nothing. See [Epic branch and landing](modes.md#epic-branch-and-landing). |
+| `commit_policy` | `"epic-branch"` \| `"current-branch"` | `"epic-branch"` | Git projects. `epic-branch`: `/swarm epic start` checks out `swarm/epic/<epicKey>` (refusing a detached HEAD or a leftover branch of the same name), every Epic commit goes there, `epic_next_wave` blocks with `EPIC_BRANCH_MISMATCH` while HEAD is elsewhere, and `/swarm epic close` lands it onto the original branch (`--land squash` default — staged, uncommitted; `merge`; `none`). `current-branch`: commits stay on the branch current at start; close lands nothing. See [Epic branch and landing](modes.md#epic-branch-and-landing). |
 
 `/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced. The `sizing` block is `.strict()` like the rest of `turbo.epic`: an unknown key fails validation.
 

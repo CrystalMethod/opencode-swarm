@@ -64,6 +64,9 @@ export interface CouplingReport {
 	roadmap: string[];
 }
 
+/** Whether the co-change conflict signal contributed to `p` (`/swarm coupling`). */
+export type EpicCochangeSignalState = 'enabled' | 'disabled-by-config';
+
 export interface ComputeCouplingReportOptions {
 	/** Cap on roadmap rank entries. Default 5. */
 	roadmapTop?: number;

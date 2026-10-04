@@ -20,10 +20,12 @@
  * re-dispatch merge-back uses).
  */
 
+import * as path from 'node:path';
 import {
 	clearWorktreeMergeStatus as clearWorktreeMergeStatus_import,
 	getWorktreeMergeFailure as getWorktreeMergeFailure_import,
 	initDurableStatusPath as initDurableStatusPath_import,
+	_internals as mergeStatusInternals,
 	scanWorktreeMergeFailuresForRecovery as scanWorktreeMergeFailuresForRecovery_import,
 	type WorktreeMergeFailure,
 } from '../../hooks/delegation-gate/worktree-merge-status.js';
@@ -56,6 +58,48 @@ export function relevantMergeFailure(
 	return classifyMergeFailure(failure, sinceMs) === 'stale'
 		? undefined
 		: failure;
+}
+
+/**
+ * The durable status file the shared, process-global registry is bound to,
+ * or null when it is unbound. Read-only: the binding is never changed here.
+ */
+function boundStatusPath(): string | null {
+	try {
+		return _internals.getBoundStatusPath();
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * {@link relevantMergeFailure} for one project, used by `epic_next_wave`
+ * (wave advance rule). The shared registry is process-global and keyed by
+ * bare task id, so its in-memory map is trusted only while it is bound to
+ * THIS project's durable file (then every record/clear is persisted to that
+ * file synchronously). Bound to another project, or unbound, the in-memory
+ * map may hold another project's `1.1`: only this project's durable file is
+ * read (read-only scan). An unreadable durable file adds nothing; `/swarm
+ * epic status` reports it.
+ */
+export function relevantMergeFailureForProject(
+	directory: string,
+	taskId: string,
+	sinceMs: number,
+): WorktreeMergeFailure | undefined {
+	const bound = boundStatusPath();
+	const ours = path.join(directory, '.swarm', 'worktree-merge-status.json');
+	if (bound !== null && path.resolve(bound) === path.resolve(ours)) {
+		const live = relevantMergeFailure(taskId, sinceMs);
+		if (live) return live;
+	}
+	const scan = _internals.scanWorktreeMergeFailuresForRecovery(directory);
+	if (scan.status !== 'ok') return undefined;
+	const durable = scan.failures.find(([id]) => id === taskId)?.[1];
+	if (!durable) return undefined;
+	return classifyMergeFailure(durable, sinceMs) === 'stale'
+		? undefined
+		: durable;
 }
 
 /**
@@ -169,4 +213,6 @@ export const _internals = {
 	getWorktreeMergeFailure: getWorktreeMergeFailure_import,
 	scanWorktreeMergeFailuresForRecovery:
 		scanWorktreeMergeFailuresForRecovery_import,
+	/** Throws when the shared registry is unbound (no project path given). */
+	getBoundStatusPath: (): string => mergeStatusInternals.getDurableStatusPath(),
 };

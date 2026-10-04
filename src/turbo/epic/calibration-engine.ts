@@ -171,8 +171,8 @@ export function effectiveActivationThreshold(
 
 /**
  * Union the static hot-module list (Lean Turbo's globals + protected) with
- * the calibration's learned additions. Returns a fresh array; callers can
- * pass this to `decideEpicActivation`'s effective-hot-module check.
+ * the calibration's learned additions. Returns a fresh array; `epic_next_wave`
+ * runs a task whose scope touches one of these alone.
  */
 export function effectiveHotModules(
 	staticHotModules: readonly string[],

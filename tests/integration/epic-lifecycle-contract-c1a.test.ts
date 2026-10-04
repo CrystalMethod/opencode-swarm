@@ -1,13 +1,18 @@
 /**
- * Epic v2 lifecycle CONTRACT v1a (commit C1a — plan-scoped lifecycle).
+ * Epic v2 lifecycle CONTRACT v1a (commit C1a — plan-scoped lifecycle;
+ * migrated to the C2 `epic_next_wave` flow), `current-branch` policy.
  *
  * One epic, end to end, through the production entry points on a real git
  * repository:
- *   `/swarm epic start` → epic_decide_phase → epic_plan_waves → per-task
- *   completion (Rule 2 marker commit carrying the `Swarm-Plan:` trailer) →
- *   epic_phase_review (fake review dispatcher injected through the tool's
- *   dispatcher option — no model call) → phase_complete (the Epic readiness
- *   gate passes) → `/swarm epic close` (report written, probe off).
+ *   `/swarm epic start` → epic_next_wave (dispatch) → per-task completion
+ *   (Rule 2 marker commit carrying the `Swarm-Plan:` trailer) →
+ *   epic_next_wave (closes the wave, dispatches the next) → … →
+ *   phase-ready-for-review → epic_phase_review (fake review dispatcher
+ *   injected through the tool's dispatcher option — no model call) →
+ *   phase_complete (the Epic readiness gate passes) → epic_next_wave
+ *   (epic-complete) → `/swarm epic close` (report written, probe off).
+ * The epic-branch policy + squash landing are pinned by contract v2
+ * (epic-lifecycle-contract-c2.test.ts). No in-wave rework (C2 MINOR 6).
  *
  * The epic is opened by `/swarm epic start` itself (config opt-in, sizing
  * verdict epic-sized, not forced). Later v2 commits extend this contract in
@@ -29,12 +34,11 @@ import {
 } from '../../src/state';
 import { executeDeclareScope } from '../../src/tools/declare-scope';
 import { executeEpicPhaseReview } from '../../src/tools/epic-phase-review';
-import { executeEpicPlanWaves } from '../../src/tools/epic-plan-waves';
-import { executeEpicDecidePhase } from '../../src/tools/epic-run-phase';
 import {
 	getOpenEpic,
 	isEpicOpenForProject,
 } from '../../src/turbo/epic/lifecycle';
+import { runEpicNextWave } from '../../src/turbo/epic/next-wave';
 import { _internals as startInternals } from '../../src/turbo/epic/start';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { freezeClock, type Restore } from '../helpers/test-clock.js';
@@ -211,7 +215,7 @@ afterEach(() => {
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('Epic lifecycle contract v1a — start → decide → waves → tasks → review → phase_complete → close', () => {
+describe('Epic lifecycle contract v1a — start → next_wave → tasks → review → phase_complete → close', () => {
 	test('one plan-scoped epic end to end', async () => {
 		// start (not forced: the plan is epic-sized).
 		const started = await handleEpicCommand(dir, ['start'], SESSION);
@@ -220,7 +224,7 @@ describe('Epic lifecycle contract v1a — start → decide → waves → tasks �
 		expect(epic?.forced).toBe(false);
 		expect(epic?.config.commitPolicy).toBe('current-branch');
 
-		// decide (scopes declared up front, as the banner requires).
+		// scopes declared up front (the planner needs live bindings).
 		for (const id of TASK_IDS) {
 			const declared = await executeDeclareScope(
 				{ taskId: id, files: [`src/task-${id}.ts`], working_directory: dir },
@@ -229,39 +233,41 @@ describe('Epic lifecycle contract v1a — start → decide → waves → tasks �
 			);
 			expect(declared.success).toBe(true);
 		}
-		const decided = await executeEpicDecidePhase({
-			directory: dir,
-			phase: 1,
-			sessionID: SESSION,
-		});
-		expect(decided.reason).toBe('decided');
-		expect(getOpenEpic(dir)?.lastDecision?.decision).toBe('promote');
 
-		// plan waves (width = the epic record's cap, 4).
-		const waves = await executeEpicPlanWaves({ directory: dir, phase: 1 });
-		expect(waves.success).toBe(true);
-		expect(waves.waves?.map((wave) => wave.taskIds)).toEqual([
+		// epic_next_wave issues waves (width = the record's cap, 4); each
+		// completion commits a Rule 2 marker bound to this plan.
+		const issued: string[][] = [];
+		for (let step = 0; step < 2; step += 1) {
+			const next = await runEpicNextWave(dir, SESSION);
+			expect(next.status).toBe('dispatch');
+			if (next.status !== 'dispatch') return;
+			issued.push(next.wave.taskIds);
+			for (const id of next.wave.taskIds) {
+				fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+				fs.writeFileSync(
+					path.join(dir, 'src', `task-${id}.ts`),
+					`export const ${ident(id)} = '${id}';\n`,
+				);
+				await updateTaskStatus(dir, id, 'completed');
+				const message = git(['log', '-1', '--format=%B']);
+				expect(
+					message.startsWith(`swarm(task ${id}): Create src/task-${id}.ts`),
+				).toBe(true);
+				expect(message).toContain(`Swarm-Plan: ${epic?.planKey}`);
+				expect(git(['log', '-1', '--name-only', '--format='])).toContain(
+					`src/task-${id}.ts`,
+				);
+			}
+		}
+		expect(issued).toEqual([
 			['1.1', '1.2', '1.3', '1.4'],
 			['1.5', '1.6'],
 		]);
-
-		// per-task completion → Rule 2 marker commit bound to this plan.
-		for (const id of TASK_IDS) {
-			fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-			fs.writeFileSync(
-				path.join(dir, 'src', `task-${id}.ts`),
-				`export const ${ident(id)} = '${id}';\n`,
-			);
-			await updateTaskStatus(dir, id, 'completed');
-			const message = git(['log', '-1', '--format=%B']);
-			expect(
-				message.startsWith(`swarm(task ${id}): Create src/task-${id}.ts`),
-			).toBe(true);
-			expect(message).toContain(`Swarm-Plan: ${epic?.planKey}`);
-			expect(git(['log', '-1', '--name-only', '--format='])).toContain(
-				`src/task-${id}.ts`,
-			);
-		}
+		expect(await runEpicNextWave(dir, SESSION)).toMatchObject({
+			status: 'phase-ready-for-review',
+			phase: 1,
+			closedWave: { seq: 2 },
+		});
 
 		// epic_phase_review → phase_complete.
 		writePhaseEvidence();
@@ -278,6 +284,8 @@ describe('Epic lifecycle contract v1a — start → decide → waves → tasks �
 				(entry: { id: string }) => entry.id === 'epic_phase_readiness',
 			)?.outcome,
 		).toBe('pass');
+
+		expect((await runEpicNextWave(dir, SESSION)).status).toBe('epic-complete');
 
 		// close.
 		const closed = await handleEpicCommand(dir, ['close'], SESSION);

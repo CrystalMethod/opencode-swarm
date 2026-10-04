@@ -4,8 +4,8 @@
  *   - `checkEpicBranch` (one `git rev-parse --abbrev-ref HEAD`) returns a
  *     structured EPIC_BRANCH_MISMATCH with the `git checkout` remedy, and
  *     fails closed on an unrecorded branch or a git failure;
- *   - `epic_decide_phase` / `epic_plan_waves` refuse with
- *     `epic-branch-mismatch`;
+ *   - `epic_next_wave` blocks with `epic-branch-mismatch` (and issues no
+ *     wave);
  *   - Rule 2 writes its marker on the epic branch, and skips it (fail
  *     closed) when HEAD is on any other branch.
  * Real git repositories, epics opened by the production `startEpic`.
@@ -15,13 +15,13 @@ import * as fs from 'node:fs';
 import { handleEpicCommand } from '../../../../src/commands/epic';
 import { closeAllProjectDbs } from '../../../../src/db/project-db';
 import { updateTaskStatus } from '../../../../src/plan/manager';
-import { executeEpicPlanWaves } from '../../../../src/tools/epic-plan-waves';
-import { executeEpicDecidePhase } from '../../../../src/tools/epic-run-phase';
 import {
 	_internals as branchInternals,
 	checkEpicBranch,
 	describeEpicBranchMismatchForProject,
 } from '../../../../src/turbo/epic/epic-branch';
+import { getOpenEpic } from '../../../../src/turbo/epic/lifecycle';
+import { runEpicNextWave } from '../../../../src/turbo/epic/next-wave';
 import { stubEpicRecord } from '../../../helpers/epic-lifecycle';
 import { freezeClock, type Restore } from '../../../helpers/test-clock';
 import {
@@ -136,38 +136,22 @@ describe('checkEpicBranch', () => {
 	});
 });
 
-describe('Epic tools refuse on branch drift', () => {
-	test('epic_decide_phase ⇒ epic-branch-mismatch', async () => {
+describe('epic_next_wave refuses on branch drift', () => {
+	test('off the epic branch ⇒ blocked epic-branch-mismatch, no wave; back on it ⇒ proceeds', async () => {
 		git(epic.dir, ['checkout', '-q', epic.originalBranch]);
-		const result = await executeEpicDecidePhase({
-			directory: epic.dir,
-			phase: 1,
-			sessionID: 'ses_branch',
-		});
-		expect(result).toMatchObject({
-			success: false,
-			reason: 'epic-branch-mismatch',
-		});
-		expect(result.message).toContain(`git checkout ${epic.epicBranch}`);
-	});
-
-	test('epic_plan_waves ⇒ epic-branch-mismatch; back on the branch it plans', async () => {
-		git(epic.dir, ['checkout', '-q', epic.originalBranch]);
-		const refused = await executeEpicPlanWaves({
-			directory: epic.dir,
-			phase: 1,
-		});
+		const refused = await runEpicNextWave(epic.dir, 'ses_branch');
 		expect(refused).toMatchObject({
-			success: false,
+			status: 'blocked',
 			reason: 'epic-branch-mismatch',
 		});
-		expect(refused.errors?.[0]).toContain('EPIC_BRANCH_MISMATCH');
+		if (refused.status === 'blocked') {
+			expect(refused.message).toContain(`git checkout ${epic.epicBranch}`);
+		}
+		expect(getOpenEpic(epic.dir)?.waves).toEqual([]);
 		git(epic.dir, ['checkout', '-q', epic.epicBranch]);
-		const planned = await executeEpicPlanWaves({
-			directory: epic.dir,
-			phase: 1,
-		});
-		expect(planned.success).toBe(true);
+		const next = await runEpicNextWave(epic.dir, 'ses_branch');
+		expect(next.status).not.toBe('blocked');
+		expect(next.status).not.toBe('refused');
 	});
 });
 

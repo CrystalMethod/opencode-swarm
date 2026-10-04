@@ -401,6 +401,31 @@ export function computeEpicSizing(
 	);
 }
 
+/**
+ * Phases already finished when the epic starts (every task completed or
+ * closed, or the phase closed) are recorded complete: `epic_next_wave`
+ * starts at the first unfinished phase. Later phases become complete only
+ * through `phase_complete` (phases are iterations).
+ */
+export function initialEpicPhases(plan: Plan): EpicRecordV1['phases'] {
+	const phases: EpicRecordV1['phases'] = {};
+	for (const phase of plan.phases) {
+		const tasks = phase.tasks ?? [];
+		const finished =
+			phase.status === 'closed' ||
+			(tasks.length > 0 && tasks.every((task) => !isPending(task.status)));
+		if (finished) {
+			phases[String(phase.id)] = {
+				status: 'complete',
+				completeAtStart: true,
+				reviewRuns: 0,
+				verdicts: [],
+			};
+		}
+	}
+	return phases;
+}
+
 function readGitFacts(directory: string): EpicRecordV1['git'] {
 	if (!_internals.getGitRepositoryStatus(directory).isRepo) {
 		return {
@@ -635,7 +660,10 @@ export async function startEpic(
 		},
 		git,
 		sizing,
-		lastDecision: null,
+		waves: [],
+		activeWaveSeq: null,
+		tasks: {},
+		phases: initialEpicPhases(plan),
 		closing: null,
 	};
 	const created = _internals.createEpicRecord(directory, record);

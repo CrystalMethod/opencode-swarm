@@ -364,9 +364,7 @@ export const TURBO_AGENT_TOOL_MAP: Partial<Record<AgentName, ToolName[]>> = {
  * capability derivation).
  */
 export const EPIC_TOOL_NAMES = [
-	'epic_decide_phase',
-	'epic_plan_waves',
-	'epic_record_divergence',
+	'epic_next_wave',
 	'epic_phase_review',
 ] as const satisfies readonly ToolName[];
 
@@ -864,59 +862,22 @@ Do NOT skip phase reviewer/critic when configured. Degraded and serialized tasks
 
 export const EPIC_MODE_BANNER = `## 🧭 EPIC MODE ACTIVE — an epic is open for this plan
 
-**⛔ THE USER ALWAYS COMES FIRST — this overrides everything below.** The user can message you at ANY time, including mid-phase while coders are running or retrying. The instant a user message arrives — a question, a slash command, a comment, anything — STOP advancing the flow: no dispatch, no retry, no further tool call. Answer them directly, in plain conversation, first — ignoring the user is the worst failure mode here. Then resume; if mid-wave, tell them the state ("3.1 and 3.2 are still running; I'll continue once I've answered you") rather than going silent.
+**⛔ THE USER ALWAYS COMES FIRST — this overrides everything below.** The user can message you at ANY time, including mid-wave while coders are running or retrying. The instant a user message arrives — a question, a slash command, a comment, anything — STOP advancing the flow: no dispatch, no retry, no further tool call. Answer them directly, in plain conversation, first — ignoring the user is the worst failure mode here. Then resume; if mid-wave, tell them the state ("3.1 and 3.2 are still running; I'll continue once I've answered you") rather than going silent.
 
 **An open epic ≠ start.** The user opened it with \`/swarm epic start\`; until they ask for execution ("start phase N", "run task X", "continue"): do nothing. On \`/swarm epic *\` and any slash status/config command: call the named tool ONCE, surface its output VERBATIM, then stop. Don't infer intent — if unsure, ASK. Only the user opens or closes an epic. Epic enables neither Turbo nor Lean.
 
-**Talk to the user as you work.** Once they ask you to run a phase, say a sentence before each step about what you're doing and why. Share the key facts below in your own voice; never go silent and tool-only.
+**Talk to the user as you work.** Once they ask you to run the plan, say a sentence before each step about what you're doing and why — never go silent and tool-only.
 
-Use \`epic_plan_waves\` (NOT \`lean_turbo_plan_lanes\`) for the wave plan. Do NOT call \`lean_turbo_run_phase\` directly.
+### How to run it: call \`epic_next_wave\` and do exactly what its \`status\` says
 
-### Seven-step flow (only when the user asks to run a phase)
+It plans every wave, closes finished waves, and keeps phases in order. Never plan waves yourself; never call \`lean_turbo_run_phase\` / \`lean_turbo_plan_lanes\`.
+- \`dispatch\` → follow its \`instructions\`: one \`Task\` per \`taskId\`, ALL in ONE message; per task Stage A (\`pre_check_batch\`) → Stage B (\`reviewer\` + \`test_engineer\`) → \`update_task_status(completed)\`; then call \`epic_next_wave\` again.
+- \`declare-scopes\` → \`declare_scope\` once per listed \`taskId\` (start from \`suggestedFiles\`), then call again.
+- \`in-progress\` → finish the listed tasks, then call again.
+- \`blocked\` → relay \`message\` to the user and apply its remedy.
+- \`phase-ready-for-review\` → \`epic_phase_review(phase)\` ONCE (phase reviewer, then critic). Both APPROVED → retrospective → \`phase_complete\` → \`epic_next_wave\`; otherwise fix the findings and re-run it.
+- \`epic-complete\` → tell the user to close the epic with \`/swarm epic close\`.
+- \`refused\` → relay \`message\`; run tasks per-task serially.
 
-> Supersedes Rule 1a/3a: declare ALL pending scopes UP FRONT (step 1), BEFORE step 2. Just-in-time declaration breaks the wave planner.
-
-**1. \`declare_scope\` for every pending task of phase N** — at the start of EVERY phase; one call per single \`taskId\` string (NOT ranges/arrays/globs). Tight, disjoint scopes; avoid shared files (\`__init__.py\`, barrels, registries) — they force serial waves. Scope is a CONTRACT: need more files → re-declare with \`replace_existing: true\` BEFORE dispatching. Declarations expire after 1h; any plan revision voids them — including the phase advance when a phase's last task completes.
-
-**2. \`epic_decide_phase(directory, phase=N, sessionID)\`** — returns:
-- \`decided\`+\`promote\` → step 3
-- \`demoted\` → step 3, then one coder \`Task\` at a time (each through step 6), then step 7
-- \`scopes-missing\` → \`declare_scope\` again for each \`missingScopes[]\` (undeclared, expired, or plan revised), retry step 2
-- \`epic-disabled-by-config\` → relay \`message\` (set \`turbo.epic.mode.enabled: true\`) and stop
-- \`epic-mode-not-active\` / \`epic-state-unreadable\` → no usable open epic (closed, plan replaced, or corrupt): relay \`message\`, suggest \`/swarm epic status\`, run the phase per-task serially
-- \`phase-already-complete\` → step 2 with \`phase=N+1\` (NOT step 4)
-- other (\`no-phase\`, \`phase-empty\`, …) → fix per \`message\`, retry
-
-**3. Surface the verdict to the user immediately, before any further action:**
-> Epic Mode: <PROMOTE|DEMOTE> (p=<value>) — <one-sentence rationale or top blocking reason>
-> Dependencies: <task_id> ← <deps>; … (omit if none)
-
-**4. \`epic_plan_waves(directory, phase=N)\`** — returns \`{ waves: [{ waveId, taskIds, files }], serializedTasks, degradedTasks }\`. Failures mirror step 2, plus \`git-failed\` (retry), \`planner-error\` (\`errors[0]\`).
-
-**4b. Surface the wave plan to the user, before dispatching any \`Task\`:**
-> Wave plan (<N> waves): Wave 1 → [<ids>] (parallel); Wave 2 → [<ids>]; … — serialized [<ids>], degraded [<ids>]
-
-Explain the waves in your own words. If \`waves.length\` exceeds the dependency-layer count, flag the over-split and its cause (e.g. every scope claims one shared file — re-declare without it, re-plan).
-
-\`serializedTasks\` causes: cycle, \`no-scope\` (no live declaration — re-declare), \`invalid-scope\`, cap-exhaustion. Fix dep graph or scopes, re-plan.
-
-\`degradedTasks[].reason\`: \`global file conflict\` / \`protected path\` → dispatch per-task after waves; \`cross-batch upstream not committed\` → commit named upstreams, re-plan; \`unresolved in-batch dependency\` → fix that upstream, re-plan; \`planning leftover\` → surface as planner bug.
-
-**5. Dispatch each wave: \`wave.taskIds.length\` SEPARATE \`Task\` calls in ONE assistant message.** Per wave in order: one \`Task(subagent_type="coder", description="Phase N task <id>", prompt="<scope + acceptance>")\` per \`taskId\`, ALL in the same turn → concurrent. Every task in the wave finishes step 6 before the next wave.
-
-⚠️ Defects: **Bundling** (many ids in one Task kills 1:1 visibility); **Splitting across messages** (serial, no parallelism); **Skipping single-task waves** (still ONE Task, still step 6).
-
-This is the only sanctioned dispatch path. Don't use \`lean_turbo_run_phase\` — visibility requires \`Task\`.
-
-After the waves: \`serializedTasks\` + \`degradedTasks\` ONE Task per message each, step 6 between.
-
-**6. Per task, after its coder returns — per-task QA, never skipped (no mode waives it):** Stage A \`pre_check_batch\` → Stage B \`reviewer\` + \`test_engineer\` (per the task's tier) → \`update_task_status(completed)\` → \`epic_record_divergence(directory, taskId, sessionID)\` (feeds calibration). If \`summary.isClean: false\`:
-> Divergence: task \`<id>\` wrote <undeclaredCount> undeclared file(s) (ratio <ratio>)
-
-**7. Phase review, then \`phase_complete\`.** Once every phase task is completed, call \`epic_phase_review(phase=N)\` ONCE. It dispatches a read-only phase reviewer and, only if that APPROVES, a phase critic, and records both verdicts — you never pass one. Tell the user:
-> Phase review: reviewer <VERDICT>, critic <VERDICT|not run> — <reason>
-
-Both APPROVED → retrospective, then \`phase_complete\`. Otherwise fix the cited issues via steps 5–6 and re-run \`epic_phase_review\`. Rework after approval (or 24h) makes it stale — \`phase_complete\` then blocks (\`EPIC_PHASE_*\`) until re-run. Don't call \`lean_turbo_review\`/\`lean_turbo_critic\` under Epic.
-
-When every task is completed or closed, tell the user the epic can be closed with \`/swarm epic close\`. Audit (no architect needed): \`/swarm epic status | last | decide | calibration\`.
+Per-task QA (Stage A + Stage B) is NEVER waived in Epic. Audit (no architect needed): \`/swarm epic status | calibration\`.
 `;

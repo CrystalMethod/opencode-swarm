@@ -1,10 +1,12 @@
 /**
  * Durable calibration state for Epic Mode Capability D.
  *
- * Persists the LEARNED knob overrides that `decideEpicActivation` consults
- * at runtime — the activation-threshold override (tighter than the static
- * config when divergence has been observed) and the auto-added hot-module
- * list (monotonically grows; never auto-shrinks per design).
+ * Persists the LEARNED knobs, rolled forward each time `epic_next_wave`
+ * closes a wave: the auto-added hot-module list (monotonically grows; never
+ * auto-shrinks per design) — `epic_next_wave` runs a task touching a hot
+ * module alone — and the activation-threshold override (tighter than the
+ * static config when divergence has been observed; reported by
+ * `/swarm epic calibration` only, since the activation gate was removed).
  *
  * Lives at `<projectRoot>/.swarm/epic/calibration.json`. Atomic
  * `tmp + rename`, per-directory fail-closed marker on malformed file,

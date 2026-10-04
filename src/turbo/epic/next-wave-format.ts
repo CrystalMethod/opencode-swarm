@@ -1,0 +1,208 @@
+/**
+ * Result shapes and architect-facing text of `epic_next_wave` (Epic v2 C2).
+ * Pure: no I/O. The procedure lives in these responses (the banner only
+ * says "call epic_next_wave and do exactly what its status says").
+ */
+
+import type { Plan } from '../../config/plan-schema.js';
+import type {
+	EpicPhaseRecord,
+	EpicTaskOutcome,
+	EpicWaveRecord,
+} from './lifecycle.js';
+import type { EpicPredecessorProblem } from './wave-select.js';
+
+export interface EpicWaveView {
+	seq: number;
+	phase: number;
+	kind: EpicWaveRecord['kind'];
+	taskIds: string[];
+	files: Record<string, string[]>;
+	tasks: { taskId: string; description: string; files: string[] }[];
+	issuedAt: string;
+}
+
+/** What the call just closed (present on results that follow a close). */
+export interface EpicClosedWaveSummary {
+	seq: number;
+	phase: number;
+	taskIds: string[];
+	resolutions: Record<string, EpicTaskOutcome['resolution']>;
+	closeHead: string | null;
+	/** Tasks with undeclared writes (session or single-task git attribution). */
+	divergence: { taskId: string; undeclared: string[] }[];
+	/** Wave-level undeclared files no task's attribution explains. */
+	waveUndeclared: string[];
+}
+
+export type EpicNextWaveRefusal =
+	| 'no-open-epic'
+	| 'epic-orphaned'
+	| 'epic-state-unreadable'
+	| 'epic-disabled-by-config';
+
+export type EpicNextWaveBlockReason =
+	| 'task-blocked'
+	| 'merge-failed'
+	| 'git-failed'
+	| 'dirty-baseline'
+	| 'predecessor-missing'
+	| 'plan-revised'
+	| 'task-reopened'
+	| 'epic-branch-mismatch';
+
+type WithClosed = { closedWave?: EpicClosedWaveSummary };
+
+export type EpicNextWaveResult =
+	| ({
+			status: 'dispatch';
+			wave: EpicWaveView;
+			instructions: string;
+	  } & WithClosed)
+	| ({
+			status: 'declare-scopes';
+			phase: number;
+			tasks: { taskId: string; suggestedFiles: string[] }[];
+			message: string;
+	  } & WithClosed)
+	| ({
+			status: 'in-progress';
+			wave: EpicWaveView;
+			waitingOn: { taskId: string; state: string }[];
+			message: string;
+	  } & WithClosed)
+	| ({
+			status: 'blocked';
+			reason: EpicNextWaveBlockReason;
+			details: Record<string, unknown>;
+			message: string;
+	  } & WithClosed)
+	| ({
+			status: 'phase-ready-for-review';
+			phase: number;
+			message: string;
+	  } & WithClosed)
+	| ({ status: 'epic-complete'; message: string } & WithClosed)
+	| { status: 'refused'; reason: EpicNextWaveRefusal; message: string };
+
+export function refused(
+	reason: EpicNextWaveRefusal,
+	message: string,
+): EpicNextWaveResult {
+	return { status: 'refused', reason, message };
+}
+
+export function toWaveView(wave: EpicWaveRecord, plan: Plan): EpicWaveView {
+	const describe = (taskId: string): string => {
+		for (const phase of plan.phases) {
+			const task = (phase.tasks ?? []).find((t) => t.id === taskId);
+			if (task) return task.description;
+		}
+		return '(no longer in the plan)';
+	};
+	return {
+		seq: wave.seq,
+		phase: wave.phase,
+		kind: wave.kind,
+		taskIds: [...wave.taskIds],
+		files: wave.files,
+		tasks: wave.taskIds.map((taskId) => ({
+			taskId,
+			description: describe(taskId),
+			files: [...(wave.files[taskId] ?? [])],
+		})),
+		issuedAt: wave.issuedAt,
+	};
+}
+
+/** The step-by-step text returned with every `dispatch`. */
+export function buildDispatchInstructions(wave: EpicWaveView): string {
+	const n = wave.taskIds.length;
+	const kind =
+		wave.kind === 'exclusive'
+			? 'exclusive — this task runs alone (it touches a global, protected, or historically hot file)'
+			: 'parallel — the tasks have disjoint declared scopes';
+	return [
+		`Wave ${wave.seq} of phase ${wave.phase} (${kind}): ${n} task(s) — ${wave.taskIds.join(', ')}.`,
+		'1. Tell the user, in one sentence, which tasks this wave runs and why.',
+		n === 1
+			? '2. Dispatch ONE Task(subagent_type="coder") for it.'
+			: `2. Dispatch ${n} SEPARATE Task(subagent_type="coder") calls, ALL in ONE assistant message (one per taskId) so they run concurrently. Never bundle several task ids into one Task; never split the wave across messages.`,
+		'   Each coder prompt: the task id, its description and acceptance criteria, and its declared scope (`wave.tasks[].files`) — the coder writes only inside that scope.',
+		"   Before dispatching, make sure each task's declared scope also lists the test files the test_engineer will write for it; if not, re-declare it now with `declare_scope` (`replace_existing: true`). A file a task writes outside its scope is not committed with the task and pauses the next wave until it is committed.",
+		"3. As each coder returns, run that task's per-task QA — Stage A `pre_check_batch`, then Stage B `reviewer` + `test_engineer` (per its tier) — then `update_task_status(<taskId>, completed)`. Per-task QA is never waived. If QA fails, send the task back to its coder and repeat the QA. If a task cannot be finished, tell the user and mark it blocked (or closed if the user drops it).",
+		'4. When every task of this wave is completed (or closed), call `epic_next_wave` again — it closes the wave (records outcomes and divergence) and issues the next one.',
+	].join('\n');
+}
+
+export function summarizeClosedWave(
+	wave: EpicWaveRecord,
+	outcomes: EpicTaskOutcome[],
+): EpicClosedWaveSummary {
+	const resolutions: Record<string, EpicTaskOutcome['resolution']> = {};
+	for (const outcome of outcomes)
+		resolutions[outcome.taskId] = outcome.resolution;
+	return {
+		seq: wave.seq,
+		phase: wave.phase,
+		taskIds: [...wave.taskIds],
+		resolutions,
+		closeHead: wave.closeHead ?? null,
+		divergence: outcomes
+			.filter((o) => o.undeclared.length > 0)
+			.map((o) => ({ taskId: o.taskId, undeclared: o.undeclared })),
+		waveUndeclared: wave.undeclared ?? [],
+	};
+}
+
+const PREDECESSOR_WHY: Record<EpicPredecessorProblem['why'], string> = {
+	removed: 'is no longer in the plan',
+	closed: 'was closed (its work will never exist)',
+	'later-phase': 'belongs to a later phase',
+	'not-committed':
+		'is completed but has no completion commit for this plan (Rule 2 skipped it — e.g. HEAD was off the epic branch, its merge-back failed, or the commit failed)',
+	cycle: 'forms a dependency cycle',
+};
+
+export function predecessorMessage(
+	problems: EpicPredecessorProblem[],
+	planKey: string,
+): string {
+	const lines = problems
+		.slice(0, 10)
+		.map(
+			(p) =>
+				`${p.taskId} depends on ${p.dependency}, which ${PREDECESSOR_WHY[p.why]}`,
+		);
+	const more = problems.length > 10 ? ` (+${problems.length - 10} more)` : '';
+	const committedHint = problems.some((p) => p.why === 'not-committed')
+		? ` A "no completion commit" task was completed during the epic but Rule 2 wrote no marker for it. If its work IS already committed on the epic branch, record the marker with: git commit --allow-empty -m "swarm(task <id>): <description>" -m "Swarm-Plan: ${planKey}" (one per task); otherwise commit its work with that same message.`
+		: '';
+	return `These tasks can never run as planned: ${lines.join('; ')}${more}. Tell the user and fix the plan — drop or correct the dependency (save_plan), or close the dependent task (update_task_status closed).${committedHint} Then call epic_next_wave.`;
+}
+
+/**
+ * Phase bookkeeping: the current phase takes `currentStatus` (`active` while
+ * waves run, `review` once every task is resolved). A phase recorded
+ * `complete` (by `phase_complete`) is never downgraded. Returns the SAME
+ * object when nothing changes (callers skip the write).
+ */
+export function syncPhaseRecords(
+	phases: Record<string, EpicPhaseRecord>,
+	currentPhase: number,
+	currentStatus: 'active' | 'review',
+): Record<string, EpicPhaseRecord> {
+	const key = String(currentPhase);
+	const prior = phases[key];
+	if (prior?.status === currentStatus || prior?.status === 'complete') {
+		return phases;
+	}
+	return {
+		...phases,
+		[key]: {
+			status: currentStatus,
+			reviewRuns: prior?.reviewRuns ?? 0,
+			verdicts: prior?.verdicts ?? [],
+		},
+	};
+}

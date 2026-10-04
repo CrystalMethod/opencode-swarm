@@ -2965,7 +2965,7 @@ async function buildParallelExecutionGuidance(
 
 	if (!enabled || effectiveMaxConcurrent <= 1) return null;
 
-	// Epic v2: while an epic is open its banner + epic_plan_waves own the
+	// Epic v2: while an epic is open its banner + epic_next_wave own the
 	// dispatch guidance; the whole-phase SERIAL/Lean advisory below would
 	// contradict them. Sentinel-first probe: one existsSync when off.
 	if (_internals.isEpicOpenForProject(directory)) return null;

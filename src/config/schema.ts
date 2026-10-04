@@ -3182,14 +3182,14 @@ export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
  * Two independent opt-in master gates, both default `false` and both read
  * through `src/turbo/epic/config-gate.ts`:
  *   - `mode.enabled` gates Epic Mode itself: `/swarm epic start`, the Epic
- *     tools (`epic_decide_phase`, `epic_plan_waves`, …), and the
+ *     tools (`epic_next_wave`, `epic_phase_review`), and the
  *     project-scoped open-epic probe (Rule 2 auto-commit, the Epic
  *     phase-readiness gate in `phase_complete`). With it off, none of those
  *     run (an already-open epic is inert until re-enabled or closed).
  *   - `cochange.enabled` gates only Capability A's git co-change conflict
- *     signal. With it off, `p` is computed from declared-path conflicts only
- *     and the decision rationale records `cochangeSignal: 'disabled-by-config'`
- *     (also for `/swarm coupling`).
+ *     signal. With it off, `epic_next_wave` keeps a wave's tasks apart on
+ *     declared-path conflicts only, and `/swarm coupling` records
+ *     `cochangeSignal: 'disabled-by-config'`.
  *
  * This block lives under `turbo`, whose schema is a discriminated union on
  * `strategy`: a `turbo` block without a valid `strategy` (and, for
@@ -3222,35 +3222,29 @@ export const EpicConfigSchema = z
 			.strict()
 			.optional(),
 		/**
-		 * Epic mode activation settings (Capability C). When `enabled`,
-		 * `/swarm epic start` can open an epic for the current plan and the
-		 * architect-facing flow (`epic_decide_phase` → `epic_plan_waves` →
-		 * `Task` per wave → `epic_phase_review`) becomes usable; it computes
-		 * `p` over the plan, gate on the activation threshold + hot modules +
-		 * greenfield (predecessor-evidence) rule, and either dispatch waves
-		 * (when promoted) or fall back to the standard serial path (when
-		 * demoted). Default off — opt-in; with it off those entry points
-		 * refuse with `epic-disabled-by-config`.
+		 * Epic mode settings. When `enabled`, `/swarm epic start` can open an
+		 * epic for the current plan and the architect-facing flow
+		 * (`epic_next_wave` → `Task` per wave task → per-task QA →
+		 * `epic_phase_review` → `phase_complete`) becomes usable. Default
+		 * off — opt-in; with it off those entry points refuse with
+		 * `epic-disabled-by-config`.
 		 */
 		mode: z
 			.object({
 				/** Master gate for Epic Mode activation. Default off; opt-in. */
 				enabled: z.boolean().default(false),
 				/**
-				 * Activation threshold for `p` (the coupling coefficient computed
-				 * over the plan). Plans with `p <= activation_threshold` are
-				 * eligible for parallel promotion; plans above this threshold are
-				 * forced serial. Conservative default — most plans below this are
-				 * genuinely parallelizable.
+				 * Static ceiling of the calibration threshold override (reported
+				 * by `/swarm epic calibration`). The plan-wide `p` activation gate
+				 * was removed in Epic v2 C2 — sizing at `/swarm epic start`
+				 * replaced it — so this no longer forces serial execution.
 				 */
 				activation_threshold: z.number().min(0).max(1).default(0.3),
 				/**
-				 * Legacy greenfield floor (brief §4.2). Recorded in the decision
-				 * rationale for telemetry only — it no longer forces serial. The
-				 * greenfield gate now passes on Rule 1 (non-git project) or on
-				 * predecessor evidence (every cross-phase upstream task has a
-				 * `swarm(task <id>):` commit marker); see
-				 * `src/turbo/epic/activation.ts`.
+				 * Retired: read by nothing since the activation gate was removed
+				 * (Epic v2 C2). Still accepted so existing configs stay valid;
+				 * predecessor evidence is the plan-scoped `swarm(task <id>):`
+				 * completion marker that `epic_next_wave` checks.
 				 */
 				min_commits_for_signal: z.number().int().min(1).default(20),
 			})
@@ -3258,10 +3252,10 @@ export const EpicConfigSchema = z
 			.optional(),
 		/**
 		 * Epic Mode calibration (Capability D). Outcome-based self-tuning.
-		 * After every task completion `epic_record_divergence` appends a
-		 * record to `.swarm/epic/divergence.jsonl` comparing declared scope
-		 * to actual files modified. On every `epic_decide_phase` the
-		 * calibration engine consumes any new records and adjusts two knobs:
+		 * When `epic_next_wave` closes a wave it appends a record per
+		 * completed task to `.swarm/epic/divergence.jsonl` comparing declared
+		 * scope to actual files modified, then the calibration engine
+		 * consumes any new records and adjusts two knobs:
 		 *
 		 *   - `activationThresholdOverride` — tightens (toward zero) on
 		 *     divergence; loosens (toward `mode.activation_threshold`) only
@@ -3273,8 +3267,9 @@ export const EpicConfigSchema = z
 		 *     ratchet — auto-loosening here would defeat the safety guarantee).
 		 *
 		 * State persists at `.swarm/epic/calibration.json`. Defaults to
-		 * `enabled: true`, but it only ever runs inside `epic_decide_phase`,
-		 * so it is inert unless `mode.enabled` is also true.
+		 * `enabled: true`, but it only ever runs inside `epic_next_wave`, so it
+		 * is inert unless `mode.enabled` is also true. Learned hot modules
+		 * make `epic_next_wave` run a task touching them alone.
 		 */
 		calibration: z
 			.object({

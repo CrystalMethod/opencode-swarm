@@ -3,7 +3,8 @@
  *
  * Two consecutive plans in ONE repository both contain task `1.1`. Through
  * the real completion funnel (`updateTaskStatus` → Rule 2 → real git) and
- * the real Rule 3 evidence read (`buildIsUpstreamCommittedWithStatus`):
+ * the real Rule 3 evidence read (`resolvePlanMarkerScope` +
+ * `readPlanScopedCommittedTaskIds`, which `epic_next_wave` uses):
  *
  *   - plan A's 1.1 commits a marker bound to plan A (`Swarm-Plan:` trailer);
  *   - plan B's Rule 3 does NOT see plan A's marker as evidence for B's 1.1;
@@ -27,8 +28,11 @@ import {
 	updateTaskStatus,
 } from '../../src/plan/manager';
 import { closeEpic } from '../../src/turbo/epic/close.js';
+import {
+	readPlanScopedCommittedTaskIds,
+	resolvePlanMarkerScope,
+} from '../../src/turbo/epic/plan-key';
 import { startEpic } from '../../src/turbo/epic/start.js';
-import { buildIsUpstreamCommittedWithStatus } from '../../src/turbo/epic/upstream-commits';
 import { createIsolatedTestEnv } from '../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../helpers/tmpdir';
 
@@ -106,13 +110,12 @@ async function openEpic() {
 	});
 }
 
+/** The predecessor-evidence read `epic_next_wave` uses (Rule 3). */
 async function rule3(taskId: string): Promise<boolean> {
-	const evidence = await buildIsUpstreamCommittedWithStatus(
-		dir,
-		await loadPlanJsonOnly(dir),
-	);
-	expect(evidence.gitFailed).toBe(false);
-	return evidence.predicate(taskId);
+	const current = await loadPlanJsonOnly(dir);
+	if (!current) throw new Error('no plan');
+	const scope = await resolvePlanMarkerScope(dir, current);
+	return readPlanScopedCommittedTaskIds(dir, scope, 10_000).has(taskId);
 }
 
 beforeEach(() => {

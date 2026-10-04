@@ -5,18 +5,13 @@
  * modifying it. Capabilities:
  *  - A: co-change-aware pair conflict (`epicPairConflict`).
  *  - B: coupling KPI + decoupling roadmap (`computeCouplingReport`).
- *  - C: per-plan activation decision (`decideEpicActivation`).
+ *  - wave issuing / closing lives behind the `epic_next_wave` tool
+ *    (`./next-wave.ts`).
  *
  * Dependency direction is one-way: `epic` depends on `lean`; `lean` never
  * depends on `epic`. All Lean Turbo files stay byte-for-byte untouched.
  */
 
-export type {
-	EpicActivationOptions,
-	EpicActivationRationale,
-	EpicActivationVerdict,
-} from './activation.js';
-export { decideEpicActivation } from './activation.js';
 export type {
 	CoChangeThreshold,
 	EpicPairVerdict,
@@ -47,9 +42,10 @@ export {
 export type {
 	EpicCloseOutcome,
 	EpicInspection,
-	EpicLastDecision,
 	EpicRecordV1,
 	EpicSentinel,
+	EpicTaskOutcome,
+	EpicWaveRecord,
 } from './lifecycle.js';
 export {
 	EPIC_LIFECYCLE_NAMESPACE,
@@ -60,8 +56,3 @@ export {
 	inspectEpic,
 	isEpicOpenForProject,
 } from './lifecycle.js';
-export type { PromotionEvidenceRecord } from './promotion-evidence.js';
-export {
-	appendPromotionEvidence,
-	readPromotionEvidence,
-} from './promotion-evidence.js';

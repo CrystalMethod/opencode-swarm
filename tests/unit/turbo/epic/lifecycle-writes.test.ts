@@ -24,9 +24,10 @@ import {
 	epicSentinelExists,
 	inspectEpic,
 	markEpicClosing,
+	parseEpicRecord,
 	readEpicSentinel,
-	recordEpicLastDecision,
 	repairEpicSentinel,
+	updateEpicRecord,
 } from '../../../../src/turbo/epic/lifecycle';
 import {
 	openEpicForTest,
@@ -154,14 +155,14 @@ describe('stale caller vs a re-opened epic with the same epicKey (F1)', () => {
 		const b = openEpicForTest(dir, { token: 'token-B' });
 		expect(b.epicKey).toBe(a.epicKey);
 		expect(markEpicClosing(dir, a.epicKey, 'abandoned', a.token)).toBeNull();
-		expect(() =>
-			recordEpicLastDecision(
+		expect(
+			updateEpicRecord(
 				dir,
 				a.epicKey,
-				{ decidedAt: 'x', decision: 'demote', p: 1, blockingReasons: [] },
+				(record) => ({ ...record, activeWaveSeq: 99 }),
 				a.token,
 			),
-		).toThrow('No Epic lifecycle row');
+		).toBeNull();
 		expect(deleteEpicState(dir, a.epicKey, a.token)).toEqual({
 			rowsDeleted: [],
 			sentinelDeleted: false,
@@ -231,18 +232,14 @@ describe('repairEpicSentinel', () => {
 });
 
 describe('record updates', () => {
-	test('lastDecision and closing are revision-checked updates', () => {
+	test('wave state and closing are revision-checked updates', () => {
 		const epic = openEpicForTest(dir);
-		const decision = {
-			decidedAt: '2026-03-01T00:00:00.000Z',
-			phase: 1,
-			decision: 'promote' as const,
-			p: 0.1,
-			blockingReasons: [],
+		const phases = {
+			'1': { status: 'active' as const, reviewRuns: 0, verdicts: [] },
 		};
-		recordEpicLastDecision(dir, epic.epicKey, decision);
+		updateEpicRecord(dir, epic.epicKey, (record) => ({ ...record, phases }));
 		const closing = markEpicClosing(dir, epic.epicKey, 'completed');
-		expect(closing?.lastDecision).toEqual(decision);
+		expect(closing?.phases).toEqual(phases);
 		expect(closing?.status).toBe('closing');
 		expect(closing?.closing).toEqual({
 			requestedAt: '2026-03-01T00:00:00.000Z',
@@ -269,14 +266,28 @@ describe('record updates', () => {
 		expect(raw?.status).toBe('closing');
 	});
 
-	test('recording a decision without a row throws', () => {
-		expect(() =>
-			recordEpicLastDecision(dir, 'missing-key', {
-				decidedAt: 'x',
-				decision: 'demote',
-				p: 1,
-				blockingReasons: [],
-			}),
-		).toThrow('No Epic lifecycle row');
+	test('updating without a row returns null', () => {
+		expect(updateEpicRecord(dir, 'missing-key', (record) => record)).toBeNull();
+	});
+
+	test('a pre-C2 row (lastDecision, no wave fields) parses with defaults and drops lastDecision', () => {
+		const epic = openEpicForTest(dir);
+		const raw = getCoordinationStateRaw(
+			dir,
+			EPIC_LIFECYCLE_NAMESPACE,
+			epic.epicKey,
+		);
+		const legacy = JSON.parse(raw?.payload ?? '{}') as Record<string, unknown>;
+		delete legacy.waves;
+		delete legacy.activeWaveSeq;
+		delete legacy.tasks;
+		delete legacy.phases;
+		legacy.lastDecision = null;
+		const parsed = parseEpicRecord(JSON.stringify(legacy));
+		expect(parsed.waves).toEqual([]);
+		expect(parsed.activeWaveSeq).toBeNull();
+		expect(parsed.tasks).toEqual({});
+		expect(parsed.phases).toEqual({});
+		expect('lastDecision' in parsed).toBe(false);
 	});
 });

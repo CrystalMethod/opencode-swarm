@@ -13,8 +13,14 @@ import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
 import type { ReviewModelDispatcher } from '../review/contracts.js';
 import type { ReviewAgentModelRegistry } from '../review/runtime.js';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle.js';
 import {
+	EPIC_PHASE_VERDICTS_KEEP,
+	getOpenEpic,
+	isEpicOpenForProject,
+	updateEpicRecord,
+} from '../turbo/epic/lifecycle.js';
+import {
+	describeOpenEpicWaves,
 	type EpicPhaseReviewRunResult,
 	runEpicPhaseReview,
 } from '../turbo/epic/phase-readiness.js';
@@ -25,7 +31,11 @@ export type EpicPhaseReviewToolResult =
 	| {
 			success: false;
 			phase: number;
-			reason: 'epic-mode-not-active' | 'no-session' | 'invalid-phase';
+			reason:
+				| 'epic-mode-not-active'
+				| 'no-session'
+				| 'invalid-phase'
+				| 'waves-open';
 			message: string;
 	  };
 
@@ -36,7 +46,52 @@ export type EpicPhaseReviewToolResult =
 export const _internals = {
 	runEpicPhaseReview,
 	isEpicOpenForProject,
+	describeOpenEpicWaves,
+	getOpenEpic,
+	updateEpicRecord,
 };
+
+/**
+ * Record one review run and its verdicts on the open epic (Epic v2 C2).
+ * Best-effort: the evidence file is the gate's authority; this is the
+ * epic's own history for `/swarm epic status` and the close report.
+ */
+function recordReviewRun(
+	directory: string,
+	phase: number,
+	result: EpicPhaseReviewRunResult,
+): void {
+	if (!result.success) return;
+	try {
+		const epic = _internals.getOpenEpic(directory);
+		if (!epic) return;
+		const verdict = `reviewer:${result.reviewer.verdict} critic:${result.critic?.verdict ?? 'not-run'}`;
+		_internals.updateEpicRecord(
+			directory,
+			epic.epicKey,
+			(record) => {
+				const key = String(phase);
+				const prior = record.phases[key];
+				return {
+					...record,
+					phases: {
+						...record.phases,
+						[key]: {
+							status: prior?.status ?? 'review',
+							reviewRuns: (prior?.reviewRuns ?? 0) + 1,
+							verdicts: [...(prior?.verdicts ?? []), verdict].slice(
+								-EPIC_PHASE_VERDICTS_KEEP,
+							),
+						},
+					},
+				};
+			},
+			epic.token,
+		);
+	} catch {
+		// history only — never fails the review
+	}
+}
 
 export async function executeEpicPhaseReview(
 	args: { phase: number },
@@ -76,7 +131,23 @@ export async function executeEpicPhaseReview(
 				'No epic is open for the current plan; the Epic phase review is only required (and only recorded) while an epic is open (`/swarm epic start`).',
 		};
 	}
-	return _internals.runEpicPhaseReview(directory, phase, sessionID, options);
+	const openWaves = _internals.describeOpenEpicWaves(directory, phase);
+	if (openWaves !== null) {
+		return {
+			success: false,
+			phase,
+			reason: 'waves-open',
+			message: `Cannot review phase ${phase} yet: ${openWaves}`,
+		};
+	}
+	const result = await _internals.runEpicPhaseReview(
+		directory,
+		phase,
+		sessionID,
+		options,
+	);
+	recordReviewRun(directory, phase, result);
+	return result;
 }
 
 export function createEpicPhaseReviewTool(

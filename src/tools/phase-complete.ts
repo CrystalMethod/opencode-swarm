@@ -87,7 +87,10 @@ import {
 	swarmState,
 } from '../state';
 import { telemetry } from '../telemetry';
-import { isEpicOpenForProject } from '../turbo/epic/lifecycle';
+import {
+	isEpicOpenForProject,
+	markEpicPhaseComplete,
+} from '../turbo/epic/lifecycle';
 import {
 	EPIC_PHASE_REVIEW_TOOL,
 	verifyEpicPhaseReadiness,
@@ -129,6 +132,7 @@ export const phaseCompleteReceiptInternals = {
 /** Narrow seam for guarded-plan commit tests. */
 export const phaseCompleteCommitInternals = {
 	savePlan: (...args: Parameters<typeof savePlan>) => savePlan(...args),
+	markEpicPhaseComplete,
 };
 
 /** Injectable observational gates for aggregate-preflight regression tests. */
@@ -2071,6 +2075,34 @@ export async function executePhaseComplete(
 		warnings.push(
 			`Warning: failed to write phase complete event: ${writeError instanceof Error ? writeError.message : String(writeError)}`,
 		);
+	}
+
+	// Epic v2 C2: phases are iterations — `epic_next_wave` issues no wave of
+	// the next phase until this phase is recorded complete on the open epic.
+	// Pushed only while an epic is open (the probe above), so the non-Epic
+	// result is unchanged.
+	if (epicActiveForProject) {
+		try {
+			const marked = phaseCompleteCommitInternals.markEpicPhaseComplete(
+				dir,
+				phase,
+			);
+			if (marked.outcome === 'not-current-phase') {
+				warnings.push(
+					marked.currentPhase === null
+						? `Warning: the open epic could not determine its current phase (plan unreadable), so phase ${phase} was not recorded complete on the epic; epic_next_wave will not advance past it until phase_complete is re-run.`
+						: `Warning: the open epic is on phase ${marked.currentPhase}; Epic runs phases in order, so phase ${phase} was not recorded complete on the epic. Finish phase ${marked.currentPhase} through epic_next_wave first.`,
+				);
+			} else if (marked.outcome === 'no-open-epic') {
+				warnings.push(
+					`Warning: phase ${phase} could not be recorded complete on the epic (no epic is open for this plan any more).`,
+				);
+			}
+		} catch (epicError) {
+			warnings.push(
+				`Warning: phase ${phase} could not be recorded complete on the open epic (${epicError instanceof Error ? epicError.message : String(epicError)}); re-run phase_complete so epic_next_wave can advance.`,
+			);
+		}
 	}
 
 	// Reset phase state on success

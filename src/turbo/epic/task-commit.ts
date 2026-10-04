@@ -6,18 +6,15 @@
  * to `completed` and the durable plan write has succeeded. The resulting
  * commit serves two purposes:
  *
- *   1. **Greenfield gate progress.** Each completed-and-committed task
- *      advances `commitsObserved` so the activation gate
- *      (`src/turbo/epic/activation.ts`) eventually opens. Without this,
- *      an Epic-only workflow never produces commits and the gate
- *      permanently blocks parallel promotion — the exact failure mode
- *      Rule 4 of the redesign identified.
+ *   1. **The task's work lands on the epic branch** before dependent waves
+ *      start (coders need a clean baseline).
  *
  *   2. **Parallel-eligibility evidence (Rule 3).** Downstream tasks can
  *      require their `depends:` upstream to be *committed* (not just
  *      marked complete) before they fan out. The commit message format
- *      `swarm(task <id>): ...` is the searchable marker the lane
- *      planner consumes in `upstream-commits.ts`.
+ *      `swarm(task <id>): ...` is the searchable marker
+ *      `epic_next_wave` reads through `plan-key.ts`
+ *      (`readPlanScopedCommittedTaskIds`) as predecessor evidence.
  *
  * Failure handling: every step degrades non-fatally. A failed commit must
  * never block the durable task-status update — the plan ledger is the

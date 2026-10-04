@@ -9,12 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plan } from '../../../../src/config/plan-schema';
-import {
-	mergeEpicScopes,
-	readLatestEpicDeclaredScopeForCalibration,
-	resolveEpicDeclaredScopes,
-	toEpicPlanIdentity,
-} from '../../../../src/turbo/epic/declared-scopes';
+import { resolveEpicDeclaredScopes } from '../../../../src/turbo/epic/declared-scopes';
 import {
 	declareScopesForTest,
 	resetDeclaredScopesForTest,
@@ -115,66 +110,5 @@ describe('resolveEpicDeclaredScopes', () => {
 			'1.1': [],
 			'1.2': [],
 		});
-	});
-});
-
-describe('mergeEpicScopes / toEpicPlanIdentity', () => {
-	test('caller entries win per task; resolved entries are kept otherwise', () => {
-		expect(
-			mergeEpicScopes(
-				{ '1.1': ['src/a.ts'], '1.2': [] },
-				{ '1.2': ['src/b.ts'], '9.9': ['src/z.ts'] },
-			),
-		).toEqual({
-			'1.1': ['src/a.ts'],
-			'1.2': ['src/b.ts'],
-			'9.9': ['src/z.ts'],
-		});
-		expect(mergeEpicScopes({ '1.1': [] }, undefined)).toEqual({ '1.1': [] });
-	});
-
-	test('toEpicPlanIdentity validates the raw plan view', () => {
-		expect(toEpicPlanIdentity(plan(['1.1']))?.title).toBe(
-			'Epic declared scopes',
-		);
-		expect(toEpicPlanIdentity({ phases: [] })).toBeNull();
-		expect(toEpicPlanIdentity(null)).toBeNull();
-	});
-});
-
-describe('readLatestEpicDeclaredScopeForCalibration', () => {
-	test('reads the latest declaration even after the plan structure changes', async () => {
-		const before = plan(['1.1']);
-		writePlan(before);
-		await declareScopesForTest(dir, { '1.1': ['src/a.ts'] });
-		const revised = plan(['1.1', '1.2']);
-
-		// Live scheduling read no longer matches the revised structure…
-		expect(resolveEpicDeclaredScopes(dir, revised, ['1.1'])['1.1']).toEqual([]);
-		// …but the historical calibration read is keyed by plan id only.
-		expect(
-			readLatestEpicDeclaredScopeForCalibration({
-				directory: dir,
-				taskId: '1.1',
-				plan: revised,
-			}),
-		).toEqual(['src/a.ts']);
-	});
-
-	test('a stale v1 file is not a historical declaration', () => {
-		writePlan(plan(['1.1']));
-		const scopesDir = path.join(dir, '.swarm', 'scopes');
-		fs.mkdirSync(scopesDir, { recursive: true });
-		fs.writeFileSync(
-			path.join(scopesDir, 'scope-1.1.json'),
-			JSON.stringify({ taskId: '1.1', files: ['src/a.ts'] }),
-		);
-		expect(
-			readLatestEpicDeclaredScopeForCalibration({
-				directory: dir,
-				taskId: '1.1',
-				plan: plan(['1.1']),
-			}),
-		).toBeNull();
 	});
 });

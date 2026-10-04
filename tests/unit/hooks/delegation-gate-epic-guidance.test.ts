@@ -1,6 +1,6 @@
 /**
  * Epic v2 seam in `buildParallelExecutionGuidance`: while an epic is open
- * the Epic banner + `epic_plan_waves` own dispatch guidance, so the
+ * the Epic banner + `epic_next_wave` own dispatch guidance, so the
  * whole-phase parallel/serial advisory is suppressed. With no epic the
  * guidance text is unchanged, and the probe is only consulted after the
  * existing `parallelization disabled ⇒ null` early return.

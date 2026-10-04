@@ -41,8 +41,8 @@ function makePlan(tasks: PlanTask[]): { phases: PlanPhase[] } {
 
 // Pure planner-algorithm tests: fixture scopes ride the planner's explicit
 // `scopes` channel. Store-backed v2 resolution and the stale-v1 regressions
-// live in tests/unit/tools/epic-plan-waves-declared-scopes.test.ts and
-// tests/unit/turbo/epic/declared-scopes.test.ts.
+// live in tests/unit/turbo/epic/declared-scopes.test.ts and the
+// `epic_next_wave` suites (tests/unit/turbo/epic/next-wave-*.test.ts).
 let declared: Record<string, string[]> = {};
 function writeScope(_scopesDir: string, taskId: string, files: string[]): void {
 	declared[taskId] = files;

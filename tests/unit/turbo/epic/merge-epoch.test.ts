@@ -15,6 +15,7 @@ import {
 	classifyMergeFailure,
 	describeMergeFailuresForStatus,
 	relevantMergeFailure,
+	relevantMergeFailureForProject,
 } from '../../../../src/turbo/epic/merge-epoch';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
@@ -120,5 +121,64 @@ describe('describeMergeFailuresForStatus', () => {
 		writeStatus('{not json');
 		const text = describeMergeFailuresForStatus(dir, ROOT).join('\n');
 		expect(text).toContain('Could not read');
+	});
+});
+
+describe('relevantMergeFailureForProject (epic_next_wave advance rule)', () => {
+	const ours = path.join('/p', '.swarm', 'worktree-merge-status.json');
+	const durable: Array<[string, WorktreeMergeFailure]> = [
+		['disk', { ...base, completedAt: ROOT + 1 }],
+		['old', { ...base, completedAt: ROOT - 1 }],
+	];
+	beforeEach(() => {
+		_internals.initDurableStatusPath = () => {
+			throw new Error('the shared binding must never change');
+		};
+		_internals.getWorktreeMergeFailure = (id: string) =>
+			id === 'live' ? { ...base, completedAt: ROOT + 2 } : undefined;
+		_internals.scanWorktreeMergeFailuresForRecovery = () => ({
+			status: 'ok',
+			failures: durable,
+		});
+	});
+
+	test('registry bound to THIS project: in-memory first, then the durable file; stale filtered', () => {
+		_internals.getBoundStatusPath = () => ours;
+		expect(
+			relevantMergeFailureForProject('/p', 'live', ROOT)?.completedAt,
+		).toBe(ROOT + 2);
+		expect(
+			relevantMergeFailureForProject('/p', 'disk', ROOT)?.completedAt,
+		).toBe(ROOT + 1);
+		expect(relevantMergeFailureForProject('/p', 'old', ROOT)).toBeUndefined();
+		expect(relevantMergeFailureForProject('/p', 'none', ROOT)).toBeUndefined();
+	});
+
+	test.each([
+		[
+			'another project',
+			() => path.join('/other', '.swarm', 'worktree-merge-status.json'),
+		],
+		[
+			'nothing (unbound)',
+			() => {
+				throw new Error('durableStatusPath not set');
+			},
+		],
+	])('registry bound to %s: the in-memory map is ignored; only this project’s durable file counts', (_label, bound) => {
+		_internals.getBoundStatusPath = bound as () => string;
+		expect(relevantMergeFailureForProject('/p', 'live', ROOT)).toBeUndefined();
+		expect(
+			relevantMergeFailureForProject('/p', 'disk', ROOT)?.completedAt,
+		).toBe(ROOT + 1);
+	});
+
+	test('an unreadable durable file adds nothing', () => {
+		_internals.getBoundStatusPath = () => ours;
+		_internals.scanWorktreeMergeFailuresForRecovery = () => ({
+			status: 'uncertain',
+			reason: 'corrupt',
+		});
+		expect(relevantMergeFailureForProject('/p', 'disk', ROOT)).toBeUndefined();
 	});
 });

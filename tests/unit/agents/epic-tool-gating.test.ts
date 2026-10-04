@@ -52,6 +52,20 @@ describe('Epic tool map registry shape', () => {
 		expect([...EPIC_TOOL_NAMES].sort()).toEqual(metadataEpic);
 	});
 
+	test('Epic v2 C2 tool set: epic_next_wave replaces decide / plan_waves / record_divergence', () => {
+		expect([...EPIC_TOOL_NAMES]).toEqual([
+			'epic_next_wave',
+			'epic_phase_review',
+		]);
+		for (const removed of [
+			'epic_decide_phase',
+			'epic_plan_waves',
+			'epic_record_divergence',
+		]) {
+			expect(Object.keys(TOOL_METADATA)).not.toContain(removed);
+		}
+	});
+
 	test('Epic tools have agents: [] and are absent from the always-on AGENT_TOOL_MAP', () => {
 		for (const tool of EPIC_TOOL_NAMES) {
 			expect(TOOL_METADATA[tool].agents).toEqual([]);

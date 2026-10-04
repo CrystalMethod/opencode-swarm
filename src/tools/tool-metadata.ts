@@ -1038,30 +1038,14 @@ export const TOOL_METADATA = {
 			'Revoke a previously promoted external skill. Returns a disabled message when external_skills.curation_enabled is false.',
 		agents: [],
 	},
-	epic_decide_phase: {
+	epic_next_wave: {
 		description:
-			'Compute the Epic Mode verdict for a phase WITHOUT dispatching coders. Runs preflight + calibration + the three gates (p-threshold, hot-module, greenfield/predecessor-evidence), persists the decision, and returns the verdict so the architect can dispatch waves via the visible Task tool (promote) or fall back to per-task serial (demote). Pair with `epic_plan_waves` to get the wave plan when promoted. Declared scope comes only from live `declare_scope` bindings (expire after 1h; a plan revision voids them), with plan `files_touched` as the fallback; `scopes-missing` means re-run `declare_scope` for each listed task. Requires `turbo.epic.mode.enabled: true` (else reason `epic-disabled-by-config`) and an epic open for the current plan via `/swarm epic start` (else `epic-mode-not-active`).',
-		agents: [],
-	},
-	epic_plan_waves: {
-		description:
-			"Partition a phase's pending tasks into ordered concurrent waves for Epic Mode dispatch. " +
-			'A wave is a set of tasks with mutually disjoint declared scopes and all dependencies satisfied by prior waves. ' +
-			'Returns `{ waves: [{ waveId, taskIds, files }, ...], serializedTasks, degradedTasks }`. ' +
-			'For each wave in order, the architect dispatches one `Task(subagent_type="coder", ...)` per `taskId` — all in one assistant message — so the wave runs concurrently and each coder appears as a visible subagent. ' +
-			'Wait for the wave to finish before dispatching the next. ' +
-			'Pair with `epic_decide_phase` (called first; this tool is only relevant on a `promote` verdict). ' +
-			'Preflight reject reasons: `epic-disabled-by-config` (set `turbo.epic.mode.enabled: true`), `epic-mode-not-active` (no epic open — `/swarm epic start`), `epic-state-unreadable`, `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (declared scope undeclared, expired after 1h, or declared against an older plan revision — re-run `declare_scope` for each of `missingScopes`), `git-failed` (transient — retry), `planner-error`.',
+			'Epic Mode: the single, idempotent way forward while an epic is open. Closes the active wave once every task is resolved (recording per-task outcomes and declared-vs-actual divergence, feeding calibration), keeps phases in order, and issues the next wave of disjoint tasks with dispatch instructions. Returns a status: dispatch | declare-scopes | in-progress | blocked | phase-ready-for-review | epic-complete | refused. Requires `turbo.epic.mode.enabled: true` and an epic opened by `/swarm epic start`.',
 		agents: [],
 	},
 	epic_phase_review: {
 		description:
 			'Epic Mode phase readiness: dispatch a read-only phase reviewer, then (only if it APPROVES) a read-only phase critic over the completed phase; parse both verdicts from the agents and record them to .swarm/evidence/{phase}/epic-phase-review.json. Required by phase_complete while an epic is open for the current plan; re-run after any fix (evidence is bound to the plan and phase task evidence).',
-		agents: [],
-	},
-	epic_record_divergence: {
-		description:
-			"After every `update_task_status(completed)`, record the task's declared-vs-actual divergence to .swarm/epic/divergence.jsonl. Feeds Epic Mode's self-calibration loop (Capability D). Best-effort: never blocks.",
 		agents: [],
 	},
 } satisfies Record<string, ToolMeta>;

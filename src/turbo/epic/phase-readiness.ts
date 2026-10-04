@@ -60,6 +60,7 @@ import {
 	type DivergenceRecord,
 	readDivergenceHistory,
 } from './divergence-recorder';
+import { type EpicRecordV1, getOpenEpic } from './lifecycle';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -127,7 +128,8 @@ export type EpicPhaseReadinessCode =
 	| 'EPIC_PHASE_CRITIC_MISSING'
 	| 'EPIC_PHASE_CRITIC_NOT_APPROVED'
 	| 'EPIC_PHASE_REVIEW_STALE'
-	| 'EPIC_PHASE_PLAN_UNREADABLE';
+	| 'EPIC_PHASE_PLAN_UNREADABLE'
+	| 'EPIC_PHASE_WAVES_OPEN';
 
 export type EpicPhaseReadinessResult =
 	| { ok: true; evidence: EpicPhaseReviewEvidence }
@@ -305,15 +307,56 @@ function rerunHint(phase: number): string {
 	return `Call ${EPIC_PHASE_REVIEW_TOOL}({ phase: ${phase} }) — it dispatches the phase reviewer and then the phase critic and records both verdicts — then retry phase_complete.`;
 }
 
+/** Seqs of the epic's waves for `phase` that are issued and not closed. */
+export function openEpicWavesForPhase(
+	record: Pick<EpicRecordV1, 'waves'>,
+	phase: number,
+): number[] {
+	return record.waves
+		.filter((wave) => wave.phase === phase && wave.status === 'issued')
+		.map((wave) => wave.seq);
+}
+
+/**
+ * Epic v2 C2: a phase is reviewable / completable only when every wave
+ * `epic_next_wave` issued for it is closed. Null when that holds (or no
+ * epic is open); otherwise the blocking reason. An unreadable epic record
+ * fails closed.
+ */
+export function describeOpenEpicWaves(
+	directory: string,
+	phase: number,
+): string | null {
+	let record: EpicRecordV1 | null;
+	try {
+		record = _internals.getOpenEpic(directory);
+	} catch (error) {
+		return `the open epic's record is unreadable (${error instanceof Error ? error.message : String(error)}), so its waves cannot be verified (fail closed). Ask the user to run \`/swarm epic status\`.`;
+	}
+	if (!record) return null;
+	const open = openEpicWavesForPhase(record, phase);
+	if (open.length === 0) return null;
+	return `wave ${open.join(', ')} of phase ${phase} is still open. Call epic_next_wave — it closes a wave once every task in it is resolved — until it returns phase-ready-for-review.`;
+}
+
 /**
  * Verify that `phase` has fresh, APPROVED phase-reviewer and phase-critic
- * evidence. Observational only: never dispatches or writes.
+ * evidence and (Epic v2 C2) no open wave. Observational only: never
+ * dispatches or writes.
  */
 export async function verifyEpicPhaseReadiness(
 	directory: string,
 	phase: number,
 	nowMs: number,
 ): Promise<EpicPhaseReadinessResult> {
+	const openWaves = describeOpenEpicWaves(directory, phase);
+	if (openWaves !== null) {
+		return {
+			ok: false,
+			code: 'EPIC_PHASE_WAVES_OPEN',
+			reason: `Phase ${phase} cannot complete: ${openWaves}`,
+		};
+	}
 	const read = _internals.readEvidence(directory, phase);
 	const rel = `.swarm/evidence/${phase}/${EPIC_PHASE_REVIEW_FILENAME}`;
 	if (read.status === 'missing') {
@@ -745,7 +788,7 @@ export async function runEpicPhaseReview(
 			success: false,
 			phase,
 			reason: 'tasks-incomplete',
-			message: `Phase ${phase} still has unfinished tasks (${binding.incompleteTaskIds.join(', ')}). Complete every task (update_task_status completed + epic_record_divergence) before the phase review.`,
+			message: `Phase ${phase} still has unfinished tasks (${binding.incompleteTaskIds.join(', ')}). Complete every task (update_task_status completed), then call epic_next_wave until it returns phase-ready-for-review.`,
 		};
 	}
 
@@ -853,4 +896,5 @@ export const _internals = {
 	writeEvidence: (target: string, content: string): Promise<void> =>
 		atomicWriteSwarmFile(target, content),
 	now: (): number => Date.now(),
+	getOpenEpic,
 };
