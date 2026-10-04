@@ -352,7 +352,13 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		enableEpicMode(tempDir, 'test-session');
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+			// Epic Mode is opt-in: the Rule 2 project probe is false without it.
+			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 		});
+		// Commit the config so the (scope-less) completion sees a clean
+		// non-.swarm tree — Rule 2 refuses a marker over uncommitted work.
+		gitRun(tempDir, ['add', '.opencode/opencode-swarm.json']);
+		gitRun(tempDir, ['commit', '-m', 'config']);
 		await savePlanWithTasks(['1.1']);
 
 		await completeTasks(['1.1']);
@@ -385,6 +391,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		enableEpicMode(tempDir, 'test-session');
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
 		});
 		await savePlanWithTasks(['1.1']);
 		managerInternals.getWorktreeMergeFailure = () => ({

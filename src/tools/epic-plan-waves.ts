@@ -19,9 +19,17 @@ import { loadPluginConfigWithMeta as loadPluginConfigWithMeta_import } from '../
 import { DEFAULT_LEAN_TURBO_CONFIG } from '../config/constants';
 import type { LeanTurboConfig } from '../config/schema';
 import { isGitRepo as isGitRepo_import } from '../git/branch';
+import {
+	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+	isEpicModeConfigEnabled,
+} from '../turbo/epic/config-gate';
+import {
+	mergeEpicScopes,
+	resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import,
+	toEpicPlanIdentity,
+} from '../turbo/epic/declared-scopes';
 import { buildIsUpstreamCommittedWithStatus as buildIsUpstreamCommittedWithStatus_import } from '../turbo/epic/upstream-commits';
 import { type EpicWavePlan, planEpicWaves } from '../turbo/epic/wave-planner';
-import { readTaskScopes as readTaskScopes_import } from '../turbo/lean/conflicts';
 import type { PlanPhase } from '../turbo/lean/partition-common';
 import { criticalWarn } from '../utils/logger.js';
 import { createSwarmTool } from './create-tool';
@@ -46,12 +54,15 @@ export interface EpicPlanWavesResult {
 	degradedTasks?: EpicWavePlan['degradedTasks'];
 	/**
 	 * Set when `reason === 'scopes-missing'` — the task ids that have no
-	 * declared scope and no `files_touched` fallback. The architect must
-	 * call `declare_scope` for each of these and re-invoke this tool.
+	 * live declared scope (undeclared, expired, or declared against an older
+	 * plan revision) and no `files_touched` fallback. The architect must
+	 * re-run `declare_scope` for each of these (or pass them in the explicit
+	 * `scopes` map) and re-invoke this tool.
 	 */
 	missingScopes?: string[];
 	/** Set on failure — categorical short code (machine-readable). */
 	reason?:
+		| 'epic-disabled-by-config'
 		| 'no-plan'
 		| 'no-phase'
 		| 'phase-empty'
@@ -76,7 +87,8 @@ function readPlanJson(directory: string): { phases: PlanPhase[] } | null {
 /**
  * Execute the `epic_plan_waves` tool.
  *
- * Six possible outcomes:
+ * Possible outcomes:
+ *   0. `epic-disabled-by-config` — `turbo.epic.mode.enabled !== true`
  *   1. `no-plan` — `.swarm/plan.json` missing / unparseable
  *   2. `no-phase` — phase number not in `plan.json`
  *   3. `phase-empty` — phase exists but has zero tasks
@@ -92,6 +104,25 @@ export async function executeEpicPlanWaves(
 	args: EpicPlanWavesArgs,
 ): Promise<EpicPlanWavesResult> {
 	const { directory, phase, scopes } = args;
+
+	// Config master gate (`turbo.epic.mode.enabled`, default false). Loaded
+	// once and reused for the `turbo.lean.*` knobs below. A config load
+	// failure fails CLOSED for the gate (Epic Mode is opt-in).
+	let loadedConfig: Awaited<
+		ReturnType<typeof _internals.loadPluginConfigWithMeta>
+	> | null = null;
+	try {
+		loadedConfig = await _internals.loadPluginConfigWithMeta(directory);
+	} catch {
+		loadedConfig = null;
+	}
+	if (!isEpicModeConfigEnabled(loadedConfig?.config)) {
+		return {
+			success: false,
+			reason: 'epic-disabled-by-config',
+			errors: [EPIC_MODE_CONFIG_DISABLED_MESSAGE],
+		};
+	}
 
 	const plan = _internals.readPlanJson(directory);
 	if (!plan) {
@@ -172,19 +203,33 @@ export async function executeEpicPlanWaves(
 	// it all so any unexpected throw surfaces as `planner-error` instead
 	// of bubbling out of the tool as an opaque promise rejection.
 	try {
-		// Preflight: every pending task must have either a declared scope on
-		// disk OR `files_touched` populated OR an explicit scopes-map entry.
-		// Without scope data the wave planner has nothing to partition on
-		// and would silently emit zero waves. Same gate as
+		// ONE plan-identity + v2 binding-set read for the whole call, shared
+		// by the preflight below and the wave planner (#2532 hoisting).
+		// `declare_scope` persists only v2 bindings; the legacy v1
+		// `.swarm/scopes/scope-<taskId>.json` projection is never consulted:
+		// every phase task gets an explicit entry (`[]` = no live declared
+		// scope), so the shared partition preflight never falls back to its
+		// v1 file read. Caller-supplied `scopes` entries win per task.
+		const declaredScopes = _internals.resolveEpicDeclaredScopes(
+			directory,
+			toEpicPlanIdentity(plan),
+			pendingTasks.map((task) => task.id),
+		);
+		const effectiveScopes = mergeEpicScopes(declaredScopes, scopes);
+
+		// Preflight: every pending task must have either a live declared
+		// scope binding OR `files_touched` populated OR an explicit
+		// scopes-map entry. Without scope data the wave planner has nothing
+		// to partition on and would silently emit zero waves. Same gate as
 		// `epic_decide_phase` for consistency.
 		const tasksMissingScope: string[] = [];
 		for (const task of pendingTasks) {
-			const declaredScope = _internals.readTaskScopes(directory, task.id);
+			const declaredScope = declaredScopes[task.id] ?? [];
 			const filesTouched = task.files_touched ?? [];
 			const providedScope =
 				scopes && task.id in scopes ? scopes[task.id] : null;
 			if (
-				(declaredScope === null || declaredScope.length === 0) &&
+				declaredScope.length === 0 &&
 				filesTouched.length === 0 &&
 				(providedScope === null || providedScope.length === 0)
 			) {
@@ -199,12 +244,15 @@ export async function executeEpicPlanWaves(
 				missingScopes: tasksMissingScope,
 				errors: [
 					`Cannot plan waves for phase ${phase}: ${tasksMissingScope.length} pending task(s) ` +
-						`have no declared scope and no files_touched in plan.json. ` +
+						`have no live declared scope and no files_touched in plan.json. ` +
+						`A declared scope is missing when it was undeclared, expired (bindings live 1h), ` +
+						`or the plan was revised since declaration. ` +
 						`The wave planner needs scope data to compute disjoint concurrent groups; ` +
 						`without it the dispatch is silently serial and Epic Mode's parallelization is lost.\n\n` +
 						`Missing scopes: ${list}\n\n` +
-						`Resolution: call \`declare_scope\` once for EACH of those task ids with the exact ` +
-						`file paths the task will touch. Then re-invoke \`epic_plan_waves(phase=${phase})\`.`,
+						`Resolution: re-run \`declare_scope\` once for EACH of those task ids with the exact ` +
+						`file paths the task will touch (or pass them in the explicit \`scopes\` map argument). ` +
+						`Then re-invoke \`epic_plan_waves(phase=${phase})\`.`,
 				],
 			};
 		}
@@ -241,15 +289,9 @@ export async function executeEpicPlanWaves(
 		// defaults. Falls back to defaults on any load failure so a
 		// malformed user config doesn't break planning.
 		let leanConfig: LeanTurboConfig = { ...DEFAULT_LEAN_TURBO_CONFIG };
-		try {
-			const loaded = await _internals.loadPluginConfigWithMeta(directory);
-			const userLean = loaded?.config?.turbo?.lean;
-			if (userLean) {
-				leanConfig = { ...leanConfig, ...userLean };
-			}
-		} catch {
-			// Use defaults; warning would be noise for projects without a
-			// custom turbo config (the common case).
+		const userLean = loadedConfig?.config?.turbo?.lean;
+		if (userLean) {
+			leanConfig = { ...leanConfig, ...userLean };
 		}
 
 		const wavePlan = planEpicWaves(
@@ -257,7 +299,7 @@ export async function executeEpicPlanWaves(
 			phase,
 			plan,
 			leanConfig,
-			scopes,
+			effectiveScopes,
 			isUpstreamCommitted,
 		);
 
@@ -287,7 +329,7 @@ export async function executeEpicPlanWaves(
  */
 export const _internals = {
 	readPlanJson,
-	readTaskScopes: readTaskScopes_import,
+	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	isGitRepo: (cwd: string): boolean => isGitRepo_import(cwd),
 	// Only the status-bearing variant is wired in here. The legacy
 	// permissive `buildIsUpstreamCommitted` is intentionally NOT exposed
@@ -306,7 +348,7 @@ export const epic_plan_waves: ToolDefinition = createSwarmTool({
 		'For each wave in order, the architect dispatches one `Task(subagent_type="coder", ...)` per `taskId` — all in one assistant message — so the wave runs concurrently and each coder appears as a visible subagent. ' +
 		'Wait for the wave to finish before dispatching the next. ' +
 		'Pair with `epic_decide_phase` (called first; this tool is only relevant on a `promote` verdict). ' +
-		'Preflight reject reasons: `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (call `declare_scope` for `missingScopes`), `git-failed` (transient — retry), `planner-error`.',
+		'Preflight reject reasons: `epic-disabled-by-config` (set `turbo.epic.mode.enabled: true`), `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (declared scope undeclared, expired after 1h, or declared against an older plan revision — re-run `declare_scope` for each of `missingScopes`, or pass them in `scopes`), `git-failed` (transient — retry), `planner-error`.',
 	args: {
 		directory: z
 			.string()
@@ -316,7 +358,7 @@ export const epic_plan_waves: ToolDefinition = createSwarmTool({
 			.record(z.string(), z.array(z.string()))
 			.optional()
 			.describe(
-				'Optional pre-loaded scopes map (taskId -> file paths). When omitted, scopes are read from `.swarm/scopes/scope-<taskId>.json` and `files_touched` in plan.json.',
+				'Optional explicit scopes map (taskId -> file paths). Tasks absent from the map resolve from their live `declare_scope` binding for the current plan revision, then from `files_touched` in plan.json.',
 			),
 	},
 	execute: async (args: unknown, _directory: string) => {

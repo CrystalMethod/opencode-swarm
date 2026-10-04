@@ -28,6 +28,8 @@
  * non-interactive). This module adds no new subprocess primitives.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
 	_internals as gitBranchInternals,
 	isGitRepo as isGitRepo_import,
@@ -51,9 +53,66 @@ export interface CommitTaskCompletionResult {
 	 * skip paths.
 	 */
 	committed: boolean;
-	reason: 'no-git' | 'commit-failed' | 'success' | 'idempotent-skip';
+	/**
+	 * - `scope-unresolved`: no declared scope could be resolved for the task
+	 *   AND the working tree holds non-`.swarm` changes (or its state could
+	 *   not be read). No marker is written — a marker-only commit would let
+	 *   Rule 3 treat the task as committed while its changes stay
+	 *   uncommitted. `error` carries the operator remediation.
+	 */
+	reason:
+		| 'no-git'
+		| 'commit-failed'
+		| 'success'
+		| 'idempotent-skip'
+		| 'scope-unresolved';
 	sha?: string;
 	error?: string;
+}
+
+/** Literal pathspec for an exact file path (no glob interpretation). */
+function literalPathspec(p: string): string {
+	return `:(literal)${p}`;
+}
+
+/**
+ * Upper bound on the combined byte length of scope paths passed inline as
+ * `git commit` argv. Windows caps the whole command line at 32 767 chars;
+ * 24 KiB leaves room for the executable, `-c` hardening flags, and message.
+ * Larger scopes go through `--pathspec-from-file` instead.
+ */
+const COMMIT_ARGV_PATHSPEC_BUDGET_BYTES = 24 * 1024;
+
+/** True for a `git status -z` path inside a `.swarm/` directory (any depth). */
+function isSwarmStatePath(p: string): boolean {
+	const normalized = p.replace(/\\/g, '/');
+	return (
+		normalized === '.swarm' ||
+		normalized.startsWith('.swarm/') ||
+		normalized.includes('/.swarm/') ||
+		normalized.endsWith('/.swarm')
+	);
+}
+
+/**
+ * Parse `git status --porcelain=v1 -z` output into changed paths. Rename /
+ * copy records carry a second (origin) NUL-terminated path, which is also a
+ * change and is returned too.
+ */
+export function parsePorcelainZPaths(output: string): string[] {
+	const tokens = output.split('\0');
+	const paths: string[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		const record = tokens[i];
+		if (record.length < 4) continue;
+		const xy = record.slice(0, 2);
+		paths.push(record.slice(3));
+		if ((xy[0] === 'R' || xy[0] === 'C') && i + 1 < tokens.length) {
+			i += 1;
+			if (tokens[i].length > 0) paths.push(tokens[i]);
+		}
+	}
+	return paths;
 }
 
 /**
@@ -96,19 +155,23 @@ export function formatTaskCommitMessage(
  *
  * - **No-op when not a git repo**: returns `{ committed: false, reason: 'no-git' }`.
  *   Rule 1 in the redesign — non-git projects skip the entire commit flow.
- * - **Scope-bounded staging**: when `scopePaths` is non-empty, only those
- *   paths are staged (plus the AGENTS.md #4 `.swarm` exclude). The previous
- *   `git add -A` approach swept in sibling lanes' work-in-progress under
- *   parallel dispatch — the adversarial review on 2026-06-03 found that
- *   each `swarm(task A):` commit was actually containing fragments of lanes
- *   B/C/D, corrupting Rule 3's evidence.
- * - **No-scope marker-only path**: when `scopePaths` is undefined or empty,
- *   skip staging entirely and write an `--allow-empty` marker. This is the
- *   correct behavior for: pure verification tasks, tasks whose only output
- *   is under `.swarm/` (excluded by policy), and any future case where a
- *   task's scope is genuinely empty. The marker advances `commitsObserved`
- *   so Rule 4's greenfield-gate-opening still works, and it preserves
- *   Rule 3 evidence — without contaminating other lanes' working trees.
+ * - **Scope-bounded staging AND commit**: when `scopePaths` is non-empty,
+ *   only those paths are staged (plus the AGENTS.md #4 `.swarm` exclude)
+ *   and the commit itself is restricted to them (`--only` pathspec). The
+ *   previous `git add -A` approach swept in sibling lanes' work-in-progress
+ *   under parallel dispatch — the adversarial review on 2026-06-03 found
+ *   that each `swarm(task A):` commit was actually containing fragments of
+ *   lanes B/C/D, corrupting Rule 3's evidence — and a pathspec-less commit
+ *   still swept in anything pre-staged in the index.
+ * - **No-scope path**: when `scopePaths` is undefined or empty, an empty
+ *   `--allow-empty --only` marker is written ONLY if the working tree has no
+ *   non-`.swarm` change (pure verification tasks, `.swarm`-only output).
+ *   The marker advances `commitsObserved` so Rule 4's greenfield gate still
+ *   opens, and preserves Rule 3 evidence. When the tree IS dirty (or its
+ *   status cannot be read) the scope is merely unresolvable — an expired
+ *   binding, a revised plan — and the task's changes would stay uncommitted
+ *   behind a marker claiming otherwise, so the call returns
+ *   `reason: 'scope-unresolved'` and raises a criticalWarn with remediation.
  * - **Non-fatal on git failures**: logs and returns `commit-failed`. The
  *   plan ledger is authoritative per AGENTS.md #5; git is downstream.
  */
@@ -199,6 +262,40 @@ export async function commitTaskCompletion(
 	}
 	const message = formatTaskCommitMessage(taskId, description);
 
+	// No resolvable scope: a marker-only commit is correct ONLY when the task
+	// left nothing outside `.swarm/` to commit (pure verification tasks,
+	// `.swarm`-only output). When the tree is dirty — e.g. the 1 h scope
+	// binding expired before completion, the plan was revised, or a worktree
+	// squash landing left the task's changes unstaged — writing the marker
+	// would let Rule 3 treat the task as committed while its changes stay
+	// uncommitted. Refuse instead and tell the operator how to recover. A
+	// status read failure is "unknown" and refused the same way (fail-closed
+	// for Rule 3 evidence).
+	if (paths.length === 0) {
+		let dirtyPaths: string[] | null = null;
+		let statusError: string | undefined;
+		try {
+			dirtyPaths = _internals
+				.listChangedPaths(directory)
+				.filter((p) => !isSwarmStatePath(p));
+		} catch (err) {
+			statusError = err instanceof Error ? err.message : String(err);
+		}
+		if (dirtyPaths === null || dirtyPaths.length > 0) {
+			const detail =
+				dirtyPaths === null
+					? `working-tree status could not be read (${statusError})`
+					: `${dirtyPaths.length} uncommitted non-.swarm path(s) present: ${dirtyPaths.slice(0, 5).join(', ')}${dirtyPaths.length > 5 ? `, +${dirtyPaths.length - 5} more` : ''}`;
+			const remediation = `No declared scope could be resolved for task ${taskId} (scope binding missing, expired, or declared against a different plan revision) and ${detail}. No \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\` marker was written, so Rule 3 will NOT treat this task as committed. Remediation: re-run \`declare_scope\` for task ${taskId} and then re-run its completion (\`update_task_status\` → completed), OR commit the task's changes manually with a subject starting \`swarm(task ${scrubTaskIdForGitSubject(taskId)}):\`.`;
+			criticalWarn(`[epic:task-commit] ${remediation}`);
+			return {
+				committed: false,
+				reason: 'scope-unresolved',
+				error: remediation,
+			};
+		}
+	}
+
 	// Phase 11 (B5): bounded retry loop over the stage+commit pair. If
 	// either step fails with a lock-contention error AND we have retries
 	// left, sleep and re-attempt. Any other failure (or the final attempt)
@@ -206,12 +303,14 @@ export async function commitTaskCompletion(
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt <= INDEX_LOCK_BACKOFF_MS.length; attempt++) {
 		try {
-			if (paths.length > 0) {
-				_internals.stageScopedPaths(directory, paths);
-			}
-			// When `paths` is empty we skip staging entirely. `--allow-empty`
-			// still produces the marker the planner's Rule 3 check reads.
-			_internals.commitAllowEmpty(directory, message);
+			const files =
+				paths.length > 0 ? _internals.stageScopedPaths(directory, paths) : [];
+			// `commitScopedPaths` uses `--only` semantics: ONLY the task's
+			// in-scope files land in the marker commit, so anything else
+			// already in the index (user WIP, a sibling lane's staged files)
+			// stays staged and out of this task's commit. With no files it
+			// produces an empty marker that likewise ignores the index.
+			_internals.commitScopedPaths(directory, message, files);
 			const sha = _internals.gitHeadSha(directory);
 			return { committed: true, reason: 'success', sha };
 		} catch (err) {
@@ -240,6 +339,36 @@ export async function commitTaskCompletion(
 }
 
 /**
+ * Parse `git diff --name-status -z` output into `[source, destination]`
+ * pairs for rename records (`R<score>\0src\0dst\0`). Copy records
+ * (`C<score>`) carry two paths but no source deletion and are skipped, as
+ * are single-path records. Exported for tests.
+ */
+export function parseRenamePairsZ(output: string): Array<[string, string]> {
+	const parts = output.split('\0');
+	const pairs: Array<[string, string]> = [];
+	let i = 0;
+	while (i < parts.length) {
+		const status = parts[i] ?? '';
+		if (status.length === 0) {
+			i += 1;
+			continue;
+		}
+		if (status.startsWith('R') || status.startsWith('C')) {
+			const source = parts[i + 1];
+			const destination = parts[i + 2];
+			if (status.startsWith('R') && source && destination) {
+				pairs.push([source, destination]);
+			}
+			i += 3;
+			continue;
+		}
+		i += 2;
+	}
+	return pairs;
+}
+
+/**
  * DI seam — production code calls through `_internals.<name>` so tests
  * substitute deterministic doubles without `mock.module`'s cross-file
  * leak (AGENTS.md invariant 7). Restore in `afterEach`.
@@ -247,71 +376,195 @@ export async function commitTaskCompletion(
 export const _internals = {
 	isGitRepo: (cwd: string) => isGitRepo_import(cwd),
 	/**
-	 * Stage exactly the declared scope paths for this task. The trailing
-	 * `:(exclude).swarm` + `:(exclude).swarm/**` pathspecs are belt-and-
-	 * suspenders against AGENTS.md #4 even when the architect's scope
-	 * declaration accidentally points into `.swarm/`. We do NOT rely on
-	 * the user's `.gitignore`: a single misconfigured project would
-	 * otherwise commit prompts, ledgers, telemetry, and evidence into
-	 * git history every time Rule 2 fires.
+	 * Stage the task's declared scope and return the exact files the marker
+	 * commit must contain (cwd-relative, `.swarm/` excluded at any depth).
 	 *
-	 * Missing pathspecs (declared scope points to a non-existent file) are
-	 * left to surface as a `commit-failed` reason — better than silent
-	 * staging skip, since it tells the user their scope declaration is
-	 * stale. Rule 2's non-fatal contract means the plan-write still wins.
+	 * AGENTS.md #4: `.swarm/` content must never reach git history, whatever
+	 * the scope says and whatever the user's `.gitignore` holds. That is
+	 * enforced by filtering discovered paths in JS — NOT by an
+	 * `:(exclude,glob)**\/.swarm/**` pathspec on `git add`: on git 2.43 that
+	 * exclude made `git add -- <new file in a new nested dir> <exclude>` exit
+	 * 0 while staging NOTHING (directory-traversal dependent, e.g. it failed
+	 * for `trk/n2/n3/f.ts` yet worked for `c1/d1/e1/f.ts`), silently
+	 * dropping the task's new files from its commit.
+	 *
+	 *  1. `git ls-files -z --others --modified --exclude-standard --
+	 *     :(literal)<scope>` discovers untracked (non-ignored), modified and
+	 *     deleted files under the scope paths (literal: a scope entry like
+	 *     `src/*.ts` or `app/[id].tsx` names exactly that path — never a
+	 *     glob sweeping sibling WIP; a directory entry still matches
+	 *     everything beneath it);
+	 *  2. `.swarm` paths are dropped; the rest is staged with
+	 *     `git add -A -- :(literal)<file>` (literal: `app/[id].tsx` must not
+	 *     glob-match `app/i.tsx`);
+	 *  3. `git diff --cached --name-only --no-renames --relative --
+	 *     :(literal)<scope>` yields every staged change within scope
+	 *     (including files staged by an earlier lock-contention attempt and
+	 *     both sides of a rename), again minus `.swarm`;
+	 *  4. for every staged rename whose destination is in that set, the
+	 *     source path is added too, so the commit carries the deletion.
+	 *
+	 * Phase 17 (E.3): every git call is chunked (200 paths) so monorepo-scale
+	 * scopes never exceed `ARG_MAX` (~256 KB macOS, 32 767 chars Windows).
+	 * A scope path that matches nothing is simply absent from the result.
 	 */
-	stageScopedPaths: (cwd: string, paths: string[]) => {
-		// Phase 8: exclude `.swarm/` at ANY depth, not just the repo root.
-		// The original `:(exclude).swarm` + `:(exclude).swarm/**` only
-		// matched the top-level — a scope path like `packages/foo/` in a
-		// monorepo would still drag in `packages/foo/.swarm/` content.
-		//
-		// Verified on git 2.51: this single recursive pattern correctly
-		// excludes `.swarm/` contents at root AND at any depth, regardless
-		// of whether the inclusion pathspec is `.`, `src`, or
-		// `packages/foo`. Combining it with the older non-glob excludes
-		// (`:(exclude).swarm` etc.) actually BREAKS inclusion for subtree
-		// paths — `git add -- packages/foo :(exclude).swarm` stages
-		// nothing, even when no `.swarm` exists. So we deliberately use
-		// only the single recursive form.
-		//
-		// Phase 17 (E.3): chunk paths into batches so a monorepo-scale
-		// scope (1000s of files) doesn't exceed `ARG_MAX` (~256 KB on
-		// macOS). At ~100 bytes/path, ~2500 paths exhausts the limit;
-		// `spawnSync` then throws E2BIG and Rule 2 silently degrades to
-		// `commit-failed`. Empirically 200 paths/call leaves ample
-		// headroom. The `.swarm` exclude is added to every chunk so it
-		// applies uniformly; the index accumulates across chunks before
-		// a single commit is issued by the caller.
+	stageScopedPaths: (cwd: string, paths: string[]): string[] => {
 		const CHUNK = 200;
-		for (let i = 0; i < paths.length; i += CHUNK) {
-			const chunk = paths.slice(i, i + CHUNK);
+		const chunked = <T>(items: T[]): T[][] => {
+			const out: T[][] = [];
+			for (let i = 0; i < items.length; i += CHUNK) {
+				out.push(items.slice(i, i + CHUNK));
+			}
+			return out;
+		};
+		const splitZ = (output: string): string[] =>
+			output.split('\0').filter((p) => p.length > 0 && !isSwarmStatePath(p));
+
+		const discovered = new Set<string>();
+		for (const chunk of chunked(paths)) {
+			const out = gitBranchInternals.gitExec(
+				[
+					'ls-files',
+					'-z',
+					'--others',
+					'--modified',
+					'--exclude-standard',
+					'--',
+					...chunk.map(literalPathspec),
+				],
+				cwd,
+			);
+			for (const p of splitZ(out)) discovered.add(p);
+		}
+		for (const chunk of chunked([...discovered])) {
 			gitBranchInternals.gitExec(
-				['add', '--', ...chunk, ':(exclude,glob)**/.swarm/**'],
+				['add', '-A', '--', ...chunk.map(literalPathspec)],
 				cwd,
 			);
 		}
+		const staged = new Set<string>();
+		for (const chunk of chunked(paths)) {
+			const out = gitBranchInternals.gitExec(
+				[
+					'diff',
+					'--cached',
+					'--name-only',
+					'-z',
+					'--no-renames',
+					'--relative',
+					'--',
+					...chunk.map(literalPathspec),
+				],
+				cwd,
+			);
+			for (const p of splitZ(out)) staged.add(p);
+		}
+		// A staged rename (`git mv old new`) whose DESTINATION is in scope
+		// must carry its source-path deletion into the same commit; otherwise
+		// `--only -- new` commits just the addition and leaves `old` staged
+		// as a dangling deletion. Detected index-wide (the source is usually
+		// outside the declared scope) via rename-aware name-status.
+		if (staged.size > 0) {
+			const out = gitBranchInternals.gitExec(
+				['diff', '--cached', '-M', '--name-status', '-z', '--relative'],
+				cwd,
+			);
+			for (const [source, destination] of parseRenamePairsZ(out)) {
+				if (staged.has(destination) && !isSwarmStatePath(source)) {
+					staged.add(source);
+				}
+			}
+		}
+		return [...staged];
 	},
 	/**
-	 * `--allow-empty` variant of commit. We don't expose this in
-	 * `src/git/branch.ts` because it's specific to the task-completion
-	 * marker semantics — a normal commit should fail on empty trees to
-	 * surface bugs. Here we explicitly want the marker.
+	 * Marker commit restricted to the given files (`--only` semantics).
 	 *
-	 * Phase 8: `--no-verify` skips `pre-commit`, `commit-msg`, and
-	 * `pre-commit-msg` hooks. Rule 2's commits are protocol markers, not
-	 * user-authored content — running Biome/typecheck/lint on every task
-	 * completion would add minutes of wall-clock per task and, worse,
-	 * could block the marker entirely on a repo with a strict pre-commit
-	 * gate. Plan ledger remains authoritative; the commit is the audit
-	 * trail, not the gate.
+	 * Previously this ran `git commit --allow-empty` with NO pathspec, which
+	 * commits the whole index — sweeping any pre-staged user or sibling-lane
+	 * file into this task's `swarm(task <id>):` commit. Now:
+	 *  - with files: `git commit --only -- :(literal)<file>...` commits
+	 *    exactly those files (as staged by `stageScopedPaths`); every other
+	 *    staged entry remains staged and out of the commit.
+	 *  - without files: `--allow-empty --only` creates an empty marker
+	 *    commit regardless of what is staged (git: "If used together with
+	 *    --allow-empty paths are also not required, and an empty commit will
+	 *    be created").
+	 * File lists whose inline pathspec would exceed
+	 * {@link COMMIT_ARGV_PATHSPEC_BUDGET_BYTES} are passed through a
+	 * NUL-delimited `--pathspec-from-file` under the git dir (ARG_MAX /
+	 * Windows command-line cap), removed in `finally`.
+	 *
+	 * `--allow-empty` keeps the marker even when the scope carried no change
+	 * (Rule 3 evidence). Phase 8: `--no-verify` skips `pre-commit`,
+	 * `commit-msg`, and `pre-commit-msg` hooks. Rule 2's commits are protocol
+	 * markers, not user-authored content — running Biome/typecheck/lint on
+	 * every task completion would add minutes of wall-clock per task and,
+	 * worse, could block the marker entirely on a repo with a strict
+	 * pre-commit gate. Plan ledger remains authoritative; the commit is the
+	 * audit trail, not the gate.
 	 */
-	commitAllowEmpty: (cwd: string, message: string) => {
-		gitBranchInternals.gitExec(
-			['commit', '--allow-empty', '--no-verify', '-m', message],
-			cwd,
+	commitScopedPaths: (cwd: string, message: string, files: string[]) => {
+		const base = [
+			'commit',
+			'--allow-empty',
+			'--only',
+			'--no-verify',
+			'-m',
+			message,
+		];
+		const pathspecs = files
+			.filter((p) => !isSwarmStatePath(p))
+			.map(literalPathspec);
+		if (pathspecs.length === 0) {
+			gitBranchInternals.gitExec(base, cwd);
+			return;
+		}
+		const inlineBytes = pathspecs.reduce(
+			(sum, p) => sum + Buffer.byteLength(p, 'utf-8') + 1,
+			0,
 		);
+		if (inlineBytes <= COMMIT_ARGV_PATHSPEC_BUDGET_BYTES) {
+			gitBranchInternals.gitExec([...base, '--', ...pathspecs], cwd);
+			return;
+		}
+		const gitPath = gitBranchInternals
+			.gitExec(
+				[
+					'rev-parse',
+					'--git-path',
+					`swarm-rule2-pathspec-${process.pid}-${Date.now()}`,
+				],
+				cwd,
+			)
+			.trim();
+		const specFile = path.resolve(cwd, gitPath);
+		try {
+			fs.writeFileSync(specFile, `${pathspecs.join('\0')}\0`, 'utf-8');
+			gitBranchInternals.gitExec(
+				[...base, `--pathspec-from-file=${specFile}`, '--pathspec-file-nul'],
+				cwd,
+			);
+		} finally {
+			try {
+				fs.rmSync(specFile, { force: true });
+			} catch {
+				/* best-effort cleanup of the transient pathspec file */
+			}
+		}
 	},
+	/**
+	 * Paths with any working-tree, index, or untracked change (porcelain v1,
+	 * NUL-delimited so unusual file names parse exactly). Throws on git
+	 * failure — the caller treats that as "unknown" and refuses the marker.
+	 */
+	listChangedPaths: (cwd: string): string[] =>
+		parsePorcelainZPaths(
+			gitBranchInternals.gitExec(
+				['status', '--porcelain=v1', '-z', '--untracked-files=normal'],
+				cwd,
+			),
+		),
 	gitHeadSha: (cwd: string) => {
 		return gitBranchInternals.gitExec(['rev-parse', 'HEAD'], cwd).trim();
 	},

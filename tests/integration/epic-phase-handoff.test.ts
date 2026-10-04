@@ -53,9 +53,21 @@ function initGitRepo(dir: string): void {
 	// Prevent GPG signing from blocking tests in environments where the
 	// user's global ~/.gitconfig sets commit.gpgsign = true.
 	expect(git(['config', 'commit.gpgsign', 'false'], dir).status).toBe(0);
+	// Epic Mode is opt-in (`turbo.epic.mode.enabled`): without it the
+	// project probe gating Rule 2 is false. Committed in the seed commit so
+	// the config file never counts as an uncommitted working-tree change.
+	fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+	fs.writeFileSync(
+		path.join(dir, '.opencode', 'opencode-swarm.json'),
+		JSON.stringify({
+			turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+		}),
+	);
 	// Seed an initial commit so HEAD exists.
 	fs.writeFileSync(path.join(dir, 'README.md'), '# test\n');
-	expect(git(['add', 'README.md'], dir).status).toBe(0);
+	expect(
+		git(['add', 'README.md', '.opencode/opencode-swarm.json'], dir).status,
+	).toBe(0);
 	expect(git(['commit', '-m', 'initial'], dir).status).toBe(0);
 }
 
@@ -101,19 +113,6 @@ function makePlanWithCrossBatchDep(): Plan {
 		],
 		migration_status: 'native',
 	};
-}
-
-function writeScopeFile(dir: string, taskId: string, files: string[]): void {
-	const scopesDir = path.join(dir, '.swarm', 'scopes');
-	fs.mkdirSync(scopesDir, { recursive: true });
-	fs.writeFileSync(
-		path.join(scopesDir, `scope-${taskId}.json`),
-		JSON.stringify({
-			taskId,
-			files,
-			declaredAt: '2026-06-03T00:00:00.000Z',
-		}),
-	);
 }
 
 /**
@@ -205,50 +204,47 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		expect(allWaveTasks).toContain('2.1');
 	});
 
-	test('without a scope file: completing 1.1 produces a marker-only commit, no working-tree contamination', async () => {
-		// Create some unrelated working-tree changes (simulates sibling
-		// lanes' WIP that an earlier `git add -A` would have swept in).
-		const wipFile = path.join(dir, 'src', 'other-lane-wip.ts');
-		fs.mkdirSync(path.dirname(wipFile), { recursive: true });
-		fs.writeFileSync(wipFile, 'export const WIP = "do not commit me";\n');
-
+	test('without a scope, a CLEAN tree: completing 1.1 produces an empty marker-only commit', async () => {
 		const commitCountBefore = parseInt(
 			git(['rev-list', '--count', 'HEAD'], dir).stdout.trim(),
 			10,
 		);
 
-		// No scope file declared for 1.1.
+		// No scope declared for 1.1; only `.swarm/` runtime state is dirty.
 		await updateTaskStatus(dir, '1.1', 'completed');
 
-		// The swarm(task 1.1) commit exists.
 		expect(git(['log', '--pretty=%s'], dir).stdout).toMatch(
 			/^swarm\(task 1\.1\):/m,
 		);
-		// And it contains NO files (marker-only). The sibling lane's
-		// WIP is NOT in git history — this is the headline fix from
-		// the 2026-06-03 adversarial review.
-		const showLog = git(['log', '-1', '--name-only', '--pretty='], dir).stdout;
-		expect(showLog).not.toContain('other-lane-wip.ts');
-		// Phase 9 strengthening: prove the commit is GENUINELY empty,
-		// not just "WIP file absent from the listing". `diff-tree` against
-		// HEAD reports every path changed in the tip commit; for an
-		// `--allow-empty` marker the answer must be no paths at all.
+		// Phase 9 strengthening: the marker is GENUINELY empty.
 		const diffTree = git(
 			['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'],
 			dir,
 		).stdout.trim();
 		expect(diffTree).toBe('');
-		// And the head advanced by exactly one commit — proving a
-		// commit DID happen (not a false positive where the empty diff
-		// is just HEAD never moving).
 		const commitCountAfter = parseInt(
 			git(['rev-list', '--count', 'HEAD'], dir).stdout.trim(),
 			10,
 		);
 		expect(commitCountAfter).toBe(commitCountBefore + 1);
-		// The wip file is still in the working tree (we didn't lose it),
-		// just untracked.
-		expect(fs.existsSync(wipFile)).toBe(true);
+	});
+
+	test('without a scope, a DIRTY tree: completing 1.1 writes NO marker and leaves the changes uncommitted', async () => {
+		// Unresolvable scope (never declared / expired binding) while the
+		// working tree holds non-.swarm changes — e.g. a worktree squash
+		// landing left the task's edits unstaged. A marker here would let
+		// Rule 3 treat 1.1 as committed while its changes are not.
+		const wipFile = path.join(dir, 'src', 'other-lane-wip.ts');
+		fs.mkdirSync(path.dirname(wipFile), { recursive: true });
+		fs.writeFileSync(wipFile, 'export const WIP = "do not commit me";\n');
+		const headBefore = git(['rev-parse', 'HEAD'], dir).stdout.trim();
+
+		await updateTaskStatus(dir, '1.1', 'completed');
+
+		expect(git(['rev-parse', 'HEAD'], dir).stdout.trim()).toBe(headBefore);
+		expect(git(['log', '--pretty=%s'], dir).stdout).not.toMatch(
+			/^swarm\(task 1\.1\):/m,
+		);
 		const status = git(
 			['status', '--porcelain', 'src/other-lane-wip.ts'],
 			dir,
@@ -419,9 +415,11 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		// that the cross-phase upstream (1.1) is in git. After Rule 2
 		// commits 1.1 via update_task_status, executeEpicDecidePhase
 		// for phase 2 must promote.
-		writeScopeFile(dir, '1.1', []);
-		writeScopeFile(dir, '2.1', ['src/thing.ts']); // preflight needs this
 		await updateTaskStatus(dir, '1.1', 'completed');
+		// Declare AFTER completion: closing Phase 1 advances current_phase,
+		// so a declaration made before it would be pinned to a stale plan
+		// revision. The decide preflight needs 2.1's live v2 binding.
+		await declareScope(dir, '2.1', ['src/thing.ts']);
 
 		// At this point: 1 swarm commit observed (well under any
 		// historical floor), 1.1 marker in git history.
@@ -448,7 +446,7 @@ describe('Epic Mode end-to-end handoff — Rule 2 commit → Rule 3 predicate �
 		// reports 1.1 missing → predecessor evidence fails → demote.
 		// The blocking reason must name 1.1 specifically so the architect
 		// knows what to do to unblock.
-		writeScopeFile(dir, '2.1', ['src/thing.ts']); // preflight needs this
+		await declareScope(dir, '2.1', ['src/thing.ts']); // preflight needs this
 		const verdict = await executeEpicDecidePhase({
 			directory: dir,
 			phase: 2,

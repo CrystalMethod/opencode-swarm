@@ -29,6 +29,8 @@ import {
 } from '../session/snapshot-store.js';
 import { SNAPSHOT_PROJECTION_FILE } from '../session/snapshot-writer.js';
 import { swarmState } from '../state';
+import { isEpicModeConfigEnabledForDirectory } from '../turbo/epic/config-gate';
+import { clearAllEpicSessionRows } from '../turbo/epic/state';
 import { recoverStaleCoderSettlements } from '../workflow/coder-settlement.js';
 import { isPathUnderSwarmWorktreeBase } from '../worktree/core';
 import {
@@ -74,6 +76,8 @@ export const _internals: {
 		directory: string,
 		sessionID: string,
 	) => Promise<string[]>;
+	clearAllEpicSessionRows: typeof clearAllEpicSessionRows;
+	isEpicModeConfigEnabledForDirectory: typeof isEpicModeConfigEnabledForDirectory;
 } = {
 	cleanupOrphanedBranches,
 	removeOwnedWorktreeDir,
@@ -85,6 +89,8 @@ export const _internals: {
 	beginSnapshotCoordinationReset,
 	clearSnapshotRows,
 	releaseKnowledgeGateObligations: releaseKnowledgeGateObligations,
+	clearAllEpicSessionRows,
+	isEpicModeConfigEnabledForDirectory,
 };
 
 function errorMessage(err: unknown): string {
@@ -244,6 +250,11 @@ export async function handleResetSessionCommand(
 	sessionID?: string,
 ): Promise<string> {
 	const results: string[] = [];
+	// Captured before the in-memory sessions are discarded below; gates the
+	// Epic-only durable row sweep (zero I/O for non-Epic sessions).
+	const epicFlagSet = [...swarmState.agentSessions.values()].some(
+		(session) => session.epicModeActive === true,
+	);
 
 	// Keep a closing guard through snapshot/projection deletion. A plain close
 	// would delete its entry before the rows are cleared, letting a concurrent
@@ -415,6 +426,29 @@ export async function handleResetSessionCommand(
 		results.push(
 			`⚠️ Durable session QA override sweep failed: ${errorMessage(err)}`,
 		);
+	}
+
+	// Epic Mode rows are session-keyed durable mirrors of the in-memory
+	// `epicModeActive` flags cleared above. Leaving them would keep the
+	// project-scoped Epic probe on (Rule 2 auto-commits, Epic phase
+	// readiness) for sessions this reset just discarded. Swept for every
+	// session, like the snapshot rows and QA overrides. Best-effort.
+	// Epic-only: non-Epic projects (config off, no in-memory Epic flag) skip
+	// the sweep entirely — no DB read, no extra output line.
+	if (
+		epicFlagSet ||
+		_internals.isEpicModeConfigEnabledForDirectory(directory)
+	) {
+		try {
+			const swept = _internals.clearAllEpicSessionRows(directory);
+			if (swept > 0) {
+				results.push(`✅ Cleared ${swept} durable Epic Mode session row(s)`);
+			}
+		} catch (err) {
+			results.push(
+				`⚠️ Durable Epic Mode session row sweep failed: ${errorMessage(err)}`,
+			);
+		}
 	}
 
 	// #2471 (absorbing #1896 row 4): release THIS session's guardrail action

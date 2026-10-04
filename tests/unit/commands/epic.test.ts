@@ -36,7 +36,7 @@ beforeEach(() => {
 	_internals.isEpicModeActive = (() => active) as never;
 	_internals.isStateUnreadable = (() => false) as never;
 	_internals.loadEpicSessionState = (() => sessionStateStored) as never;
-	_internals.readTaskScopes = (() => null) as never;
+	_internals.resolveEpicDeclaredScopes = () => ({}); // no live v2 bindings
 	_internals.enableEpicMode = (() => {
 		active = true;
 		enableCalls += 1;

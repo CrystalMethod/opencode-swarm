@@ -1,26 +1,28 @@
 /**
- * Epic Mode run-phase tool (Capability C).
+ * Epic Mode phase decision (Capability C).
  *
- * The architect invokes this tool — instead of `lean_turbo_run_phase` —
- * when Epic Mode is active. It:
+ * The architect-facing tool is `epic_decide_phase` (decide only). The
+ * transparent flow is `declare_scope` (×N) → `epic_decide_phase` →
+ * `epic_plan_waves` → per-wave `Task` dispatch → `epic_record_divergence`.
+ * `executeEpicDecidePhase`:
  *
- *   1. Verifies Epic Mode is on for the session (else fails closed).
- *   2. Loads the plan, resolves task scopes the same way the coupling
- *      report does, and queries the co-change signal.
+ *   1. Refuses when `turbo.epic.mode.enabled !== true` (config master gate)
+ *      or Epic Mode is not on for the session (both fail closed).
+ *   2. Loads the plan and resolves task scopes from the authoritative v2
+ *      scope-binding store (what `declare_scope` writes), falling back to
+ *      `files_touched`. Queries the co-change signal ONLY when
+ *      `turbo.epic.cochange.enabled === true`; otherwise `p` is computed from
+ *      declared-path conflicts alone and the rationale records
+ *      `cochangeSignal: 'disabled-by-config'`.
  *   3. Runs `decideEpicActivation` over the WHOLE PLAN (per-plan
  *      activation per Q1) to get a `promote | demote` verdict.
- *   4. Appends one record to `.swarm/evidence/epic-promotions.jsonl`
- *      and updates `.swarm/epic-state.json` with the verdict.
- *   5. If promoted: invokes `LeanTurboRunner` for the given phase by
- *      composition (zero edits to `src/turbo/lean/`).
- *   6. If demoted: returns a structured "epic recommends serial"
- *      verdict so the caller can fall back to the standard serial
- *      flow.
+ *   4. Appends one record to `.swarm/evidence/epic-promotions.jsonl` and
+ *      mirrors the verdict into the Epic session state (`recordEpicDecision`).
  *
- * Composition contract: this tool is the only architect-facing entry
- * point Capability C adds. It does not modify `lean_turbo_run_phase`,
- * `LeanTurboRunner`, or any Lean Turbo file. Decision happens above
- * Lean Turbo; execution dispatches into Lean Turbo via import only.
+ * The tool never dispatches coders. The former opaque decide-and-dispatch
+ * path (`executeEpicRunPhase`, which drove `LeanTurboRunner` and had no
+ * ToolDefinition or production caller) was removed: the transparent wave
+ * flow above is the only supported Epic dispatch path.
  */
 
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
@@ -29,7 +31,6 @@ import { loadPluginConfigWithMeta as loadPluginConfigWithMeta_import } from '../
 import { isSwarmSessionId } from '../config/swarm-branch.js';
 import { isGitRepo as isGitRepo_import } from '../git/branch.js';
 import { loadPlanJsonOnly as loadPlanJsonOnly_import } from '../plan/manager.js';
-import { swarmState } from '../state.js';
 import type { EpicActivationVerdict } from '../turbo/epic/activation.js';
 import { decideEpicActivation as decideEpicActivation_import } from '../turbo/epic/activation.js';
 import {
@@ -42,20 +43,20 @@ import {
 	effectiveHotModules as effectiveHotModules_import,
 } from '../turbo/epic/calibration-engine.js';
 import { getCoChangeData as getCoChangeData_import } from '../turbo/epic/cochange-source.js';
+import {
+	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+	isEpicCochangeConfigEnabled,
+	isEpicModeConfigEnabled,
+} from '../turbo/epic/config-gate.js';
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
+import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory as readDivergenceHistory_import } from '../turbo/epic/divergence-recorder.js';
 import { appendPromotionEvidence as appendPromotionEvidence_import } from '../turbo/epic/promotion-evidence.js';
 import {
 	isEpicModeActive as isEpicModeActive_import,
 	recordEpicDecision as recordEpicDecision_import,
 } from '../turbo/epic/state.js';
-import {
-	buildIsUpstreamCommitted as buildIsUpstreamCommitted_import,
-	buildIsUpstreamCommittedWithStatus as buildIsUpstreamCommittedWithStatus_import,
-} from '../turbo/epic/upstream-commits.js';
-import { readTaskScopes as readTaskScopes_import } from '../turbo/lean/conflicts.js';
-import type { LaneResult } from '../turbo/lean/runner.js';
-import { LeanTurboRunner as LeanTurboRunner_import } from '../turbo/lean/runner.js';
+import { buildIsUpstreamCommittedWithStatus as buildIsUpstreamCommittedWithStatus_import } from '../turbo/epic/upstream-commits.js';
 import * as logger from '../utils/logger.js';
 import { createSwarmTool } from './create-tool.js';
 
@@ -69,14 +70,12 @@ export interface EpicRunPhaseResult {
 	success: boolean;
 	/** The verdict for this run, persisted to evidence. */
 	verdict?: EpicActivationVerdict;
-	/** Set when the verdict was `promote` and Lean Turbo ran. */
-	lanes?: LaneResult[];
-	degradedTasks?: string[];
-	serializedTasks?: string[];
 	/**
 	 * Either:
+	 *  - `'decided'` — epic chose parallel (`promote`); the architect pairs
+	 *    it with `epic_plan_waves` and dispatches each wave via `Task`.
 	 *  - `'demoted'` — epic chose serial; the caller should fall back.
-	 *  - `'promoted'` — epic chose parallel and Lean Turbo ran.
+	 *  - `'epic-disabled-by-config'` — `turbo.epic.mode.enabled !== true`.
 	 *  - `'epic-mode-not-active'` — the session has not toggled Epic Mode.
 	 *  - `'no-plan'` — `.swarm/plan.json` is missing.
 	 *  - `'no-phase'` — the requested phase number isn't present in the
@@ -94,21 +93,26 @@ export interface EpicRunPhaseResult {
 	 *    (E.1): the Phase 15 B35 guard only fired when at least one
 	 *    completed task existed; an empty `tasks: []` slipped through to
 	 *    the same vacuous-pass `promote` B35 was supposed to prevent.
-	 *  - `'lean-runner-error'` — Lean Turbo threw during promoted execution.
 	 *  - `'scopes-missing'` — one or more pending tasks in the phase have
-	 *    neither a declared scope file on disk nor `files_touched` in
-	 *    plan.json. Lean Turbo's lane planner needs scope data to compute
-	 *    parallel lanes; without it the dispatch returns empty lanes and
-	 *    the parallelization promise is silently broken. The architect
-	 *    must call `declare_scope` for each missing task and then
-	 *    re-invoke `epic_decide_phase`.
+	 *    neither a live declared scope binding (undeclared, expired after
+	 *    1 h, or declared against an older plan revision) nor
+	 *    `files_touched` in plan.json. The wave planner needs scope data to
+	 *    compute disjoint waves; without it the dispatch is silently
+	 *    serial. The architect must re-run `declare_scope` for each missing
+	 *    task and then re-invoke `epic_decide_phase`.
+	 *  - `'epic-state-unreadable'` — `recordEpicDecision` failed (Epic
+	 *    session state store unreadable / fail-closed).
 	 */
 	reason: string;
-	/** Set when `reason === 'lean-runner-error'`. */
+	/** Set when `reason === 'epic-state-unreadable'`. */
 	errors?: string[];
 	/** Set when `reason === 'scopes-missing'` — the task ids with no scope. */
 	missingScopes?: string[];
-	/** Set when `reason === 'scopes-missing'` — actionable message for the architect. */
+	/**
+	 * Actionable message for the architect (set for `scopes-missing`,
+	 * `epic-mode-not-active`, `epic-disabled-by-config`, and other preflight
+	 * rejections).
+	 */
 	message?: string;
 }
 
@@ -126,51 +130,70 @@ export const _internals = {
 	appendPromotionEvidence: appendPromotionEvidence_import,
 	recordEpicDecision: recordEpicDecision_import,
 	isEpicModeActive: isEpicModeActive_import,
-	readTaskScopes: readTaskScopes_import,
+	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	loadCalibrationState: loadCalibrationState_import,
 	saveCalibrationState: saveCalibrationState_import,
 	applyCalibration: applyCalibration_import,
 	effectiveActivationThreshold: effectiveActivationThreshold_import,
 	effectiveHotModules: effectiveHotModules_import,
 	readDivergenceHistory: readDivergenceHistory_import,
-	LeanTurboRunner: LeanTurboRunner_import as typeof LeanTurboRunner_import,
-	buildIsUpstreamCommitted: buildIsUpstreamCommitted_import,
 	buildIsUpstreamCommittedWithStatus: buildIsUpstreamCommittedWithStatus_import,
 };
 
 /**
- * Decide-only path: runs stages 1-9 of the phase flow (preflight + calibration
- * + co-change + decision + evidence write + session state mirror) and returns
- * the verdict WITHOUT dispatching Lean Turbo.
+ * Decide-only path behind `epic_decide_phase`: runs the phase flow
+ * (preflight + calibration + co-change + decision + evidence write + session
+ * state mirror) and returns the verdict WITHOUT dispatching coders. The
+ * architect then calls `epic_plan_waves` and dispatches each wave via Task
+ * for visibility.
  *
- * This is the shared helper between:
- *  - `epic_run_phase`: legacy unified tool (decide + dispatch in one call) —
- *    calls this then continues with dispatch when verdict is promote.
- *  - `epic_decide_phase`: transparent flow (decide only — architect then
- *    calls `epic_plan_waves` and dispatches each wave via Task for visibility).
- *
- * Returns the same EpicRunPhaseResult shape with:
- *  - reason: 'decided'  → verdict is promote, caller may dispatch.
+ * Returns an EpicRunPhaseResult with:
+ *  - reason: 'decided'  → verdict is promote, architect may dispatch waves.
  *  - reason: 'demoted'  → verdict is demote, caller falls back to serial.
  *
  * Error / non-decision reasons (all set success: false):
+ *  - 'epic-disabled-by-config' — `turbo.epic.mode.enabled !== true`.
  *  - 'epic-mode-not-active' — the session has not toggled Epic Mode.
  *  - 'no-plan' — `.swarm/plan.json` is missing.
  *  - 'no-phase' (Phase 12 B11) — the requested phase number isn't in the plan.
  *  - 'phase-empty' (Phase 17 E.1) — phase exists but has zero tasks.
  *  - 'phase-already-complete' (Phase 15 B35) — every task already completed.
- *  - 'scopes-missing' — one or more pending tasks lack declared scope.
- *  - 'epic-state-unreadable' — `.swarm/epic-state.json` is corrupt.
+ *  - 'scopes-missing' — one or more pending tasks lack a live declared scope.
+ *  - 'epic-state-unreadable' — `recordEpicDecision` failed (Epic session
+ *    state store unreadable / fail-closed).
  */
 export async function executeEpicDecidePhase(
 	args: EpicRunPhaseArgs,
 ): Promise<EpicRunPhaseResult> {
 	const { directory, phase, sessionID } = args;
 
+	// Config master gate: `turbo.epic.mode.enabled` (default false). Loaded
+	// once here and reused for the epic/cochange/calibration knobs below.
+	// A config load failure fails CLOSED (Epic Mode is opt-in).
+	let config: ReturnType<typeof _internals.loadPluginConfigWithMeta>['config'];
+	try {
+		config = _internals.loadPluginConfigWithMeta(directory).config;
+	} catch {
+		return {
+			success: false,
+			reason: 'epic-disabled-by-config',
+			message: EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+		};
+	}
+	if (!isEpicModeConfigEnabled(config)) {
+		return {
+			success: false,
+			reason: 'epic-disabled-by-config',
+			message: EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+		};
+	}
+
 	if (!_internals.isEpicModeActive(directory, sessionID)) {
 		return {
 			success: false,
 			reason: 'epic-mode-not-active',
+			message:
+				'Epic Mode is not active for this session. Ask the user to run `/swarm epic on` (or `/swarm turbo epic on`) in this session, then retry; until then execute the phase per-task serially.',
 		};
 	}
 
@@ -179,18 +202,28 @@ export async function executeEpicDecidePhase(
 		return { success: false, reason: 'no-plan' };
 	}
 
+	// ONE plan-identity + v2 binding-set read for the whole decision,
+	// shared by the preflight and the plan-wide coupling inputs (#2532
+	// hoisting). `declare_scope` persists only v2 bindings pinned to the
+	// exact plan identity; the legacy v1 `.swarm/scopes/scope-<id>.json`
+	// projection is never consulted.
+	const declaredScopes = _internals.resolveEpicDeclaredScopes(
+		directory,
+		plan,
+		plan.phases.flatMap((ph) => (ph.tasks ?? []).map((task) => task.id)),
+	);
+
 	// --- Preflight: every pending task in this phase must have a declared
-	// scope (either via `declare_scope` → .swarm/scopes/scope-{taskId}.json,
-	// or via `files_touched` in plan.json). Lean Turbo's lane planner reads
-	// from this scope graph; if it's empty, the planner has nothing to
-	// plan and returns empty lanes — which makes the promote verdict
-	// silently meaningless and the architect typically falls back to
-	// serial. Discovered live with Kimi K2.6 (fair-clinical-bench session,
-	// Phase 1 + Phase 2): the model called epic_run_phase without
-	// declaring scopes upfront, got an empty lane plan, misdiagnosed it
-	// as "Epic Mode serialized everything", and ran tasks one-by-one.
-	// The banner-mandate Step 0 fix proved insufficient — tool-side
-	// enforcement is needed.
+	// scope (a live `declare_scope` binding for the current plan revision,
+	// or `files_touched` in plan.json). The wave planner reads from this
+	// scope graph; if it's empty, the planner has nothing to plan and
+	// returns empty waves — which makes the promote verdict silently
+	// meaningless and the architect typically falls back to serial.
+	// Discovered live with Kimi K2.6 (fair-clinical-bench session): the
+	// model decided without declaring scopes upfront, got an empty plan,
+	// misdiagnosed it as "Epic Mode serialized everything", and ran tasks
+	// one-by-one. The banner-mandate Step 0 fix proved insufficient —
+	// tool-side enforcement is needed.
 	const phaseInPlan = plan.phases.find((ph) => ph.id === phase);
 	if (!phaseInPlan) {
 		// Phase 12 (B11): explicit failure rather than the silent
@@ -242,12 +275,9 @@ export async function executeEpicDecidePhase(
 		}
 		const tasksMissingScope: string[] = [];
 		for (const task of pendingTasks) {
-			const declaredScope = _internals.readTaskScopes(directory, task.id);
+			const declaredScope = declaredScopes[task.id] ?? [];
 			const filesTouched = task.files_touched ?? [];
-			if (
-				(declaredScope === null || declaredScope.length === 0) &&
-				filesTouched.length === 0
-			) {
+			if (declaredScope.length === 0 && filesTouched.length === 0) {
 				tasksMissingScope.push(task.id);
 			}
 		}
@@ -259,19 +289,20 @@ export async function executeEpicDecidePhase(
 				missingScopes: tasksMissingScope,
 				message:
 					`Cannot decide phase ${phase}: ${tasksMissingScope.length} pending task(s) ` +
-					`have no declared scope and no files_touched in plan.json. ` +
+					`have no live declared scope and no files_touched in plan.json. ` +
+					`A declared scope is missing when it was undeclared, expired (bindings live 1h), ` +
+					`or the plan was revised since declaration. ` +
 					`The wave planner (\`epic_plan_waves\`) needs scope data to compute disjoint concurrent groups; ` +
 					`without it the dispatch is silently serial and Epic Mode's parallelization is lost.\n\n` +
 					`Missing scopes: ${list}\n\n` +
-					`Resolution: call \`declare_scope\` once for EACH of those task ids, passing the exact ` +
+					`Resolution: re-run \`declare_scope\` once for EACH of those task ids, passing the exact ` +
 					`file paths the task will touch. Then re-invoke \`epic_decide_phase(phase=${phase})\`.`,
 			};
 		}
 	}
 
-	// Load epic + cochange config (with safe defaults if the keys are
-	// absent — caller may have only enabled the mode via /swarm epic on).
-	const { config } = _internals.loadPluginConfigWithMeta(directory);
+	// Epic + cochange knobs (safe defaults when keys are absent). `config`
+	// was loaded once at the top for the master gate.
 	const modeCfg = config.turbo?.epic?.mode;
 	const cochangeCfg = config.turbo?.epic?.cochange;
 	const calibrationCfg = config.turbo?.epic?.calibration;
@@ -280,9 +311,10 @@ export async function executeEpicDecidePhase(
 	const cochangeNpmiThreshold = cochangeCfg?.threshold ?? 0.6;
 	const cochangeMinCoChanges = cochangeCfg?.min_co_changes ?? 5;
 	const calibrationEnabled = calibrationCfg?.enabled !== false;
+	const cochangeEnabled = isEpicCochangeConfigEnabled(config);
 
 	// --- Capability D: roll calibration forward from any divergence records
-	// observed since the last `epic_run_phase` call. The engine is pure; the
+	// observed since the last `epic_decide_phase` call. The engine is pure; the
 	// only side effect is the calibration-state write at the end. Failure is
 	// non-fatal — calibration is opportunistic, not load-bearing for safety.
 	let effectiveThreshold = staticActivationThreshold;
@@ -319,7 +351,7 @@ export async function executeEpicDecidePhase(
 					} catch (err) {
 						// Critical: if persistence failed we MUST NOT use the
 						// in-memory `updated` for this run either. The next
-						// `epic_run_phase` would re-read the OLD `processedRecords`
+						// `epic_decide_phase` would re-read the OLD `processedRecords`
 						// from disk and re-apply the same divergence records,
 						// causing silent threshold drift across repeated failures
 						// (adversarial review H1). Sacrifice one run of new signal
@@ -330,7 +362,7 @@ export async function executeEpicDecidePhase(
 						// state with no surface indication. Pre-Phase-16 this
 						// was `warn` (debug-gated).
 						logger.criticalWarn(
-							`[epic_run_phase] calibration persist failed; ignoring this run's calibration delta to avoid drift on next run: ${err instanceof Error ? err.message : String(err)}`,
+							`[epic_decide_phase] calibration persist failed; ignoring this run's calibration delta to avoid drift on next run: ${err instanceof Error ? err.message : String(err)}`,
 						);
 					}
 					const sourceForThisRun = savedSuccessfully
@@ -361,7 +393,7 @@ export async function executeEpicDecidePhase(
 			// gate decisions could be using stale knobs and the operator
 			// wouldn't know calibration stopped updating.
 			logger.criticalWarn(
-				`[epic_run_phase] calibration step failed, falling back to static knobs: ${err instanceof Error ? err.message : String(err)}`,
+				`[epic_decide_phase] calibration step failed, falling back to static knobs: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			effectiveThreshold = staticActivationThreshold;
 			extraHotModules = [];
@@ -369,8 +401,7 @@ export async function executeEpicDecidePhase(
 	}
 
 	// Q1: per-plan activation — evaluate over the whole plan's task graph,
-	// not just `phase`. The `phase` arg is what we then dispatch into Lean
-	// Turbo, but the promote/demote decision applies plan-wide.
+	// not just `phase`. The promote/demote decision applies plan-wide.
 	const rawTasks: Array<{ id: string; files_touched?: string[] }> = [];
 	for (const ph of plan.phases) {
 		for (const task of ph.tasks) {
@@ -378,13 +409,19 @@ export async function executeEpicDecidePhase(
 		}
 	}
 	const tasks: CouplingTask[] = rawTasks.map((task) => {
-		const scopeFiles = _internals.readTaskScopes(directory, task.id);
-		const scope: string[] = scopeFiles ?? task.files_touched ?? [];
+		const scopeFiles = declaredScopes[task.id] ?? [];
+		const scope: string[] =
+			scopeFiles.length > 0 ? scopeFiles : (task.files_touched ?? []);
 		return { id: task.id, scope };
 	});
 
-	const { pairs, commitsObserved } =
-		await _internals.getCoChangeData(directory);
+	// Co-change signal: fetched ONLY when `turbo.epic.cochange.enabled ===
+	// true`. Disabled ⇒ no git-log scan, `p` is computed from declared-path
+	// conflicts alone, and the rationale records `disabled-by-config` —
+	// distinct from an enabled signal that simply found no pairs.
+	const { pairs, commitsObserved } = cochangeEnabled
+		? await _internals.getCoChangeData(directory)
+		: { pairs: [], commitsObserved: 0 };
 
 	// Rule 1 of the greenfield-smart redesign: explicitly tell the activation
 	// decider whether the project is a git repo. When it isn't, the greenfield
@@ -484,6 +521,7 @@ export async function executeEpicDecidePhase(
 			crossPhaseUpstreams,
 			phantomDeps,
 			isUpstreamCommitted,
+			cochangeSignal: cochangeEnabled ? 'enabled' : 'disabled-by-config',
 		},
 	);
 
@@ -498,7 +536,7 @@ export async function executeEpicDecidePhase(
 		});
 	} catch (err) {
 		logger.warn(
-			`[epic_run_phase] promotion-evidence append failed: ${err instanceof Error ? err.message : String(err)}`,
+			`[epic_decide_phase] promotion-evidence append failed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 
@@ -518,7 +556,7 @@ export async function executeEpicDecidePhase(
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		logger.error(
-			`[epic_run_phase] recordEpicDecision failed, refusing to dispatch: ${msg}`,
+			`[epic_decide_phase] recordEpicDecision failed, refusing to dispatch: ${msg}`,
 		);
 		return {
 			success: false,
@@ -528,10 +566,8 @@ export async function executeEpicDecidePhase(
 		};
 	}
 
-	// End of decide-only path. Return verdict to the caller. `epic_run_phase`
-	// (below) continues with Lean Turbo dispatch when reason === 'decided';
-	// `epic_decide_phase` (separate tool) returns here so the architect can
-	// call `epic_plan_waves` and dispatch each wave via Task for full CLI
+	// Decide-only: return the verdict so the architect can call
+	// `epic_plan_waves` and dispatch each wave via Task for full CLI
 	// visibility.
 	return {
 		success: true,
@@ -539,111 +575,6 @@ export async function executeEpicDecidePhase(
 		reason: verdict.decision === 'demote' ? 'demoted' : 'decided',
 	};
 }
-
-/**
- * Full unified path: decide + dispatch in one call (legacy behavior).
- *
- * For transparent CLI-visible dispatch, prefer `epic_decide_phase` + lane
- * dispatch via the architect's Task tool — see EPIC_MODE_BANNER. This unified
- * path remains for back-compat and for callers that don't need visibility
- * into the parallel coder agents.
- */
-export async function executeEpicRunPhase(
-	args: EpicRunPhaseArgs,
-): Promise<EpicRunPhaseResult> {
-	const { directory, phase, sessionID } = args;
-
-	// Run the decide-only path. Any error reason ('epic-mode-not-active',
-	// 'no-plan', 'scopes-missing', 'epic-state-unreadable') propagates as-is.
-	// 'demoted' propagates as-is. Only 'decided' continues with dispatch.
-	const decided = await executeEpicDecidePhase(args);
-	if (decided.reason !== 'decided') {
-		return decided;
-	}
-	const verdict = decided.verdict!; // 'decided' guarantees verdict is set
-
-	// Re-load config for the dispatch step (cheap — both calls share filesystem
-	// cache effectively).
-	const { config } = _internals.loadPluginConfigWithMeta(directory);
-
-	// --- Promotion path: dispatch into LeanTurboRunner.
-	const leanConfig =
-		config.turbo?.strategy === 'lean' ? config.turbo.lean : undefined;
-	let runResult: {
-		ok: boolean;
-		lanes?: LaneResult[];
-		degradedTasks?: string[];
-		serializedTasks?: string[];
-		reason?: string;
-	} | null = null;
-	let runError: Error | null = null;
-	let runner: InstanceType<typeof _internals.LeanTurboRunner> | null = null;
-	// Note: Rule 3 (cross-batch upstream-commit enforcement) lives in the
-	// architect-facing planner tools (`epic_plan_waves` for Epic Mode,
-	// `lean_turbo_plan_lanes` for legacy Lean Turbo), per the one-flow
-	// enforcement principle (commit db00eb8a). `executeEpicRunPhase` is
-	// retained only for composition users + tests; wiring Rule 3 here is
-	// dead code from the architect's perspective. Composition users who
-	// want Rule 3 should construct `LeanTurboRunner` with the
-	// `isUpstreamCommitted` option directly.
-
-	try {
-		runner = new _internals.LeanTurboRunner({
-			directory,
-			sessionID,
-			opencodeClient: swarmState.opencodeClient ?? null,
-			generatedAgentNames: swarmState.generatedAgentNames,
-			leanConfig,
-		});
-		runResult = await runner.runPhase(phase);
-	} catch (error) {
-		runError = error instanceof Error ? error : new Error(String(error));
-	}
-
-	if (runner) {
-		try {
-			if (runError || !runResult?.ok) {
-				await runner.cleanupAfterFailure();
-			} else {
-				await runner.cleanupAfterSuccess();
-			}
-		} catch (cleanupError) {
-			logger.error(
-				`[epic_run_phase] runner cleanup failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
-			);
-		}
-	}
-
-	if (runError) {
-		return {
-			success: false,
-			verdict,
-			reason: 'lean-runner-error',
-			errors: [runError.message],
-		};
-	}
-
-	return {
-		success: runResult?.ok ?? false,
-		verdict,
-		lanes: runResult?.lanes,
-		degradedTasks: runResult?.degradedTasks,
-		serializedTasks: runResult?.serializedTasks,
-		reason: 'promoted',
-	};
-}
-
-/**
- * NOTE: `epic_run_phase` is intentionally NOT exposed as a tool to the
- * architect. The transparent decide-then-dispatch wave flow (`epic_decide_phase`
- * → `epic_plan_waves` → Task dispatch per wave) is the ONLY supported flow,
- * because it gives the user real-time visibility into each concurrent coder
- * agent. The legacy unified-path function `executeEpicRunPhase` remains
- * exported for tests and any composition users, but no ToolDefinition
- * wraps it — so the architect cannot call it and accidentally fall back
- * to the opaque path. This is a deliberate product decision: one flow,
- * unambiguous, always-visible.
- */
 
 /**
  * Transparent decide-only tool. Returns the verdict (promote/demote/error)
@@ -658,14 +589,13 @@ export async function executeEpicRunPhase(
  *  4. After each task completes (via `update_task_status`), call
  *     `epic_record_divergence` to feed the calibration loop.
  *
- * This is the CLI-visibility flow. The legacy `epic_run_phase` bundles
- * decide + dispatch into one opaque tool call where the user can't see
- * the concurrent coder agents.
+ * This is the only Epic dispatch flow: every concurrent coder is a visible
+ * Task subagent (there is no opaque decide-and-dispatch tool).
  */
 export const epic_decide_phase: ToolDefinition = createSwarmTool({
 	allowWorkingDirectoryOverride: true,
 	description:
-		"Compute the Epic Mode verdict for a phase. Runs a scope-graph preflight, rolls the calibration loop forward over any new divergence records, computes the plan-wide coupling coefficient `p`, gates on three checks (p-threshold, hot-module, greenfield), persists the decision to .swarm/evidence/epic-promotions.jsonl, and returns the verdict (promote/demote/error). This tool does NOT dispatch coders; on a `promote` verdict the architect pairs it with `epic_plan_waves` to obtain the wave plan, then for each wave issues one `Task(subagent_type='coder', ...)` per taskId — all in one assistant message — so each concurrent coder appears as a visible subagent. On a `demote` verdict the architect falls back to per-task serial. Use only when /swarm epic is on for the session.",
+		"Compute the Epic Mode verdict for a phase. Runs a scope-graph preflight, rolls the calibration loop forward over any new divergence records, computes the plan-wide coupling coefficient `p`, gates on three checks (p-threshold, hot-module, greenfield), persists the decision to .swarm/evidence/epic-promotions.jsonl, and returns the verdict (promote/demote/error). This tool does NOT dispatch coders; on a `promote` verdict the architect pairs it with `epic_plan_waves` to obtain the wave plan, then for each wave issues one `Task(subagent_type='coder', ...)` per taskId — all in one assistant message — so each concurrent coder appears as a visible subagent. On a `demote` verdict the architect falls back to per-task serial. Requires `turbo.epic.mode.enabled: true` in config (else reason `epic-disabled-by-config`) and /swarm epic on for the session. A `scopes-missing` reason means a pending task's declared scope is undeclared, expired (bindings live 1h), or was declared against an older plan revision — re-run `declare_scope` for each listed task.",
 	args: {
 		directory: z.string().describe('Project root directory'),
 		phase: z.number().int().positive().describe('Phase number to decide on'),
@@ -680,11 +610,9 @@ export const epic_decide_phase: ToolDefinition = createSwarmTool({
 		//
 		// What this guard does NOT do: protect lane provisioning.
 		// `executeEpicDecidePhase` uses `sessionID` only as a lookup key —
-		// `isEpicModeActive` (:170) and `recordEpicDecision` (:511) — and never
-		// reaches `provisionWorktree`. (The `LeanTurboRunner` construction lower
-		// in this file belongs to `executeEpicRunPhase`, which has no
-		// ToolDefinition; see the note above it.) The lane-provisioning guard for
-		// that path is in `provisionWorktree` itself.
+		// `isEpicModeActive` and `recordEpicDecision` — and never
+		// reaches `provisionWorktree`. The lane-provisioning guard lives in
+		// `provisionWorktree` itself.
 		//
 		// What it DOES do: turn an unencodable session id into a precise error
 		// instead of a misleading one. Without it, `isEpicModeActive` simply

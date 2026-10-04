@@ -4385,9 +4385,11 @@ export function hasActiveLeanTurbo(sessionID?: string): boolean {
  * Mirrors `hasActiveLeanTurbo` but reads `session.epicModeActive`. The flag
  * is set by `enableEpicMode` (and by `/swarm turbo epic on`) and cleared by
  * `disableEpicMode` (and `/swarm turbo epic off`). The durable mirror is
- * `.swarm/epic-state.json` — see `src/turbo/epic/state.ts`. Epic Mode does
- * NOT require `turboStrategy === 'lean'`; it composes Lean Turbo internally
- * inside `epic_run_phase`.
+ * the per-session row in the project SQLite coordination store (with
+ * `.swarm/epic-state.json` as a compatibility projection) — see
+ * `src/turbo/epic/state.ts`. Epic Mode does NOT require
+ * `turboStrategy === 'lean'`: the architect dispatches promoted waves itself
+ * via visible `Task` calls (`epic_decide_phase` → `epic_plan_waves`).
  */
 export function hasActiveEpicMode(sessionID?: string): boolean {
 	if (sessionID) {

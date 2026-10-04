@@ -1,6 +1,14 @@
 import { loadPluginConfigWithMeta } from '../config';
 import { getAgentSession } from '../state';
-import { disableEpicMode, enableEpicMode } from '../turbo/epic/state';
+import {
+	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+	isEpicModeConfigEnabled,
+} from '../turbo/epic/config-gate';
+import {
+	disableEpicMode,
+	enableEpicMode,
+	peekEpicSessionState,
+} from '../turbo/epic/state';
 import {
 	emptyRunState,
 	isStateUnreadable,
@@ -21,8 +29,10 @@ import { TURBO_BYPASS_DISCLOSURE } from './turbo-constants.js';
  */
 export const _internals: {
 	loadPluginConfigWithMeta: typeof loadPluginConfigWithMeta;
+	disableEpicMode: typeof disableEpicMode;
 } = {
 	loadPluginConfigWithMeta,
+	disableEpicMode,
 };
 
 /**
@@ -67,10 +77,25 @@ export async function handleTurboCommand(
 	const isLeanActive = session.leanTurboActive === true;
 
 	// Disable helper - pauses lean if needed and resets all turbo flags.
-	// Also clears Epic Mode (since Epic dispatches into Lean Turbo when it
-	// promotes; leaving epic active after disabling lean would have the
-	// architect call epic_run_phase against a disabled lean engine).
-	const disableTurbo = (reason: string): void => {
+	//
+	// Epic Mode is an independent toggle: it dispatches coders via `Task`,
+	// not through Lean Turbo, so it does not need Turbo to stay on. Turbo off
+	// therefore cross-clears an ACTIVE Epic row ONLY when Epic was enabled
+	// through the combined `/swarm turbo epic on` toggle
+	// (`enabledVia === 'turbo'`), or when the caller is an explicit
+	// `/swarm turbo epic off|toggle` (`epic: 'always'`). An active standalone
+	// `/swarm epic on` enablement is left untouched. When the session has NO
+	// active Epic row (never-Epic projects included) the pre-Epic-catch-up
+	// behaviour is preserved exactly: `disableEpicMode` is called and the
+	// in-memory flag cleared, best-effort, so non-Epic durable state is
+	// unchanged. Clearing an ACTIVE row is fail-consistent: if the durable
+	// write throws, the in-memory flag is kept and the error is surfaced in
+	// the reply instead of claiming Epic was disabled.
+	type DisableTurboResult = { epicCleared: boolean; epicError?: string };
+	const disableTurbo = (
+		reason: string,
+		epic: 'always' | 'if-enabled-via-turbo' = 'if-enabled-via-turbo',
+	): DisableTurboResult => {
 		if (isLeanActive) {
 			try {
 				pauseLeanTurboRun(directory, sessionID, reason);
@@ -80,42 +105,147 @@ export async function handleTurboCommand(
 				);
 			}
 		}
-		// Cross-clear Epic Mode whenever turbo is disabled — Epic Mode's
-		// contract requires Lean Turbo as its promote-dispatch target.
-		// Best-effort; durable-state write failure is logged, not thrown.
+		let rowRead = true;
+		let rowActive = false;
+		let rowViaTurbo = false;
 		try {
-			disableEpicMode(directory, sessionID);
+			const row = peekEpicSessionState(directory, sessionID);
+			rowActive = row?.active === true;
+			rowViaTurbo = rowActive && row?.enabledVia === 'turbo';
 		} catch (error) {
-			logger.error(
-				`[turbo] disableEpicMode (cross-clear) failed: ${error instanceof Error ? error.message : String(error)}`,
+			rowRead = false;
+			logger.warn(
+				`[turbo] could not read Epic Mode state for cross-clear: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		session.epicModeActive = false;
+		const result: DisableTurboResult = { epicCleared: false };
+		const noActiveEpic = rowRead ? !rowActive : session.epicModeActive !== true;
+		if (noActiveEpic && epic !== 'always') {
+			// No active Epic row (or unreadable state for a session without the
+			// Epic flag): identical to the pre-catch-up unconditional cross-clear
+			// (inactive row write + flag reset), errors logged only. An
+			// unreadable state with the Epic flag set is left alone — unknown
+			// provenance must never cross-clear a standalone enablement.
+			try {
+				_internals.disableEpicMode(directory, sessionID);
+			} catch (error) {
+				logger.error(
+					`[turbo] disableEpicMode (cross-clear) failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			session.epicModeActive = false;
+		} else if (epic === 'always' || rowViaTurbo) {
+			const epicWasActive = rowActive || session.epicModeActive === true;
+			try {
+				_internals.disableEpicMode(directory, sessionID);
+				session.epicModeActive = false;
+				result.epicCleared = epicWasActive;
+			} catch (error) {
+				const msg = error instanceof Error ? error.message : String(error);
+				logger.error(`[turbo] disableEpicMode (cross-clear) failed: ${msg}`);
+				if (epicWasActive) {
+					// Keep the in-memory flag consistent with the still-active
+					// durable row and report the failure.
+					result.epicError = msg;
+				} else {
+					session.epicModeActive = false;
+				}
+			}
+		}
 		session.turboMode = false;
 		session.turboStrategy = undefined;
 		session.leanTurboActive = false;
 		session.leanTurboCurrentPhase = undefined;
+		return result;
+	};
+	const epicAlsoDisabledSuffix = (r: DisableTurboResult): string => {
+		if (r.epicError !== undefined) {
+			return `\nEpic Mode was NOT disabled (durable state write failed: ${r.epicError}); it is still active. Retry \`/swarm epic off\`.`;
+		}
+		return r.epicCleared
+			? '\nEpic Mode also disabled (it was enabled via `/swarm turbo epic on`).'
+			: '';
+	};
+
+	// Combined `/swarm turbo epic on` enablement. Order of operations is
+	// fail-closed so nothing half-enables:
+	//   1. config master gate (`turbo.epic.mode.enabled`) — refused before
+	//      ANY state changes, Lean Turbo included;
+	//   2. Lean Turbo (durable run state first, then session flags);
+	//   3. Epic Mode durable row (`enabledVia: 'turbo'`) + in-memory mirror.
+	// A step-3 failure rolls step 2 back when Lean was not already on.
+	const enableTurboEpic = (): string => {
+		let configEnabled = false;
+		try {
+			configEnabled = isEpicModeConfigEnabled(
+				_internals.loadPluginConfigWithMeta(directory).config,
+			);
+		} catch (error) {
+			logger.warn(
+				`[turbo] could not read config for Epic Mode gate (failing closed): ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		if (!configEnabled) {
+			return `${EPIC_MODE_CONFIG_DISABLED_MESSAGE}\nTurbo state is unchanged.`;
+		}
+		const prior = {
+			turboMode: session.turboMode,
+			turboStrategy: session.turboStrategy,
+			leanTurboActive: session.leanTurboActive,
+			leanTurboCurrentPhase: session.leanTurboCurrentPhase,
+		};
+		const leanMsg = enableLeanTurbo(session, directory, sessionID);
+		if (!session.leanTurboActive) {
+			return `${leanMsg}\nEpic Mode NOT enabled: \`/swarm turbo epic on\` enables Lean Turbo and Epic Mode together, and Lean Turbo failed to enable. Use \`/swarm epic on\` to enable Epic Mode alone.`;
+		}
+		try {
+			enableEpicMode(directory, sessionID, { enabledVia: 'turbo' });
+			session.epicModeActive = true;
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			logger.error(`[turbo] enableEpicMode failed: ${msg}`);
+			if (prior.leanTurboActive !== true) {
+				try {
+					pauseLeanTurboRun(
+						directory,
+						sessionID,
+						'/swarm turbo epic on (rollback: Epic Mode enable failed)',
+					);
+				} catch (pauseError) {
+					logger.error(
+						`[turbo] pauseLeanTurboRun (rollback) failed: ${pauseError instanceof Error ? pauseError.message : String(pauseError)}`,
+					);
+				}
+				session.turboMode = prior.turboMode;
+				session.turboStrategy = prior.turboStrategy;
+				session.leanTurboActive = prior.leanTurboActive;
+				session.leanTurboCurrentPhase = prior.leanTurboCurrentPhase;
+				return `Epic Mode could not be enabled: ${msg}\nLean Turbo was rolled back; Turbo state is unchanged.`;
+			}
+			return `${leanMsg}\nEpic Mode could not be enabled: ${msg}`;
+		}
+		return `${leanMsg}\nEpic Mode enabled — the architect will use the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → Task (per task in current wave, all in one message) → per task: pre_check_batch → reviewer + test_engineer → update_task_status(completed) → epic_record_divergence → epic_phase_review → phase_complete.`;
 	};
 
 	// --- Explicit off commands ---
 	if (arg0 === 'off' || (arg0 === 'lean' && arg1 === 'off')) {
 		// turbo off OR turbo lean off
-		disableTurbo('/swarm turbo off');
-		return 'Turbo Mode disabled';
+		const epicCleared = disableTurbo('/swarm turbo off');
+		return `Turbo Mode disabled${epicAlsoDisabledSuffix(epicCleared)}`;
 	}
 
 	if (arg0 === 'standard' && arg1 === 'off') {
 		// turbo standard off
-		disableTurbo('/swarm turbo standard off');
-		return 'Turbo Mode disabled';
+		const epicCleared = disableTurbo('/swarm turbo standard off');
+		return `Turbo Mode disabled${epicAlsoDisabledSuffix(epicCleared)}`;
 	}
 
 	// --- Toggle (no args): off/standard → enable standard; standard on → disable ---
 	if (arg0 === undefined) {
 		if (isTurboOn) {
 			// Any turbo is on (standard or lean) → disable all turbo
-			disableTurbo('/swarm turbo (toggle off)');
-			return 'Turbo Mode disabled';
+			const epicCleared = disableTurbo('/swarm turbo (toggle off)');
+			return `Turbo Mode disabled${epicAlsoDisabledSuffix(epicCleared)}`;
 		} else {
 			// Turbo is off → enable standard
 			session.turboMode = true;
@@ -146,27 +276,27 @@ export async function handleTurboCommand(
 		}
 
 		// Switch to standard (pause lean first if was active)
-		if (isLeanActive) {
-			disableTurbo('/swarm turbo on (switching from lean)');
-		}
+		const epicCleared: DisableTurboResult = isLeanActive
+			? disableTurbo('/swarm turbo on (switching from lean)')
+			: { epicCleared: false };
 		session.turboMode = true;
 		session.turboStrategy = 'standard';
 		session.leanTurboActive = false;
 		session.leanTurboCurrentPhase = undefined;
-		return `Turbo Mode enabled. ${TURBO_BYPASS_DISCLOSURE}`;
+		return `Turbo Mode enabled. ${TURBO_BYPASS_DISCLOSURE}${epicAlsoDisabledSuffix(epicCleared)}`;
 	}
 
 	// --- turbo standard on ---
 	if (arg0 === 'standard' && arg1 === 'on') {
 		// Pause lean if was active before switching to standard
-		if (isLeanActive) {
-			disableTurbo('/swarm turbo standard on (switching from lean)');
-		}
+		const epicCleared: DisableTurboResult = isLeanActive
+			? disableTurbo('/swarm turbo standard on (switching from lean)')
+			: { epicCleared: false };
 		session.turboMode = true;
 		session.turboStrategy = 'standard';
 		session.leanTurboActive = false;
 		session.leanTurboCurrentPhase = undefined;
-		return `Turbo Mode enabled (standard). ${TURBO_BYPASS_DISCLOSURE}`;
+		return `Turbo Mode enabled (standard). ${TURBO_BYPASS_DISCLOSURE}${epicAlsoDisabledSuffix(epicCleared)}`;
 	}
 
 	// --- turbo standard (no second arg): toggle standard ---
@@ -177,17 +307,17 @@ export async function handleTurboCommand(
 		const isStandardActive =
 			session.turboMode === true && session.turboStrategy === 'standard';
 		if (isStandardActive) {
-			disableTurbo('/swarm turbo standard (toggle off)');
-			return 'Turbo Mode disabled';
+			const epicCleared = disableTurbo('/swarm turbo standard (toggle off)');
+			return `Turbo Mode disabled${epicAlsoDisabledSuffix(epicCleared)}`;
 		}
-		if (isLeanActive) {
-			disableTurbo('/swarm turbo standard (switching from lean)');
-		}
+		const epicCleared: DisableTurboResult = isLeanActive
+			? disableTurbo('/swarm turbo standard (switching from lean)')
+			: { epicCleared: false };
 		session.turboMode = true;
 		session.turboStrategy = 'standard';
 		session.leanTurboActive = false;
 		session.leanTurboCurrentPhase = undefined;
-		return `Turbo Mode enabled (standard). ${TURBO_BYPASS_DISCLOSURE}`;
+		return `Turbo Mode enabled (standard). ${TURBO_BYPASS_DISCLOSURE}${epicAlsoDisabledSuffix(epicCleared)}`;
 	}
 
 	// --- turbo lean on ---
@@ -199,75 +329,43 @@ export async function handleTurboCommand(
 	if (arg0 === 'lean' && arg1 === undefined) {
 		if (isLeanActive) {
 			// Lean is active → disable
-			disableTurbo('/swarm turbo lean (toggle off)');
-			return 'Turbo Mode disabled';
+			const epicCleared = disableTurbo('/swarm turbo lean (toggle off)');
+			return `Turbo Mode disabled${epicAlsoDisabledSuffix(epicCleared)}`;
 		} else {
 			// Lean is not active → enable lean
 			return enableLeanTurbo(session, directory, sessionID);
 		}
 	}
 
-	// --- turbo epic on/off (single-command unified toggle for Epic Mode +
-	// Lean Turbo). Epic Mode auto-decides per-plan parallel-vs-serial; when
-	// it promotes, it dispatches into Lean Turbo. The two are typically
-	// used together, so `/swarm turbo epic on` flips both as a convenience.
-	// `/swarm epic` remains as the epic-only toggle for users who want to
-	// gate parallelization without also activating lean's session banners.
+	// --- turbo epic on/off: convenience toggle that flips Lean Turbo AND
+	// Epic Mode together. Epic Mode auto-decides per-phase parallel-vs-serial
+	// and dispatches promoted waves via `Task`; it does not depend on Lean
+	// Turbo. `/swarm epic on|off` remains the Epic-only toggle. Epic enabled
+	// here is recorded as `enabledVia: 'turbo'` so a later `/swarm turbo off`
+	// also turns it off (and says so).
 	if (arg0 === 'epic' && arg1 === 'on') {
-		// Enable lean turbo first (it sets turboMode + turboStrategy +
-		// leanTurboActive + persists the run state). On durable-write
-		// failure it returns an error string and leaves session flags
-		// untouched — detect that and ABORT before flipping epic on
-		// (otherwise the architect would see EPIC_MODE_BANNER and call
-		// epic_run_phase, which dispatches into a Lean Turbo that is
-		// not actually running).
-		const leanMsg = enableLeanTurbo(session, directory, sessionID);
-		if (!session.leanTurboActive) {
-			return `${leanMsg}\nEpic Mode NOT enabled: Lean Turbo failed to enable (Epic Mode requires Lean Turbo as its promote-dispatch target).`;
-		}
-		// Then enable epic mode in the durable state and mirror the
-		// in-memory flag so `hasActiveEpicMode` picks it up.
-		try {
-			enableEpicMode(directory, sessionID);
-			session.epicModeActive = true;
-		} catch (error) {
-			logger.error(
-				`[turbo] enableEpicMode failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return `${leanMsg}\nEpic Mode could not be enabled: ${error instanceof Error ? error.message : String(error)}`;
-		}
-		return `${leanMsg}\nEpic Mode enabled — the architect will use the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → Task (per task in current wave, all in one message) → epic_record_divergence.`;
+		return enableTurboEpic();
 	}
 	if (arg0 === 'epic' && arg1 === 'off') {
-		// `disableTurbo` already cross-clears Epic Mode (durable +
-		// in-memory) as part of its standard reset, so a single call
-		// handles both axes.
-		disableTurbo('/swarm turbo epic off');
-		return 'Turbo Mode + Epic Mode disabled';
+		// Explicit epic off: always clear Epic Mode (durable + in-memory),
+		// regardless of how it was enabled.
+		const r = disableTurbo('/swarm turbo epic off', 'always');
+		return r.epicError !== undefined
+			? `Turbo Mode disabled${epicAlsoDisabledSuffix(r)}`
+			: 'Turbo Mode + Epic Mode disabled';
 	}
 	if (arg0 === 'epic' && arg1 === undefined) {
 		// Bare `/swarm turbo epic` → toggle. Use the in-memory flag as the
-		// source of truth (it's a mirror of `.swarm/epic-state.json`; the
-		// disk file is the durable backup for restart scenarios, but in
-		// this process the session flag is what every other check reads).
+		// source of truth (it mirrors the durable SQLite row; the row is the
+		// restart authority, but in this process the session flag is what
+		// every other check reads).
 		if (session.epicModeActive === true) {
-			disableTurbo('/swarm turbo epic (toggle off)');
-			return 'Turbo Mode + Epic Mode disabled';
+			const r = disableTurbo('/swarm turbo epic (toggle off)', 'always');
+			return r.epicError !== undefined
+				? `Turbo Mode disabled${epicAlsoDisabledSuffix(r)}`
+				: 'Turbo Mode + Epic Mode disabled';
 		}
-		const leanMsg = enableLeanTurbo(session, directory, sessionID);
-		if (!session.leanTurboActive) {
-			return `${leanMsg}\nEpic Mode NOT enabled: Lean Turbo failed to enable.`;
-		}
-		try {
-			enableEpicMode(directory, sessionID);
-			session.epicModeActive = true;
-		} catch (error) {
-			logger.error(
-				`[turbo] enableEpicMode failed: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return `${leanMsg}\nEpic Mode could not be enabled: ${error instanceof Error ? error.message : String(error)}`;
-		}
-		return `${leanMsg}\nEpic Mode enabled — the architect will use the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → Task (per task in current wave, all in one message) → epic_record_divergence.`;
+		return enableTurboEpic();
 	}
 
 	// Unknown argument (issue #2493): reject instead of silently toggling.

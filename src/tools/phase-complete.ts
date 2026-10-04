@@ -87,6 +87,10 @@ import {
 	swarmState,
 } from '../state';
 import { telemetry } from '../telemetry';
+import {
+	EPIC_PHASE_REVIEW_TOOL,
+	verifyEpicPhaseReadiness,
+} from '../turbo/epic/phase-readiness';
 import { isEpicModeActiveForProject } from '../turbo/epic/state';
 import { _internals as leanPhaseInternals } from '../turbo/lean/phase-ready';
 import { pushAdvisory } from '../utils/advisory-queue';
@@ -138,6 +142,8 @@ export const phaseCompletePreflightInternals = {
 	runFinalReviewGate,
 	runFinalCouncilGate,
 	runTodoGateGate,
+	verifyEpicPhaseReadiness,
+	isEpicModeActiveForProject,
 };
 
 /**
@@ -949,7 +955,8 @@ export async function executePhaseComplete(
 					};
 		},
 	});
-	const epicActiveForProject = isEpicModeActiveForProject(dir);
+	const epicActiveForProject =
+		phaseCompletePreflightInternals.isEpicModeActiveForProject(dir);
 	preflightChecks.push({
 		id: 'lean_turbo_readiness',
 		responsibleActor: 'architect',
@@ -988,6 +995,43 @@ export async function executePhaseComplete(
 					};
 		},
 	});
+	// Epic Mode phase readiness: an APPROVED phase reviewer AND phase critic,
+	// dispatched and recorded by epic_phase_review and bound to the current
+	// plan / phase task evidence. Applies whenever Epic Mode is active for the
+	// project, independent of Turbo: with Turbo on it is the only phase-level
+	// review left (Gates 1-5 are bypassed); with Turbo off it adds the
+	// cross-task integration review that per-task Stage B cannot provide for
+	// concurrently executed waves. Pushed ONLY when Epic is active so the
+	// non-Epic gate report stays byte-identical to the pre-Epic report.
+	if (epicActiveForProject)
+		preflightChecks.push({
+			id: 'epic_phase_readiness',
+			responsibleActor: 'architect',
+			applicable: true,
+			run: async () => {
+				const check =
+					await phaseCompletePreflightInternals.verifyEpicPhaseReadiness(
+						dir,
+						phase,
+						preflightNowMs,
+					);
+				return check.ok
+					? passGate({
+							evidenceRefs: [`epic-phase-review:${check.evidence.reviewed_at}`],
+						})
+					: {
+							...passGate(),
+							blocked: true,
+							reason: check.code,
+							message: `Phase ${phase} cannot be completed: ${check.reason}`,
+							recovery: {
+								kind: 'tool',
+								action: EPIC_PHASE_REVIEW_TOOL,
+								args: { phase },
+							},
+						};
+			},
+		});
 
 	preflightChecks.push({
 		id: 'required_agents',

@@ -2582,61 +2582,44 @@ The execution profile controls plan-scoped execution preferences. MODE: PLAN dra
 
 ### `turbo.epic` — Epic Mode settings
 
-Epic Mode is an optional execution mode that augments Lean Turbo with autonomous, coupling-aware lane planning. With these keys at their defaults, no Epic-mode code runs and behavior is identical to Lean Turbo alone. See [Epic Mode](modes.md#epic-mode-preview) for the design.
+Epic Mode is an optional, coupling-aware execution mode: per phase it decides whether the plan's tasks can run in parallel and, when promoted, the architect dispatches them as concurrent waves of visible coder `Task` calls. Every key defaults to off; see [Epic Mode](modes.md#epic-mode-preview) for the design.
+
+**Two independent opt-in master gates:**
+
+- `turbo.epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config` (`epic_record_divergence` returns the same reason as a no-op), and the project-scoped Epic behaviours (Rule 2 per-task commit markers, the `epic_phase_readiness` gate in `phase_complete`) never run. `/swarm epic off|status|decide|last|calibration` keep working.
+- `turbo.epic.cochange.enabled` gates only the git co-change conflict signal. Without it, `p` is computed from declared-path conflicts alone and the decision rationale (and `/swarm coupling`) records `cochangeSignal: 'disabled-by-config'`.
+
+**`strategy` is required.** `turbo` is a discriminated union on `strategy`. A `turbo` block without `"strategy": "standard"` — or `"strategy": "lean"` together with a `"lean"` object — fails validation and is **dropped whole**, silently taking `turbo.epic` with it (other top-level keys are unaffected). The `epic` block is accepted under either strategy.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal. With this off, the module is dormant and no Epic-mode code runs in any flow. |
+| `mode.enabled` | boolean | `false` | Master gate for Epic Mode (see above). |
+| `mode.activation_threshold` | number | `0.3` | Plan-wide `p` ceiling. Plans with `p ≤` the effective threshold (static value, possibly tightened by calibration) are eligible for parallel promotion. |
+| `mode.min_commits_for_signal` | number | `20` | Legacy greenfield floor. Recorded in the decision rationale for telemetry only; it no longer affects promotion. The greenfield gate passes on a non-git project (Rule 1) or when every cross-phase upstream task has a `swarm(task <id>):` commit marker. |
+| `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal (see above). |
 | `cochange.threshold` | number | `0.6` | NPMI floor (range `[-1, 1]`) for a file pair to be treated as historically co-changing. Stricter than `co_change_analyzer`'s discovery default (`0.5`). |
 | `cochange.min_co_changes` | number | `5` | Minimum raw co-change count required before NPMI is considered, to suppress small-sample noise. Stricter than the analyzer's discovery default (`3`). |
+| `calibration.enabled` | boolean | `true` | Outcome-based self-calibration (Capability D). Runs only inside `epic_decide_phase`, so it is inert unless `mode.enabled` is true. |
+| `calibration.floor_threshold` | number | `0.05` | Calibration never tightens the threshold below this. |
+| `calibration.tighten_step` | number | `0.02` | Per-divergent-task tightening step. |
+| `calibration.loosen_step` | number | `0.01` | Per-loosening-event step toward the static threshold. |
+| `calibration.loosen_window` | number | `10` | Consecutive clean tasks required before one loosening step. |
 
-`turbo.epic` is independent of `turbo.strategy` — the keys are accepted under both `"standard"` and `"lean"` strategies. The block is purely additive; omitting it leaves Lean Turbo, Turbo, and Full-Auto behavior unchanged.
-
-**Example** — Enable the co-change signal with conservative defaults:
+**Example** — Enable Epic Mode with the co-change signal:
 
 ```json
 {
   "turbo": {
-    "strategy": "lean",
-    "lean": { "max_parallel_coders": 4 },
+    "strategy": "standard",
     "epic": {
-      "cochange": {
-        "enabled": true,
-        "threshold": 0.6,
-        "min_co_changes": 5
-      }
+      "mode": { "enabled": true, "activation_threshold": 0.3 },
+      "cochange": { "enabled": true, "threshold": 0.6, "min_co_changes": 5 }
     }
   }
 }
 ```
 
-### `turbo.epic.mode` — Epic Mode activation gate (Capability C, preview)
-
-Epic Mode auto-decides per plan whether to invoke Lean Turbo's parallel planner or fall back to serial, based on the coupling coefficient `p`. See [Epic Mode (preview)](modes.md#capability-c--activation-gate-and-the-epic-mode-itself) for the design.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `mode.enabled` | boolean | `false` | Master gate for Epic Mode activation. When off, no Epic-mode runtime code runs. |
-| `mode.activation_threshold` | number | `0.3` | Plan-wide `p` ceiling. Plans with `p ≤ activation_threshold` are eligible for parallel promotion; plans above are forced serial. |
-| `mode.min_commits_for_signal` | number | `20` | Greenfield rule. A co-change history with fewer than this many commits is treated as too sparse — promotion is blocked regardless of `p`. |
-
-**Example** — Enable Epic Mode with a strict threshold and dense-history requirement:
-
-```json
-{
-  "turbo": {
-    "strategy": "lean",
-    "epic": {
-      "mode": {
-        "enabled": true,
-        "activation_threshold": 0.2,
-        "min_commits_for_signal": 50
-      },
-      "cochange": { "enabled": true }
-    }
-  }
-}
-```
+With `"strategy": "lean"`, also include a `"lean"` object (for example `"lean": { "max_parallel_coders": 4 }`), otherwise the whole `turbo` block is dropped.
 
 ## QA gates reference
 

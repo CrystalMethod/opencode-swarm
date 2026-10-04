@@ -5,36 +5,39 @@ import { listCoordinationStates } from '../../../../src/db/coordination-store.js
 import { closeAllProjectDbs } from '../../../../src/db/project-db.js';
 import {
 	emptyPersisted,
-	emptySessionState,
+	enableEpicMode,
+	_internals as epicStateInternals,
 	isEpicModeActiveForProject,
 	loadEpicSessionState,
+	recordEpicDecision,
 	repairStateUnreadable,
-	saveEpicSessionState,
 } from '../../../../src/turbo/epic/state';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir.js';
 
 const COORDINATION_NAMESPACE = 'turbo.epic.session';
 
 let dir: string;
+const originalConfigGate =
+	epicStateInternals.isEpicModeConfigEnabledForDirectory;
 
 beforeEach(() => {
 	dir = canonicalMkdtemp('epic-state-sqlite-');
 	repairStateUnreadable(dir);
+	// Hold the `turbo.epic.mode.enabled` master gate open: these cases cover
+	// SQLite authority, not the config gate (see state-liveness.test.ts).
+	epicStateInternals.isEpicModeConfigEnabledForDirectory = () => true;
 });
 
 afterEach(() => {
+	epicStateInternals.isEpicModeConfigEnabledForDirectory = originalConfigGate;
 	repairStateUnreadable(dir);
 	closeAllProjectDbs();
 	fs.rmSync(dir, { recursive: true, force: true });
 });
 
 describe('epic state SQLite authority', () => {
-	test('saveEpicSessionState stores one coordination row per session and refreshes the projection', () => {
-		const state = emptySessionState('sess-epic');
-		state.active = true;
-		state.enabledAt = '2026-01-01T00:00:00.000Z';
-
-		saveEpicSessionState(dir, state);
+	test('a session write stores one coordination row per session and refreshes the projection', () => {
+		enableEpicMode(dir, 'sess-epic');
 
 		const rows = listCoordinationStates(dir, COORDINATION_NAMESPACE);
 		expect(rows).toHaveLength(1);
@@ -73,9 +76,8 @@ describe('epic state SQLite authority', () => {
 	});
 
 	test('repairs a mismatched projection without overwriting the cold archive', () => {
-		const state = emptySessionState('archive-collision');
-		state.active = true;
-		saveEpicSessionState(dir, state);
+		const state = { sessionID: 'archive-collision' };
+		enableEpicMode(dir, state.sessionID);
 		const filePath = path.join(dir, '.swarm', 'epic-state.json');
 		const archivePath = `${filePath}.imported`;
 		fs.writeFileSync(archivePath, 'original archive', 'utf-8');
@@ -94,18 +96,15 @@ describe('epic state SQLite authority', () => {
 	});
 
 	test('saving the same session twice advances revision/generation without duplicating rows', () => {
-		const state = emptySessionState('sess-epic');
-		state.active = true;
-		saveEpicSessionState(dir, state);
+		enableEpicMode(dir, 'sess-epic');
 		const first = listCoordinationStates(dir, COORDINATION_NAMESPACE)[0];
 
-		state.lastDecision = {
+		recordEpicDecision(dir, 'sess-epic', {
 			decidedAt: '2026-01-02T00:00:00.000Z',
 			decision: 'promote',
 			p: 0.1,
 			blockingReasons: [],
-		};
-		saveEpicSessionState(dir, state);
+		});
 		const rows = listCoordinationStates(dir, COORDINATION_NAMESPACE);
 		const second = rows[0];
 

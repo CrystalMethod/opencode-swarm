@@ -20,6 +20,16 @@ import { projectDbExists } from '../../db/project-db.js';
 import { atomicWriteSwarmFileSync } from '../../utils/atomic-write.js';
 import { canonicalRootKeyFresh } from '../../utils/canonical-root.js';
 import * as logger from '../../utils/logger.js';
+import { isEpicModeConfigEnabledForDirectory } from './config-gate.js';
+
+/**
+ * How Epic Mode was enabled for a session. `'turbo'` means the combined
+ * `/swarm turbo epic on` toggle (so turning Turbo off also turns Epic off);
+ * `'epic'` means the standalone `/swarm epic on` toggle (Turbo off leaves it
+ * alone). Rows written before this field existed have it `undefined` and are
+ * treated as standalone — never cross-cleared by a Turbo toggle.
+ */
+export type EpicEnabledVia = 'turbo' | 'epic';
 
 /** Top-level state for a single session. */
 export interface EpicSessionState {
@@ -32,6 +42,14 @@ export interface EpicSessionState {
 	lastDecision?: EpicLastDecision;
 	/** Whether epic mode is currently active for this session. */
 	active: boolean;
+	/** Which command enabled Epic Mode (absent on pre-existing rows). */
+	enabledVia?: EpicEnabledVia;
+	/**
+	 * Last liveness heartbeat for this session (ISO 8601). Refreshed by
+	 * {@link refreshEpicSessionHeartbeat} so a long-lived Epic session's row
+	 * never ages past {@link EPIC_SESSION_STALE_TTL_MS}.
+	 */
+	lastHeartbeatAt?: string;
 }
 
 /** Minimal snapshot of the last activation decision. */
@@ -53,6 +71,46 @@ export interface EpicPersistedState {
 const STATE_FILE = 'epic-state.json';
 const COORDINATION_NAMESPACE = 'turbo.epic.session';
 const MAX_SESSION_WRITE_ATTEMPTS = 5;
+
+/**
+ * Staleness TTL for the project-scoped Epic probe
+ * ({@link isEpicModeActiveForProject}). An active session row whose
+ * coordination-row `updatedAt` is older than this is ignored: a session that
+ * crashed (or was abandoned without a `session.deleted` event) must not keep
+ * Epic-only behaviour — Rule 2 auto-commits, lean phase readiness — switched on
+ * for every later non-Epic session in the project. 24 h comfortably exceeds
+ * any single working session; live sessions refresh their row through
+ * {@link refreshEpicSessionHeartbeat} (wired to the session `idle` lifecycle
+ * event) at most every {@link EPIC_SESSION_HEARTBEAT_INTERVAL_MS}.
+ */
+export const EPIC_SESSION_STALE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Minimum interval between heartbeat writes for one live Epic session. */
+export const EPIC_SESSION_HEARTBEAT_INTERVAL_MS = EPIC_SESSION_STALE_TTL_MS / 4;
+
+/**
+ * DI seam (AGENTS.md §7). `isEpicModeConfigEnabledForDirectory` is the
+ * fail-closed `turbo.epic.mode.enabled` master gate; `now` drives staleness
+ * so tests can age rows without sleeping. Restore in `afterEach`.
+ */
+export const _internals = {
+	isEpicModeConfigEnabledForDirectory,
+	now: (): number => Date.now(),
+	/**
+	 * True when the row's session is live in THIS process with the Epic flag
+	 * set (in-memory, zero I/O). A live session's row is honoured past the
+	 * staleness TTL — after a long idle stretch or a restart that restored
+	 * the session from its snapshot — so the TTL only retires rows of
+	 * crashed/abandoned sessions and never fails open on a live one.
+	 *
+	 * Wired by the plugin entry (`src/index.ts`) to the in-memory
+	 * `swarmState` Epic flag. Not imported here on purpose: importing
+	 * `src/state` from this module would drag the whole session-state graph
+	 * into every importer of the probe (e.g. `src/plan/manager.ts`). Unwired
+	 * (CLI / isolated tests) it answers `false` — TTL-only behaviour.
+	 */
+	isSessionLiveInProcess: (_sessionID: string): boolean => false,
+};
 
 function nowISO(): string {
 	return new Date().toISOString();
@@ -335,34 +393,6 @@ function mutateSessionRowAtomic(
 	throw new Error(`Epic state persistence failed: contention for ${sessionID}`);
 }
 
-function deleteSessionRowAtomic(directory: string, sessionID: string): void {
-	preflightProjectionTarget(directory);
-	ensureReadableState(directory);
-	for (let attempt = 0; attempt < MAX_SESSION_WRITE_ATTEMPTS; attempt++) {
-		const current = getCoordinationState(
-			directory,
-			COORDINATION_NAMESPACE,
-			sessionID,
-		);
-		if (!current) {
-			refreshProjectionFromCoordination(directory);
-			return;
-		}
-		if (
-			deleteCoordinationState(
-				directory,
-				COORDINATION_NAMESPACE,
-				sessionID,
-				current.revision,
-			)
-		) {
-			refreshProjectionFromCoordination(directory);
-			return;
-		}
-	}
-	throw new Error(`Epic state persistence failed: contention for ${sessionID}`);
-}
-
 export function emptyPersisted(): EpicPersistedState {
 	return { version: 1, updatedAt: nowISO(), sessions: {} };
 }
@@ -374,7 +404,10 @@ export function emptySessionState(sessionID: string): EpicSessionState {
 /**
  * Per-directory fail-closed marker. When canonical state is corrupt
  * (bad legacy JSON, malformed row payloads, import conflicts), we set a flag
- * and refuse to read it until `repairStateUnreadable` is called.
+ * and refuse to read it until the state is proven readable again: either a
+ * teardown (`clearEpicSessionRow` / `clearAllEpicSessionRows`) rebuilds the
+ * projection from the remaining rows, or `repairStateUnreadable` re-validates
+ * the legacy file and every coordination row.
  */
 const stateUnreadableMap = new Map<string, boolean>();
 
@@ -438,72 +471,6 @@ function readPersisted(directory: string): EpicPersistedState | null {
 	}
 }
 
-function _writePersisted(
-	directory: string,
-	persisted: EpicPersistedState,
-): void {
-	if (stateUnreadableMap.get(stateKey(directory))) {
-		throw new Error(
-			`Epic state is unreadable. Please repair .swarm/${STATE_FILE} before continuing.`,
-		);
-	}
-	preflightProjectionTarget(directory);
-	const nextUpdatedAt = nowISO();
-	const nextPersisted: EpicPersistedState = {
-		version: 1,
-		updatedAt: nextUpdatedAt,
-		sessions: persisted.sessions,
-	};
-	try {
-		const currentRows = new Map(
-			listCoordinationStates(directory, COORDINATION_NAMESPACE).map((row) => [
-				row.entityKey,
-				row,
-			]),
-		);
-		const nextKeys = new Set(Object.keys(nextPersisted.sessions));
-		for (const [entityKey, row] of currentRows) {
-			if (nextKeys.has(entityKey)) continue;
-			const deleted = deleteCoordinationState(
-				directory,
-				COORDINATION_NAMESPACE,
-				entityKey,
-				row.revision,
-			);
-			if (!deleted) {
-				throw new Error(
-					`Epic state persistence failed: delete conflict for ${entityKey}`,
-				);
-			}
-		}
-		for (const [sessionID, state] of Object.entries(nextPersisted.sessions)) {
-			const current = currentRows.get(sessionID);
-			const result = transitionCoordinationState(directory, {
-				namespace: COORDINATION_NAMESPACE,
-				entityKey: sessionID,
-				expectedRevision: current?.revision ?? null,
-				generation: (current?.generation ?? 0) + 1,
-				status: state.active ? 'active' : 'inactive',
-				payload: JSON.stringify(state),
-			});
-			if (result.outcome !== 'applied') {
-				throw new Error(
-					`Epic state persistence failed: ${result.outcome} for ${sessionID}`,
-				);
-			}
-		}
-		writeProjection(directory, nextPersisted);
-	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
-		logger.error(`[turbo/epic/state] Failed to persist ${STATE_FILE}: ${msg}`);
-		throw new Error(
-			msg.startsWith('Epic state persistence')
-				? msg
-				: `Epic state persistence failed: ${msg}`,
-		);
-	}
-}
-
 /** Read this session's state, or null if not yet recorded. */
 export function loadEpicSessionState(
 	directory: string,
@@ -515,14 +482,6 @@ export function loadEpicSessionState(
 	return persisted.sessions[sessionID] ?? null;
 }
 
-/** Write the given session state, replacing any prior entry for that sessionID. */
-export function saveEpicSessionState(
-	directory: string,
-	state: EpicSessionState,
-): void {
-	saveSessionRowAtomic(directory, state);
-}
-
 /** True iff epic mode is currently active for the given session. */
 export function isEpicModeActive(
 	directory: string,
@@ -532,18 +491,62 @@ export function isEpicModeActive(
 	return state?.active === true;
 }
 
+function hasTraversalSegment(directory: string): boolean {
+	return directory.split(/[\\/]/).includes('..');
+}
+
 /**
- * True iff epic mode is currently active for ANY session in the project.
+ * Read this session's Epic row without creating anything: returns `null`
+ * (and touches no file or database) when the project has never persisted
+ * Epic state. Otherwise identical to {@link loadEpicSessionState}.
+ */
+export function peekEpicSessionState(
+	directory: string,
+	sessionID: string,
+): EpicSessionState | null {
+	if (!sessionID || hasTraversalSegment(directory)) return null;
+	if (stateUnreadableMap.get(stateKey(directory))) return null;
+	let hasDb = false;
+	try {
+		hasDb = projectDbExists(directory);
+	} catch {
+		return null;
+	}
+	if (!hasDb && !fs.existsSync(stateFilePath(directory))) return null;
+	return loadEpicSessionState(directory, sessionID);
+}
+
+function isRowFresh(updatedAt: string, nowMs: number): boolean {
+	const ts = Date.parse(updatedAt);
+	// Unparseable timestamps fail closed (treated as stale).
+	if (!Number.isFinite(ts)) return false;
+	return nowMs - ts <= EPIC_SESSION_STALE_TTL_MS;
+}
+
+/**
+ * True iff Epic Mode is live for ANY session in the project.
  *
- * Fail-closed: returns `false` on unreadable state, matching the rest of
- * this module's defaults.
+ * Project-scoped on purpose: sub-agent sessions (coders dispatched via
+ * `Task`) never carry the architect's Epic flag, yet Rule 2 and phase
+ * readiness must still know the project runs under Epic.
+ *
+ * Returns `false` when:
+ *  - `turbo.epic.mode.enabled !== true` (the config master gate — with it
+ *    off, no Epic Mode behaviour runs regardless of persisted rows; the
+ *    config is only read once an Epic row is known to exist, so non-Epic
+ *    projects pay no config I/O here),
+ *  - every active row is older than {@link EPIC_SESSION_STALE_TTL_MS}
+ *    (crashed / abandoned sessions) AND its session is not live in this
+ *    process with the Epic flag set (a live in-process Epic session's row is
+ *    honoured regardless of age — see `_internals.isSessionLiveInProcess`),
+ *  - state is unreadable (fail-closed, matching the rest of this module).
  */
 export function isEpicModeActiveForProject(directory: string): boolean {
 	// This read-only probe is also called by a few direct tool entry points that
 	// bypass `resolveWorkingDirectory`. Never follow raw traversal segments into
 	// an ancestor's `.swarm/` database; the caller will fail closed at its normal
 	// retrospective/project-root gate instead.
-	if (directory.split(/[\\/]/).includes('..')) return false;
+	if (hasTraversalSegment(directory)) return false;
 	if (stateUnreadableMap.get(stateKey(directory))) return false;
 	const hasLegacyFile = fs.existsSync(stateFilePath(directory));
 	let hasCoordinationRows = false;
@@ -560,16 +563,182 @@ export function isEpicModeActiveForProject(directory: string): boolean {
 	if (!hasLegacyFile && !hasCoordinationRows) {
 		return false;
 	}
+	if (!_internals.isEpicModeConfigEnabledForDirectory(directory)) return false;
+	// readPersisted performs the one-time legacy import and validates every row
+	// payload (marking the directory unreadable on corruption).
 	const persisted = readPersisted(directory);
 	if (!persisted) return false;
-	for (const session of Object.values(persisted.sessions)) {
-		if (session?.active === true) return true;
+	let rows: ReturnType<typeof listCoordinationStates>;
+	try {
+		rows = listCoordinationStates(directory, COORDINATION_NAMESPACE);
+	} catch {
+		return false;
+	}
+	const nowMs = _internals.now();
+	for (const row of rows) {
+		const session = persisted.sessions[row.entityKey];
+		if (session?.active !== true) continue;
+		if (
+			isRowFresh(row.updatedAt, nowMs) ||
+			_internals.isSessionLiveInProcess(row.entityKey)
+		)
+			return true;
 	}
 	return false;
 }
 
-/** Enable epic mode for the session; records `enabledAt`. */
-export function enableEpicMode(directory: string, sessionID: string): void {
+/**
+ * Refresh the liveness heartbeat of an ACTIVE Epic session row so the
+ * project probe keeps honouring it past {@link EPIC_SESSION_STALE_TTL_MS}.
+ * Throttled: writes only when the row is older than
+ * {@link EPIC_SESSION_HEARTBEAT_INTERVAL_MS}. Side-effect free (never creates
+ * `.swarm/`, the project DB, or a row) when the session has no active row.
+ * Returns `true` when a heartbeat was written. May throw on persistence
+ * failure — lifecycle callers wrap it fail-open.
+ */
+export function refreshEpicSessionHeartbeat(
+	directory: string,
+	sessionID: string,
+): boolean {
+	if (!sessionID || hasTraversalSegment(directory)) return false;
+	if (stateUnreadableMap.get(stateKey(directory))) return false;
+	if (!projectDbExists(directory)) return false;
+	const current = getCoordinationState(
+		directory,
+		COORDINATION_NAMESPACE,
+		sessionID,
+	);
+	if (!current || current.status !== 'active') return false;
+	const ts = Date.parse(current.updatedAt);
+	const nowMs = _internals.now();
+	if (Number.isFinite(ts) && nowMs - ts < EPIC_SESSION_HEARTBEAT_INTERVAL_MS) {
+		return false;
+	}
+	const next = mutateSessionRowAtomic(directory, sessionID, (state) => {
+		if (state.active === true) {
+			state.lastHeartbeatAt = new Date(nowMs).toISOString();
+		}
+	});
+	return next?.active === true;
+}
+
+/**
+ * Revision-checked delete of one coordination row that does NOT parse any
+ * row payload first, so a corrupt row (which makes the module fail closed)
+ * can still be removed by the teardown paths. The JSON projection is then
+ * refreshed best-effort.
+ */
+function deleteRowWithoutPayloadValidation(
+	directory: string,
+	sessionID: string,
+): boolean {
+	for (let attempt = 0; attempt < MAX_SESSION_WRITE_ATTEMPTS; attempt++) {
+		const current = getCoordinationState(
+			directory,
+			COORDINATION_NAMESPACE,
+			sessionID,
+		);
+		if (!current) return false;
+		if (
+			deleteCoordinationState(
+				directory,
+				COORDINATION_NAMESPACE,
+				sessionID,
+				current.revision,
+			)
+		) {
+			return true;
+		}
+	}
+	throw new Error(`Epic state persistence failed: contention for ${sessionID}`);
+}
+
+function refreshProjectionAfterTeardown(directory: string): void {
+	try {
+		refreshProjectionFromCoordination(directory);
+		// A successful rebuild proves every remaining row parses, so a prior
+		// fail-closed marker (e.g. set by the row just removed) is lifted.
+		stateUnreadableMap.delete(stateKey(directory));
+	} catch {
+		// Remaining rows are still unreadable, or the projection target is
+		// unwritable — the authoritative delete already happened. Drop the now
+		// stale projection so a later legacy-import pass can never resurrect
+		// the deleted session rows from it. Best-effort.
+		try {
+			const filePath = stateFilePath(directory);
+			if (fs.existsSync(filePath) && fs.lstatSync(filePath).isFile()) {
+				fs.unlinkSync(filePath);
+			}
+		} catch {
+			// best-effort
+		}
+	}
+}
+
+/**
+ * Delete one session's Epic row (session end). Side-effect free when the
+ * session has no row: never creates `.swarm/`, the project DB, or a legacy
+ * import. Returns `true` when a row was removed. May throw on persistence
+ * failure — lifecycle callers wrap it fail-open.
+ */
+export function clearEpicSessionRow(
+	directory: string,
+	sessionID: string,
+): boolean {
+	if (!sessionID || hasTraversalSegment(directory)) return false;
+	if (!projectDbExists(directory)) return false;
+	if (!deleteRowWithoutPayloadValidation(directory, sessionID)) return false;
+	refreshProjectionAfterTeardown(directory);
+	return true;
+}
+
+/**
+ * Delete every session's Epic row in the project. Used by `/swarm close`
+ * and `/swarm reset-session`, which tear down ALL in-memory agent sessions
+ * (and their snapshot rows) — leaving their durable Epic rows behind would
+ * keep the project-scoped probe answering "Epic active" for sessions no
+ * process still considers Epic. Operates on the authoritative SQLite rows
+ * only (never imports a legacy JSON file or creates a database) and never
+ * parses row payloads, so a corrupt row is cleared too. Returns the number
+ * of rows removed. May throw — callers report fail-open.
+ */
+export function clearAllEpicSessionRows(directory: string): number {
+	if (hasTraversalSegment(directory)) return 0;
+	if (!projectDbExists(directory)) return 0;
+	const rows = listCoordinationStates(directory, COORDINATION_NAMESPACE);
+	let removed = 0;
+	for (const row of rows) {
+		if (deleteRowWithoutPayloadValidation(directory, row.entityKey)) {
+			removed += 1;
+		}
+	}
+	if (removed > 0) refreshProjectionAfterTeardown(directory);
+	return removed;
+}
+
+/** Options for {@link enableEpicMode}. */
+export interface EnableEpicModeOptions {
+	/**
+	 * Which command enabled Epic Mode. Defaults to `'epic'` (standalone);
+	 * `/swarm turbo epic on` passes `'turbo'` so that turning Turbo off later
+	 * cross-clears Epic only when Turbo was what turned it on.
+	 */
+	enabledVia?: EpicEnabledVia;
+}
+
+/**
+ * Enable epic mode for the session; records `enabledAt` and `enabledVia`.
+ * Re-enabling an ALREADY-ACTIVE session keeps the first enabler's
+ * `enabledVia` (e.g. `/swarm turbo epic on` after a standalone
+ * `/swarm epic on` stays `'epic'`, so a later `/swarm turbo off` does not
+ * cross-clear the user's standalone enablement).
+ */
+export function enableEpicMode(
+	directory: string,
+	sessionID: string,
+	options: EnableEpicModeOptions = {},
+): void {
+	const enabledVia: EpicEnabledVia = options.enabledVia ?? 'epic';
 	const current = loadEpicSessionState(directory, sessionID);
 	if (!current) {
 		saveSessionRowAtomic(directory, {
@@ -577,13 +746,16 @@ export function enableEpicMode(directory: string, sessionID: string): void {
 			active: true,
 			enabledAt: nowISO(),
 			disabledAt: undefined,
+			enabledVia,
 		});
 		return;
 	}
 	mutateSessionRowAtomic(directory, sessionID, (state) => {
+		const alreadyActive = state.active === true;
 		state.active = true;
 		state.enabledAt = nowISO();
 		state.disabledAt = undefined;
+		if (!alreadyActive) state.enabledVia = enabledVia;
 	});
 }
 
@@ -604,14 +776,9 @@ export function disableEpicMode(directory: string, sessionID: string): void {
 	});
 }
 
-/** Reset the session's state entry entirely. */
-export function resetEpicSession(directory: string, sessionID: string): void {
-	deleteSessionRowAtomic(directory, sessionID);
-}
-
 /**
- * Update the session's `lastDecision` field. Used by the runner after each
- * activation evaluation so `/swarm epic status` can show the most recent
+ * Update the session's `lastDecision` field. Used by `epic_decide_phase`
+ * after each activation evaluation so `/swarm epic status` can show the most recent
  * decision rationale without re-reading the evidence JSONL.
  *
  * Precondition: the session must already have an entry (i.e. the caller has

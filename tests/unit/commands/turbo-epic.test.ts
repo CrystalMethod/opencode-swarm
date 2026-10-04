@@ -26,7 +26,10 @@ import {
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { handleTurboCommand } from '../../../src/commands/turbo';
+import {
+	handleTurboCommand,
+	_internals as turboInternals,
+} from '../../../src/commands/turbo';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
 import {
 	resetSwarmState,
@@ -36,7 +39,11 @@ import {
 import { isEpicModeActive } from '../../../src/turbo/epic/state';
 
 const mockLoadPluginConfigWithMeta = mock(() => ({
-	config: { turbo: { strategy: 'lean' as const } },
+	// `turbo.epic.mode.enabled: true` — the Epic Mode config master gate. The
+	// refusal path (gate off) is covered in turbo-epic-cross-clear.test.ts.
+	config: {
+		turbo: { strategy: 'lean' as const, epic: { mode: { enabled: true } } },
+	},
 	meta: { path: '/tmp/test' },
 }));
 
@@ -50,8 +57,13 @@ mock.module('../../../src/config', () => ({
 const SESSION_ID = 'sess-turbo-epic';
 
 let tmpDir: string;
+const originalTurboLoader = turboInternals.loadPluginConfigWithMeta;
 
 beforeEach(() => {
+	// turbo.ts reads config through its `_internals` seam (captured at module
+	// init, so the module mock above does not reach it).
+	turboInternals.loadPluginConfigWithMeta =
+		mockLoadPluginConfigWithMeta as unknown as typeof originalTurboLoader;
 	tmpDir = fs.realpathSync(
 		fs.mkdtempSync(path.join(os.tmpdir(), 'turbo-epic-cmd-')),
 	);
@@ -60,6 +72,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	turboInternals.loadPluginConfigWithMeta = originalTurboLoader;
 	resetSwarmState();
 	closeAllProjectDbs();
 	try {
@@ -147,13 +160,14 @@ describe('/swarm turbo epic (toggle)', () => {
 	});
 });
 
-describe('/swarm turbo epic — cross-clear: disabling lean disables epic too', () => {
+describe('/swarm turbo epic — cross-clear: disabling turbo disables epic enabled VIA turbo', () => {
 	test('/swarm turbo off after epic on clears BOTH flags', async () => {
 		await handleTurboCommand(tmpDir, ['epic', 'on'], SESSION_ID);
 		expect(isEpicModeActive(tmpDir, SESSION_ID)).toBe(true);
 
 		const out = await handleTurboCommand(tmpDir, ['off'], SESSION_ID);
 		expect(out).toContain('Turbo Mode disabled');
+		expect(out).toContain('Epic Mode also disabled');
 
 		const session = swarmState.agentSessions.get(SESSION_ID);
 		expect(session?.epicModeActive).toBe(false);

@@ -1,9 +1,12 @@
 /**
  * Tests for the `epic_plan_waves` tool wrapper.
  *
- * Covers the tool boundary: preflight branches (no-plan, no-phase,
- * phase-empty, phase-already-complete, scopes-missing, git-failed,
- * planner-error) and the success path that forwards to `planEpicWaves`.
+ * Covers the tool boundary: preflight branches (epic-disabled-by-config,
+ * no-plan, no-phase, phase-empty, phase-already-complete, scopes-missing,
+ * git-failed, planner-error) and the success path that forwards to
+ * `planEpicWaves`. Declared scopes go through the real `declare_scope`
+ * (v2 bindings); hand-written v1 scope files appear only in the regression
+ * proving they are ignored.
  *
  * All tests use the `_internals` DI seam (AGENTS.md invariant 7) — no
  * `mock.module`.
@@ -16,13 +19,59 @@ import {
 	_internals,
 	executeEpicPlanWaves,
 } from '../../../src/tools/epic-plan-waves';
+import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../../../src/turbo/epic/config-gate';
+import {
+	declareScopesForTest,
+	resetDeclaredScopesForTest,
+} from '../../helpers/declared-scope-bindings';
+import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 
 // Capture original internals so each test restores after override.
 const originals = { ..._internals };
 
-afterEach(() => {
-	Object.assign(_internals, originals);
+// Epic Mode is opt-in (`turbo.epic.mode.enabled`); enable it for every test
+// except the explicit config-gate cases, which override this stub.
+const enableEpicConfig = () =>
+	({ config: { turbo: { epic: { mode: { enabled: true } } } } }) as never;
+
+beforeEach(() => {
+	_internals.loadPluginConfigWithMeta = enableEpicConfig;
 });
+
+afterEach(async () => {
+	Object.assign(_internals, originals);
+	await resetDeclaredScopesForTest();
+});
+
+/** Schema-valid plan (required for real `declare_scope`). */
+function schemaPlan(
+	phaseId: number,
+	tasks: Array<{ id: string; depends?: string[]; files_touched?: string[] }>,
+) {
+	return {
+		schema_version: '1.0.0',
+		title: 'Epic plan waves tool',
+		swarm: 'test-swarm',
+		current_phase: phaseId,
+		phases: [
+			{
+				id: phaseId,
+				name: `Phase ${phaseId}`,
+				status: 'in_progress',
+				tasks: tasks.map((t) => ({
+					id: t.id,
+					phase: phaseId,
+					status: 'pending',
+					size: 'small',
+					description: `Task ${t.id}`,
+					depends: t.depends ?? [],
+					files_touched: t.files_touched ?? [],
+					acceptance: 'Done',
+				})),
+			},
+		],
+	};
+}
 
 /**
  * Envelope invariant: on any failure (`success: false`), the success-only
@@ -43,10 +92,22 @@ function expectCleanFailureEnvelope(result: {
 	expect(result.degradedTasks).toBeUndefined();
 }
 
-function writeScope(scopesDir: string, taskId: string, files: string[]): void {
+/** Frozen instant for the stale-v1 regression (see `writeStaleV1Scope`). */
+const V1_FROZEN_NOW_MS = Date.parse('2026-06-01T12:00:00.000Z');
+
+/**
+ * Hand-written legacy v1 scope file stamped as declared "just now" against the
+ * frozen clock, so no TTL/expiry can explain it being ignored — only the
+ * v2-only resolution can. Call inside `withFrozenClockAsync`.
+ */
+function writeStaleV1Scope(dir: string, taskId: string, files: string[]) {
 	fs.writeFileSync(
-		path.join(scopesDir, `scope-${taskId}.json`),
-		JSON.stringify({ taskId, files, declaredAt: '2026-01-01T00:00:00.000Z' }),
+		path.join(dir, '.swarm', 'scopes', `scope-${taskId}.json`),
+		JSON.stringify({
+			taskId,
+			files,
+			declaredAt: new Date(Date.now()).toISOString(),
+		}),
 	);
 }
 
@@ -70,6 +131,57 @@ describe('executeEpicPlanWaves — preflight branches', () => {
 		} catch {
 			// ignore
 		}
+	});
+
+	test('epic-disabled-by-config: mode.enabled !== true refuses before any planning', async () => {
+		fs.writeFileSync(
+			path.join(swarmDir, 'plan.json'),
+			JSON.stringify(schemaPlan(1, [{ id: '1.1', files_touched: ['a.ts'] }])),
+		);
+		for (const stub of [
+			() => ({ config: {} }) as never,
+			() =>
+				({
+					config: { turbo: { epic: { mode: { enabled: false } } } },
+				}) as never,
+			() => {
+				throw new Error('config unreadable');
+			},
+		]) {
+			_internals.loadPluginConfigWithMeta = stub;
+			const result = await executeEpicPlanWaves({
+				directory: tempDir,
+				phase: 1,
+			});
+			expect(result.reason).toBe('epic-disabled-by-config');
+			expect(result.errors).toEqual([EPIC_MODE_CONFIG_DISABLED_MESSAGE]);
+			expectCleanFailureEnvelope(result);
+		}
+	});
+
+	test('REGRESSION: stale v1 scope files do not satisfy the preflight', async () => {
+		fs.writeFileSync(
+			path.join(swarmDir, 'plan.json'),
+			JSON.stringify(schemaPlan(1, [{ id: '1.1' }, { id: '1.2' }])),
+		);
+		await withFrozenClockAsync(
+			async () => {
+				writeStaleV1Scope(tempDir, '1.1', ['src/a.ts']);
+				writeStaleV1Scope(tempDir, '1.2', ['src/b.ts']);
+				const result = await executeEpicPlanWaves({
+					directory: tempDir,
+					phase: 1,
+				});
+				expect(result.reason).toBe('scopes-missing');
+				expect(result.missingScopes?.sort()).toEqual(['1.1', '1.2']);
+				expect(result.errors?.[0]).toContain('expired (bindings live 1h)');
+				expect(result.errors?.[0]).toContain(
+					'plan was revised since declaration',
+				);
+				expect(result.errors?.[0]).toContain('`scopes` map');
+			},
+			{ fixedNow: V1_FROZEN_NOW_MS },
+		);
 	});
 
 	test('no-plan: missing plan.json returns reason="no-plan"', async () => {
@@ -267,13 +379,16 @@ describe('executeEpicPlanWaves — preflight branches', () => {
 				],
 			}),
 		);
-		writeScope(scopesDir, '1.1', ['src/a.ts']);
 		_internals.isGitRepo = () => true;
 		_internals.buildIsUpstreamCommittedWithStatus = () => ({
 			predicate: () => false,
 			gitFailed: true,
 		});
-		const result = await executeEpicPlanWaves({ directory: tempDir, phase: 1 });
+		const result = await executeEpicPlanWaves({
+			directory: tempDir,
+			phase: 1,
+			scopes: { '1.1': ['src/a.ts'] },
+		});
 		expect(result.reason).toBe('git-failed');
 		expect(result.errors?.[0]).toContain('git log');
 		expectCleanFailureEnvelope(result);
@@ -292,9 +407,8 @@ describe('executeEpicPlanWaves — preflight branches', () => {
 				],
 			}),
 		);
-		writeScope(scopesDir, '1.1', ['src/a.ts']);
-		// Sabotage readTaskScopes to throw inside the planner
-		_internals.readTaskScopes = () => {
+		// Sabotage the v2 declared-scope resolver to throw inside the planner
+		_internals.resolveEpicDeclaredScopes = () => {
 			throw new Error('synthetic disk read failure');
 		};
 		const result = await executeEpicPlanWaves({ directory: tempDir, phase: 1 });
@@ -327,62 +441,28 @@ describe('executeEpicPlanWaves — success path forwards to planEpicWaves', () =
 		}
 	});
 
-	test('Phase-2 shape DAG produces 3 waves through the tool', async () => {
-		writeScope(scopesDir, '2.1', ['src/registry.py']);
-		writeScope(scopesDir, '2.2', ['src/column_types.py']);
-		writeScope(scopesDir, '2.3', ['src/models/logistic.py']);
-		writeScope(scopesDir, '2.4', ['src/models/random_forest.py']);
-		writeScope(scopesDir, '2.5', ['src/models/xgboost.py']);
-		writeScope(scopesDir, '2.6', ['src/models/mlp.py']);
+	test('Phase-2 shape DAG (real declare_scope) produces 3 waves through the tool', async () => {
 		fs.writeFileSync(
 			path.join(swarmDir, 'plan.json'),
-			JSON.stringify({
-				phases: [
-					{
-						id: 2,
-						name: 'Models',
-						tasks: [
-							{
-								id: '2.1',
-								description: 'Registry',
-								status: 'pending',
-								depends: [],
-							},
-							{
-								id: '2.2',
-								description: 'Col types',
-								status: 'pending',
-								depends: ['2.1'],
-							},
-							{
-								id: '2.3',
-								description: 'Logistic',
-								status: 'pending',
-								depends: ['2.1', '2.2'],
-							},
-							{
-								id: '2.4',
-								description: 'RF',
-								status: 'pending',
-								depends: ['2.1', '2.2'],
-							},
-							{
-								id: '2.5',
-								description: 'XGB',
-								status: 'pending',
-								depends: ['2.1', '2.2'],
-							},
-							{
-								id: '2.6',
-								description: 'MLP',
-								status: 'pending',
-								depends: ['2.1', '2.2'],
-							},
-						],
-					},
-				],
-			}),
+			JSON.stringify(
+				schemaPlan(2, [
+					{ id: '2.1' },
+					{ id: '2.2', depends: ['2.1'] },
+					...['2.3', '2.4', '2.5', '2.6'].map((id) => ({
+						id,
+						depends: ['2.1', '2.2'],
+					})),
+				]),
+			),
 		);
+		await declareScopesForTest(tempDir, {
+			'2.1': ['src/registry.py'],
+			'2.2': ['src/column_types.py'],
+			'2.3': ['src/models/logistic.py'],
+			'2.4': ['src/models/random_forest.py'],
+			'2.5': ['src/models/xgboost.py'],
+			'2.6': ['src/models/mlp.py'],
+		});
 		const result = await executeEpicPlanWaves({ directory: tempDir, phase: 2 });
 		expect(result.success).toBe(true);
 		expect(result.waves?.length).toBe(3);
@@ -390,5 +470,25 @@ describe('executeEpicPlanWaves — success path forwards to planEpicWaves', () =
 		expect(result.waves?.[1].taskIds).toEqual(['2.2']);
 		expect(result.waves?.[2].taskIds).toEqual(['2.3', '2.4', '2.5', '2.6']);
 		expect(result.plan?.totalConcurrentTasks).toBe(6);
+	});
+
+	test('three disjoint real declarations (no files_touched) → one concurrent wave', async () => {
+		fs.writeFileSync(
+			path.join(swarmDir, 'plan.json'),
+			JSON.stringify(
+				schemaPlan(1, [{ id: '1.1' }, { id: '1.2' }, { id: '1.3' }]),
+			),
+		);
+		await declareScopesForTest(tempDir, {
+			'1.1': ['src/a.ts'],
+			'1.2': ['src/b.ts'],
+			'1.3': ['src/c.ts'],
+		});
+		const result = await executeEpicPlanWaves({ directory: tempDir, phase: 1 });
+		expect(result.success).toBe(true);
+		expect(result.serializedTasks).toEqual([]);
+		expect(result.waves?.map((w) => w.taskIds)).toEqual([
+			['1.1', '1.2', '1.3'],
+		]);
 	});
 });

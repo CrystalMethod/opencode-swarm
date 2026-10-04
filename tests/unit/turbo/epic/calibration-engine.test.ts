@@ -37,6 +37,7 @@ function makeRecord(
 		timestamp: overrides.timestamp ?? '2025-01-01T00:00:00Z',
 		sessionID: overrides.sessionID ?? 'sess-1',
 		taskId: overrides.taskId ?? 'T-1',
+		...(overrides.planId === undefined ? {} : { planId: overrides.planId }),
 		phaseNumber: overrides.phaseNumber,
 		declaredScope,
 		actualFiles,
@@ -319,6 +320,49 @@ describe('Simulation invariants', () => {
 		const { lastCalibrationAt: _a, updatedAt: _ua, ...aShape } = a;
 		const { lastCalibrationAt: _b, updatedAt: _ub, ...bShape } = b;
 		expect(aShape).toEqual(bShape);
+	});
+});
+
+describe('applyCalibration — latest record per (planId, taskId) (F2)', () => {
+	test('a retried/reworked task counts once, with its final outcome', () => {
+		const divergentFirst = makeRecord({
+			planId: 'p',
+			taskId: '1.1',
+			isClean: false,
+			divergenceRatio: 0.5,
+			undeclared: ['src/x.ts'],
+		});
+		const cleanRework = makeRecord({
+			planId: 'p',
+			taskId: '1.1',
+			isClean: true,
+		});
+		const next = applyCalibration(
+			emptyCalibrationState(),
+			[divergentFirst, divergentFirst, cleanRework],
+			baseOptions,
+		);
+		// Only the final (clean) attempt is applied: no tightening, no hot module.
+		expect(next.activationThresholdOverride).toBeUndefined();
+		expect(next.hotModuleAdditions).toEqual([]);
+		expect(next.consecutiveCleanCount).toBe(1);
+		// Every consumed record is still marked processed.
+		expect(next.processedRecords).toBe(3);
+	});
+
+	test('duplicate divergent records for one task tighten only once', () => {
+		const divergent = makeRecord({
+			planId: 'p',
+			taskId: '1.1',
+			isClean: false,
+			divergenceRatio: 0.5,
+		});
+		const next = applyCalibration(
+			emptyCalibrationState(),
+			[divergent, divergent],
+			{ ...baseOptions, tightenStep: 0.02 },
+		);
+		expect(next.activationThresholdOverride).toBeCloseTo(0.28, 6);
 	});
 });
 

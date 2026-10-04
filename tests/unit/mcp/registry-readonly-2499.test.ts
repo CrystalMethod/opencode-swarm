@@ -67,6 +67,23 @@ describe('MCP tool registry (#2499)', () => {
 		}
 	});
 
+	test('write-boundary denylist covers the state-writing Epic Mode tools', () => {
+		// epic_decide_phase appends .swarm/evidence/epic-promotions.jsonl and
+		// rolls calibration/Epic session state; epic_phase_review dispatches
+		// agents and writes
+		// .swarm/evidence/{phase}/epic-phase-review.json. None of these names
+		// matches a generic write_/record_ prefix, so each must be listed.
+		for (const name of [
+			'epic_decide_phase',
+			'epic_phase_review',
+			'epic_record_divergence',
+		]) {
+			expect(WRITE_TOOL_NAME_PATTERN.test(name)).toBe(true);
+		}
+		// Read-only neighbours stay off the denylist.
+		expect(WRITE_TOOL_NAME_PATTERN.test('lean_turbo_status')).toBe(false);
+	});
+
 	test('a missing root fails closed', () => {
 		expect(() =>
 			buildMcpToolRegistry({ root: '' } as { root: string }),

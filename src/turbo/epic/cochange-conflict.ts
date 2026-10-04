@@ -12,9 +12,10 @@
  *    not invoke it, nothing changes anywhere.
  *
  * Path / co-change name reconciliation:
- *  - Scope paths may arrive normalized but absolute (`{projectRoot}/src/x.ts`)
- *    because `src/turbo/lean/planner.ts:getValidatedFiles` prepends `directory`
- *    to relative scopes.
+ *  - Planner scope paths are repo-relative (`getValidatedFiles` in
+ *    `src/turbo/lean/partition-common.ts` normalizes them relative to the
+ *    project root), but other callers may still pass normalized absolute
+ *    paths (`{projectRoot}/src/x.ts`).
  *  - Co-change paths come from `git log --name-only` and are always
  *    repo-relative (e.g. `src/x.ts`).
  *  - We bridge with a boundary-aware suffix match: a scope path matches a

@@ -16,6 +16,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	computeDivergence,
+	type DivergenceRecord,
+	latestRecordPerTask,
 	readDivergenceHistory,
 	recordTaskDivergence,
 } from '../../../../src/turbo/epic/divergence-recorder';
@@ -261,5 +263,111 @@ describe('readDivergenceHistory', () => {
 		});
 		expect(all).toHaveLength(5);
 		expect(all[0].taskId).toBe('T-0');
+	});
+});
+
+describe('computeDivergence — directory scopes (F5)', () => {
+	test('writes inside a declared directory are declared, and the directory is used', () => {
+		const result = computeDivergence(
+			['src/auth/'],
+			['src/auth/login.ts', 'src/auth/deep/token.ts'],
+		);
+		expect(result.undeclared).toEqual([]);
+		expect(result.unused).toEqual([]);
+		expect(result.divergenceRatio).toBe(0);
+	});
+
+	test('containment is segment-aware: src/auth does not cover src/authentication.ts', () => {
+		const result = computeDivergence(['src/auth'], ['src/authentication.ts']);
+		expect(result.undeclared).toEqual(['src/authentication.ts']);
+		expect(result.unused).toEqual(['src/auth']);
+	});
+
+	test('containment is directional: a declared file does not cover a sibling under its name', () => {
+		const result = computeDivergence(['src/a.ts'], ['src/b.ts']);
+		expect(result.undeclared).toEqual(['src/b.ts']);
+		expect(result.unused).toEqual(['src/a.ts']);
+	});
+
+	test('an unused directory scope with no writes beneath it stays unused', () => {
+		const result = computeDivergence(
+			['src/auth', 'src/db'],
+			['src/auth/login.ts'],
+		);
+		expect(result.unused).toEqual(['src/db']);
+	});
+});
+
+describe('recordTaskDivergence — idempotency per (planId, taskId) (F2)', () => {
+	const base = {
+		sessionID: 's1',
+		taskId: '1.1',
+		planId: 'plan-a',
+		declaredScope: ['src/a.ts'],
+		actualFiles: ['src/a.ts', 'src/b.ts'],
+	};
+
+	test('retry with identical sets is a no-op returning the existing record', () => {
+		const first = recordTaskDivergence({ directory: dir, ...base });
+		const retry = recordTaskDivergence({ directory: dir, ...base });
+		expect(first?.duplicate).toBeUndefined();
+		expect(retry?.duplicate).toBe(true);
+		expect(retry?.record.timestamp).toBe(first?.record.timestamp);
+		const history = readDivergenceHistory(dir);
+		expect(history).toHaveLength(1);
+		expect(history[0].planId).toBe('plan-a');
+	});
+
+	test('rework with different sets appends a superseding record', () => {
+		recordTaskDivergence({ directory: dir, ...base });
+		const rework = recordTaskDivergence({
+			directory: dir,
+			...base,
+			actualFiles: ['src/a.ts'],
+		});
+		expect(rework?.duplicate).toBeUndefined();
+		const history = readDivergenceHistory(dir);
+		expect(history).toHaveLength(2);
+		expect(latestRecordPerTask(history)).toEqual([history[1]]);
+	});
+
+	test('the same task id under another plan is a separate key', () => {
+		recordTaskDivergence({ directory: dir, ...base });
+		recordTaskDivergence({ directory: dir, ...base, planId: 'plan-b' });
+		expect(readDivergenceHistory(dir)).toHaveLength(2);
+	});
+
+	test('records without a planId are never deduplicated (backward compatible)', () => {
+		const { planId: _omit, ...legacy } = base;
+		recordTaskDivergence({ directory: dir, ...legacy });
+		recordTaskDivergence({ directory: dir, ...legacy });
+		const history = readDivergenceHistory(dir);
+		expect(history).toHaveLength(2);
+		expect(history[0].planId).toBeUndefined();
+		expect(latestRecordPerTask(history)).toHaveLength(2);
+	});
+});
+
+describe('latestRecordPerTask', () => {
+	const rec = (taskId: string, planId: string | undefined, ts: string) =>
+		({
+			timestamp: ts,
+			sessionID: 's',
+			taskId,
+			...(planId === undefined ? {} : { planId }),
+			declaredScope: [],
+			actualFiles: [],
+			undeclared: [],
+			unused: [],
+			divergenceRatio: 0,
+			isClean: true,
+		}) as DivergenceRecord;
+
+	test('keeps only the latest per key, in chronological order', () => {
+		const a1 = rec('1.1', 'p', 't1');
+		const b1 = rec('1.2', 'p', 't2');
+		const a2 = rec('1.1', 'p', 't3');
+		const legacy = rec('1.1', undefined, 't4');
+		expect(latestRecordPerTask([a1, b1, a2, legacy])).toEqual([b1, a2, legacy]);
 	});
 });

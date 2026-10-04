@@ -1,15 +1,15 @@
 /**
- * Tests for the epic_run_phase tool.
+ * Tests for the epic_decide_phase tool (`executeEpicDecidePhase`).
  * File: tests/unit/tools/epic-run-phase.test.ts
  *
  * Covers:
  *  - Fails closed when Epic Mode is not active for the session.
  *  - Fails gracefully when .swarm/plan.json is missing.
- *  - Demotion path: returns reason='demoted' without invoking LeanTurboRunner.
- *  - Promotion path: invokes LeanTurboRunner, returns the lane results.
+ *  - Promote ⇒ reason='decided'; demote ⇒ reason='demoted' (decide-only,
+ *    never dispatches coders).
  *  - Promotion-evidence is appended exactly once per call.
- *  - Records the decision into the session state (`recordEpicDecision`).
- *  - Lean runner exceptions are surfaced as reason='lean-runner-error'.
+ *  - Records the decision into the session state (`recordEpicDecision`) and
+ *    fails closed (reason='epic-state-unreadable') when that write throws.
  *
  * Uses the _internals DI seam — no mock.module (AGENTS.md invariant 7).
  */
@@ -18,10 +18,20 @@ import {
 	_internals,
 	epic_decide_phase,
 	executeEpicDecidePhase,
-	executeEpicRunPhase,
 } from '../../../src/tools/epic-run-phase';
 
 const realInternals = { ..._internals };
+
+/**
+ * Stub for the Epic v2 declared-scope resolver: maps every requested task id
+ * through `scopeFor` (`null` → `[]`, i.e. no live declared scope).
+ */
+function declaredScopesStub(
+	scopeFor: (taskId: string) => string[] | null,
+): typeof _internals.resolveEpicDeclaredScopes {
+	return (_directory, _plan, taskIds) =>
+		Object.fromEntries(taskIds.map((id) => [id, scopeFor(id) ?? []]));
+}
 
 interface StubState {
 	epicActive: boolean;
@@ -45,13 +55,6 @@ interface StubState {
 		rationale: unknown;
 		blockingReasons: string[];
 	};
-	runnerResult: {
-		ok: boolean;
-		lanes?: unknown[];
-		degradedTasks?: string[];
-		serializedTasks?: string[];
-	} | null;
-	runnerThrows: boolean;
 	evidenceAppends: number;
 	decisionRecordings: number;
 }
@@ -101,13 +104,6 @@ beforeEach(() => {
 			},
 			blockingReasons: [],
 		},
-		runnerResult: {
-			ok: true,
-			lanes: [],
-			degradedTasks: [],
-			serializedTasks: [],
-		},
-		runnerThrows: false,
 		evidenceAppends: 0,
 		decisionRecordings: 0,
 	};
@@ -118,7 +114,7 @@ beforeEach(() => {
 		config: stub.pluginConfig,
 		isUsingDefaults: false,
 	})) as never;
-	_internals.readTaskScopes = (() => null) as never;
+	_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => null);
 	_internals.getCoChangeData = (async () => stub.cochangeData) as never;
 	_internals.decideEpicActivation = (() => stub.verdict) as never;
 	_internals.appendPromotionEvidence = (() => {
@@ -128,29 +124,18 @@ beforeEach(() => {
 	_internals.recordEpicDecision = (() => {
 		stub.decisionRecordings += 1;
 	}) as never;
-
-	// Stub the LeanTurboRunner class.
-	class FakeRunner {
-		runPhase = async (_n: number) => {
-			if (stub.runnerThrows) throw new Error('simulated runner failure');
-			return stub.runnerResult!;
-		};
-		cleanupAfterSuccess = async () => {};
-		cleanupAfterFailure = async () => {};
-	}
-	_internals.LeanTurboRunner = FakeRunner as never;
 });
 
 afterEach(() => {
 	_internals.isEpicModeActive = realInternals.isEpicModeActive;
 	_internals.loadPlanJsonOnly = realInternals.loadPlanJsonOnly;
 	_internals.loadPluginConfigWithMeta = realInternals.loadPluginConfigWithMeta;
-	_internals.readTaskScopes = realInternals.readTaskScopes;
+	_internals.resolveEpicDeclaredScopes =
+		realInternals.resolveEpicDeclaredScopes;
 	_internals.getCoChangeData = realInternals.getCoChangeData;
 	_internals.decideEpicActivation = realInternals.decideEpicActivation;
 	_internals.appendPromotionEvidence = realInternals.appendPromotionEvidence;
 	_internals.recordEpicDecision = realInternals.recordEpicDecision;
-	_internals.LeanTurboRunner = realInternals.LeanTurboRunner;
 	_internals.loadCalibrationState = realInternals.loadCalibrationState;
 	_internals.saveCalibrationState = realInternals.saveCalibrationState;
 	_internals.applyCalibration = realInternals.applyCalibration;
@@ -166,25 +151,26 @@ afterEach(() => {
 	_internals.isGitRepo = realInternals.isGitRepo;
 	_internals.buildIsUpstreamCommittedWithStatus =
 		realInternals.buildIsUpstreamCommittedWithStatus;
-	_internals.buildIsUpstreamCommitted = realInternals.buildIsUpstreamCommitted;
 });
 
-describe('executeEpicRunPhase — failure modes', () => {
+describe('executeEpicDecidePhase — failure modes', () => {
 	test('returns epic-mode-not-active when the session has not toggled on', async () => {
 		stub.epicActive = false;
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
 		});
 		expect(result.success).toBe(false);
 		expect(result.reason).toBe('epic-mode-not-active');
+		// F7e: the refusal carries remediation instead of a bare code.
+		expect(result.message).toContain('/swarm epic on');
 		expect(stub.evidenceAppends).toBe(0);
 	});
 
 	test('returns no-plan when plan.json is missing', async () => {
 		stub.plan = null;
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -195,36 +181,7 @@ describe('executeEpicRunPhase — failure modes', () => {
 	});
 });
 
-describe('executeEpicRunPhase — demotion path', () => {
-	test('returns demoted without invoking LeanTurboRunner', async () => {
-		stub.verdict = {
-			...stub.verdict,
-			decision: 'demote',
-			p: 0.8,
-			blockingReasons: ['p too high'],
-		};
-		let runnerInvoked = false;
-		class TrackingRunner {
-			runPhase = async () => {
-				runnerInvoked = true;
-				return { ok: true };
-			};
-			cleanupAfterSuccess = async () => {};
-			cleanupAfterFailure = async () => {};
-		}
-		_internals.LeanTurboRunner = TrackingRunner as never;
-
-		const result = await executeEpicRunPhase({
-			directory: '/fake',
-			phase: 1,
-			sessionID: 's1',
-		});
-		expect(result.success).toBe(true);
-		expect(result.reason).toBe('demoted');
-		expect(result.verdict?.decision).toBe('demote');
-		expect(runnerInvoked).toBe(false);
-	});
-
+describe('executeEpicDecidePhase — demotion path', () => {
 	test('demotion still appends evidence and records the decision', async () => {
 		stub.verdict = {
 			...stub.verdict,
@@ -232,7 +189,7 @@ describe('executeEpicRunPhase — demotion path', () => {
 			p: 0.8,
 			blockingReasons: ['x'],
 		};
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -242,75 +199,13 @@ describe('executeEpicRunPhase — demotion path', () => {
 	});
 });
 
-describe('executeEpicRunPhase — promotion path', () => {
-	test('invokes LeanTurboRunner and returns lane results', async () => {
-		stub.runnerResult = {
-			ok: true,
-			lanes: [
-				{
-					laneId: 'lane-1',
-					taskIds: ['1.1'],
-					files: ['src/a.ts'],
-					status: 'completed' as const,
-				},
-			],
-			degradedTasks: [],
-			serializedTasks: [],
-		};
-		const result = await executeEpicRunPhase({
-			directory: '/fake',
-			phase: 1,
-			sessionID: 's1',
-		});
-		expect(result.success).toBe(true);
-		expect(result.reason).toBe('promoted');
-		expect(result.lanes).toHaveLength(1);
-		expect(result.verdict?.decision).toBe('promote');
-	});
-
-	test('promotion appends evidence and records the decision exactly once', async () => {
-		await executeEpicRunPhase({
-			directory: '/fake',
-			phase: 1,
-			sessionID: 's1',
-		});
-		expect(stub.evidenceAppends).toBe(1);
-		expect(stub.decisionRecordings).toBe(1);
-	});
-
-	test('lean runner exception surfaces as lean-runner-error', async () => {
-		stub.runnerThrows = true;
-		const result = await executeEpicRunPhase({
-			directory: '/fake',
-			phase: 1,
-			sessionID: 's1',
-		});
-		expect(result.success).toBe(false);
-		expect(result.reason).toBe('lean-runner-error');
-		expect(result.errors).toBeDefined();
-		expect(result.errors?.[0]).toContain('simulated runner failure');
-		// The verdict is still recorded even when execution fails.
-		expect(result.verdict?.decision).toBe('promote');
-	});
-});
-
-describe('executeEpicRunPhase — fail-closed on state-unreadable', () => {
-	test('recordEpicDecision throw causes fail-closed before dispatch', async () => {
-		let runnerInvoked = false;
-		class TrackingRunner {
-			runPhase = async () => {
-				runnerInvoked = true;
-				return { ok: true };
-			};
-			cleanupAfterSuccess = async () => {};
-			cleanupAfterFailure = async () => {};
-		}
-		_internals.LeanTurboRunner = TrackingRunner as never;
+describe('executeEpicDecidePhase — fail-closed on state-unreadable', () => {
+	test('recordEpicDecision throw causes fail-closed (no decided verdict)', async () => {
 		_internals.recordEpicDecision = (() => {
 			throw new Error('Epic state is unreadable for /fake');
 		}) as never;
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -319,8 +214,6 @@ describe('executeEpicRunPhase — fail-closed on state-unreadable', () => {
 		expect(result.reason).toBe('epic-state-unreadable');
 		expect(result.errors).toBeDefined();
 		expect(result.errors?.[0]).toContain('unreadable');
-		// And critically: LeanTurboRunner was NOT invoked.
-		expect(runnerInvoked).toBe(false);
 		// The verdict is still returned (the decision was computed before
 		// the state write attempted).
 		expect(result.verdict?.decision).toBe('promote');
@@ -328,33 +221,23 @@ describe('executeEpicRunPhase — fail-closed on state-unreadable', () => {
 
 	test('appendPromotionEvidence throw does NOT cause fail-closed (audit-only)', async () => {
 		// Evidence-write failure is an audit-trail miss, not a safety
-		// issue — execution still proceeds.
-		let runnerInvoked = false;
-		class TrackingRunner {
-			runPhase = async () => {
-				runnerInvoked = true;
-				return { ok: true };
-			};
-			cleanupAfterSuccess = async () => {};
-			cleanupAfterFailure = async () => {};
-		}
-		_internals.LeanTurboRunner = TrackingRunner as never;
+		// issue — the decision still completes and is recorded.
 		_internals.appendPromotionEvidence = (() => {
 			throw new Error('simulated EROFS');
 		}) as never;
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
 		});
 		expect(result.success).toBe(true);
-		expect(result.reason).toBe('promoted');
-		expect(runnerInvoked).toBe(true);
+		expect(result.reason).toBe('decided');
+		expect(stub.decisionRecordings).toBe(1);
 	});
 });
 
-describe('executeEpicRunPhase — per-plan activation (Q1)', () => {
+describe('executeEpicDecidePhase — per-plan activation (Q1)', () => {
 	test('decides over the whole plan, not just the requested phase', async () => {
 		stub.plan = {
 			phases: [
@@ -402,7 +285,7 @@ describe('executeEpicRunPhase — per-plan activation (Q1)', () => {
 			return stub.verdict;
 		}) as never;
 
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 2,
 			sessionID: 's1',
@@ -412,7 +295,7 @@ describe('executeEpicRunPhase — per-plan activation (Q1)', () => {
 	});
 });
 
-describe('executeEpicRunPhase — Capability D calibration wiring', () => {
+describe('executeEpicDecidePhase — Capability D calibration wiring', () => {
 	test('passes the calibration-effective threshold to decideEpicActivation', async () => {
 		// Calibration says: override threshold to 0.10 and promote 'src/hot.ts'.
 		_internals.loadCalibrationState = (() => ({
@@ -443,7 +326,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 			return stub.verdict;
 		}) as never;
 
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -485,7 +368,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 		_internals.effectiveActivationThreshold = (() => 0.3) as never;
 		_internals.effectiveHotModules = (() => []) as never;
 
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -494,7 +377,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 		expect(saveCalls).toBe(1);
 	});
 
-	test('calibration failure falls back to static knobs and does not block dispatch', async () => {
+	test('calibration failure falls back to static knobs and does not block the decision', async () => {
 		_internals.loadCalibrationState = (() => {
 			throw new Error('simulated calibration corruption');
 		}) as never;
@@ -513,7 +396,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 			return stub.verdict;
 		}) as never;
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -522,7 +405,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 		expect(capturedOptions).not.toBeNull();
 		expect(capturedOptions!.activationThreshold).toBe(0.3);
 		expect(capturedOptions!.extraHotModules).toEqual([]);
-		expect(result.reason).toBe('promoted');
+		expect(result.reason).toBe('decided');
 	});
 
 	test('save-failure falls back to durable state for THIS run (adversarial H1 — prevents double-count drift)', async () => {
@@ -582,7 +465,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 			return stub.verdict;
 		}) as never;
 
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -612,7 +495,7 @@ describe('executeEpicRunPhase — Capability D calibration wiring', () => {
 			return null;
 		}) as never;
 
-		await executeEpicRunPhase({
+		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -667,10 +550,10 @@ describe('epic_decide_phase tool — ctx.sessionID precedence (Fix B)', () => {
 	});
 });
 
-describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)', () => {
-	test('refuses to dispatch when pending tasks have no declared scope AND no files_touched', async () => {
+describe('executeEpicDecidePhase — scope-missing preflight (live-test escalation)', () => {
+	test('refuses to decide when pending tasks have no declared scope AND no files_touched', async () => {
 		// Plan with two pending tasks neither of which has scope data.
-		// readTaskScopes returns null (no scope file) and files_touched is empty.
+		// No live declared scope binding and files_touched is empty.
 		stub.plan = {
 			phases: [
 				{
@@ -693,9 +576,9 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 				},
 			],
 		};
-		_internals.readTaskScopes = (() => null) as never;
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => null);
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -725,14 +608,16 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 				},
 			],
 		};
-		_internals.readTaskScopes = (() => ['src/a.ts']) as never;
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => [
+			'src/a.ts',
+		]);
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
 		});
-		// Reaches the decision and dispatches.
+		// Reaches the decision.
 		expect(result.reason).not.toBe('scopes-missing');
 		expect(stub.evidenceAppends).toBe(1);
 	});
@@ -754,9 +639,9 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 				},
 			],
 		};
-		_internals.readTaskScopes = (() => null) as never;
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => null);
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -788,9 +673,9 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 				},
 			],
 		};
-		_internals.readTaskScopes = (() => null) as never;
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => null);
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
 			sessionID: 's1',
@@ -833,11 +718,12 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 				},
 			],
 		};
-		// 2.1 has on-disk scope; 2.2 has nothing; 2.3 has files_touched; 2.4 completed.
-		_internals.readTaskScopes = ((_dir: string, taskId: string) =>
-			taskId === '2.1' ? ['src/a.ts'] : null) as never;
+		// 2.1 has a live declared scope; 2.2 has nothing; 2.3 has files_touched; 2.4 completed.
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub((taskId) =>
+			taskId === '2.1' ? ['src/a.ts'] : null,
+		);
 
-		const result = await executeEpicRunPhase({
+		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 2,
 			sessionID: 's1',
@@ -848,18 +734,7 @@ describe('executeEpicRunPhase — scope-missing preflight (live-test escalation)
 });
 
 describe('executeEpicDecidePhase — transparent decide-only path', () => {
-	test('returns reason="decided" on promote without dispatching Lean Turbo', async () => {
-		let runnerInvoked = false;
-		class TrackingRunner {
-			runPhase = async () => {
-				runnerInvoked = true;
-				return { ok: true };
-			};
-			cleanupAfterSuccess = async () => {};
-			cleanupAfterFailure = async () => {};
-		}
-		_internals.LeanTurboRunner = TrackingRunner as never;
-
+	test('returns reason="decided" on promote without dispatching coders', async () => {
 		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
@@ -868,11 +743,12 @@ describe('executeEpicDecidePhase — transparent decide-only path', () => {
 		expect(result.success).toBe(true);
 		expect(result.reason).toBe('decided');
 		expect(result.verdict?.decision).toBe('promote');
-		// Critically: Lean Turbo was NOT invoked — the decide-only tool stops
-		// before dispatch so the architect can dispatch via Task instead.
-		expect(runnerInvoked).toBe(false);
-		// Lane fields are absent because no dispatch happened.
-		expect(result.lanes).toBeUndefined();
+		// Decide-only: the result carries no dispatch output.
+		expect(Object.keys(result).sort()).toEqual([
+			'reason',
+			'success',
+			'verdict',
+		]);
 	});
 
 	test('returns reason="demoted" on demote without dispatching', async () => {
@@ -882,17 +758,6 @@ describe('executeEpicDecidePhase — transparent decide-only path', () => {
 			p: 0.8,
 			blockingReasons: ['p too high'],
 		};
-		let runnerInvoked = false;
-		class TrackingRunner {
-			runPhase = async () => {
-				runnerInvoked = true;
-				return { ok: true };
-			};
-			cleanupAfterSuccess = async () => {};
-			cleanupAfterFailure = async () => {};
-		}
-		_internals.LeanTurboRunner = TrackingRunner as never;
-
 		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
@@ -901,10 +766,9 @@ describe('executeEpicDecidePhase — transparent decide-only path', () => {
 		expect(result.success).toBe(true);
 		expect(result.reason).toBe('demoted');
 		expect(result.verdict?.decision).toBe('demote');
-		expect(runnerInvoked).toBe(false);
 	});
 
-	test('still persists evidence + records decision (same audit trail as run_phase)', async () => {
+	test('still persists evidence + records decision (audit trail on promote)', async () => {
 		await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,
@@ -931,7 +795,7 @@ describe('executeEpicDecidePhase — transparent decide-only path', () => {
 				},
 			],
 		};
-		_internals.readTaskScopes = (() => null) as never;
+		_internals.resolveEpicDeclaredScopes = declaredScopesStub(() => null);
 		const result = await executeEpicDecidePhase({
 			directory: '/fake',
 			phase: 1,

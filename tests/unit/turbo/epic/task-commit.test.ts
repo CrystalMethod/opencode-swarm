@@ -6,7 +6,9 @@
  *  - No-git directories early-return without spawning any git command.
  *  - Git directories stage + commit with the `swarm(task <id>):` prefix.
  *  - Commit failures are non-fatal (returned in result, not thrown).
- *  - `--allow-empty` is used so no-op tasks still produce a marker.
+ *  - `--allow-empty --only` is used so no-op tasks still produce a marker
+ *    without sweeping the index (scope/pathspec cases live in
+ *    task-commit-scope.test.ts).
  *  - `formatTaskCommitMessage` produces the contract format Rule 3 consumes.
  *
  * Test isolation: uses the file-scoped `_internals` DI seam per
@@ -97,6 +99,10 @@ describe('commitTaskCompletion', () => {
 		// actually wait during unit tests. Tests that want to verify the
 		// retry behavior override this with a tracked stub.
 		_internals.sleep = async () => {};
+		// Default: a clean working tree, so the no-scope path writes its
+		// marker. The dirty-tree refusal is covered in
+		// task-commit-scope.test.ts.
+		_internals.listChangedPaths = () => [];
 	});
 
 	afterEach(() => {
@@ -113,8 +119,8 @@ describe('commitTaskCompletion', () => {
 		_internals.stageScopedPaths = () => {
 			throw new Error('stageScopedPaths must not be called in no-git path');
 		};
-		_internals.commitAllowEmpty = () => {
-			throw new Error('commitAllowEmpty must not be called in no-git path');
+		_internals.commitScopedPaths = () => {
+			throw new Error('commitScopedPaths must not be called in no-git path');
 		};
 
 		const result = await commitTaskCompletion('/tmp/fake', '2.1', 'desc', [
@@ -129,9 +135,10 @@ describe('commitTaskCompletion', () => {
 		_internals.isGitRepo = () => true;
 		_internals.stageScopedPaths = (cwd: string, paths: string[]) => {
 			calls.push({ fn: 'stageScopedPaths', args: [cwd, paths] });
+			return paths;
 		};
-		_internals.commitAllowEmpty = (cwd: string, message: string) => {
-			calls.push({ fn: 'commitAllowEmpty', args: [cwd, message] });
+		_internals.commitScopedPaths = (cwd: string, message: string) => {
+			calls.push({ fn: 'commitScopedPaths', args: [cwd, message] });
 		};
 		_internals.gitHeadSha = () => 'abc1234';
 
@@ -148,11 +155,11 @@ describe('commitTaskCompletion', () => {
 			fn: 'stageScopedPaths',
 			args: ['/tmp/fake', ['src/models/foo.ts', 'src/models/bar.ts']],
 		});
-		expect(calls[1].fn).toBe('commitAllowEmpty');
+		expect(calls[1].fn).toBe('commitScopedPaths');
 		expect(calls[1].args[1]).toMatch(/^swarm\(task 2\.1\):/);
 	});
 
-	test('no-scope path: SKIPS staging entirely, produces marker-only commit (the cross-lane WIP fix)', async () => {
+	test('no-scope path on a clean tree: SKIPS staging entirely, produces marker-only commit (the cross-lane WIP fix)', async () => {
 		// This is the headline contract from the adversarial review on
 		// 2026-06-03: when a task has no declared scope, Rule 2 must NOT
 		// fall back to `git add -A` (which swept in sibling lanes' WIP
@@ -164,8 +171,8 @@ describe('commitTaskCompletion', () => {
 				'stageScopedPaths must not be called when scope is empty',
 			);
 		};
-		_internals.commitAllowEmpty = (cwd: string, message: string) => {
-			calls.push({ fn: 'commitAllowEmpty', args: [cwd, message] });
+		_internals.commitScopedPaths = (cwd: string, message: string) => {
+			calls.push({ fn: 'commitScopedPaths', args: [cwd, message] });
 		};
 		_internals.gitHeadSha = () => 'def5678';
 
@@ -187,58 +194,10 @@ describe('commitTaskCompletion', () => {
 		);
 		expect(whitespaceScope.committed).toBe(true);
 		// Three commit calls; zero stage calls.
-		expect(calls.filter((c) => c.fn === 'commitAllowEmpty')).toHaveLength(3);
+		expect(calls.filter((c) => c.fn === 'commitScopedPaths')).toHaveLength(3);
 	});
 
-	test('stageScopedPaths argv (real) includes ALL .swarm exclude pathspecs, including nested (AGENTS.md #4)', async () => {
-		// Phase 9 rewrite: the previous version of this test stubbed the
-		// very seam it claimed to verify, then asserted its own fabricated
-		// argv equaled itself — proving nothing. This version stubs the
-		// LOWER seam (`gitBranchInternals.gitExec`) and exercises the
-		// REAL `stageScopedPaths` so a regression that drops any of the
-		// `.swarm` exclude pathspecs is actually caught.
-		const gitOrig = gitBranchInternals.gitExec;
-		const capturedArgvs: string[][] = [];
-		gitBranchInternals.gitExec = ((args: string[], _cwd: string) => {
-			capturedArgvs.push([...args]);
-			// Return value depends on the subcommand. `git log` for the
-			// idempotency probe must report "no existing commit" so the
-			// flow continues; `git rev-parse HEAD` must return a sha.
-			if (args[0] === 'log') return '';
-			if (args[0] === 'rev-parse') return 'abc1234';
-			return '';
-		}) as typeof gitBranchInternals.gitExec;
-
-		try {
-			_internals.isGitRepo = () => true;
-			// Restore real production functions for the staging path —
-			// they will call the stubbed `gitBranchInternals.gitExec`.
-			_internals.stageScopedPaths = originals.stageScopedPaths;
-			_internals.commitAllowEmpty = originals.commitAllowEmpty;
-			_internals.gitHeadSha = originals.gitHeadSha;
-			_internals.hasExistingTaskCommit = originals.hasExistingTaskCommit;
-
-			await commitTaskCompletion('/tmp/fake', '2.1', 'desc', ['src/foo.ts']);
-
-			// Find the `git add` call (the staging argv).
-			const addArgv = capturedArgvs.find((a) => a[0] === 'add');
-			expect(addArgv).toBeDefined();
-			// All four exclude pathspecs must be present. Top-level
-			// patterns alone don't cover nested `.swarm/` in monorepo
-			// subtrees — the recursive `**/.swarm` patterns close that
-			// hole (the gap the adversarial review on 2026-06-03 found).
-			expect(addArgv).toEqual([
-				'add',
-				'--',
-				'src/foo.ts',
-				':(exclude,glob)**/.swarm/**',
-			]);
-		} finally {
-			gitBranchInternals.gitExec = gitOrig;
-		}
-	});
-
-	test('commitAllowEmpty argv (real) carries --no-verify so pre-commit hooks do NOT fire', async () => {
+	test('commitScopedPaths argv (real) carries --no-verify so pre-commit hooks do NOT fire, and --only so the index is not swept', async () => {
 		// Phase 8 contract: Rule 2's marker commits are protocol artifacts,
 		// not user content; the user's pre-commit / commit-msg hooks
 		// should not run on every task completion (otherwise Biome /
@@ -255,10 +214,10 @@ describe('commitTaskCompletion', () => {
 
 		try {
 			_internals.isGitRepo = () => true;
-			_internals.commitAllowEmpty = originals.commitAllowEmpty;
+			_internals.commitScopedPaths = originals.commitScopedPaths;
 			_internals.hasExistingTaskCommit = originals.hasExistingTaskCommit;
 			_internals.gitHeadSha = originals.gitHeadSha;
-			_internals.stageScopedPaths = () => {};
+			_internals.stageScopedPaths = () => [];
 
 			await commitTaskCompletion('/tmp/fake', '3.1', 'desc');
 
@@ -266,6 +225,7 @@ describe('commitTaskCompletion', () => {
 			expect(commitArgv).toBeDefined();
 			expect(commitArgv).toContain('--allow-empty');
 			expect(commitArgv).toContain('--no-verify');
+			expect(commitArgv).toContain('--only');
 		} finally {
 			gitBranchInternals.gitExec = gitOrig;
 		}
@@ -284,8 +244,9 @@ describe('commitTaskCompletion', () => {
 		let commitCalled = false;
 		_internals.stageScopedPaths = () => {
 			stageCalled = true;
+			return [];
 		};
-		_internals.commitAllowEmpty = () => {
+		_internals.commitScopedPaths = () => {
 			commitCalled = true;
 		};
 
@@ -311,8 +272,8 @@ describe('commitTaskCompletion', () => {
 			throw new Error('git log failed');
 		};
 		let commitCalled = false;
-		_internals.stageScopedPaths = () => {};
-		_internals.commitAllowEmpty = () => {
+		_internals.stageScopedPaths = () => [];
+		_internals.commitScopedPaths = () => {
 			commitCalled = true;
 		};
 		_internals.gitHeadSha = () => 'abc1234';
@@ -348,8 +309,8 @@ describe('commitTaskCompletion', () => {
 
 	test('commit failure is non-fatal — returns reason="commit-failed"', async () => {
 		_internals.isGitRepo = () => true;
-		_internals.stageScopedPaths = () => {};
-		_internals.commitAllowEmpty = () => {
+		_internals.stageScopedPaths = () => [];
+		_internals.commitScopedPaths = () => {
 			throw new Error('pre-commit hook rejected commit');
 		};
 
@@ -398,10 +359,10 @@ describe('commitTaskCompletion', () => {
 
 	test('Phase 11 (B5): commit retries on index.lock contention and succeeds on the second attempt', async () => {
 		_internals.isGitRepo = () => true;
-		_internals.stageScopedPaths = () => {};
+		_internals.stageScopedPaths = () => [];
 		_internals.gitHeadSha = () => 'sha-after-retry';
 		let attempt = 0;
-		_internals.commitAllowEmpty = () => {
+		_internals.commitScopedPaths = () => {
 			attempt++;
 			if (attempt === 1) {
 				throw new Error(
@@ -427,9 +388,9 @@ describe('commitTaskCompletion', () => {
 
 	test('Phase 11 (B5): commit retries up to 4 attempts on persistent lock contention, then degrades non-fatally', async () => {
 		_internals.isGitRepo = () => true;
-		_internals.stageScopedPaths = () => {};
+		_internals.stageScopedPaths = () => [];
 		let attempt = 0;
-		_internals.commitAllowEmpty = () => {
+		_internals.commitScopedPaths = () => {
 			attempt++;
 			throw new Error(
 				"fatal: Unable to create '/repo/.git/index.lock': File exists.",
@@ -453,9 +414,9 @@ describe('commitTaskCompletion', () => {
 
 	test('Phase 11 (B5): non-lock errors do NOT trigger retry (a pre-commit hook reject only runs once)', async () => {
 		_internals.isGitRepo = () => true;
-		_internals.stageScopedPaths = () => {};
+		_internals.stageScopedPaths = () => [];
 		let attempt = 0;
-		_internals.commitAllowEmpty = () => {
+		_internals.commitScopedPaths = () => {
 			attempt++;
 			throw new Error('hook failed: license header missing');
 		};
@@ -472,9 +433,9 @@ describe('commitTaskCompletion', () => {
 
 	test('Phase 17 (C.H2): taskId with unsafe characters (\\n, parens, backtick) gets scrubbed in the commit subject', async () => {
 		_internals.isGitRepo = () => true;
-		_internals.stageScopedPaths = () => {};
+		_internals.stageScopedPaths = () => [];
 		let captured: string | null = null;
-		_internals.commitAllowEmpty = (_cwd: string, message: string) => {
+		_internals.commitScopedPaths = (_cwd: string, message: string) => {
 			captured = message;
 		};
 		_internals.gitHeadSha = () => 'sha';
@@ -496,8 +457,9 @@ describe('commitTaskCompletion', () => {
 		let captured: string[] | null = null;
 		_internals.stageScopedPaths = (_cwd: string, paths: string[]) => {
 			captured = paths;
+			return paths;
 		};
-		_internals.commitAllowEmpty = () => {};
+		_internals.commitScopedPaths = () => {};
 		_internals.gitHeadSha = () => 'sha';
 
 		// Architect-authored scope mixing real paths with pathspec magic.
@@ -511,48 +473,13 @@ describe('commitTaskCompletion', () => {
 		expect(captured).toEqual(['src/foo.ts', 'src/bar.ts']);
 	});
 
-	test('Phase 17 (E.3): scopes larger than CHUNK get split into multiple add invocations', async () => {
-		_internals.isGitRepo = () => true;
-		const chunks: number[] = [];
-		_internals.stageScopedPaths = originals.stageScopedPaths;
-		// Capture chunk count via the real impl's gitExec layer.
-		const { _internals: gbi } = await import('../../../../src/git/branch');
-		const gitOrig = gbi.gitExec;
-		gbi.gitExec = ((args: string[]) => {
-			if (args[0] === 'add') {
-				// pathspec count = total - 2 (the 'add', '--', and final
-				// exclude — the exclude is 1 token at the tail).
-				const pathCount = args.filter(
-					(a) => !a.startsWith(':(') && a !== 'add' && a !== '--',
-				).length;
-				chunks.push(pathCount);
-			}
-			return '';
-		}) as typeof gbi.gitExec;
-		_internals.commitAllowEmpty = () => {};
-		_internals.gitHeadSha = () => 'sha';
-		_internals.hasExistingTaskCommit = () => false;
-
-		try {
-			const manyPaths = Array.from({ length: 450 }, (_, i) => `src/f${i}.ts`);
-			await commitTaskCompletion('/tmp/fake', '3.1', 'desc', manyPaths);
-			// 450 paths / chunk size 200 → 3 invocations (200 + 200 + 50).
-			expect(chunks.length).toBe(3);
-			expect(chunks[0]).toBe(200);
-			expect(chunks[1]).toBe(200);
-			expect(chunks[2]).toBe(50);
-		} finally {
-			gbi.gitExec = gitOrig;
-		}
-	});
-
 	test('Phase 17 (B.M9): pre-existing marker → committed=true with idempotent-skip reason (not committed=false)', async () => {
 		_internals.isGitRepo = () => true;
 		_internals.hasExistingTaskCommit = () => true;
 		_internals.stageScopedPaths = () => {
 			throw new Error('must not stage');
 		};
-		_internals.commitAllowEmpty = () => {
+		_internals.commitScopedPaths = () => {
 			throw new Error('must not commit');
 		};
 

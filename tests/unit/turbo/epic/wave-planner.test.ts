@@ -12,8 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { LeanTurboConfig } from '../../../../src/config/schema';
-import { planEpicWaves } from '../../../../src/turbo/epic/wave-planner';
-import type { ScopeFile } from '../../../../src/turbo/lean/conflicts';
+import { planEpicWaves as planWavesImpl } from '../../../../src/turbo/epic/wave-planner';
 import type {
 	PlanPhase,
 	PlanTask,
@@ -40,23 +39,23 @@ function makePlan(tasks: PlanTask[]): { phases: PlanPhase[] } {
 	};
 }
 
-function writeScope(scopesDir: string, taskId: string, files: string[]): void {
-	const scope: ScopeFile = {
-		taskId,
-		files,
-		declaredAt: '2026-01-01T00:00:00.000Z',
-	};
-	fs.writeFileSync(
-		path.join(scopesDir, `scope-${taskId}.json`),
-		JSON.stringify(scope),
-	);
+// Pure planner-algorithm tests: fixture scopes ride the planner's explicit
+// `scopes` channel. Store-backed v2 resolution and the stale-v1 regressions
+// live in tests/unit/tools/epic-plan-waves-declared-scopes.test.ts and
+// tests/unit/turbo/epic/declared-scopes.test.ts.
+let declared: Record<string, string[]> = {};
+function writeScope(_scopesDir: string, taskId: string, files: string[]): void {
+	declared[taskId] = files;
 }
+const planEpicWaves: typeof planWavesImpl = (d, ph, pl, c, sc, ...rest) =>
+	planWavesImpl(d, ph, pl, c, { ...declared, ...sc }, ...rest);
 
 describe('planEpicWaves', () => {
 	let tempDir: string;
 	let scopesDir: string;
 
 	beforeEach(() => {
+		declared = {};
 		tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wave-planner-test-'));
 		scopesDir = path.join(tempDir, '.swarm', 'scopes');
 		fs.mkdirSync(scopesDir, { recursive: true });

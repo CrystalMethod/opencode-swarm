@@ -37,7 +37,10 @@
 
 import { normalizePath } from '../lean/conflicts.js';
 import type { CalibrationState } from './calibration.js';
-import type { DivergenceRecord } from './divergence-recorder.js';
+import {
+	type DivergenceRecord,
+	latestRecordPerTask,
+} from './divergence-recorder.js';
 
 export interface ApplyCalibrationOptions {
 	/** Static config value — the absolute ceiling for the threshold. */
@@ -68,9 +71,12 @@ const DEFAULT_LOOSEN_WINDOW = 10;
  *
  * The caller is responsible for tracking which records are "new" (typically
  * by reading the full divergence history and slicing past the
- * `processedRecords` count from the current state). This function does
- * not deduplicate — feeding the same record twice will double-count its
- * effect.
+ * `processedRecords` count from the current state). Within `newRecords`
+ * only the LATEST record per `(planId, taskId)` is applied (a retried or
+ * reworked task counts once, with its final outcome); records without a
+ * `planId` are applied individually. `processedRecords` still advances by
+ * `newRecords.length` so every consumed record is marked processed.
+ * Feeding the same keyless record twice across calls double-counts it.
  */
 export function applyCalibration(
 	state: CalibrationState,
@@ -88,7 +94,7 @@ export function applyCalibration(
 	let consecutiveCleanCount = state.consecutiveCleanCount;
 	const hotSet = new Set(state.hotModuleAdditions);
 
-	for (const record of newRecords) {
+	for (const record of latestRecordPerTask(newRecords)) {
 		if (record.isClean) {
 			consecutiveCleanCount += 1;
 			if (consecutiveCleanCount >= loosenWindow) {

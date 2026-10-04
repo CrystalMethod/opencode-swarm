@@ -3174,21 +3174,35 @@ export const LeanTurboConfigSchema = z.object({
 export type LeanTurboConfig = z.infer<typeof LeanTurboConfigSchema>;
 
 /**
- * Epic mode — co-change-aware conflict detection settings.
+ * Epic Mode settings (`turbo.epic`).
  *
- * Epic mode is an additive layer that composes Lean Turbo (it never modifies it).
- * Capability A surfaces git co-change history as an extra conflict signal so
- * pairs of files that historically change together can be treated as conflicting
- * even when path-based rules would not catch the coupling.
+ * Epic Mode reuses Lean Turbo's conflict predicates (it never modifies Lean
+ * Turbo) and dispatches promoted waves itself via visible `Task` calls.
  *
- * With `cochange.enabled: false` (the default), no Epic-mode code runs in any
- * existing flow — behavior is identical to upstream Lean Turbo.
+ * Two independent opt-in master gates, both default `false` and both read
+ * through `src/turbo/epic/config-gate.ts`:
+ *   - `mode.enabled` gates Epic Mode itself: `/swarm epic on`,
+ *     `/swarm turbo epic on`, `epic_decide_phase`, `epic_plan_waves`, and the
+ *     project-scoped Epic probe (Rule 2 auto-commit, the Epic phase-readiness
+ *     gate in `phase_complete`). With it off, none of those run.
+ *   - `cochange.enabled` gates only Capability A's git co-change conflict
+ *     signal. With it off, `p` is computed from declared-path conflicts only
+ *     and the decision rationale records `cochangeSignal: 'disabled-by-config'`
+ *     (also for `/swarm coupling`).
+ *
+ * This block lives under `turbo`, whose schema is a discriminated union on
+ * `strategy`: a `turbo` block without a valid `strategy` (and, for
+ * `strategy: 'lean'`, a `lean` object) fails validation and is dropped
+ * whole, taking `turbo.epic` with it.
  */
 export const EpicConfigSchema = z
 	.object({
 		cochange: z
 			.object({
-				/** Master gate for the co-change conflict signal. Default off; opt-in. */
+				/**
+				 * Master gate for the co-change conflict signal (Capability A).
+				 * Default off; opt-in. Off ⇒ path-only conflicts.
+				 */
 				enabled: z.boolean().default(false),
 				/**
 				 * NPMI floor for considering a file pair "historically co-changing".
@@ -3208,12 +3222,14 @@ export const EpicConfigSchema = z
 			.optional(),
 		/**
 		 * Epic mode activation settings (Capability C). When `enabled`, the
-		 * `/swarm epic` command and the architect-facing flow
-		 * (`epic_decide_phase` → `epic_plan_waves` → `Task` per wave) become
-		 * usable; they compute `p` over the plan, gate on the activation
-		 * threshold + hot modules + greenfield rule, and either dispatch via
-		 * the wave planner (when promoted) or fall back to the standard
-		 * serial path (when demoted). Default off — opt-in.
+		 * `/swarm epic on` / `/swarm turbo epic on` toggles and the
+		 * architect-facing flow (`epic_decide_phase` → `epic_plan_waves` →
+		 * `Task` per wave → `epic_phase_review`) become usable; they compute
+		 * `p` over the plan, gate on the activation threshold + hot modules +
+		 * greenfield (predecessor-evidence) rule, and either dispatch waves
+		 * (when promoted) or fall back to the standard serial path (when
+		 * demoted). Default off — opt-in; with it off those entry points
+		 * refuse with `epic-disabled-by-config`.
 		 */
 		mode: z
 			.object({
@@ -3228,10 +3244,12 @@ export const EpicConfigSchema = z
 				 */
 				activation_threshold: z.number().min(0).max(1).default(0.3),
 				/**
-				 * Greenfield rule (brief §4.2). Co-change history with fewer than
-				 * this many commits is treated as too sparse to trust; the plan is
-				 * forced serial regardless of `p`. Matches `co_change_analyzer`'s
-				 * own minimum-commits floor.
+				 * Legacy greenfield floor (brief §4.2). Recorded in the decision
+				 * rationale for telemetry only — it no longer forces serial. The
+				 * greenfield gate now passes on Rule 1 (non-git project) or on
+				 * predecessor evidence (every cross-phase upstream task has a
+				 * `swarm(task <id>):` commit marker); see
+				 * `src/turbo/epic/activation.ts`.
 				 */
 				min_commits_for_signal: z.number().int().min(1).default(20),
 			})
@@ -3253,9 +3271,9 @@ export const EpicConfigSchema = z
 		 *     without being declared are added permanently (a one-way
 		 *     ratchet — auto-loosening here would defeat the safety guarantee).
 		 *
-		 * State persists at `.swarm/epic/calibration.json`. Default `enabled`
-		 * matches the rest of Epic Mode — on when the parent config is
-		 * present, defaults are conservative.
+		 * State persists at `.swarm/epic/calibration.json`. Defaults to
+		 * `enabled: true`, but it only ever runs inside `epic_decide_phase`,
+		 * so it is inert unless `mode.enabled` is also true.
 		 */
 		calibration: z
 			.object({

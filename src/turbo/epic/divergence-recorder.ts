@@ -2,15 +2,15 @@
  * Divergence recorder for Epic Mode Capability D (self-calibration).
  *
  * After every task transitions to `completed`, this module:
- *   1. Compares the task's DECLARED scope (from
- *      `.swarm/scopes/scope-{taskId}.json` — what the coder said it would
- *      touch) against the ACTUAL files modified during the task
- *      (`session.modifiedFilesThisCoderTask` — what the guardrails hook
- *      observed the coder writing to).
+ *   1. Compares the task's DECLARED scope (latest `declare_scope` binding for
+ *      the task under the current plan id, via the calibration-only reader in
+ *      `declared-scopes.ts`) against the ACTUAL files attributed to that exact
+ *      task (unioned across the architect and same-project child sessions by
+ *      `epic_record_divergence`, which records nothing without attribution).
  *   2. Computes divergence — undeclared writes (actual − declared), unused
  *      declarations (declared − actual), and a per-task divergence ratio
- *      (undeclared / max(1, actual)).
- *   3. Appends one record to `.swarm/epic/divergence.jsonl`.
+ *      (undeclared / max(1, actual)). A declared directory covers descendants.
+ *   3. Appends one record to `.swarm/epic/divergence.jsonl`, idempotently.
  *
  * The calibration engine (`./calibration-engine.ts`) reads this history on
  * the next `epic_decide_phase` invocation and uses it to adjust the
@@ -19,12 +19,11 @@
  * Pure I/O: never throws to the caller. Failures are logged and swallowed
  * so the task-completion path is never blocked by an audit write.
  */
-
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { resolveRetentionCap } from '../../retention/caps.js';
 import * as logger from '../../utils/logger.js';
-import { normalizePath } from '../lean/conflicts.js';
+import { normalizePath, pathsConflict } from '../lean/conflicts.js';
 
 /** One record per task completion. */
 export interface DivergenceRecord {
@@ -32,22 +31,23 @@ export interface DivergenceRecord {
 	timestamp: string;
 	sessionID: string;
 	taskId: string;
+	/** `derivePlanId` of the task's plan; keys `(planId, taskId)` dedupe. */
+	planId?: string; // absent on legacy records — those are never deduplicated
 	/** Phase the task belonged to, when known. */
 	phaseNumber?: number;
-	/** Normalised paths declared via `declare_scope` or files_touched fallback. */
+	/** Normalised paths of the task's latest `declare_scope` declaration. */
 	declaredScope: string[];
-	/** Normalised paths the guardrails hook observed the coder write to. */
+	/** Normalised paths attributed to this task's coder writes. */
 	actualFiles: string[];
-	/** Files in `actualFiles` not present in `declaredScope`. */
+	/** Files in `actualFiles` not covered by `declaredScope` (dirs cover). */
 	undeclared: string[];
-	/** Files in `declaredScope` not present in `actualFiles`. */
+	/** Entries in `declaredScope` covering no file in `actualFiles`. */
 	unused: string[];
 	/** undeclared.length / max(1, actualFiles.length). 0 ⇒ fully declared. */
 	divergenceRatio: number;
 	/** True when divergenceRatio === 0 (no undeclared writes). */
 	isClean: boolean;
 }
-
 const EVIDENCE_REL_DIR = path.join('.swarm', 'epic');
 const EVIDENCE_FILE = 'divergence.jsonl';
 
@@ -144,10 +144,16 @@ export function computeDivergence(
 } {
 	const declared = Array.from(new Set(declaredScope.map(normalizePath))).sort();
 	const actual = Array.from(new Set(actualFiles.map(normalizePath))).sort();
-	const declaredSet = new Set(declared);
-	const actualSet = new Set(actual);
-	const undeclared = actual.filter((f) => !declaredSet.has(f));
-	const unused = declared.filter((f) => !actualSet.has(f));
+	// A declared entry covers an actual file when they are the same path OR
+	// the declared entry is a directory prefix of it at a segment boundary —
+	// the same containment rule as Lean's `pathsConflict`, made directional
+	// (declared ⊇ actual). So writes inside a declared directory scope are
+	// declared, and a directory scope with writes inside it is used.
+	const covers = (declaredPath: string, actualPath: string): boolean =>
+		declaredPath.length <= actualPath.length &&
+		pathsConflict(declaredPath, actualPath);
+	const undeclared = actual.filter((f) => !declared.some((d) => covers(d, f)));
+	const unused = declared.filter((d) => !actual.some((f) => covers(d, f)));
 	const divergenceRatio =
 		actual.length === 0 ? 0 : undeclared.length / actual.length;
 	return { declared, actual, undeclared, unused, divergenceRatio };
@@ -157,6 +163,8 @@ interface RecordTaskDivergenceArgs {
 	directory: string;
 	sessionID: string;
 	taskId: string;
+	/** Plan identity; enables `(planId, taskId)` idempotency (see record). */
+	planId?: string;
 	phaseNumber?: number;
 	declaredScope: readonly string[];
 	actualFiles: readonly string[];
@@ -175,11 +183,12 @@ interface RecordTaskDivergenceArgs {
  */
 export function recordTaskDivergence(
 	args: RecordTaskDivergenceArgs,
-): { path: string; record: DivergenceRecord } | null {
+): { path: string; record: DivergenceRecord; duplicate?: boolean } | null {
 	const {
 		directory,
 		sessionID,
 		taskId,
+		planId,
 		phaseNumber,
 		declaredScope,
 		actualFiles,
@@ -188,10 +197,31 @@ export function recordTaskDivergence(
 	const { declared, actual, undeclared, unused, divergenceRatio } =
 		computeDivergence(declaredScope, actualFiles);
 
+	// Idempotency per (planId, taskId): a retried call that would record the
+	// SAME declared/actual sets as the latest record for this task is a
+	// no-op (returns that record, `duplicate: true`). A rework with different
+	// sets appends a new record, which supersedes the earlier one for
+	// calibration (`latestRecordPerTask`).
+	if (planId !== undefined) {
+		const prior = findLatestRecordForTask(directory, planId, taskId);
+		if (
+			prior !== null &&
+			sameStringArray(prior.declaredScope, declared) &&
+			sameStringArray(prior.actualFiles, actual)
+		) {
+			return {
+				path: path.join(directory, EVIDENCE_REL_DIR, EVIDENCE_FILE),
+				record: prior,
+				duplicate: true,
+			};
+		}
+	}
+
 	const record: DivergenceRecord = {
 		timestamp: new Date().toISOString(),
 		sessionID,
 		taskId,
+		...(planId !== undefined ? { planId } : {}),
 		phaseNumber,
 		declaredScope: declared,
 		actualFiles: actual,
@@ -226,6 +256,48 @@ export function recordTaskDivergence(
 		return null;
 	}
 	return { path: filePath, record };
+}
+
+function sameStringArray(
+	a: readonly string[] | undefined,
+	b: readonly string[],
+): boolean {
+	if (!Array.isArray(a) || a.length !== b.length) return false;
+	return a.every((value, index) => value === b[index]);
+}
+
+function findLatestRecordForTask(
+	directory: string,
+	planId: string,
+	taskId: string,
+): DivergenceRecord | null {
+	let latest: DivergenceRecord | null = null;
+	for (const record of readDivergenceHistory(directory)) {
+		if (record.planId === planId && record.taskId === taskId) latest = record;
+	}
+	return latest;
+}
+
+/**
+ * Collapse records to the LATEST one per `(planId, taskId)`, preserving the
+ * chronological position of each surviving record. Records without a
+ * `planId` (written before the field existed) are kept as-is — they cannot
+ * be keyed safely across plans. Pure.
+ */
+export function latestRecordPerTask(
+	records: readonly DivergenceRecord[],
+): DivergenceRecord[] {
+	const lastIndex = new Map<string, number>();
+	records.forEach((record, index) => {
+		if (typeof record.planId === 'string') {
+			lastIndex.set(`${record.planId}\u0000${record.taskId}`, index);
+		}
+	});
+	return records.filter(
+		(record, index) =>
+			typeof record.planId !== 'string' ||
+			lastIndex.get(`${record.planId}\u0000${record.taskId}`) === index,
+	);
 }
 
 export interface ReadDivergenceHistoryOptions {

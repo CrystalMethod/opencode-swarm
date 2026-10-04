@@ -1349,7 +1349,7 @@ export const COMMAND_REGISTRY = {
 		description:
 			'Measure plan coupling (p) and rank modules driving conflicts (Epic mode preview)',
 		details:
-			"Computes the coupling coefficient p = (conflicting task pairs) / (total task pairs) over the current plan, using Epic mode's combined path + co-change conflict signal. Surfaces per-module contention and a ranked decoupling roadmap. Read-only: runs independent of `turbo.epic.cochange.enabled` so it can be used as a what-if diagnostic before opting into the runtime signal.",
+			"Computes the coupling coefficient p = (conflicting task pairs) / (total task pairs) over the current plan, using Epic mode's combined path + co-change conflict signal. Surfaces per-module contention and a ranked decoupling roadmap. Declared scopes come from live `declare_scope` bindings (falling back to plan `files_touched`). Read-only and usable without Epic Mode on, but the co-change signal is included only when `turbo.epic.cochange.enabled` is true — otherwise p reflects path conflicts only and the report says the signal is disabled by config.",
 		args: '--phase <n>, --threshold <-1..1>, --min-co-changes <n>, --format markdown|json, --persist',
 		category: 'diagnostics',
 		toolPolicy: 'none',
@@ -1359,7 +1359,7 @@ export const COMMAND_REGISTRY = {
 		description:
 			'Toggle Epic Mode (autonomous coupling-aware parallel activation) and inspect its decisions',
 		details:
-			'Epic Mode is an additive overlay that composes Lean Turbo. When on, the architect follows the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → for each wave in order, dispatch one Task per taskId in the wave, ALL in one assistant message (each concurrent coder appears as a visible subagent the user can click into) → epic_record_divergence. epic_decide_phase computes the plan-wide coupling coefficient p and gates parallel promotion on p + a hot-module check + a greenfield rule. epic_plan_waves partitions promoted phases into ordered concurrent groups (waves) that respect dependency order and scope disjointness. Subcommands: on, off, status, decide (read-only what-if), last (most recent decision from durable evidence log), calibration (Capability D state: learned threshold + hot modules + recent divergent tasks). Bare /swarm epic shows status. Decision rationale persists to .swarm/evidence/epic-promotions.jsonl after every epic_decide_phase invocation.',
+			"Epic Mode decides per phase whether the plan's tasks can run in parallel and dispatches promoted waves itself via visible Task calls (it does not require Lean Turbo). Requires `turbo.epic.mode.enabled: true` in config (a `turbo` block must also declare `strategy`); `on` is refused otherwise. When on, the architect follows the transparent decide-then-dispatch wave flow: declare_scope (per pending task) → epic_decide_phase → epic_plan_waves → for each wave in order, dispatch one Task per taskId in the wave, ALL in one assistant message (each concurrent coder appears as a visible subagent the user can click into) → per task: pre_check_batch → reviewer + test_engineer → update_task_status(completed) → epic_record_divergence → epic_phase_review → phase_complete. epic_decide_phase computes the plan-wide coupling coefficient p and gates parallel promotion on p + a hot-module check + a greenfield (predecessor-evidence) rule. epic_plan_waves partitions promoted phases into ordered concurrent groups (waves) that respect dependency order and scope disjointness. Subcommands: on, off, status, decide (read-only what-if), last (most recent decision from durable evidence log), calibration (Capability D state: learned threshold + hot modules + recent divergent tasks). Bare /swarm epic shows status. Decision rationale persists to .swarm/evidence/epic-promotions.jsonl after every epic_decide_phase invocation.",
 		args: 'on | off | status | decide | last | calibration',
 		category: 'diagnostics',
 		toolPolicy: 'none',
@@ -1911,7 +1911,7 @@ export const COMMAND_REGISTRY = {
 			'\n' +
 			`**Standard turbo** — ${TURBO_BYPASS_DISCLOSURE}\n` +
 			`**Lean turbo** — parallel lane execution with per-lane reviewer gates and file-lock conflict detection. ${TURBO_BYPASS_DISCLOSURE}\n` +
-			'**Epic** — additive overlay above Lean Turbo. Auto-decides per-plan parallel-vs-serial via the coupling coefficient `p` and three gates (p-threshold, hot-module, greenfield). When `/swarm turbo epic on` is selected, Lean Turbo is also enabled — Epic dispatches Lean Turbo when it promotes.\n' +
+			'**Epic** — auto-decides per phase whether to run tasks in parallel via the coupling coefficient `p` and three gates (p-threshold, hot-module, greenfield). Promoted waves are dispatched by the architect as visible `Task` calls (not through Lean Turbo); every task still runs per-task Stage A/B, and `epic_phase_review` is required before `phase_complete`. Requires `turbo.epic.mode.enabled: true`. `/swarm turbo epic on` enables Lean Turbo and Epic Mode together.\n' +
 			'\n' +
 			'Subcommands:\n' +
 			'  turbo on           — enable turbo (uses lean when config turbo.strategy is "lean", otherwise standard)\n' +

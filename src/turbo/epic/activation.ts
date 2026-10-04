@@ -18,10 +18,14 @@
  *      Turbo already maintains (reused by import; not duplicated).
  *      Touching a hot module forces serial regardless of `p`.
  *
- *   3. **Greenfield gate.** If the co-change history is sparse (fewer
- *      than `min_commits_for_signal` distinct commits across the
- *      analyzer output), the signal is too weak to trust per brief §4.2's
- *      greenfield rule. Force serial.
+ *   3. **Greenfield gate (predecessor evidence).** Passes when the
+ *      project is not a git repo (greenfield-smart Rule 1: the co-change
+ *      premise is absent), or when every cross-phase upstream task the
+ *      phase depends on has a `swarm(task <id>):` marker in git history.
+ *      Phantom dependency ids (declared but absent from the plan) fail it
+ *      closed. The legacy `commitsObserved >= min_commits_for_signal`
+ *      floor is NOT load-bearing: both values are still recorded in the
+ *      rationale for telemetry only.
  *
  * Default-serial-promote-on-proof (brief §4.2): when any gate fails or
  * the data is missing, the decision is `demote`. Promotion requires
@@ -41,7 +45,11 @@ import { computeCouplingReport } from './coupling-report.js';
 export interface EpicActivationOptions {
 	/** Plan-wide p ceiling. Plans with p > activationThreshold are demoted. */
 	activationThreshold: number;
-	/** Greenfield floor on the analyzer's commit window. */
+	/**
+	 * Legacy greenfield floor on the analyzer's commit window. Recorded in
+	 * `rationale.greenfieldCheck.minCommits` for telemetry only — it no
+	 * longer affects the decision (see the predecessor-evidence gate).
+	 */
 	minCommitsForSignal: number;
 	/** NPMI floor for the co-change conflict signal — passed through to coupling. */
 	cochangeNpmiThreshold: number;
@@ -62,12 +70,13 @@ export interface EpicActivationOptions {
 	 * The greenfield gate exists because co-change signals require git history
 	 * to compute. When the project is not a git repo, there is no signal type
 	 * to evaluate — the gate's premise is absent, so it passes trivially
-	 * rather than fail-closed. Callers (typically `epic_run_phase`) resolve
+	 * rather than fail-closed. Callers (typically `epic_decide_phase`) resolve
 	 * this via `isGitRepo(directory)` from `src/git/branch.ts`.
 	 *
-	 * Backward-compat: omitted or `undefined` reverts to legacy behavior
-	 * (apply the `commitsObserved >= minCommitsForSignal` floor
-	 * unconditionally). Callers should pass an explicit boolean.
+	 * Omitted or `undefined` means "not known to be non-git": the Rule 1
+	 * bypass does not apply and the predecessor-evidence check decides the
+	 * gate. (The legacy `commitsObserved >= minCommitsForSignal` floor is no
+	 * longer applied in any case.) Callers should pass an explicit boolean.
 	 */
 	isGitProject?: boolean;
 	/**
@@ -103,7 +112,7 @@ export interface EpicActivationOptions {
 	 * commits ARE the synchronization point; this check ties them
 	 * together.
 	 *
-	 * Callers (`epic_run_phase`) compute this from the plan's dep graph.
+	 * Callers (`epic_decide_phase`) compute this from the plan's dep graph.
 	 */
 	crossPhaseUpstreams?: readonly string[];
 	/**
@@ -117,7 +126,20 @@ export interface EpicActivationOptions {
 	 * predicate, or pass neither.
 	 */
 	isUpstreamCommitted?: (taskId: string) => boolean;
+	/**
+	 * Whether the co-change conflict signal fed `p`. `'disabled-by-config'`
+	 * means `turbo.epic.cochange.enabled !== true`, so the caller passed no
+	 * co-change pairs and `p` is computed from declared-path conflicts only.
+	 * This is deliberately distinct from "signal absent" (an enabled signal
+	 * that found no qualifying pairs, e.g. a greenfield repo). Recorded
+	 * verbatim in `rationale.pCheck.cochangeSignal` for audit; omitted ⇒ the
+	 * field is not recorded (legacy callers).
+	 */
+	cochangeSignal?: EpicCochangeSignalState;
 }
+
+/** Whether the co-change conflict signal contributed to `p`. */
+export type EpicCochangeSignalState = 'enabled' | 'disabled-by-config';
 
 /** Each gate's pass/fail outcome plus the evidence behind it. */
 export interface EpicActivationRationale {
@@ -125,6 +147,13 @@ export interface EpicActivationRationale {
 		passed: boolean;
 		p: number;
 		threshold: number;
+		/**
+		 * Whether the co-change signal fed `p` (see
+		 * `EpicActivationOptions.cochangeSignal`). Optional: records written
+		 * before this field existed lack it, and renderers must treat
+		 * absence as "not recorded".
+		 */
+		cochangeSignal?: EpicCochangeSignalState;
 	};
 	hotModuleCheck: {
 		passed: boolean;
@@ -189,7 +218,8 @@ export interface EpicActivationVerdict {
  * Inputs are pre-resolved by the caller:
  *  - `tasks`: every task in scope (typically the whole plan), with the
  *    same `{ id, scope }` shape Capability B consumes. The caller
- *    handles `readTaskScopes` / `files_touched` resolution and any
+ *    handles declared-scope (`resolveEpicDeclaredScopes`, v2 bindings) /
+ *    `files_touched` resolution and any
  *    completed-task filtering.
  *  - `cochangePairs`: the analyzer's output (unfiltered) plus the
  *    `commitsObserved` count from `parseGitLog`. The greenfield gate
@@ -209,7 +239,7 @@ export function decideEpicActivation(
 ): EpicActivationVerdict {
 	// Edge case worth flagging: empty `tasks` produces a vacuous-promote
 	// verdict (p=0, hot-module check has nothing to fail on, greenfield
-	// still gated by commitsObserved). The caller is responsible for not
+	// passes vacuously with no cross-phase upstreams). The caller is responsible for not
 	// dispatching execution against an empty plan — the verdict itself is
 	// honest about what it measured, just unusual.
 	// --- Gate 3: greenfield (predecessor-evidence redesign — Phase 10).
@@ -295,6 +325,9 @@ export function decideEpicActivation(
 			passed: pPassed,
 			p: report.p,
 			threshold: options.activationThreshold,
+			...(options.cochangeSignal !== undefined
+				? { cochangeSignal: options.cochangeSignal }
+				: {}),
 		},
 		hotModuleCheck: {
 			passed: hotPassed,

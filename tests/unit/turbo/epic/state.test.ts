@@ -7,7 +7,7 @@
  *  - enable / disable round-trip preserves the timestamps.
  *  - Atomic write leaves no `.tmp.*` leftovers.
  *  - Per-directory fail-closed on a malformed JSON file (and repair).
- *  - Reset clears the session entry.
+ *  - clearEpicSessionRow removes the session entry.
  *  - recordEpicDecision merges into the existing session entry.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -16,17 +16,17 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { closeAllProjectDbs } from '../../../../src/db/project-db';
 import {
+	clearEpicSessionRow,
 	disableEpicMode,
 	emptyPersisted,
 	enableEpicMode,
+	_internals as epicStateInternals,
 	isEpicModeActive,
 	isEpicModeActiveForProject,
 	isStateUnreadable,
 	loadEpicSessionState,
 	recordEpicDecision,
 	repairStateUnreadable,
-	resetEpicSession,
-	saveEpicSessionState,
 } from '../../../../src/turbo/epic/state';
 
 let dir: string;
@@ -135,21 +135,19 @@ describe('epic state — atomic write hygiene', () => {
 		expect(leftovers).toEqual([]);
 	});
 
-	test('saveEpicSessionState updates the same file on the second write', () => {
-		saveEpicSessionState(dir, {
-			sessionID: 'sess-1',
-			active: true,
-			enabledAt: '2025-01-01T00:00:00Z',
-		});
-		saveEpicSessionState(dir, {
-			sessionID: 'sess-1',
-			active: false,
-			enabledAt: '2025-01-01T00:00:00Z',
-			disabledAt: '2025-01-02T00:00:00Z',
-		});
+	test('a second write updates the same session entry in place', () => {
+		enableEpicMode(dir, 'sess-1');
+		const enabledAt = loadEpicSessionState(dir, 'sess-1')?.enabledAt;
+		expect(enabledAt).toBeDefined();
+		disableEpicMode(dir, 'sess-1');
 		const state = loadEpicSessionState(dir, 'sess-1');
-		expect(state?.disabledAt).toBe('2025-01-02T00:00:00Z');
 		expect(state?.active).toBe(false);
+		expect(state?.enabledAt).toBe(enabledAt);
+		expect(typeof state?.disabledAt).toBe('string');
+		const projected = JSON.parse(
+			fs.readFileSync(path.join(dir, '.swarm', 'epic-state.json'), 'utf-8'),
+		);
+		expect(Object.keys(projected.sessions)).toEqual(['sess-1']);
 	});
 });
 
@@ -193,10 +191,10 @@ describe('epic state — fail-closed on corrupt file', () => {
 });
 
 describe('epic state — reset + decision recording', () => {
-	test('resetEpicSession removes the session entry', () => {
+	test('clearEpicSessionRow removes the session entry', () => {
 		enableEpicMode(dir, 'sess-1');
 		expect(loadEpicSessionState(dir, 'sess-1')).not.toBeNull();
-		resetEpicSession(dir, 'sess-1');
+		expect(clearEpicSessionRow(dir, 'sess-1')).toBe(true);
 		expect(loadEpicSessionState(dir, 'sess-1')).toBeNull();
 	});
 
@@ -232,6 +230,18 @@ describe('epic state — reset + decision recording', () => {
 });
 
 describe('isEpicModeActiveForProject — project-scoped Epic check', () => {
+	// The config master gate (`turbo.epic.mode.enabled`) is covered in
+	// state-liveness.test.ts; here it is held open so these cases exercise
+	// the row semantics only.
+	const originalConfigGate =
+		epicStateInternals.isEpicModeConfigEnabledForDirectory;
+	beforeEach(() => {
+		epicStateInternals.isEpicModeConfigEnabledForDirectory = () => true;
+	});
+	afterEach(() => {
+		epicStateInternals.isEpicModeConfigEnabledForDirectory = originalConfigGate;
+	});
+
 	test('fails closed when the project root cannot be opened as a directory', () => {
 		const fileRoot = path.join(dir, 'not-a-directory');
 		fs.writeFileSync(fileRoot, 'occupied');

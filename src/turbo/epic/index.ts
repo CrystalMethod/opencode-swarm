@@ -27,6 +27,12 @@ export type {
 	GetCoChangePairsOptions,
 } from './cochange-source.js';
 export { getCoChangeData, getCoChangePairs } from './cochange-source.js';
+export {
+	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+	isEpicCochangeConfigEnabled,
+	isEpicModeConfigEnabled,
+	isEpicModeConfigEnabledForDirectory,
+} from './config-gate.js';
 export type {
 	ComputeCouplingReportOptions,
 	ConflictingPair,
@@ -44,20 +50,27 @@ export {
 	readPromotionEvidence,
 } from './promotion-evidence.js';
 export type {
+	EnableEpicModeOptions,
+	EpicEnabledVia,
 	EpicLastDecision,
 	EpicPersistedState,
 	EpicSessionState,
 } from './state.js';
 export {
+	clearAllEpicSessionRows,
+	clearEpicSessionRow,
 	disableEpicMode,
+	EPIC_SESSION_HEARTBEAT_INTERVAL_MS,
+	EPIC_SESSION_STALE_TTL_MS,
 	emptyPersisted as emptyEpicPersisted,
 	emptySessionState as emptyEpicSessionState,
 	enableEpicMode,
 	isEpicModeActive,
+	isEpicModeActiveForProject,
 	isStateUnreadable as isEpicStateUnreadable,
 	loadEpicSessionState,
+	peekEpicSessionState,
 	recordEpicDecision,
+	refreshEpicSessionHeartbeat,
 	repairStateUnreadable as repairEpicStateUnreadable,
-	resetEpicSession,
-	saveEpicSessionState,
 } from './state.js';

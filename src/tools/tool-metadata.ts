@@ -1040,7 +1040,7 @@ export const TOOL_METADATA = {
 	},
 	epic_decide_phase: {
 		description:
-			'Compute the Epic Mode verdict for a phase WITHOUT dispatching coders. Runs preflight + calibration + the three gates (p-threshold, hot-module, greenfield), persists the decision, and returns the verdict so the architect can dispatch waves via the visible Task tool (promote) or fall back to per-task serial (demote). Pair with `epic_plan_waves` to get the wave plan when promoted. Use when /swarm epic is on for the session.',
+			'Compute the Epic Mode verdict for a phase WITHOUT dispatching coders. Runs preflight + calibration + the three gates (p-threshold, hot-module, greenfield/predecessor-evidence), persists the decision, and returns the verdict so the architect can dispatch waves via the visible Task tool (promote) or fall back to per-task serial (demote). Pair with `epic_plan_waves` to get the wave plan when promoted. Declared scope comes only from live `declare_scope` bindings (expire after 1h; a plan revision voids them), with plan `files_touched` as the fallback; `scopes-missing` means re-run `declare_scope` for each listed task. Requires `turbo.epic.mode.enabled: true` (else reason `epic-disabled-by-config`) and /swarm epic on for the session.',
 		agents: ['architect'],
 	},
 	epic_plan_waves: {
@@ -1051,7 +1051,12 @@ export const TOOL_METADATA = {
 			'For each wave in order, the architect dispatches one `Task(subagent_type="coder", ...)` per `taskId` — all in one assistant message — so the wave runs concurrently and each coder appears as a visible subagent. ' +
 			'Wait for the wave to finish before dispatching the next. ' +
 			'Pair with `epic_decide_phase` (called first; this tool is only relevant on a `promote` verdict). ' +
-			'Preflight reject reasons: `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (call `declare_scope` for `missingScopes`), `git-failed` (transient — retry), `planner-error`.',
+			'Preflight reject reasons: `epic-disabled-by-config` (set `turbo.epic.mode.enabled: true`), `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (declared scope undeclared, expired after 1h, or declared against an older plan revision — re-run `declare_scope` for each of `missingScopes`), `git-failed` (transient — retry), `planner-error`.',
+		agents: ['architect'],
+	},
+	epic_phase_review: {
+		description:
+			'Epic Mode phase readiness: dispatch a read-only phase reviewer, then (only if it APPROVES) a read-only phase critic over the completed phase; parse both verdicts from the agents and record them to .swarm/evidence/{phase}/epic-phase-review.json. Required by phase_complete while Epic Mode is active; re-run after any fix (evidence is bound to the plan and phase task evidence).',
 		agents: ['architect'],
 	},
 	epic_record_divergence: {

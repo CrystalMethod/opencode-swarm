@@ -7,13 +7,16 @@
  * `if (hasActiveEpicMode(...)) inject(EPIC_MODE_BANNER)` block relies
  * on:
  *
- *   - `EPIC_MODE_BANNER` exists and instructs the architect to use
- *     `epic_run_phase` instead of `lean_turbo_run_phase`.
+ *   - `EPIC_MODE_BANNER` exists and instructs the architect to use the
+ *     visible decide → plan-waves → Task flow instead of
+ *     `lean_turbo_run_phase`, with per-task Stage A/B and the
+ *     `epic_phase_review` phase gate.
  *   - `hasActiveEpicMode(sessionID)` reads `session.epicModeActive`
  *     and returns the expected booleans (per-session and any-session).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { EPIC_MODE_BANNER } from '../../../src/config/constants';
+import { estimateTokens } from '../../../src/hooks/utils';
 import {
 	hasActiveEpicMode,
 	resetSwarmState,
@@ -43,23 +46,82 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(EPIC_MODE_BANNER).toContain('epic_plan_waves');
 		expect(EPIC_MODE_BANNER).toContain('Task');
 		expect(EPIC_MODE_BANNER).toContain('epic_record_divergence');
-		expect(EPIC_MODE_BANNER).toContain('Six-step flow');
+		expect(EPIC_MODE_BANNER).toContain('Seven-step flow');
+		expect(EPIC_MODE_BANNER).not.toContain('Six-step flow');
 	});
 
-	test('forbids the opaque dispatch tools (lean_turbo_run_phase + epic_run_phase)', () => {
-		// Both tools dispatch coders via opencodeClient internally (outside
-		// opencode's Task tracking). The banner must block both so the
-		// transparent Task-based dispatch is the only flow the architect
-		// can take.
+	test('forbids the opaque lean_turbo_run_phase dispatch and no longer names the removed epic_run_phase', () => {
+		// lean_turbo_run_phase dispatches coders via opencodeClient internally
+		// (outside opencode's Task tracking). The banner must block it so the
+		// transparent Task-based dispatch is the only flow the architect can
+		// take.
 		expect(EPIC_MODE_BANNER).toContain(
 			'Do NOT call `lean_turbo_run_phase` directly',
 		);
 		expect(EPIC_MODE_BANNER).toContain("Don't use `lean_turbo_run_phase`");
-		// The architect's pretraining may include the deprecated
-		// `epic_run_phase` tool. The banner must explicitly anchor the
-		// model away from inventing a call to it.
-		expect(EPIC_MODE_BANNER).toContain('epic_run_phase');
-		expect(EPIC_MODE_BANNER).toContain('deprecated');
+		// The legacy epic_run_phase execution path was removed outright, so the
+		// banner must not advertise it (even as "deprecated").
+		expect(EPIC_MODE_BANNER).not.toContain('epic_run_phase');
+	});
+
+	test('step 6 requires per-task Stage A/B before completion + divergence', () => {
+		// Runtime truth: update_task_status(completed) requires Stage B in every
+		// mode (Turbo/Lean bypass branches are legacy-caller-only). The banner
+		// previously said Epic "doesn't change Stage B" without ever telling
+		// the architect to run it between dispatch and completion.
+		const step6 = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('**6. '),
+			EPIC_MODE_BANNER.indexOf('**7. '),
+		);
+		expect(step6).toContain('`pre_check_batch`');
+		expect(step6).toContain('`reviewer` + `test_engineer`');
+		expect(step6).toContain('never skipped');
+		expect(step6.indexOf('pre_check_batch')).toBeLessThan(
+			step6.indexOf('update_task_status(completed)'),
+		);
+		expect(step6.indexOf('update_task_status(completed)')).toBeLessThan(
+			step6.indexOf('epic_record_divergence'),
+		);
+	});
+
+	test('step 7 routes phase completion through epic_phase_review', () => {
+		const step7 = EPIC_MODE_BANNER.slice(EPIC_MODE_BANNER.indexOf('**7. '));
+		expect(step7).toContain('`epic_phase_review(phase=N)`');
+		expect(step7).toContain('phase critic');
+		expect(step7).toContain('`EPIC_PHASE_*`');
+		expect(step7.indexOf('epic_phase_review')).toBeLessThan(
+			step7.lastIndexOf('`phase_complete`'),
+		);
+		expect(EPIC_MODE_BANNER).not.toContain("doesn't change Stage B");
+	});
+
+	test('step 2 explains scope expiry and the config opt-in reason', () => {
+		const step2 = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('**2. '),
+			EPIC_MODE_BANNER.indexOf('**3. '),
+		);
+		expect(step2).toContain('`scopes-missing`');
+		expect(step2).toContain('expired');
+		expect(step2).toContain('plan revised');
+		expect(step2).toContain('`epic-disabled-by-config`');
+		expect(step2).toContain('turbo.epic.mode.enabled: true');
+	});
+
+	test('step 1: re-declare needs replace_existing; a phase advance voids bindings (declare per phase)', () => {
+		const step1 = EPIC_MODE_BANNER.slice(
+			EPIC_MODE_BANNER.indexOf('**1. '),
+			EPIC_MODE_BANNER.indexOf('**2. '),
+		);
+		expect(step1).toContain('every pending task of phase N');
+		expect(step1).toContain('start of EVERY phase');
+		expect(step1).toContain('replace_existing: true');
+		expect(step1).toContain('phase advance');
+	});
+
+	test('stays within the pre-catch-up injection budget (≤ 1994 tokens)', () => {
+		// The banner competes for the system-enhancer injection budget; the
+		// catch-up additions (steps 6/7) were paid for by tightening prose.
+		expect(estimateTokens(EPIC_MODE_BANNER)).toBeLessThanOrEqual(1994);
 	});
 
 	test('explains both promote and demote outcomes', () => {
@@ -82,10 +144,10 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(EPIC_MODE_BANNER).toContain('THE USER ALWAYS COMES FIRST');
 		expect(EPIC_MODE_BANNER).toContain('STOP advancing the flow');
 		expect(EPIC_MODE_BANNER.toLowerCase()).toContain('slash command');
-		// It must come BEFORE the six-step flow header to outrank it.
+		// It must come BEFORE the step-flow header to outrank it.
 		expect(
 			EPIC_MODE_BANNER.indexOf('THE USER ALWAYS COMES FIRST'),
-		).toBeLessThan(EPIC_MODE_BANNER.indexOf('Six-step flow'));
+		).toBeLessThan(EPIC_MODE_BANNER.indexOf('Seven-step flow'));
 	});
 
 	test('asks the architect to tell the user the verdict and wave plan', () => {

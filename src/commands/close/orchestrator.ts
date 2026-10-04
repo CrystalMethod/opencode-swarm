@@ -11,6 +11,8 @@ import { runRetentionSweep } from '../../retention/sweep';
 import { buildActionMenu } from '../../services/session-reflection';
 import { closeSnapshotCoordinationInitialization } from '../../session/snapshot-coordination-init.js';
 import { hasActiveFullAuto, swarmState } from '../../state';
+import { isEpicModeConfigEnabled } from '../../turbo/epic/config-gate';
+import { clearAllEpicSessionRows } from '../../turbo/epic/state';
 import { atomicWriteSwarmFile } from '../../utils/atomic-write';
 import { resolveGitExecutable } from '../../utils/git-executable.js';
 import { log } from '../../utils/logger';
@@ -609,6 +611,27 @@ export async function handleCloseCommand(
 		// reported by the dispatcher as a generic "finalize failed" — that would
 		// misrepresent an otherwise-successful run. Wrap it and surface any failure
 		// as a warning so the success return below still fires. (#1692)
+		// Close ends Epic Mode runtime state (#2483 R5) for every session it
+		// tears down below. The clean stage normally removes swarm.db (and
+		// with it every Epic row), but a preserved swarm.db would otherwise
+		// keep the project-scoped Epic probe on for the next session. No-op
+		// when swarm.db is gone. Best-effort, reported as a warning. Epic-only:
+		// skipped (no DB read, no warning) unless Epic is enabled by config or
+		// a live session carries the in-memory Epic flag.
+		if (
+			isEpicModeConfigEnabled(loadedConfig) ||
+			[...swarmState.agentSessions.values()].some(
+				(session) => session.epicModeActive === true,
+			)
+		) {
+			try {
+				clearAllEpicSessionRows(directory);
+			} catch (epicClearError) {
+				ctx.warnings.push(
+					`Durable Epic Mode session rows were not cleared: ${epicClearError instanceof Error ? epicClearError.message : String(epicClearError)}`,
+				);
+			}
+		}
 		try {
 			const sessionIdsToEnd = [...swarmState.agentSessions.keys()];
 			for (const sessionId of sessionIdsToEnd) {

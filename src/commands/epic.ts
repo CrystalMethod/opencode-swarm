@@ -2,17 +2,22 @@
  * `/swarm epic` — Epic Mode activation toggle and diagnostics (Capability C).
  *
  * Subcommands:
- *   /swarm epic on        — enable Epic Mode for this session
+ *   /swarm epic on        — enable Epic Mode for this session (refused
+ *                            unless `turbo.epic.mode.enabled: true`)
  *   /swarm epic off       — disable Epic Mode for this session
- *   /swarm epic           — toggle (on if off, off if on)
+ *   /swarm epic           — same as `status` (bare form never toggles)
  *   /swarm epic status    — show current state + last decision rationale
+ *   /swarm epic last      — most recent decision from the durable evidence log
+ *   /swarm epic calibration — Capability D calibration state
  *   /swarm epic decide    — run the activation decision once and print the
  *                            verdict without dispatching execution
  *                            (read-only what-if; does NOT write to
  *                             `.swarm/evidence/epic-promotions.jsonl`)
  *
- * Toggling only mutates session state (and the durable
- * `.swarm/epic-state.json`); it does not start or stop any execution. The
+ * Toggling only mutates session state (and the durable Epic session state
+ * store); it does not start or stop any execution. `off`, `status`, `last`,
+ * `decide`, and `calibration` work regardless of the config gate so a user
+ * can always inspect or turn Epic Mode off. The
  * `epic_decide_phase` + `epic_plan_waves` tools (plus per-wave Task dispatch
  * by the architect) are the architect-facing entries that gate execution.
  */
@@ -30,7 +35,13 @@ import {
 	loadCalibrationState,
 } from '../turbo/epic/calibration.js';
 import { getCoChangeData } from '../turbo/epic/cochange-source.js';
+import {
+	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
+	isEpicCochangeConfigEnabled,
+	isEpicModeConfigEnabled,
+} from '../turbo/epic/config-gate.js';
 import type { CouplingTask } from '../turbo/epic/coupling-report.js';
+import { resolveEpicDeclaredScopes } from '../turbo/epic/declared-scopes.js';
 import { readDivergenceHistory } from '../turbo/epic/divergence-recorder.js';
 import { readPromotionEvidence } from '../turbo/epic/promotion-evidence.js';
 import {
@@ -39,8 +50,8 @@ import {
 	isEpicModeActive,
 	isStateUnreadable,
 	loadEpicSessionState,
+	repairStateUnreadable,
 } from '../turbo/epic/state.js';
-import { readTaskScopes } from '../turbo/lean/conflicts.js';
 
 /**
  * Test-only DI seam. Production code calls `_internals.fn(...)` so tests can
@@ -54,10 +65,11 @@ export const _internals = {
 	ensureAgentSession,
 	isEpicModeActive,
 	isStateUnreadable,
+	repairStateUnreadable,
 	loadEpicSessionState,
 	enableEpicMode,
 	disableEpicMode,
-	readTaskScopes,
+	resolveEpicDeclaredScopes,
 	readPromotionEvidence,
 	loadCalibrationState,
 	isCalibrationStateUnreadable,
@@ -83,6 +95,14 @@ export async function handleEpicCommand(
 	);
 
 	const arg0 = args[0]?.toLowerCase();
+
+	// The fail-closed "state unreadable" marker is process-local and is only
+	// lifted by a successful re-validation. Re-check it on every command so a
+	// user who fixed or removed the bad state sees recovery without a restart.
+	// Only when flagged: a healthy project must not open or create the DB here.
+	if (_internals.isStateUnreadable(directory)) {
+		_internals.repairStateUnreadable(directory);
+	}
 
 	switch (arg0) {
 		case 'status':
@@ -116,6 +136,20 @@ function enableAndAck(
 	sessionID: string,
 	session: ReturnType<typeof _internals.ensureAgentSession>,
 ): string {
+	// Config master gate (`turbo.epic.mode.enabled`, default false). Refuse
+	// to turn Epic Mode on without the opt-in; a config load failure fails
+	// closed. `off` is deliberately NOT gated so it always works.
+	let modeEnabled = false;
+	try {
+		modeEnabled = isEpicModeConfigEnabled(
+			_internals.loadPluginConfigWithMeta(directory).config,
+		);
+	} catch {
+		modeEnabled = false;
+	}
+	if (!modeEnabled) {
+		return EPIC_MODE_CONFIG_DISABLED_MESSAGE;
+	}
 	try {
 		_internals.enableEpicMode(directory, sessionID);
 	} catch (err) {
@@ -129,7 +163,7 @@ function enableAndAck(
 	return [
 		'Epic Mode enabled for this session.',
 		'',
-		"The architect will now use the transparent decide-then-dispatch wave flow for phase execution: `declare_scope` (×N pending tasks) → `epic_decide_phase` → `epic_plan_waves` → for each wave in order, dispatch `Task` (×taskIds in the wave, ALL in one assistant message) → `epic_record_divergence`. Each phase decision computes the plan-wide coupling coefficient `p` and chooses promote/demote per the configured thresholds. Promoted phases dispatch coders via opencode's `Task` tool so you can click into each concurrent coder and watch progress live.",
+		"The architect will now use the transparent decide-then-dispatch wave flow for phase execution: `declare_scope` (×N pending tasks) → `epic_decide_phase` → `epic_plan_waves` → for each wave in order, dispatch `Task` (×taskIds in the wave, ALL in one assistant message) → per task: `pre_check_batch` → `reviewer` + `test_engineer` → `update_task_status(completed)` → `epic_record_divergence` → `epic_phase_review` → `phase_complete`. Each phase decision computes the plan-wide coupling coefficient `p` and chooses promote/demote per the configured thresholds. Promoted phases dispatch coders via opencode's `Task` tool so you can click into each concurrent coder and watch progress live.",
 		'',
 		'Run `/swarm epic decide` to see the current verdict without executing.',
 	].join('\n');
@@ -156,7 +190,7 @@ function renderStatus(directory: string, sessionID: string): string {
 	// differs (the first one needs repair; the second one just needs `on`).
 	if (_internals.isStateUnreadable(directory)) {
 		lines.push(
-			'**Epic Mode state is unreadable** (`.swarm/epic-state.json` is corrupt or has an unexpected shape). Status cannot be reported until the file is repaired or removed. The fail-closed marker means `epic_decide_phase` will refuse to compute a verdict in this state.',
+			'**Epic Mode state is unreadable** (the durable Epic session state is corrupt or has an unexpected shape). Status cannot be reported until it is repaired. The fail-closed marker means `epic_decide_phase` will refuse to compute a verdict in this state. Fix or remove `.swarm/epic-state.json` (the legacy import / projection file) and re-run; if the corruption is in the SQLite Epic session rows, run `/swarm reset-session` to clear them.',
 		);
 		return lines.join('\n');
 	}
@@ -230,6 +264,22 @@ function formatGreenfieldDetail(input: {
 		: 'fail — no diagnostic fields present (legacy record?)';
 }
 
+/**
+ * Render whether the co-change signal fed `p`. Returns `null` for legacy
+ * records that predate the field (nothing to say).
+ */
+function formatCochangeSignal(
+	signal: EpicActivationVerdict['rationale']['pCheck']['cochangeSignal'],
+): string | null {
+	if (signal === 'disabled-by-config') {
+		return 'co-change signal: disabled by config (`turbo.epic.cochange.enabled` is not true) — p reflects declared-path conflicts only';
+	}
+	if (signal === 'enabled') {
+		return 'co-change signal: enabled';
+	}
+	return null;
+}
+
 function renderLast(directory: string): string {
 	// `/swarm epic last` — shows the most recent decision from the durable
 	// evidence log. Complements `/swarm epic status` (which reads in-memory
@@ -271,6 +321,10 @@ function renderLast(directory: string): string {
 	lines.push(
 		`- **p-threshold**: ${r.pCheck.passed ? 'pass' : 'fail'} (p=${r.pCheck.p.toFixed(3)} vs threshold ${r.pCheck.threshold.toFixed(3)})`,
 	);
+	{
+		const signalLine = formatCochangeSignal(r.pCheck.cochangeSignal);
+		if (signalLine) lines.push(`- ${signalLine}`);
+	}
 	const hot = r.hotModuleCheck.touchedHotModules;
 	lines.push(
 		`- **hot-module**: ${r.hotModuleCheck.passed ? 'pass' : `fail — touched ${hot.slice(0, 3).join(', ')}${hot.length > 3 ? `, +${hot.length - 3} more` : ''}`}`,
@@ -448,18 +502,30 @@ async function renderDecide(directory: string): Promise<string> {
 	const minCommitsForSignal = modeCfg?.min_commits_for_signal ?? 20;
 	const cochangeNpmiThreshold = cochangeCfg?.threshold ?? 0.6;
 	const cochangeMinCoChanges = cochangeCfg?.min_co_changes ?? 5;
+	const cochangeEnabled = isEpicCochangeConfigEnabled(config);
 
+	// ONE plan-identity + v2 binding-set read for every task (declared
+	// scopes live only in the v2 binding store `declare_scope` writes).
+	const declaredScopes = _internals.resolveEpicDeclaredScopes(
+		directory,
+		plan,
+		plan.phases.flatMap((phase) => (phase.tasks ?? []).map((task) => task.id)),
+	);
 	const tasks: CouplingTask[] = [];
 	for (const phase of plan.phases) {
 		for (const task of phase.tasks) {
-			const scopeFiles = _internals.readTaskScopes(directory, task.id);
-			const scope: string[] = scopeFiles ?? task.files_touched ?? [];
+			const scopeFiles = declaredScopes[task.id] ?? [];
+			const scope: string[] =
+				scopeFiles.length > 0 ? scopeFiles : (task.files_touched ?? []);
 			tasks.push({ id: task.id, scope });
 		}
 	}
 
-	const { pairs, commitsObserved } =
-		await _internals.getCoChangeData(directory);
+	// Co-change signal only when `turbo.epic.cochange.enabled === true`;
+	// otherwise path-only conflicts, recorded as `disabled-by-config`.
+	const { pairs, commitsObserved } = cochangeEnabled
+		? await _internals.getCoChangeData(directory)
+		: { pairs: [], commitsObserved: 0 };
 
 	// Phase 16 (C4.H2): include the Phase 10/13 gate inputs that the
 	// real `epic_decide_phase` tool computes — `isGitProject` (Rule 1
@@ -491,6 +557,7 @@ async function renderDecide(directory: string): Promise<string> {
 			cochangeNpmiThreshold,
 			cochangeMinCoChanges,
 			isGitProject,
+			cochangeSignal: cochangeEnabled ? 'enabled' : 'disabled-by-config',
 		},
 	);
 	const caveat =
@@ -507,6 +574,12 @@ function formatVerdict(verdict: EpicActivationVerdict): string {
 	lines.push(
 		`- p-threshold: **${verdict.rationale.pCheck.passed ? 'pass' : 'fail'}** (p=${verdict.rationale.pCheck.p.toFixed(3)}, threshold=${verdict.rationale.pCheck.threshold.toFixed(3)})`,
 	);
+	{
+		const signalLine = formatCochangeSignal(
+			verdict.rationale.pCheck.cochangeSignal,
+		);
+		if (signalLine) lines.push(`- ${signalLine}`);
+	}
 	lines.push(
 		`- hot-module: **${verdict.rationale.hotModuleCheck.passed ? 'pass' : 'fail'}** (${verdict.rationale.hotModuleCheck.touchedHotModules.length} hot module(s) touched)`,
 	);
@@ -537,7 +610,7 @@ function formatVerdict(verdict: EpicActivationVerdict): string {
 	}
 	lines.push('');
 	lines.push(
-		'_This was a read-only `/swarm epic decide` call — no execution was dispatched and no evidence file was written. To act on this verdict, the architect should declare scopes for all pending tasks, then call `epic_decide_phase` → `epic_plan_waves` → for each wave, dispatch one `Task` per `taskId` in a single message._',
+		'_This was a read-only `/swarm epic decide` call — no execution was dispatched and no evidence file was written. To act on this verdict, the architect should declare scopes for all pending tasks, then call `epic_decide_phase` → `epic_plan_waves` → for each wave, dispatch one `Task` per `taskId` in a single message → per-task Stage A/B + `update_task_status(completed)` + `epic_record_divergence` → `epic_phase_review` → `phase_complete`._',
 	);
 	return lines.join('\n');
 }

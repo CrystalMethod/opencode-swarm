@@ -665,36 +665,113 @@ The same fields are also available under `worktree.runtime_isolation` with ident
 
 ## Epic Mode (preview)
 
-> **Status: opt-in, off by default.** Epic Mode is an optional execution mode that augments Lean Turbo with autonomous, coupling-aware lane planning. All four capabilities (A — co-change conflict, B — coupling report, C — activation gate, D — self-calibration) are wired: the `/swarm epic` and `/swarm coupling` commands, the `epic_decide_phase` / `epic_plan_waves` / `epic_record_divergence` tools, and the `EPIC_MODE_BANNER` are registered. With `turbo.epic.*` at defaults nothing runs and behavior is identical to Lean Turbo alone — the mode activates only after `/swarm epic on` (or `/swarm turbo epic on`).
+> **Status: opt-in, off by default.** Epic Mode needs **both** a config opt-in (`turbo.epic.mode.enabled: true`, inside a `turbo` block that declares a valid `strategy`) **and** a session toggle (`/swarm epic on` or `/swarm turbo epic on`). Without the config opt-in, `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, and `epic_plan_waves` refuse with reason `epic-disabled-by-config`, and no Epic behaviour runs anywhere else (Rule 2 auto-commit, the Epic phase-readiness gate). The four capabilities (A — co-change conflict, B — coupling report, C — activation gate, D — self-calibration) are wired through the `/swarm epic` and `/swarm coupling` commands, the `epic_decide_phase` / `epic_plan_waves` / `epic_record_divergence` / `epic_phase_review` tools, and the `EPIC_MODE_BANNER`.
 >
 > **Worktree-isolation interaction:** when Epic dispatches coders into isolated git worktrees, a coder whose merge-back fails leaves its work stranded outside the main tree. Epic's Rule 2 auto-commit detects this and skips the `swarm(task <id>):` completion marker so Rule 3 never treats an unmerged task as satisfied; the plan status still advances (the ledger is authoritative) and the failure is surfaced for recovery.
 
 ### What Epic Mode Is
 
-Epic Mode composes Lean Turbo without modifying it. Where Lean Turbo asks *"how do I run these tasks in parallel safely?"*, Epic Mode adds *"should this work be parallel at all, and what is making it serial?"* — by measuring coupling from git history in addition to file paths.
+An **epic** is one plan bound to one spec: the codebase's one-plan-per-feature convention (a `Plan` is bound to a single `.swarm/spec.md` via `specMtime`/`specHash`) means "per epic" and "per plan" are the same thing. Epic Mode asks, for that plan, *"should this work run in parallel at all, and what is making it serial?"* — by measuring coupling from declared file scopes and (optionally) git co-change history — and then runs the promoted work as concurrent **waves** of visible coder `Task` calls.
 
-The dependency direction is strictly one-way: Epic Mode depends on Lean Turbo; Lean Turbo never depends on Epic Mode. No file under `src/turbo/lean/` is modified.
+Epic Mode reuses Lean Turbo's conflict predicates, risk lists, and partition preflight by import, and never modifies `src/turbo/lean/`. It does **not** dispatch through Lean Turbo's runner: promoted waves are dispatched by the architect itself via opencode's `Task` tool, so each concurrent coder is a visible subagent you can click into.
 
-### Capability A — Co-change-aware Pair Conflict
+### Mode comparison
 
-`src/turbo/epic/cochange-conflict.ts` exports `epicPairConflict(scopeA, scopeB, cochangePairs, threshold)` — a pure function that combines:
+| | Standard Turbo | Lean Turbo | Epic Mode |
+|---|---|---|---|
+| Enable | `/swarm turbo on` | `/swarm turbo lean on` | `turbo.epic.mode.enabled: true` + `/swarm epic on` (or `/swarm turbo epic on`, which also enables Lean Turbo) |
+| Parallelism | None | Lanes (serial chains) dispatched by `lean_turbo_run_phase` | Waves dispatched by the architect as one `Task` per task, all in one message |
+| Decides whether to parallelize | No | No (always lane-plans) | Yes — `epic_decide_phase` promotes or demotes on `p` + three gates |
+| Phase-level gate | See [Turbo](#turbo) | See [Lean Turbo](#lean-turbo-lane-planning-engine) | `epic_phase_readiness` (replaces Lean readiness); Gates 1–5 + todo gate bypassed only if Turbo is also on |
 
-1. Lean Turbo's existing path-based pair test (`pathsConflict` from `src/turbo/lean/conflicts.ts`), and
-2. A git co-change signal sourced from the existing `co_change_analyzer` tool, threshold-gated by NPMI and raw co-change count.
+Under Epic Mode, per-task Stage A (`pre_check_batch`) and Stage B (reviewer + test_engineer, per the task's tier) are **always** required before `update_task_status(completed)` — for wave, serialized, and degraded tasks alike, whether or not Turbo is also on.
 
-The combination is **conservative**: the co-change signal can only escalate a verdict from "no conflict" to "conflict". It can never downgrade a path-based conflict. The data source (`src/turbo/epic/cochange-source.ts`) caches per-project results keyed on `git HEAD`, with FIFO eviction at 10 directories, and falls back to "signal absent" (returning `[]`) on greenfield repos, non-git directories, or git errors — so a missing signal is never silently mistaken for "no conflict".
+### The seven-step flow
+
+The architect follows this flow only when the user asks it to run a phase (`EPIC_MODE_BANNER`, injected every architect turn while Epic is on, carries the details):
+
+1. **`declare_scope` for every pending task of the phase, up front — at the start of every phase** — one call per task id, tight and disjoint. Declarations live **1 hour** and are voided by any plan revision (they are bound to the exact plan id and structure hash). Completing a phase's last task advances `current_phase`, which changes the structure hash — so the next phase always starts by re-declaring its tasks. To widen an existing task's scope, re-declare it with `replace_existing: true`.
+2. **`epic_decide_phase(phase)`** — runs the scope preflight, rolls calibration forward, computes `p`, applies the three gates, appends the verdict to `.swarm/evidence/epic-promotions.jsonl`, and returns `decided` (promote) or `demoted`. Error reasons include `epic-disabled-by-config`, `epic-mode-not-active`, `scopes-missing` (re-declare each listed task — undeclared, expired, or declared against an older plan revision), `no-phase`, `phase-empty`, `phase-already-complete`, and `epic-state-unreadable`.
+3. **Tell the user the verdict** (promote/demote, `p`, top blocking reason).
+4. **`epic_plan_waves(phase)`** — partitions pending tasks into ordered waves plus `serializedTasks` and `degradedTasks`; the architect then shows the user the wave plan.
+5. **Dispatch each wave** as one `Task(subagent_type="coder")` per task id, all in one assistant message; serialized and degraded tasks follow one at a time. A demoted phase runs every task this way.
+6. **Per task:** Stage A (`pre_check_batch`) → Stage B (reviewer + test_engineer, per the task's tier) → `update_task_status(completed)` → `epic_record_divergence`. Epic never waives per-task QA.
+7. **`epic_phase_review(phase)`**, then the retrospective, then `phase_complete`.
+
+### Waves vs. lanes
+
+- A **lane** (Lean Turbo) is a serial chain; lanes run concurrently inside `lean_turbo_run_phase`'s runner.
+- A **wave** (Epic) is a set of tasks with mutually disjoint declared scopes whose dependencies are all satisfied by earlier waves (or, for cross-phase upstreams, by a `swarm(task <id>):` commit marker). Waves run one after another; tasks within a wave run concurrently, capped by `turbo.lean.max_parallel_coders`.
+- Both planners share `src/turbo/lean/partition-common.ts` for risk classification and cycle-safe topological sort, so they classify the same inputs identically; Epic supplies its own v2-resolved scopes to it explicitly (see [Declared scopes](#declared-scopes)).
+
+**Serialized tasks** (`serializedTasks`) could not be placed in a wave: dependency cycle, `no-scope` (no live declaration — re-declare), `invalid-scope`, or concurrency-cap exhaustion. **Degraded tasks** (`degradedTasks[].reason`) run per task after the waves: `global file conflict` / `protected path` (Lean Turbo hot modules), `cross-batch upstream not committed (greenfield-smart Rule 3)`, `unresolved in-batch dependency`, or `planning leftover (no identifiable blocker)` (a planner bug).
+
+### Declared scopes
+
+Epic's entry points — `epic_decide_phase`, `epic_plan_waves`, `/swarm epic decide`, and `/swarm coupling` — read declared scope **only** from the authoritative v2 scope-binding store that `declare_scope` writes, pinned to the exact plan identity: a binding counts only while it is live (1 h TTL) and was declared against the current plan structure. Legacy v1 `.swarm/scopes/scope-<taskId>.json` files are ignored, so a stale v1 file can never certify a task's scope. Epic resolves these scopes itself and passes them explicitly to the shared partition planner; where no live binding exists, the plan's `files_touched` is the fallback, and a pending task with neither is reported as `scopes-missing`. `epic_record_divergence` alone uses a separate historical, calibration-only reader (the latest declaration for the task under the current plan id, regardless of expiry), because the live binding has usually expired or been voided by the time a completed task is recorded; it is never used to authorize writes or schedule work.
+
+### Activation gates (all must pass for promotion)
+
+1. **p-threshold.** `p ≤` the effective activation threshold (`turbo.epic.mode.activation_threshold`, default `0.3`, possibly tightened by calibration). `p` is computed over the **entire plan's task graph**, not just the phase being run.
+2. **Hot-module.** No task in scope may touch a Lean Turbo global file (`package.json`, lockfiles, barrels, build config), a protected path (`auth/`, `crypto/`, `secret/`, `.env`, …), or a calibration-promoted hot module.
+3. **Greenfield (predecessor evidence).** Passes when the project is not a git repository (**Rule 1**: the co-change premise is absent), or when every cross-phase upstream task the phase depends on has a `swarm(task <id>):` marker in git history. A dependency id that does not exist in the plan (a "phantom dep") fails the gate closed. The legacy `commitsObserved ≥ min_commits_for_signal` floor is **not** applied; both values are still recorded in the rationale for telemetry.
+
+Default-serial, promote-on-proof: any failing gate forces `demote`.
+
+### Greenfield-smart rules
+
+- **Rule 1 — no git, no ceremony.** In a non-git project the greenfield gate is bypassed and Rule 2 never commits.
+- **Rule 2 — per-task commit marker.** While Epic Mode is active for the project, `update_task_status(completed)` triggers a best-effort `swarm(task <id>): …` commit. Only the task's resolvable declared-scope files are staged — scope entries are matched as **literal** pathspecs (`app/[id].tsx` or `src/*.ts` name exactly that path, never a glob; a directory entry still covers everything beneath it) — and the commit is pathspec-restricted (`--only`), so anything else already in the index — your WIP, a sibling task's files — stays staged and out of the commit; `.swarm/` is never committed. A staged rename (`git mv`) whose destination is in scope carries its source-path deletion into the same commit. With **no** resolvable scope (binding missing, expired, or declared against an older plan revision): if the working tree has no non-`.swarm` change, an empty marker is written (pure verification tasks); if it is dirty (or its status cannot be read), **no marker is written** and a critical warning names the remediation — re-run `declare_scope` and re-run the completion, or commit the task's changes manually with a `swarm(task <id>):` subject. The plan ledger stays authoritative; a failed commit never blocks the status update.
+- **Rule 3 — cross-batch dependencies must be committed.** The wave/lane planners degrade a task whose cross-batch upstream lacks a `swarm(task <id>):` marker (`cross-batch upstream not committed (greenfield-smart Rule 3)`); commit the named upstreams and re-plan.
+
+### Phase readiness (phase reviewer + phase critic)
+
+While Epic Mode is active for the project, `phase_complete` runs the `epic_phase_readiness` gate — with or without Turbo. It replaces Lean Turbo's `lean_turbo_readiness` gate, which is marked not-applicable under Epic (do not call `lean_turbo_review` / `lean_turbo_critic`).
+
+- **Producer:** `epic_phase_review(phase)` (architect-only). The tool itself dispatches a read-only phase reviewer and, only when it APPROVES, a read-only phase critic through the plugin's review dispatcher (300 s per-role timeout), parses each verdict from the agent's response (missing/ambiguous/failed ⇒ REJECTED), and writes `.swarm/evidence/{phase}/epic-phase-review.json`. Verdicts are never accepted as arguments. It refuses while any phase task is not completed.
+- **Freshness:** the evidence binds to the plan id, the status-free plan structure hash, the phase's task ids and statuses, and the content of every phase task's `.swarm/evidence/{taskId}.json`; any change (e.g. rework after review), age over 24 h, or a future-dated timestamp makes it stale — re-run `epic_phase_review`.
+- **Block codes:** `EPIC_PHASE_REVIEW_MISSING`, `EPIC_PHASE_REVIEW_INVALID`, `EPIC_PHASE_REVIEWER_NOT_APPROVED`, `EPIC_PHASE_CRITIC_MISSING`, `EPIC_PHASE_CRITIC_NOT_APPROVED`, `EPIC_PHASE_REVIEW_STALE`, `EPIC_PHASE_PLAN_UNREADABLE`; each carries recovery `epic_phase_review({ phase })`.
+- **Turbo interaction:** with `/swarm turbo epic on`, Gates 1–5 are bypassed by Turbo and this gate is the phase-level quality gate. With `/swarm epic on` alone, Gates 1–5 run as usual and this gate adds one cross-task integration review of the concurrently executed waves.
+
+### Liveness and toggles
+
+Epic state is one row per session in the project SQLite coordination store (`.swarm/epic-state.json` is a compatibility projection and one-time import source). The **project-scoped** probe (`isEpicModeActiveForProject`, used by Rule 2 and phase readiness, because coder sub-sessions never carry the architect's flag) answers "Epic is on" only when the config gate is on **and** some active row either was updated in the last **24 h** or belongs to a session that is live in this process with Epic on (including one restored from its snapshot after a restart) — so a long idle stretch never silently turns Rule 2 and phase readiness off while the Epic banner still shows. Live Epic sessions refresh their row's heartbeat at most every **6 h** on `session.idle`, `session.error`, and `session.status` (idle/error) events, so only crashed or abandoned sessions age out. Rows are cleared on `session.deleted`, by `/swarm close`, and by `/swarm reset-session`. All of this session-lifecycle and teardown work runs only when Epic is enabled by config or the session carries the Epic flag — non-Epic projects see no extra I/O or output.
+
+`/swarm turbo off` (and the other Turbo-off paths) also disables Epic Mode **only** if Epic was enabled via `/swarm turbo epic on`, and says so in its reply; Epic enabled standalone with `/swarm epic on` is left alone. While Epic is on, the first enabler is kept: `/swarm turbo epic on` after `/swarm epic on` does not re-tag it as Turbo-enabled. `/swarm turbo epic off` always disables both. If the durable Epic write fails during a Turbo-off cross-clear, Epic stays on (in memory and on disk) and the reply says so instead of claiming it was disabled.
+
+### Slash command
+
+```
+/swarm epic on            # enable for this session (refused without turbo.epic.mode.enabled: true)
+/swarm epic off           # disable (always allowed)
+/swarm epic               # same as status — the bare form never toggles
+/swarm epic status        # current state + last decision rationale
+/swarm epic decide        # read-only what-if: compute the verdict without dispatching or writing evidence
+/swarm epic last          # most recent decision from .swarm/evidence/epic-promotions.jsonl
+/swarm epic calibration   # Capability D state: learned threshold, hot modules, recent divergent tasks
+```
+
+`off`, `status`, `decide`, `last`, and `calibration` work regardless of the config gate. If the durable Epic state is unreadable, `status` says so (fail-closed); fix or remove `.swarm/epic-state.json`, or run `/swarm reset-session` to clear corrupt Epic rows, and the next `/swarm epic` command re-validates it.
+
+You can also enable Epic Mode together with Lean Turbo:
+
+```
+/swarm turbo epic on      # enables Lean Turbo + Epic Mode together (same config gate)
+/swarm turbo epic off     # disables both
+/swarm turbo epic         # toggles both
+```
 
 ### Configuration
+
+The `turbo` config block is a discriminated union on `strategy`: a `turbo` block without `"strategy": "standard"` — or `"strategy": "lean"` together with a `"lean"` object — fails validation and is **dropped whole**, `turbo.epic` included. Minimal opt-in:
 
 ```json
 {
   "turbo": {
+    "strategy": "standard",
     "epic": {
-      "cochange": {
-        "enabled": false,
-        "threshold": 0.6,
-        "min_co_changes": 5
-      }
+      "mode": { "enabled": true, "activation_threshold": 0.3 },
+      "cochange": { "enabled": false, "threshold": 0.6, "min_co_changes": 5 }
     }
   }
 }
@@ -702,24 +779,23 @@ The combination is **conservative**: the co-change signal can only escalate a ve
 
 | Key | Default | Effect |
 |---|---|---|
-| `turbo.epic.cochange.enabled` | `false` | Master gate. With this off, no Epic-mode code runs. |
-| `turbo.epic.cochange.threshold` | `0.6` | NPMI floor (range `[-1, 1]`) for a pair to contribute a co-change conflict signal. |
-| `turbo.epic.cochange.min_co_changes` | `5` | Minimum raw co-change count required before NPMI is considered, to suppress small-sample noise. |
+| `turbo.epic.mode.enabled` | `false` | **Master gate for Epic Mode.** Required for `/swarm epic on`, `/swarm turbo epic on`, `epic_decide_phase`, `epic_plan_waves`, Rule 2, and the Epic phase-readiness gate. |
+| `turbo.epic.mode.activation_threshold` | `0.3` | Plan-wide `p` ceiling for promotion. |
+| `turbo.epic.mode.min_commits_for_signal` | `20` | Legacy greenfield floor — recorded in the rationale for telemetry only; no longer affects the decision. |
+| `turbo.epic.cochange.enabled` | `false` | **Master gate for the co-change signal** (Capability A). Off ⇒ `p` uses declared-path conflicts only and the rationale records `cochangeSignal: 'disabled-by-config'` (also in `/swarm coupling`). |
+| `turbo.epic.cochange.threshold` | `0.6` | NPMI floor (range `[-1, 1]`) for a pair to contribute a co-change conflict. |
+| `turbo.epic.cochange.min_co_changes` | `5` | Minimum raw co-change count before NPMI is considered. |
+| `turbo.epic.calibration.*` | see below | Capability D knobs; only consulted inside `epic_decide_phase`. |
 
-With `enabled: false` (the default), behavior is identical to before — verified by `tests/unit/turbo/epic/disabled-passthrough.test.ts`.
+### Capability A — Co-change-aware Pair Conflict
 
-### Composition with Lean Turbo
+`src/turbo/epic/cochange-conflict.ts` exports `epicPairConflict(scopeA, scopeB, cochangePairs, threshold)` — a pure function that combines Lean Turbo's path-based pair test (`pathsConflict` from `src/turbo/lean/conflicts.ts`) with a git co-change signal sourced from the existing `co_change_analyzer` tool (composed via its `_internals.parseGitLog` + `_internals.buildCoChangeMatrix` primitives), threshold-gated by NPMI and raw co-change count.
 
-Epic Mode imports — and **never modifies** — the following from Lean Turbo:
-
-- `pathsConflict`, `normalizePath` from `src/turbo/lean/conflicts.ts`
-- The output type of the existing `co_change_analyzer` tool (`src/tools/co-change-analyzer.ts`)
-
-The `co_change_analyzer` is composed (not reimplemented) via its existing `_internals.parseGitLog` + `_internals.buildCoChangeMatrix` primitives, so Epic Mode benefits from any future analyzer improvements automatically.
+The combination is **conservative**: the co-change signal can only escalate a verdict from "no conflict" to "conflict", never downgrade a path-based conflict. The data source (`src/turbo/epic/cochange-source.ts`) caches per-project results keyed on `git HEAD`, with FIFO eviction at 10 directories, and falls back to "signal absent" (`[]`) on greenfield repos, non-git directories, or git errors. The signal is only queried when `turbo.epic.cochange.enabled` is true.
 
 ### Capability B — Coupling KPI + decoupling roadmap
 
-`/swarm coupling` is a **read-only diagnostic** that computes a coupling coefficient `p` for the current plan and ranks the modules that drive the most detected conflicts. It composes Capability A's conflict predicate over every task pair, so the report shows exactly what the future epic-mode planner *would* see if asked.
+`/swarm coupling` is a **read-only diagnostic** that computes `p` for the current plan and ranks the modules that drive the most detected conflicts, using the same conflict predicate the activation gate uses.
 
 ```
 /swarm coupling                                # whole plan, markdown to stdout
@@ -730,101 +806,35 @@ The `co_change_analyzer` is composed (not reimplemented) via its existing `_inte
 /swarm coupling --persist                      # also write .swarm/epic/coupling-report.json
 ```
 
-**Output structure.** A short header (`p = 0.NNN`, X conflicting pairs out of Y), a per-module contention table sorted by conflict count, a decoupling roadmap (top-5 modules with their share of detected coupling), and a conflicting-task-pairs table showing each pair's reason (`path` / `cochange` / `both`) plus evidence counts. All figures are explicitly framed as *estimates*, not measured production outcomes (per design rule §4.2 "quantitative claims are estimates").
+**Output structure.** A short header (`p = 0.NNN`, X conflicting pairs out of Y), a per-module contention table, a decoupling roadmap (top-5 modules with their share of detected coupling), and a conflicting-task-pairs table with each pair's reason (`path` / `cochange` / `both`). All figures are *estimates*.
 
-**Independent of the runtime gate.** `/swarm coupling` runs whether or not `turbo.epic.cochange.enabled` is set. The config gate is for the *runtime* planner integration that ships later; the command itself is a what-if / diagnostic tool, useful before you opt the runtime in.
+**Config-aware.** `/swarm coupling` runs without Epic Mode being on, but it is **not** independent of `turbo.epic.cochange.enabled`: with that gate off it computes path-only conflicts and the report states the co-change signal is disabled by config. `--threshold` / `--min-co-changes` only matter when the signal is enabled.
 
-**Persists nothing by default.** With `--persist`, writes a structured JSON document to `.swarm/epic/coupling-report.json` via atomic `tmp + rename` (matching the lean-turbo state pattern), inside the project root.
+**Persists nothing by default.** With `--persist`, writes `.swarm/epic/coupling-report.json` atomically inside the project root.
 
-### Capability C — Activation gate and the `epic` mode itself
+### Promotion evidence
 
-The `epic` mode auto-decides parallel-vs-serial. When on, the architect runs the transparent decide-then-dispatch flow *instead of* `lean_turbo_run_phase(phase)`: it calls `epic_decide_phase(phase)`, which computes the coupling coefficient `p` over the whole plan (see [Per-plan, not per-phase](#per-plan-not-per-phase) below), gates on three independent checks, persists the decision to the evidence log, and returns a verdict that is either:
-
-
-- **Promote** → the architect calls `epic_plan_waves(phase)` and dispatches each wave's tasks via the visible `Task` tool (concurrency the user can see), rather than the runner-internal `LeanTurboRunner` dispatch.
-- **Demote** → a structured "serial" verdict so the architect falls back to the standard per-task serial path.
-
-(The legacy unified `epic_run_phase` tool, which dispatched into `LeanTurboRunner` directly, is deprecated and not registered for the architect — the transparent `epic_decide_phase` → `epic_plan_waves` → `Task` flow superseded it so each coder appears as a visible subagent.)
-
-#### The three gates (all must pass for promotion)
-
-1. **p-threshold.** `p ≤ turbo.epic.mode.activation_threshold` (default `0.3`). Plans above this are deemed too coupled to parallelize safely.
-2. **Hot-module.** No task in scope may touch a Lean Turbo global file (`package.json`, lockfiles, barrels, build config) or protected path (`auth/`, `crypto/`, `secret/`, `.env`, …). Reuses Lean Turbo's existing lists — no new list to maintain.
-3. **Greenfield (brief §4.2 rule).** `commitsObserved ≥ turbo.epic.mode.min_commits_for_signal` (default `20`). A sparse co-change history is signal-absent — promotion needs positive evidence, not just absence of failure.
-
-Default-serial-promote-on-proof: any failing gate forces `demote`. Promotion requires all three gates green.
-
-#### Per-plan, not per-phase
-
-The verdict is computed over the **entire plan's task graph** (every task across every phase), not just the phase being dispatched. The brief's "epic" vocabulary maps onto the codebase's one-plan-per-feature convention (a `Plan` is bound to a single `.swarm/spec.md` via `specMtime`/`specHash`), so per-plan activation IS per-epic activation. Lean Turbo's existing per-task degradation continues to operate inside each promoted phase — coupled tasks within an otherwise-promoted plan are still individually serialized by `planLeanTurboLanes`.
-
-#### Slash command
-
-```
-/swarm epic on            # enable for this session
-/swarm epic off           # disable
-/swarm epic               # toggle
-/swarm epic status        # show current state + last decision rationale
-/swarm epic decide        # read-only what-if: show the verdict without dispatching
-```
-
-Toggling mutates session state, the durable `.swarm/epic-state.json`, and the in-memory `session.epicModeActive` flag. The system-enhancer hook reads that flag on every architect turn and injects an `EPIC_MODE_BANNER` into the prompt instructing the architect to use the `epic_decide_phase` → `epic_plan_waves` → `Task` flow instead of `lean_turbo_run_phase`.
-
-You can also enable Epic Mode together with Lean Turbo via the unified turbo subcommand:
-
-```
-/swarm turbo epic on      # enables Lean Turbo + Epic Mode together
-/swarm turbo epic off     # disables both
-/swarm turbo epic         # toggles
-```
-
-`/swarm epic` remains as the epic-only toggle that does not also flip Lean Turbo session state (useful if a user wants the epic decision layer without Lean Turbo's session banners showing).
-
-#### Configuration
-
-```json
-{
-  "turbo": {
-    "epic": {
-      "mode": {
-        "enabled": false,
-        "activation_threshold": 0.3,
-        "min_commits_for_signal": 20
-      }
-    }
-  }
-}
-```
-
-| Key | Default | Effect |
-|---|---|---|
-| `turbo.epic.mode.enabled` | `false` | Master gate. With this off, no Epic Mode code runs. |
-| `turbo.epic.mode.activation_threshold` | `0.3` | Plan-wide `p` ceiling for promotion. Higher values relax the gate; lower values are more conservative. |
-| `turbo.epic.mode.min_commits_for_signal` | `20` | Greenfield rule. Co-change history with fewer than this many commits is considered too sparse to trust. |
-
-#### Promotion evidence
-
-After every `epic_decide_phase` invocation, one JSON line is appended to `.swarm/evidence/epic-promotions.jsonl` with the timestamp, sessionID, phase, decision, `p`, gate rationale, and blocking reasons. This is the audit trail — never overwritten, only appended; tolerates partial-write of the trailing line.
+Every `epic_decide_phase` invocation appends one JSON line to `.swarm/evidence/epic-promotions.jsonl` with the timestamp, sessionID, phase, decision, `p`, gate rationale (including `cochangeSignal`), and blocking reasons. Append-only; tolerates a partial trailing line. `/swarm epic decide` computes a verdict without writing it.
 
 ### Capability D — Outcome-based self-calibration
 
-Capability D closes the loop on Epic Mode's static knobs. After every task is marked `completed`, the architect calls a new tool `epic_record_divergence(directory, taskId, sessionID)` (the `EPIC_MODE_BANNER` auto-instructs it to). The tool compares the task's declared scope (`.swarm/scopes/scope-{taskId}.json`) against the files the coder actually modified (`session.modifiedFilesThisCoderTask`) and appends one line to `.swarm/epic/divergence.jsonl`.
+After each task is completed, the architect calls `epic_record_divergence(directory, taskId, sessionID)`. It compares the task's latest `declare_scope` declaration (historical, calibration-only read — see [Declared scopes](#declared-scopes)) with the files attributed to that exact task's coder writes (`getModifiedFilesForTask`), and appends one line to `.swarm/epic/divergence.jsonl`. A declared directory covers every file beneath it (segment-aware: `src/auth` covers `src/auth/login.ts`, not `src/authentication.ts`), so writes inside it are not undeclared and the directory counts as used. Tasks without a declaration record nothing (`no-scope`); with Epic disabled by config the tool is a no-op (`epic-disabled-by-config`). Records carry the plan id and are idempotent per `(planId, taskId)`: a retried call with the same declared/actual sets appends nothing (`already-recorded`), and a rework after `NEEDS_REVISION` appends a record that supersedes the earlier attempt — calibration applies only the latest record per task within each batch it consumes.
 
-On every subsequent `epic_decide_phase` call, the calibration engine consumes any new divergence records and updates two persisted knobs at `.swarm/epic/calibration.json`:
+On every subsequent `epic_decide_phase` call, the calibration engine consumes new divergence records and updates two persisted knobs at `.swarm/epic/calibration.json`:
 
 | Knob | Behaviour |
 |---|---|
 | `activationThresholdOverride` | Tightens (toward zero) by `tighten_step` for every divergent task, capped at `floor_threshold`. Loosens (toward the static `activation_threshold`) by `loosen_step` only after `loosen_window` consecutive clean tasks; the counter resets on any divergent task and on every loosening event. |
-| `hotModuleAdditions` | Files written without being declared get added permanently. **Monotonically grows** — never auto-shrinks. Loosening relaxes only the threshold; the hot-module list requires manual intervention to shrink. |
+| `hotModuleAdditions` | Files written without being declared get added permanently. **Monotonically grows** — never auto-shrinks; removal requires editing `.swarm/epic/calibration.json` by hand. |
 
-The calibration values plug into the same three gates Capability C already runs — they just supply tighter values when divergence has been observed. The static config is always the absolute ceiling: calibration can never relax past it.
+The static config is always the ceiling: calibration can never relax past it.
 
 #### `turbo.epic.calibration.*` knobs
 
 | Key | Default | Effect |
 |---|---|---|
-| `turbo.epic.calibration.enabled` | `true` | Master gate for the calibration loop. With this off, the static `mode.activation_threshold` is always used. |
-| `turbo.epic.calibration.floor_threshold` | `0.05` | Calibration never tightens the threshold below this. Below ~0.05 the gate becomes too strict to ever promote. |
+| `turbo.epic.calibration.enabled` | `true` | Master gate for the calibration loop. With this off, the static `mode.activation_threshold` is always used. Inert unless `mode.enabled` is also true. |
+| `turbo.epic.calibration.floor_threshold` | `0.05` | Calibration never tightens the threshold below this. |
 | `turbo.epic.calibration.tighten_step` | `0.02` | Per-divergent-task tightening step. |
 | `turbo.epic.calibration.loosen_step` | `0.01` | Per-loosening-event step (added toward the static config value). |
 | `turbo.epic.calibration.loosen_window` | `10` | Consecutive clean tasks required before the engine loosens by `loosen_step`. |
@@ -848,7 +858,7 @@ Each line of `.swarm/epic/divergence.jsonl`:
 }
 ```
 
-Read-tolerant of partial-write of the trailing line. Best-effort writer — failures log but never block task completion.
+Read-tolerant of a partial trailing line. Best-effort writer — failures log but never block task completion.
 
 ---
 

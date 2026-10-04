@@ -29,6 +29,10 @@ import { savePlan } from '../../src/plan/manager';
 import { executeEpicPlanWaves } from '../../src/tools/epic-plan-waves';
 import { executeEpicDecidePhase } from '../../src/tools/epic-run-phase';
 import { enableEpicMode } from '../../src/turbo/epic/state';
+import {
+	declareScopesForTest,
+	resetDeclaredScopesForTest,
+} from '../helpers/declared-scope-bindings';
 
 function makePhase2Plan(): Plan {
 	return {
@@ -119,16 +123,20 @@ function makePhase2Plan(): Plan {
 	};
 }
 
-function writeScopeFile(dir: string, taskId: string, files: string[]): void {
-	const scopesDir = path.join(dir, '.swarm', 'scopes');
-	fs.mkdirSync(scopesDir, { recursive: true });
-	fs.writeFileSync(
-		path.join(scopesDir, `scope-${taskId}.json`),
-		JSON.stringify({
-			taskId,
-			files,
-			declaredAt: '2026-06-04T00:00:00.000Z',
-		}),
+/**
+ * Declare through the real `declare_scope` path. It persists only v2 scope
+ * bindings (pinned to the plan identity) — the planners never read the
+ * legacy v1 `.swarm/scopes/scope-<id>.json` projection.
+ */
+async function writeScopeFile(
+	dir: string,
+	taskId: string,
+	files: string[],
+): Promise<void> {
+	await declareScopesForTest(
+		dir,
+		{ [taskId]: files },
+		{ sessionID: 'wave-integration-session' },
 	);
 }
 
@@ -141,12 +149,21 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 		// the protected-path classifier — would degrade tasks for unrelated reasons.
 		dir = fs.mkdtempSync(path.join(os.tmpdir(), 'epic-wave-'));
 		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+		// Epic Mode is opt-in: `turbo.epic.mode.enabled` must be true.
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.opencode', 'opencode-swarm.json'),
+			JSON.stringify({
+				turbo: { strategy: 'standard', epic: { mode: { enabled: true } } },
+			}),
+		);
 		await savePlan(dir, makePhase2Plan());
 		// No git init — this is the no-git Rule-1 scenario.
 		enableEpicMode(dir, 'wave-integration-session');
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await resetDeclaredScopesForTest();
 		try {
 			fs.rmSync(dir, { recursive: true, force: true });
 		} catch {
@@ -155,12 +172,12 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 	});
 
 	test('clean disjoint scopes: decide promotes, plan_waves produces 3 waves with the right partition', async () => {
-		writeScopeFile(dir, '2.1', ['src/registry.py', 'src/protocol.py']);
-		writeScopeFile(dir, '2.2', ['src/column_types.py']);
-		writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
-		writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
-		writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
-		writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
+		await writeScopeFile(dir, '2.1', ['src/registry.py', 'src/protocol.py']);
+		await writeScopeFile(dir, '2.2', ['src/column_types.py']);
+		await writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
+		await writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
+		await writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
+		await writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
 
 		// Step 2 of the banner: epic_decide_phase
 		const decideResult = await executeEpicDecidePhase({
@@ -194,22 +211,25 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 	});
 
 	test('kitchen-sink scope (architect claims shared __init__.py on every sibling): wave planner splits into more waves rather than degrading', async () => {
-		writeScopeFile(dir, '2.1', ['src/registry.py']);
-		writeScopeFile(dir, '2.2', ['src/column_types.py']);
+		await writeScopeFile(dir, '2.1', ['src/registry.py']);
+		await writeScopeFile(dir, '2.2', ['src/column_types.py']);
 		// The pathological recovery: every sibling claims the shared __init__.py.
-		writeScopeFile(dir, '2.3', [
+		await writeScopeFile(dir, '2.3', [
 			'src/models/logistic.py',
 			'src/models/__init__.py',
 		]);
-		writeScopeFile(dir, '2.4', [
+		await writeScopeFile(dir, '2.4', [
 			'src/models/random_forest.py',
 			'src/models/__init__.py',
 		]);
-		writeScopeFile(dir, '2.5', [
+		await writeScopeFile(dir, '2.5', [
 			'src/models/xgboost.py',
 			'src/models/__init__.py',
 		]);
-		writeScopeFile(dir, '2.6', ['src/models/mlp.py', 'src/models/__init__.py']);
+		await writeScopeFile(dir, '2.6', [
+			'src/models/mlp.py',
+			'src/models/__init__.py',
+		]);
 
 		const planResult = await executeEpicPlanWaves({ directory: dir, phase: 2 });
 		expect(planResult.success).toBe(true);
@@ -238,14 +258,13 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 			'2.6',
 		]);
 
-		// Architect calls declare_scope for each missing id (simulated by
-		// writing scope files directly — same effect on the planner).
-		writeScopeFile(dir, '2.1', ['src/registry.py']);
-		writeScopeFile(dir, '2.2', ['src/column_types.py']);
-		writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
-		writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
-		writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
-		writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
+		// Architect calls declare_scope for each missing id (real tool path).
+		await writeScopeFile(dir, '2.1', ['src/registry.py']);
+		await writeScopeFile(dir, '2.2', ['src/column_types.py']);
+		await writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
+		await writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
+		await writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
+		await writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
 
 		// Re-invoke: success path.
 		const secondAttempt = await executeEpicPlanWaves({
@@ -260,12 +279,12 @@ describe('Epic Mode wave planning — Phase-2-shape integration on no-git projec
 		// The wave planner replaces the lane planner downstream of decide,
 		// but the verdict itself comes from the same activation gate. Same
 		// inputs → same decide result regardless of which planner we use.
-		writeScopeFile(dir, '2.1', ['src/registry.py']);
-		writeScopeFile(dir, '2.2', ['src/column_types.py']);
-		writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
-		writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
-		writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
-		writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
+		await writeScopeFile(dir, '2.1', ['src/registry.py']);
+		await writeScopeFile(dir, '2.2', ['src/column_types.py']);
+		await writeScopeFile(dir, '2.3', ['src/models/logistic.py']);
+		await writeScopeFile(dir, '2.4', ['src/models/random_forest.py']);
+		await writeScopeFile(dir, '2.5', ['src/models/xgboost.py']);
+		await writeScopeFile(dir, '2.6', ['src/models/mlp.py']);
 
 		const decideA = await executeEpicDecidePhase({
 			directory: dir,
