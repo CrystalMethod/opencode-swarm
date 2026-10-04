@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.188.11](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.10...v7.188.11) (2026-10-04)
+
+
+### Bug Fixes
+
+* **turbo/lean:** unify integrated_diff_required default via DEFAULT_LEAN_TURBO_CONFIG ([#2954](https://github.com/ZaxbyHub/opencode-swarm/issues/2954)) ([a347d99](https://github.com/ZaxbyHub/opencode-swarm/commit/a347d994d5da4754043b795bf969277a877b3532))
+
 ## [7.188.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.9...v7.188.10) (2026-10-04)
 
 
