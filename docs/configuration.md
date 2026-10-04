@@ -2368,7 +2368,7 @@ Lean Turbo is a lane-planning execution strategy that partitions phase tasks int
 | `degrade_on_risk` | boolean | `true` | When `true`, Lean Turbo degrades to serial execution if risk conditions are detected (e.g., protected paths, cross-lane dependencies). |
 | `phase_reviewer` | boolean | `true` | Dispatch an additive phase-level reviewer gate at `phase_complete`. This is in addition to per-task Stage B review — it does NOT skip Stage B. |
 | `phase_critic` | boolean | `true` | Dispatch an additive phase-level critic gate at `phase_complete`. This is in addition to per-task Stage B review — it does NOT skip Stage B. |
-| `integrated_diff_required` | boolean | `true` | Require an integrated diff before accepting changes from a lane. Ensures cross-lane file changes are coherent. |
+| `integrated_diff_required` | boolean | `true` | Require an integrated diff before accepting changes from a lane. Ensures cross-lane file changes are coherent. Behavior change (#2954): the default is now `true` on every path, including projects with no `turbo` config block — set `turbo.lean.integrated_diff_required: false` to restore the previous permissive behavior. |
 | `allow_docs_only_without_reviewer` | boolean | `false` | Allow docs-only phases to complete when the reviewer agent is not available. |
 | `worktree_isolation` | boolean | `true` | Use git worktree isolation for parallel coders to enable true file-system-level parallelism. When `true`, each lane gets its own worktree. |
 | `merge_strategy` | `"merge" \| "rebase" \| "cherry-pick"` | `"merge"` | Branch merge strategy after lane worktree completion. Controls how completed lane branches are merged back into the main branch. |

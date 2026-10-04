@@ -36,6 +36,7 @@ import {
 	verifyLeanTurboPhaseReady,
 } from '../../../src/turbo/lean/phase-ready';
 import { _internals as reviewerInternals } from '../../../src/turbo/lean/reviewer';
+import { writeLeanDiffEvidence } from '../../helpers/lean-phase-evidence';
 
 // ---------------------------------------------------------------------------
 // Shared setup helpers
@@ -180,13 +181,7 @@ function setupLeanTurboSession(
 	// DEFAULT_LEAN_TURBO_CONFIG), so check 7 runs on the no-config path. These
 	// tests target the reviewer/critic gates (checks 8/9), not check 7's
 	// default — satisfying check 7 here preserves every existing expectation.
-	fs.writeFileSync(
-		path.join(laneEvidenceDir, 'lean-turbo-phase.json'),
-		JSON.stringify({
-			phase,
-			integratedDiffSummary: 'fixture integrated diff summary',
-		}),
-	);
+	writeLeanDiffEvidence(dir, phase);
 }
 
 // ---------------------------------------------------------------------------

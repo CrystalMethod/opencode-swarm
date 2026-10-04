@@ -84,8 +84,12 @@ describe('lean turbo phase-ready defaults pin (#2954)', () => {
 		expect(DEFAULT_CONFIG.integrated_diff_required).toBe(true);
 	});
 
-	test('schema default == constants default (leaf schema)', () => {
+	test('schema default == constants default (leaf schema, all three keys)', () => {
 		const parsed = LeanTurboConfigSchema.parse({});
+		expect(parsed.phase_reviewer).toBe(
+			DEFAULT_LEAN_TURBO_CONFIG.phase_reviewer,
+		);
+		expect(parsed.phase_critic).toBe(DEFAULT_LEAN_TURBO_CONFIG.phase_critic);
 		expect(parsed.integrated_diff_required).toBe(true);
 		expect(parsed.integrated_diff_required).toBe(
 			DEFAULT_LEAN_TURBO_CONFIG.integrated_diff_required,
@@ -188,6 +192,20 @@ describe('lean turbo phase-ready no-config behavior (#2954)', () => {
 	test('explicit { integrated_diff_required: true } matches the no-config result', () => {
 		const result = verifyLeanTurboPhaseReady(dir, 1, SESSION, {
 			integrated_diff_required: true,
+		});
+		expect(result.ok).toBe(false);
+		expect(result.reason).toContain(
+			'Integrated diff summary is required but missing for phase 1',
+		);
+	});
+
+	test('explicit { integrated_diff_required: undefined } falls back to the default (fail-closed, PRR-004)', () => {
+		// The merge is field-wise (?? DEFAULT), so an explicitly-undefined field
+		// in a caller-supplied config must behave like an absent field — not
+		// silently disable check 7. (Under the previous bare-spread merge this
+		// call returned ok:true.)
+		const result = verifyLeanTurboPhaseReady(dir, 1, SESSION, {
+			integrated_diff_required: undefined,
 		});
 		expect(result.ok).toBe(false);
 		expect(result.reason).toContain(

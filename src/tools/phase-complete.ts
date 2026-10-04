@@ -976,6 +976,15 @@ export async function executePhaseComplete(
 						blocked: true,
 						reason: 'LEAN_TURBO_PHASE_NOT_READY',
 						message: `Phase ${phase} cannot be completed: ${check.reason}`,
+						recovery: {
+							kind: 'user_action',
+							action: 'config',
+							args: {
+								option: 'turbo.lean.integrated_diff_required',
+								opt_out_value: false,
+								detail: `If the integrated-diff evidence is missing, re-run the phase (mid-phase) or provide ${dir}/.swarm/evidence/${phase}/lean-turbo/lean-turbo-phase.json with a non-empty integratedDiffSummary; to restore the pre-#2954 permissive behavior, set turbo.lean.integrated_diff_required: false in .opencode/opencode-swarm.json.`,
+							},
+						},
 					};
 		},
 	});

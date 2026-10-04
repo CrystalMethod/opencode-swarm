@@ -397,15 +397,6 @@ describe('Lean Turbo runtime conformance', () => {
 					}),
 				);
 				writeLeanDiffEvidence(dir, 1); // check-7 default flipped true (#2954)
-				fs.writeFileSync(
-					path.join(dir, '.swarm', 'evidence', '1', 'lean-turbo-phase.json'),
-					JSON.stringify({
-						phase: 1,
-						status: 'completed',
-						integratedDiffSummary: 'Integrated lane diff summary.',
-						timestamp: new Date().toISOString(),
-					}),
-				);
 
 				// Create required retro evidence
 				const retroDir = path.join(dir, '.swarm', 'evidence', 'retro-1');
