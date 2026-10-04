@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import { closeAllProjectDbs } from '../../../src/db/project-db';
 import {
 	_internals,
+	EPIC_PHASE_REVIEW_BASH_RETRY_NOTE,
 	EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS,
 	EPIC_PHASE_REVIEW_FILENAME,
 	runEpicPhaseReview,
@@ -74,8 +75,10 @@ function writePlan(root: string): void {
  * Scripted dispatcher: each agent gets its responses in order (a string is a
  * `completed` response with that text, an Error is an `error` dispatch).
  */
+type Scripted = string | Error | { text: string; durationMs: number };
+
 function scriptedDispatcher(
-	script: Record<string, Array<string | Error>>,
+	script: Record<string, Scripted[]>,
 	calls: ReviewDispatchRequest[],
 ): ReviewModelDispatcher {
 	const cursor: Record<string, number> = {};
@@ -84,10 +87,12 @@ function scriptedDispatcher(
 			calls.push(request);
 			const index = cursor[request.agentName] ?? 0;
 			cursor[request.agentName] = index + 1;
-			const next = script[request.agentName]?.[index] ?? '';
+			const raw = script[request.agentName]?.[index] ?? '';
+			const timed = typeof raw === 'object' && !(raw instanceof Error);
+			const next = timed ? raw.text : raw;
 			const base = {
 				agentName: request.agentName,
-				durationMs: 5,
+				durationMs: timed ? raw.durationMs : 5,
 				promptBytes: request.prompt.length,
 			};
 			return next instanceof Error
@@ -174,7 +179,9 @@ describe('runEpicPhaseReview provider-refusal retry', () => {
 		expect(calls[0].tools).toBeUndefined();
 		expect(calls[1].tools).toBe(EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS);
 		expect(calls[1].prompt).toBe(calls[0].prompt);
-		expect(calls[1].system).toBe(calls[0].system);
+		expect(calls[1].system).toBe(
+			`${calls[0].system}\n\n${EPIC_PHASE_REVIEW_BASH_RETRY_NOTE}`,
+		);
 		expect(calls[2].tools).toBeUndefined();
 		const evidence = stored();
 		expect(evidence.reviewer).toMatchObject({
@@ -249,5 +256,137 @@ describe('runEpicPhaseReview provider-refusal retry', () => {
 			dispatch: 'failed',
 			tool_profile: 'read-only',
 		});
+	});
+});
+
+describe('runEpicPhaseReview retry bounds and bookkeeping', () => {
+	test('the retry only gets the time left of the per-role timeout, and durations add up', async () => {
+		const calls: ReviewDispatchRequest[] = [];
+		await runEpicPhaseReview(dir, 1, 'arch', {
+			timeoutMs: 1_000,
+			dispatcher: scriptedDispatcher(
+				{
+					reviewer: [
+						{ text: '', durationMs: 400 },
+						{ text: APPROVED, durationMs: 250 },
+					],
+					critic: [APPROVED],
+				},
+				calls,
+			),
+		});
+		expect(calls[0].timeoutMs).toBe(1_000);
+		expect(calls[1].timeoutMs).toBe(600);
+		expect(stored().reviewer).toMatchObject({
+			verdict: 'APPROVED',
+			duration_ms: 650,
+		});
+	});
+
+	test('no retry once the first attempt used up the timeout', async () => {
+		const calls: ReviewDispatchRequest[] = [];
+		await runEpicPhaseReview(dir, 1, 'arch', {
+			timeoutMs: 1_000,
+			dispatcher: scriptedDispatcher(
+				{ reviewer: [{ text: '', durationMs: 1_000 }] },
+				calls,
+			),
+		});
+		expect(calls).toHaveLength(1);
+		expect(stored().reviewer).toMatchObject({
+			dispatch: 'unparseable',
+			tool_profile: 'read-only',
+		});
+	});
+
+	test('the tool profile is reset for a fallback model attempt', async () => {
+		const calls: ReviewDispatchRequest[] = [];
+		await runEpicPhaseReview(dir, 1, 'arch', {
+			agentModelRegistry: {
+				reviewer: { fallbackModels: ['opencode/fallback-model'] },
+			} as never,
+			dispatcher: scriptedDispatcher(
+				{
+					reviewer: [
+						'',
+						new Error('429 Too Many Requests: rate limit'),
+						APPROVED,
+					],
+					critic: [APPROVED],
+				},
+				calls,
+			),
+		});
+		const reviewerCalls = calls.filter((c) => c.agentName === 'reviewer');
+		expect(reviewerCalls).toHaveLength(3);
+		expect(reviewerCalls[1].tools).toBe(EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS);
+		expect(reviewerCalls[2].tools).toBeUndefined();
+		expect(reviewerCalls[2].model).toMatchObject({
+			providerID: 'opencode',
+			modelID: 'fallback-model',
+		});
+		expect(stored().reviewer).toMatchObject({
+			verdict: 'APPROVED',
+			tool_profile: 'read-only',
+		});
+	});
+
+	test('the critic is retried the same way and the message says so', async () => {
+		const calls: ReviewDispatchRequest[] = [];
+		const result = await runEpicPhaseReview(dir, 1, 'arch', {
+			dispatcher: scriptedDispatcher(
+				{ reviewer: [APPROVED], critic: ['', APPROVED] },
+				calls,
+			),
+		});
+		expect(calls.map((c) => c.agentName)).toEqual([
+			'reviewer',
+			'critic',
+			'critic',
+		]);
+		expect(stored().critic).toMatchObject({
+			verdict: 'APPROVED',
+			tool_profile: 'read-only-with-bash',
+		});
+		expect(result.success && result.message).toContain('retried with bash');
+	});
+});
+
+describe('tool_profile in stored evidence', () => {
+	async function approvedEvidence(): Promise<string> {
+		await runEpicPhaseReview(dir, 1, 'arch', {
+			dispatcher: scriptedDispatcher(
+				{ reviewer: [APPROVED], critic: [APPROVED] },
+				[],
+			),
+		});
+		return path.join(
+			dir,
+			'.swarm',
+			'evidence',
+			'1',
+			EPIC_PHASE_REVIEW_FILENAME,
+		);
+	}
+
+	test('evidence written before the field existed is still valid', async () => {
+		const file = await approvedEvidence();
+		const evidence = JSON.parse(fs.readFileSync(file, 'utf-8'));
+		delete evidence.reviewer.tool_profile;
+		delete evidence.critic.tool_profile;
+		fs.writeFileSync(file, JSON.stringify(evidence));
+		expect((await verifyEpicPhaseReadiness(dir, 1, FROZEN_NOW_MS)).ok).toBe(
+			true,
+		);
+	});
+
+	test('an unknown tool_profile makes the evidence invalid', async () => {
+		const file = await approvedEvidence();
+		const evidence = JSON.parse(fs.readFileSync(file, 'utf-8'));
+		evidence.reviewer.tool_profile = 'full';
+		fs.writeFileSync(file, JSON.stringify(evidence));
+		expect(await verifyEpicPhaseReadiness(dir, 1, FROZEN_NOW_MS)).toMatchObject(
+			{ ok: false, code: 'EPIC_PHASE_REVIEW_INVALID' },
+		);
 	});
 });

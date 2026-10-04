@@ -81,19 +81,24 @@ export const EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS = 300_000;
 export const EPIC_PHASE_REVIEW_TOOL = 'epic_phase_review';
 
 /**
- * Tool map for the one provider-refusal retry: the shared read-only map with
- * only `bash` left enabled. OpenCode Zen's free tier answers a session whose
- * request disables `bash` with HTTP 403 ("free tier can only be used from
- * within OpenCode"); the shared dispatcher surfaces that as a `completed`
- * response with no text, which would otherwise be recorded as an
- * unparseable REJECTED and wedge the phase gate on that provider. Every
- * other tool (write/edit/patch/shell/task/plugin tools) stays denied, so this
- * profile is still narrower than the standard per-task reviewer agent, which
- * is configured with only write/edit/patch off (`src/agents/reviewer.ts`).
- * Like that reviewer's, its bash commands pass the shell guardrails, which
- * for a scope-less non-coder role block deny-prefixed, unresolvable and
- * inline-eval writes but are not a full read-only sandbox.
+ * Tool map for the one empty-response retry: the shared read-only map with
+ * only `bash` left enabled. OpenCode Zen's free tier answers a request that
+ * disables `bash` with HTTP 403 ("free tier can only be used from within
+ * OpenCode"), and the shared dispatcher (which disables `bash` along with
+ * every mutating and plugin tool) surfaces ANY provider-side error as a
+ * `completed` response with no text — so the retry fires on every empty
+ * completion, not only the Zen 403; a second empty response stays a
+ * fail-closed REJECTED. Every other tool stays denied, so this profile is
+ * still narrower than the standard per-task reviewer/critic agents (whose
+ * own config denies only write/edit/patch among the built-ins). Their shell
+ * commands pass the same guardrails, which for a scope-less non-coder role
+ * block unresolvable, inline-eval and deny-listed (none by default) writes;
+ * that is not a read-only sandbox, so the retry also tells the model not to
+ * change anything ({@link EPIC_PHASE_REVIEW_BASH_RETRY_NOTE}).
  */
+export const EPIC_PHASE_REVIEW_BASH_RETRY_NOTE =
+	'You have a `bash` tool for this review. Use it only to read and inspect (for example cat, ls, grep, git log, git diff, git show). Never run a command that creates, modifies or deletes files, changes git state (checkout, stash, reset, commit), installs packages, or runs tests.';
+
 export const EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS: ReadOnlyToolDenials =
 	Object.freeze(
 		Object.fromEntries(
@@ -708,15 +713,27 @@ async function dispatchRole(
 				};
 				toolProfile = 'read-only';
 				let response = await dispatcher.dispatch(request);
-				// A provider refusal arrives as `completed` with no text (see
-				// EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS): retry once keeping `bash`.
-				// A model that answers — even without a verdict — is not retried.
-				if (response.status === 'completed' && response.text.trim() === '') {
+				// A provider-side error (e.g. the Zen free tier's 403 for a
+				// bash-less request) arrives as `completed` with no text (see
+				// EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS): retry once keeping `bash`,
+				// within what is left of this attempt's timeout so one model
+				// attempt never exceeds `timeoutMs`. A model that answers — even
+				// without a verdict — is not retried.
+				const remainingMs = timeoutMs - response.durationMs;
+				if (
+					response.status === 'completed' &&
+					response.text.trim() === '' &&
+					remainingMs > 0
+				) {
 					toolProfile = 'read-only-with-bash';
-					response = await dispatcher.dispatch({
+					const firstMs = response.durationMs;
+					const retry = await dispatcher.dispatch({
 						...request,
+						system: `${system}\n\n${EPIC_PHASE_REVIEW_BASH_RETRY_NOTE}`,
+						timeoutMs: remainingMs,
 						tools: EPIC_PHASE_REVIEW_BASH_RETRY_TOOLS,
 					});
+					response = { ...retry, durationMs: firstMs + retry.durationMs };
 				}
 				if (response.status === 'completed') {
 					return response as ReviewDispatchResult & { status: 'completed' };
@@ -930,11 +947,18 @@ export async function runEpicPhaseReview(
 
 	const ready =
 		reviewer.verdict === 'APPROVED' && critic?.verdict === 'APPROVED';
-	const message = ready
-		? `Phase ${phase} reviewer and critic both APPROVED. Evidence recorded at ${rel}; phase_complete may proceed.`
-		: reviewer.verdict !== 'APPROVED'
-			? `Phase reviewer returned ${reviewer.verdict}${reviewer.reason ? `: ${reviewer.reason}` : ''}. The critic was not dispatched. ${epicPhaseFixPath(phase)}`
-			: `Phase critic returned ${critic?.verdict}${critic?.reason ? `: ${critic.reason}` : ''}. ${epicPhaseFixPath(phase)}`;
+	const bashRetry = [reviewer, critic].some(
+		(verdict) => verdict?.tool_profile === 'read-only-with-bash',
+	)
+		? ' (an empty dispatch response was retried with bash enabled; see tool_profile in the evidence)'
+		: '';
+	const message =
+		(ready
+			? `Phase ${phase} reviewer and critic both APPROVED. Evidence recorded at ${rel}; phase_complete may proceed.`
+			: reviewer.verdict !== 'APPROVED'
+				? `Phase reviewer returned ${reviewer.verdict}${reviewer.reason ? `: ${reviewer.reason}` : ''}. The critic was not dispatched. ${epicPhaseFixPath(phase)}`
+				: `Phase critic returned ${critic?.verdict}${critic?.reason ? `: ${critic.reason}` : ''}. ${epicPhaseFixPath(phase)}`) +
+		bashRetry;
 	return {
 		success: true,
 		phase,
