@@ -709,7 +709,7 @@ The architect follows this flow only when the user asks it to run the plan. The 
 **Wave composition — per-component parallelism.** The Epic component planner (`src/turbo/epic/components.ts`) works on the current phase's unresolved, unblocked tasks:
 
 1. **Conflict graph.** Two tasks conflict when their scopes overlap by path (same file, or a directory and a file beneath it) or — with `turbo.epic.cochange.enabled` — a threshold-passing co-change pair has one file in each scope. This is **the same predicate** as the wave verdict the dispatch gate recomputes (see [Dispatch gate](#dispatch-gate-the-active-wave-is-the-authority)), so a wave the planner builds is always provably disjoint at dispatch. Scopes are the live declared scope, else `files_touched` (an estimate until declared).
-2. **Exclusive tasks** run **alone, before anything else**: a task touching a Lean Turbo global file or protected path, a task with no usable scope, and a task touching a module calibration learned as hot. Each is its own component (mode `exclusive`).
+2. **Exclusive tasks** run **alone, before anything else**: a task touching a Lean Turbo global file or protected path, a task with no usable scope, and a task whose declared scope touches a file [learning](#learning-across-waves-and-epics) marked hot. Each is its own component (mode `exclusive`).
 3. **Components.** The other tasks are split into connected components of the conflict graph. Each component *C* gets a density *d*<sub>C</sub> = (conflict edges inside *C*) / (pairs of tasks in *C*); *d* = 0 for a single task. A component with *d*<sub>C</sub> > `turbo.epic.mode.activation_threshold` (default 0.3) is a **`serial-component`**: a densely coupled cluster — typically a hub file most of its tasks edit — that contributes **at most one task per wave**. Otherwise it is **`parallel`**: its tasks share a wave whenever they do not conflict, so a sparse chain (A–B, B–C, …) is one component whose non-adjacent tasks still run together.
 4. **Next wave.** Among the ready tasks (every dependency resolved, cycle-safe topological order from the shared partition preflight): an exclusive task alone (`kind: 'exclusive'`); otherwise greedily, oldest component first (the number of waves since a component last had a task issued, so no component starves) and then topological order, add a task when it conflicts with no chosen task, its `serial-component` has no task in the wave yet, and the wave is below the epic's wave width (`turbo.lean.max_parallel_coders` in a git project, **1** in a non-git project). A wave of one task from a `serial-component` has `kind: 'serial-component'`; any other wave is `parallel`.
 
@@ -816,7 +816,7 @@ The Epic v1 `/swarm epic on` / `off` toggles were removed. `/swarm turbo epic �
 
 ### Sizing
 
-`/swarm epic start` refuses a plan that is not worth running as an epic (reason `not-epic-sized`, with the measured values and "run it in Balanced"). With *T* pending tasks (status not `completed`/`closed`), *coverage* the share of them with a scope (live declared scope, else `files_touched`), and *L* the serial steps of a dry run of the Epic component planner — the planner `epic_next_wave` issues waves with, with the same hot modules, co-change signal and density threshold — over every phase under the epic's wave width (the waves it would issue, assuming each completes, plus one step per task it could never schedule, e.g. a dependency cycle):
+`/swarm epic start` refuses a plan that is not worth running as an epic (reason `not-epic-sized`, with the measured values and "run it in Balanced"). With *T* pending tasks (status not `completed`/`closed`), *coverage* the share of them with a scope (live declared scope, else `files_touched`), and *L* the serial steps of a dry run of the Epic component planner — the planner `epic_next_wave` issues waves with, with the same learned hot files and co-writes (from the project prior), co-change signal and density threshold — over every phase under the epic's wave width (the waves it would issue, assuming each completes, plus one step per task it could never schedule, e.g. a dependency cycle):
 
 *S* = *T* / *L*, *S*<sub>eff</sub> = 1 / ((1 − *c*) + *c* / *S*), where *c* = `coder_fraction` (the share of a task's time parallel coders overlap; QA and architect turns stay serial).
 
@@ -830,11 +830,13 @@ A plan is epic-sized when *T* ≥ `min_tasks` (6), coverage ≥ `min_scope_cover
 /swarm epic                   # same as status — the bare form never mutates the epic
 /swarm epic status            # epic, waves, phases, divergence, orphan/sentinel repair, merge failures
 /swarm epic status --repair-refs  # also re-adopt task commits a rebase/amend made unreachable
-/swarm epic calibration       # Capability D state: learned hot modules, threshold override, recent divergent tasks
+/swarm epic learning          # what the planner learned and uses now: hot files, learned co-writes, settings
+/swarm epic prior [show]      # the project prior (.swarm/epic-prior/learning.json)
+/swarm epic prior reset [--confirm=<token>]  # clear the project prior: preview + token, then confirm
 /swarm epic clear-merge-failure <taskId> [--confirm]  # clear a recorded worktree merge failure blocking an epic wave (preview without --confirm)
 ```
 
-`close`, `status`, and `calibration` work regardless of the config gate. `/swarm epic decide` and `/swarm epic last` were removed with the activation gate (they answer with a pointer to `status`). If the lifecycle state is unreadable, `status` says so (Epic behaviour is off, fail closed) and `/swarm epic close --abandon` repairs it.
+`close`, `status`, `learning`, and `prior` work regardless of the config gate. `/swarm epic decide` and `/swarm epic last` were removed with the activation gate (they answer with a pointer to `status`); `/swarm epic calibration` was renamed `/swarm epic learning` (it answers with a pointer). If the lifecycle state is unreadable, `status` says so (Epic behaviour is off, fail closed) and `/swarm epic close --abandon` repairs it.
 
 ### Configuration
 
@@ -855,12 +857,16 @@ The `turbo` config block is a discriminated union on `strategy`: a `turbo` block
 | Key | Default | Effect |
 |---|---|---|
 | `turbo.epic.mode.enabled` | `false` | **Master gate for Epic Mode.** Required for `/swarm epic start`, the Epic tools (`epic_next_wave`, `epic_phase_review` — granted to the architect only while it is on), commit-at-landing, required worktree isolation, residue commits, the Epic phase-readiness gate, and the Epic banner. Turning it off makes an open epic inert until it is re-enabled or closed. |
-| `turbo.epic.mode.activation_threshold` | `0.3` | **Intra-component density threshold** (Epic v2 C5): a conflict component whose density exceeds it is a `serial-component` (one task per wave); see [Wave composition](#the-epic_next_wave-flow). Lower ⇒ more clusters serialize; `1` ⇒ only conflicts themselves keep tasks apart. Also the static ceiling of the calibration threshold override shown by `/swarm epic calibration` (display only). It no longer means a plan-wide coupling ceiling. |
+| `turbo.epic.mode.activation_threshold` | `0.3` | **Intra-component density threshold** (Epic v2 C5): a conflict component whose density exceeds it is a `serial-component` (one task per wave); see [Wave composition](#the-epic_next_wave-flow). Lower ⇒ more clusters serialize; `1` ⇒ only conflicts themselves keep tasks apart. It no longer means a plan-wide coupling ceiling. |
 | `turbo.epic.mode.min_commits_for_signal` | — | **Retired** (Epic v2 C5). Accepted and ignored — stripped before validation, read by nothing — with a precise "retired" warning from the loader (once) and a `retired-config-key` finding from `/swarm config doctor`, not an unrecognized-key recovery. Marked `deprecated` in the JSON schema. Remove it. |
 | `turbo.epic.cochange.enabled` | `false` | **Master gate for the co-change signal** (Capability A). Off ⇒ `epic_next_wave` separates wave members on declared-path conflicts only, and `/swarm coupling` records `cochangeSignal: 'disabled-by-config'`. On ⇒ co-changing tasks are also kept apart and each wave records its in-wave pairs. |
 | `turbo.epic.cochange.threshold` | `0.6` | NPMI floor (range `[-1, 1]`) for a pair to contribute a co-change conflict. |
 | `turbo.epic.cochange.min_co_changes` | `5` | Minimum raw co-change count before NPMI is considered. |
-| `turbo.epic.calibration.*` | see below | Capability D knobs; only consulted when `epic_next_wave` closes a wave or composes the next one. |
+| `turbo.epic.learning.enabled` | `true` | Master gate for [learning](#learning-across-waves-and-epics). Off ⇒ nothing is learned, read, or written (no import, no posterior, no prior merge). Inert unless `mode.enabled` is also true. |
+| `turbo.epic.learning.decay_per_epic` | `0.7` | Multiplier applied to the project prior at every epic close that learned something (before the epic's observations are added). |
+| `turbo.epic.learning.half_life_days` | `60` | Half-life of learned evidence, counted in whole half-lives: stored statistics are scaled by 0.5^floor(days since written / half-life) when read (full weight for a whole half-life). |
+| `turbo.epic.learning.hot_excess` | `0.25` | A file is hot when its incident rate exceeds the prior mean (0.1) by more than this, with at least one full incident. |
+| `turbo.epic.calibration` | — | **Retired** (Epic v2 C6): the whole Epic v1 calibration block (`enabled`, `floor_threshold`, `tighten_step`, `loosen_step`, `loosen_window`) is accepted and ignored with a "retired" loader warning and a `retired-config-key` doctor finding; marked `deprecated` in the JSON schema. `calibration.enabled: false` does **not** turn learning off — use `learning.enabled`. Remove it. |
 | `turbo.epic.sizing.min_tasks` | `6` | Minimum pending tasks for `/swarm epic start` (see [Sizing](#sizing)). |
 | `turbo.epic.sizing.min_scope_coverage` | `0.8` | Minimum share of pending tasks with a declared scope or `files_touched`. |
 | `turbo.epic.sizing.min_effective_speedup` | `1.25` | Minimum Amdahl-adjusted speedup *S*<sub>eff</sub>. |
@@ -892,49 +898,39 @@ The combination is **conservative**: the co-change signal can only escalate a ve
 
 **Persists nothing by default.** With `--persist`, writes `.swarm/epic/coupling-report.json` atomically inside the project root.
 
-### Capability D — Outcome-based self-calibration
+### Learning across waves and epics
 
-When `epic_next_wave` closes a wave, every completed task with known actual files (see **Divergence** in [the flow](#the-epic_next_wave-flow)) gets one line in `.swarm/epic/divergence.jsonl`, comparing its frozen declared scope with those files. A declared directory covers every file beneath it (segment-aware: `src/auth` covers `src/auth/login.ts`, not `src/authentication.ts`). A task without known actual files records nothing — calibration never learns "clean" from absent data. Records carry the plan id and are idempotent per `(planId, taskId)`: the same declared/actual sets append nothing, and a later different record supersedes the earlier one — calibration applies only the latest record per task within each batch it consumes.
+Epic Mode learns from its own outcomes (Epic v2 C6; `src/turbo/epic/learning.ts`). Everything it learns is **planner analysis only** — it adds conflict edges or exclusivity to `epic_next_wave`'s planning, it never authorizes a write, and the dispatch gate keeps checking every coder against the wave's frozen **declared** scopes.
 
-Right after recording, the calibration engine consumes the new records and updates two persisted knobs at `.swarm/epic/calibration.json`:
+**From which signals.** The per-task outcomes recorded when a wave closes (see **Divergence** in [the flow](#the-epic_next_wave-flow)):
 
-| Knob | Behaviour |
+| Signal | Learned as |
 |---|---|
-| `hotModuleAdditions` | Files written without being declared get added permanently. **Monotonically grows** — never auto-shrinks; removal requires editing `.swarm/epic/calibration.json` by hand. `epic_next_wave` runs a task whose scope touches one of them alone. |
-| `activationThresholdOverride` | Tightens (toward zero) by `tighten_step` for every divergent task, capped at `floor_threshold`; loosens (toward the static `activation_threshold`) by `loosen_step` only after `loosen_window` consecutive clean tasks. Shown by `/swarm epic calibration` only: the component planner uses the static `activation_threshold` as its density threshold. |
+| Undeclared write: a task that declared *D* wrote *f* | a **co-write** w(d → f) += 1 for every d ∈ *D*, and an incident (1.0) on *f* |
+| Merge-back failure | 0.5 on every declared file (the merge-status registry records no conflict files) |
+| Stage B failure | 0.25 per failure on every declared file |
+| Rework | 0.25 × min(generation − 1, 4) on every declared file |
+| Reopen | 0.5 per reopen on every declared file |
+| Every resolved task | an **exposure** (+1) on every declared file |
 
-The static config is always the ceiling: calibration can never relax past it.
+"Declared file" means a declared entry that is a file: a directory entry (a directory on disk, or an entry covering another path of the same task) is never charged or exposed, so one troubled `src`-scoped task cannot make everything under `src/` hot. A task run again after a reopen is charged only the **delta** of its counters over its earlier outcome (which the record keeps as `previous`).
 
-#### `turbo.epic.calibration.*` knobs
+**What is learned.**
 
-| Key | Default | Effect |
-|---|---|---|
-| `turbo.epic.calibration.enabled` | `true` | Master gate for the calibration loop (divergence is still recorded with it off; no hot modules are learned or applied). Inert unless `mode.enabled` is also true. |
-| `turbo.epic.calibration.floor_threshold` | `0.05` | Calibration never tightens the threshold below this. |
-| `turbo.epic.calibration.tighten_step` | `0.02` | Per-divergent-task tightening step. |
-| `turbo.epic.calibration.loosen_step` | `0.01` | Per-loosening-event step (added toward the static config value). |
-| `turbo.epic.calibration.loosen_window` | `10` | Consecutive clean tasks required before the engine loosens by `loosen_step`. |
+- **Learned scope expansion.** In the conflict graph a task's scope becomes scope\*(t) = scope(t) ∪ { f : Σ<sub>d∈scope(t)</sub> w(d → f) ≥ 1 }: a task declaring `src/a.ts`, whose earlier tasks also wrote `src/b.ts`, conflicts with a task on `src/b.ts` and the two do not share a wave (they form one component; dense ⇒ `serial-component`). The expansion only **adds** path-conflict edges, so the planner stays stricter than the gate's verdict and every multi-task wave it issues is still provably disjoint (co-change coupling keeps using declared scopes).
+- **Decaying hot set.** Per file, incidents α and exposures β with a prior mean of 0.1 and strength 2: r = (0.2 + α) / (2 + α + β). A file is **hot** only on *excess* evidence — α ≥ 1 and r − 0.1 > `hot_excess` — and a task whose declared scope lists a hot file (exact normalized path — a directory scope over it does not count) runs alone (exclusive `hot-file`). One undeclared write makes a file hot (r = 0.4); clean exposures cool it again (two exposures ⇒ r = 0.24, no longer hot).
+- **Neutral cold start.** With nothing learned there is no hot file and no expansion: a new project plans exactly as without learning.
 
-#### Divergence-record format
+**Levels.**
 
-Each line of `.swarm/epic/divergence.jsonl`:
+- **Epic posterior** — `.swarm/epic/posterior.json`. `/swarm epic start` copies the project prior into it (the epic record keeps the prior's sha256 as `priorDigest`), and every wave close applies that wave's outcomes **once** (idempotent per wave; an update lost to a crash is caught up by the next one). `epic_next_wave` plans with it, so an epic learns from its own earlier waves.
+- **Project prior** — `.swarm/epic-prior/learning.json` (schema `epic-learning-v1`; file paths and numbers only). `/swarm epic close` — completed or abandoned, and the `/swarm close` finalization — merges the epic into it once: prior := decay_per_epic × prior ⊕ this epic's observations, then removes the posterior. An epic that learned nothing leaves the prior untouched (no per-epic decay). `/swarm epic status` and the close report show the inherited prior's digest. It lives outside `.swarm/epic/`, so it **survives `/swarm close`**; the close output says "Project prior kept". The start's sizing dry-run plans with it.
 
-```json
-{
-  "timestamp": "2026-05-26T18:42:11.045Z",
-  "sessionID": "sess-abc",
-  "taskId": "T-1.2",
-  "phaseNumber": 1,
-  "declaredScope": ["src/a.ts"],
-  "actualFiles": ["src/a.ts", "src/global.ts"],
-  "undeclared": ["src/global.ts"],
-  "unused": [],
-  "divergenceRatio": 0.5,
-  "isClean": false
-}
-```
+**Decay and bounds.** × `decay_per_epic` (0.7) at every epic close that learned something, and age decay in **whole half-lives**: × 0.5^floor(days since the prior was last written / `half_life_days`) — evidence keeps its full weight for a whole half-life, then halves. Entries below 0.05 are dropped and each level keeps at most 2000 file statistics and 2000 co-writes; beyond that the lowest-mass entries are evicted (the weakest, oldest evidence goes first). A single observed co-write therefore keeps expanding scopes until either a later epic that learned something closes (× 0.7 ⇒ below 1) or 60 days pass; it expands again once it is observed again.
 
-Read-tolerant of a partial trailing line. Best-effort writer — failures log but never block task completion.
+**Inspect and reset.** `/swarm epic learning` shows the settings, the source (the open epic's posterior, the project prior, or a neutral start), the hot files with their evidence, and the strongest co-writes. `/swarm epic prior` shows the stored prior (and any Epic v1 import); `/swarm epic prior reset` previews and prints a single-use confirm token (valid 15 minutes, shared two-step destructive-confirm contract), and `/swarm epic prior reset --confirm=<token>` clears it. An unreadable prior is never overwritten: epics plan without learned signals and closes skip the merge until it is reset.
+
+**Epic v1 migration.** The first `/swarm epic start` with learning enabled imports Epic v1's `.swarm/epic/calibration.json` (`hotModuleAdditions` ⇒ α = 2, i.e. hot) and `.swarm/epic/divergence.jsonl` (the latest record per plan and task: declared ⇒ exposures, undeclared ⇒ incidents + co-writes) once into the project prior and records `importedFrom`; it is never repeated, and a `/swarm epic prior reset` (even of an absent prior) also records a marker that suppresses any later import. Nothing writes those v1 files any more: a `/swarm close` before the first v2 `/swarm epic start` archives them away, so nothing is imported; the retention sweep deletes leftovers after 30 days.
 
 ---
 

@@ -15,6 +15,7 @@ import {
 	GateConfigSchema,
 	type PluginConfig,
 	PluginConfigSchema,
+	RETIRED_EPIC_KEY_REPLACEMENTS,
 	resolveExternalSkillsConfig,
 } from './schema';
 
@@ -770,7 +771,11 @@ function buildConfigWithMeta(
 		if (signature !== lastRetiredEpicKeysSig) {
 			lastRetiredEpicKeysSig = signature;
 			advisoryWarn(
-				`[opencode-swarm] Ignored ${retiredEpicKeys.length} retired Epic config key(s): ${retiredEpicKeys.join(', ')}. They have no effect (the rest of the turbo block is kept) — remove them; see docs/configuration.md (Epic Mode).`,
+				`[opencode-swarm] Ignored ${retiredEpicKeys.length} retired Epic config key(s): ${retiredEpicKeys.join(', ')}. They have no effect (the rest of the turbo block is kept) — remove them; see docs/configuration.md (Epic Mode).${retiredEpicKeys
+					.map((key) => RETIRED_EPIC_KEY_REPLACEMENTS[key])
+					.filter((hint): hint is string => hint !== undefined)
+					.map((hint) => ` ${hint}`)
+					.join('')}`,
 			);
 		}
 	}

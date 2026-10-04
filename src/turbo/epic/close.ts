@@ -20,10 +20,13 @@
  *      to the original branch when the tree is clean and keeps the branch;
  *   6. delete the epic's refs `refs/swarm/epics/<epicKey>/*` (Epic v2 C3;
  *      the report captured their values in step 4) unless
- *      `turbo.epic.retain_refs: true`, rewrite the report with the landing
- *      and ref outcome, delete the row, then compare-and-delete the
+ *      `turbo.epic.retain_refs: true`; merge the epic's learning posterior
+ *      into the project prior `.swarm/epic-prior/learning.json` (Epic v2 C6,
+ *      any outcome, once per epic instance — the prior survives
+ *      `/swarm close`); rewrite the report with the landing, ref and
+ *      learning outcome, delete the row, then compare-and-delete the
  *      sentinel, under the lifecycle lock. A failed landing keeps the refs
- *      (the close resumes).
+ *      and merges nothing (the close resumes).
  * `--abandon` on unreadable state deletes every lifecycle row without
  * parsing it, then the sentinel.
  */
@@ -45,6 +48,17 @@ import {
 	performEpicLanding,
 	preflightEpicLanding,
 } from './epic-branch.js';
+import {
+	DEFAULT_EPIC_LEARNING_SETTINGS,
+	type EpicLearningSettings,
+	resolveEpicLearningSettings,
+} from './learning.js';
+import {
+	describeEpicPriorMerge,
+	EPIC_PRIOR_LEARNING_DISPLAY_PATH,
+	type EpicPriorMergeResult,
+	mergeEpicPosteriorIntoPrior,
+} from './learning-store.js';
 import {
 	deleteEpicState,
 	type EpicCloseOutcome,
@@ -112,6 +126,8 @@ export interface EpicCloseReport {
 	startedBySession: string;
 	forced: boolean;
 	sizingAtStart: EpicRecordV1['sizing'];
+	/** sha256 of the project prior the epic inherited at start (null: none). */
+	priorDigest: string | null;
 	config: EpicRecordV1['config'];
 	git: EpicRecordV1['git'] & { headAtClose: string | null };
 	/** Null when the plan is gone or no longer the epic's plan (orphaned). */
@@ -135,6 +151,12 @@ export interface EpicCloseReport {
 		/** Why the refs could not be captured, when they could not. */
 		captureError?: string;
 	} | null;
+	/**
+	 * Epic v2 C6: what the epic's learning contributed to the project prior
+	 * (`priorPath`, kept across `/swarm close`); null until the close
+	 * completes the merge step.
+	 */
+	learning: (EpicPriorMergeResult & { priorPath: string }) | null;
 }
 
 export type EpicCloseResult =
@@ -183,6 +205,8 @@ export interface EpicCloseOptions {
 	outcome?: EpicCloseOutcome;
 	/** `turbo.epic.retain_refs`: keep the epic's refs after close. */
 	retainRefs?: boolean;
+	/** `turbo.epic.learning.*` (absent ⇒ the schema defaults). */
+	learning?: EpicLearningSettings;
 }
 
 function compactStamp(iso: string): string {
@@ -398,6 +422,7 @@ export async function closeEpic(
 		startedBySession: closing.startedBySession,
 		forced: closing.forced,
 		sizingAtStart: closing.sizing,
+		priorDigest: closing.priorDigest ?? null,
 		config: closing.config,
 		git: { ...closing.git, headAtClose: readHead(directory, closing) },
 		tasks,
@@ -405,6 +430,7 @@ export async function closeEpic(
 		taskOutcomes: closing.tasks,
 		phases: closing.phases,
 		refs: captureEpicRefs(directory, closing, options.retainRefs === true),
+		learning: null,
 		landing:
 			preflight?.kind === 'ready'
 				? { ...baseLanding, status: 'pending', detail: 'landing not done yet' }
@@ -468,6 +494,16 @@ export async function closeEpic(
 			closing.epicKey,
 		).failed;
 	}
+	report.learning = {
+		..._internals.mergeEpicPosteriorIntoPrior(
+			directory,
+			closing,
+			report.reportKey,
+			options.learning ?? DEFAULT_EPIC_LEARNING_SETTINGS,
+			_internals.now(),
+		),
+		priorPath: EPIC_PRIOR_LEARNING_DISPLAY_PATH,
+	};
 	report.git.headAtClose = readHead(directory, closing);
 	reportPaths = _internals.writeReport(directory, report);
 	const deleted = _internals.deleteEpicState(
@@ -560,10 +596,12 @@ export async function finalizeOpenEpicOnSwarmClose(
 			abandon: true,
 			outcome: 'abandoned-by-swarm-close',
 			retainRefs: config?.turbo?.epic?.retain_refs === true,
+			learning: resolveEpicLearningSettings(config),
 		});
 		switch (result.status) {
 			case 'closed': {
-				const closedLine = `Open epic ${result.report.epicKey} was closed as abandoned-by-swarm-close (report: .swarm/epic-prior/reports/${result.report.reportKey}.json).`;
+				const learning = result.report.learning;
+				const closedLine = `Open epic ${result.report.epicKey} was closed as abandoned-by-swarm-close (report: .swarm/epic-prior/reports/${result.report.reportKey}.json).${learning ? ` ${describeEpicPriorMerge(learning)}` : ''}`;
 				const landing = result.report.landing;
 				if (!landing.epicBranch) return closedLine;
 				return `${closedLine} Its branch \`${landing.epicBranch}\` was kept and NOT landed (${landing.detail}); merge it yourself if you need its work, then delete it with \`git branch -D ${landing.epicBranch}\`.`;
@@ -600,6 +638,7 @@ export const _internals = {
 	writeReport,
 	readEpicRefs,
 	deleteEpicRefs,
+	mergeEpicPosteriorIntoPrior,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),
 	now: (): number => Date.now(),

@@ -69,7 +69,8 @@ function graphFor(
 		})),
 		scopes,
 		leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG },
-		hotModules: [],
+		hotFiles: [],
+		coWrites: null,
 		cochange,
 	});
 }

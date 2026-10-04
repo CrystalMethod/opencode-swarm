@@ -317,9 +317,9 @@ export async function runRetentionSweep(
 			error instanceof Error ? error.message : String(error);
 	}
 
-	// 2. Whole-file age deletion for the rebuildable epic diagnostics
-	// (divergence re-accumulates on new observations; calibration re-learns;
-	// writer-side caps bound them between sweeps).
+	// 2. Whole-file age deletion for the Epic v1 diagnostics (nothing writes
+	// them since Epic v2 C6: `/swarm epic start` imports them once into the
+	// learning prior, then they are inert leftovers until /swarm close).
 	if (cancelled('epic-diagnostics')) return result;
 	for (const [label, rel] of [
 		['epic-divergence', path.join('epic', 'divergence.jsonl')],

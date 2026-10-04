@@ -41,7 +41,8 @@ function graphInput(
 		})),
 		scopes,
 		leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG },
-		hotModules: [],
+		hotFiles: [],
+		coWrites: null,
 		cochange: null,
 		...overrides,
 	};
@@ -205,7 +206,7 @@ describe('components and modes', () => {
 		);
 	});
 
-	test('exclusive: global file, protected path, no scope, hot module — alone, first', () => {
+	test('exclusive: global file, protected path, no scope, hot file — alone, first', () => {
 		const specs: Spec[] = [
 			{ id: '1.1' },
 			{ id: '1.2', files: ['package.json'] },
@@ -213,7 +214,7 @@ describe('components and modes', () => {
 			{ id: '1.4', files: [] },
 			{ id: '1.5', files: ['src/hot.ts'] },
 		];
-		const { partition } = plan(specs, 0.3, { hotModules: ['src/hot.ts'] });
+		const { partition } = plan(specs, 0.3, { hotFiles: ['src/hot.ts'] });
 		expect(
 			partition.components
 				.filter((c) => c.mode === 'exclusive')
@@ -222,12 +223,26 @@ describe('components and modes', () => {
 			['1.2', 'global-file'],
 			['1.3', 'protected-path'],
 			['1.4', 'no-scope'],
-			['1.5', 'hot-module'],
+			['1.5', 'hot-file'],
 		]);
-		expect(nextWave(specs, 4, 0.3, { hotModules: ['src/hot.ts'] })).toEqual({
+		expect(nextWave(specs, 4, 0.3, { hotFiles: ['src/hot.ts'] })).toEqual({
 			taskIds: ['1.2'],
 			kind: 'exclusive',
 		});
+	});
+
+	test('hot files match exact paths only: a directory scope over a hot file is not exclusive', () => {
+		const specs: Spec[] = [
+			{ id: '1.1', files: ['src/lib'] },
+			{ id: '1.2', files: ['src/lib/hot.ts'] },
+			{ id: '1.3', files: ['./src/lib/hot.ts'] },
+		];
+		const { partition } = plan(specs, 0.3, { hotFiles: ['src/lib/hot.ts'] });
+		expect(
+			partition.components
+				.filter((c) => c.mode === 'exclusive')
+				.map((c) => c.id),
+		).toEqual(['1.2', '1.3']);
 	});
 
 	test('an exclusive task never joins a component through its conflicts', () => {

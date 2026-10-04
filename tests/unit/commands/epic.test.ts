@@ -9,7 +9,8 @@
  *  - status renders the lifecycle record (waves, phases, divergence,
  *    orphan, config).
  *  - the removed `decide` / `last` subcommands answer with a pointer to
- *    status and mutate nothing.
+ *    status and mutate nothing; the renamed `calibration` points at
+ *    `learning` / `prior` (their rendering: epic-learning.test.ts).
  * Lifecycle collaborators are replaced through `_internals` (AGENTS.md #7).
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
@@ -106,7 +107,7 @@ describe('handleEpicCommand — subcommand routing', () => {
 		expect(out).toContain(`\`/swarm epic ${arg}\` was removed in Epic v2`);
 		expect(out).toContain('Use `/swarm epic start`');
 		expect(out).toContain(
-			'/swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | calibration | clear-merge-failure <taskId> [--confirm]',
+			'/swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | learning | prior [show|reset [--confirm=<token>]] | clear-merge-failure <taskId> [--confirm]',
 		);
 		expect(out).not.toMatch(/\bon \| off\b/);
 		expect(startCalls).toBe(0);
@@ -278,96 +279,31 @@ describe('handleEpicCommand — status', () => {
 	});
 });
 
-describe('handleEpicCommand — calibration (Capability D state)', () => {
-	test('returns "no state yet" + static threshold when state is null (clean repo)', async () => {
-		_internals.loadCalibrationState = (() => null) as never;
-		_internals.isCalibrationStateUnreadable = (() => false) as never;
-		_internals.readDivergenceHistory = (() => []) as never;
+describe('handleEpicCommand — learning / prior routing (Epic v2 C6)', () => {
+	test('`calibration` was renamed: it points at learning / prior and renders nothing', async () => {
 		const out = await handleEpicCommand('/fake', ['calibration'], 'sess-1');
-		expect(out).toContain('Epic Mode — Calibration');
-		expect(out).toContain('No calibration state yet');
-		// Static threshold from default config (0.3) must be surfaced.
-		expect(out).toContain('0.300');
+		expect(out).toContain('`/swarm epic calibration` was renamed in Epic v2');
+		expect(out).toContain('`/swarm epic learning`');
+		expect(out).toContain('`/swarm epic prior`');
+		expect(out).not.toContain('Epic Mode — Learning');
 	});
 
-	test('returns fail-closed message when calibration state is unreadable', async () => {
-		_internals.isCalibrationStateUnreadable = (() => true) as never;
-		const out = await handleEpicCommand('/fake', ['calibration'], 'sess-1');
-		expect(out).toContain('unreadable (fail-closed)');
-		expect(out).toContain('static config defaults');
+	test('`learning` renders the learning view; it takes no options', async () => {
+		const out = await handleEpicCommand('/fake', ['learning'], 'sess-1');
+		expect(out).toContain('## Epic Mode — Learning');
+		expect(
+			await handleEpicCommand('/fake', ['learning', '--x'], 'sess-1'),
+		).toContain('`/swarm epic learning` takes no options.');
 	});
 
-	test('renders effective threshold + tightening delta when override is set', async () => {
-		_internals.isCalibrationStateUnreadable = (() => false) as never;
-		_internals.loadCalibrationState = (() => ({
-			version: 1 as const,
-			updatedAt: '2026-05-28T10:00:00Z',
-			activationThresholdOverride: 0.22,
-			hotModuleAdditions: ['src/global.ts', 'src/init.ts'],
-			consecutiveCleanCount: 3,
-			lastCalibrationAt: '2026-05-28T09:45:00Z',
-			processedRecords: 17,
-		})) as never;
-		_internals.readDivergenceHistory = (() => [
-			{
-				timestamp: '2026-05-28T09:00:00Z',
-				sessionID: 's',
-				taskId: 'T-2.4',
-				declaredScope: ['src/foo.ts'],
-				actualFiles: ['src/foo.ts', 'src/global.ts'],
-				undeclared: ['src/global.ts'],
-				unused: [],
-				divergenceRatio: 0.5,
-				isClean: false,
-			},
-		]) as never;
-		const out = await handleEpicCommand('/fake', ['calibration'], 'sess-1');
-		// Static and effective both shown with delta.
-		expect(out).toContain('Static threshold (config): 0.300');
-		expect(out).toContain('Effective threshold (learned)**: 0.220');
-		expect(out).toContain('tightened by 0.080');
-		// Counter + window from defaults.
-		expect(out).toContain('Consecutive clean tasks: 3 / 10');
-		// Hot module entries listed.
-		expect(out).toContain('src/global.ts');
-		expect(out).toContain('src/init.ts');
-		// Recent divergent rendered with undeclared sample.
-		expect(out).toContain('T-2.4');
-		expect(out).toContain('ratio=0.50');
-	});
-
-	test('says "using static" when no override is set', async () => {
-		_internals.isCalibrationStateUnreadable = (() => false) as never;
-		_internals.loadCalibrationState = (() => ({
-			version: 1 as const,
-			updatedAt: '2026-05-28T10:00:00Z',
-			hotModuleAdditions: [],
-			consecutiveCleanCount: 0,
-			processedRecords: 0,
-		})) as never;
-		_internals.readDivergenceHistory = (() => []) as never;
-		const out = await handleEpicCommand('/fake', ['calibration'], 'sess-1');
-		expect(out).toContain('using static — no calibration override');
-		expect(out).toContain("hasn't promoted any modules");
-		expect(out).toContain('None recent');
-	});
-
-	test('truncates long hot-module list at 10 entries with summary line', async () => {
-		_internals.isCalibrationStateUnreadable = (() => false) as never;
-		const lotsOfModules = Array.from({ length: 14 }, (_, i) => `src/m${i}.ts`);
-		_internals.loadCalibrationState = (() => ({
-			version: 1 as const,
-			updatedAt: '2026-05-28T10:00:00Z',
-			hotModuleAdditions: lotsOfModules,
-			consecutiveCleanCount: 0,
-			processedRecords: 20,
-		})) as never;
-		_internals.readDivergenceHistory = (() => []) as never;
-		const out = await handleEpicCommand('/fake', ['calibration'], 'sess-1');
-		expect(out).toContain('src/m0.ts');
-		expect(out).toContain('src/m9.ts');
-		expect(out).toContain('+4 more');
-		// m10..m13 should not appear individually.
-		expect(out).not.toContain('src/m12.ts');
+	test('`prior` routes to the prior view; an unknown prior subcommand gets its usage', async () => {
+		expect(await handleEpicCommand('/fake', ['prior'], 'sess-1')).toContain(
+			'## Epic Mode — Project prior',
+		);
+		expect(
+			await handleEpicCommand('/fake', ['prior', 'wipe'], 'sess-1'),
+		).toContain(
+			'Usage: /swarm epic prior [show] | /swarm epic prior reset [--confirm=<token>]',
+		);
 	});
 });

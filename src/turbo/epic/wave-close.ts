@@ -16,7 +16,7 @@
  *     undeclared files, and the task's commit (`marker`: its newest
  *     `swarm(task <id>):` commit for this plan inside the wave, else the
  *     close HEAD) that `markers.ts` mirrors to `refs/swarm/epics/…/tasks/<id>`;
- *   - divergence, computed automatically: a task's actual files are its
+ *   - undeclared files (divergence), computed automatically: a task's actual files are its
  *     write attribution unioned across every same-project session (coder
  *     writes are attributed on the coder's CHILD session). When no session
  *     holds attribution the git fallback applies: files changed since the
@@ -24,11 +24,13 @@
  *     member, and otherwise kept at WAVE level (`wave.undeclared`) minus
  *     every declared and attributed file.
  *
- * After the close is committed, the divergence of every completed task with
- * actual files is appended to `.swarm/epic/divergence.jsonl` and the
- * calibration engine is rolled forward (hot modules learned here make tasks
- * exclusive — alone — in later waves, see `components.ts`). Calibration is
- * best-effort: a failure never blocks the wave flow.
+ * After the close is committed, the epic's learning posterior applies the
+ * closed wave's outcomes once ({@link recordEpicWaveLearning},
+ * `learning-store.ts`): undeclared writes teach learned co-writes and,
+ * with merge conflicts, rework, Stage B failures and reopens, the decaying
+ * hot set the planner uses for later waves (`components.ts`). A failed
+ * update never blocks the wave flow; the next close (or the epic close)
+ * catches it up from the record.
  */
 
 import type { Plan } from '../../config/plan-schema.js';
@@ -36,7 +38,6 @@ import type { PluginConfig } from '../../config/schema.js';
 import { readTaskEvidence as readTaskEvidence_import } from '../../gate-evidence.js';
 import { _internals as gitBranchInternals } from '../../git/branch.js';
 import { readLedgerEvents as readLedgerEvents_import } from '../../plan/ledger.js';
-import { derivePlanId } from '../../plan/utils.js';
 import { hydrationProjectKey as hydrationProjectKey_import } from '../../session/hydration-ownership.js';
 import {
 	type AgentSessionState,
@@ -47,16 +48,8 @@ import {
 } from '../../state.js';
 import * as logger from '../../utils/logger.js';
 import { canonicalAttributionPath } from '../../utils/path.js';
-import {
-	loadCalibrationState as loadCalibrationState_import,
-	saveCalibrationState as saveCalibrationState_import,
-} from './calibration.js';
-import { applyCalibration as applyCalibration_import } from './calibration-engine.js';
-import {
-	computeDivergence,
-	readDivergenceHistory as readDivergenceHistory_import,
-	recordTaskDivergence as recordTaskDivergence_import,
-} from './divergence-recorder.js';
+import { resolveEpicLearningSettings, undeclaredFiles } from './learning.js';
+import { applyClosedWavesToPosterior as applyClosedWavesToPosterior_import } from './learning-store.js';
 import type {
 	EpicRecordV1,
 	EpicTaskOutcome,
@@ -85,26 +78,14 @@ export const _internals = {
 	getModifiedFilesForTask: getModifiedFilesForTask_import,
 	resetModifiedFilesForTask: resetModifiedFilesForTask_import,
 	hydrationProjectKey: hydrationProjectKey_import,
-	recordTaskDivergence: recordTaskDivergence_import,
-	readDivergenceHistory: readDivergenceHistory_import,
-	loadCalibrationState: loadCalibrationState_import,
-	saveCalibrationState: saveCalibrationState_import,
-	applyCalibration: applyCalibration_import,
+	applyClosedWavesToPosterior: applyClosedWavesToPosterior_import,
 	findTaskCommits: findTaskCommits_import,
 };
-
-/** Divergence input for one completed task with known actual files. */
-export interface EpicWaveDivergence {
-	taskId: string;
-	declared: string[];
-	actual: string[];
-}
 
 export interface EpicWaveCloseComputation {
 	closeHead: string | null;
 	outcomes: EpicTaskOutcome[];
 	waveUndeclared: string[];
-	divergence: EpicWaveDivergence[];
 }
 
 function errorText(error: unknown): string {
@@ -358,7 +339,6 @@ export async function computeWaveClose(args: {
 	}
 
 	const outcomes: EpicTaskOutcome[] = [];
-	const divergence: EpicWaveDivergence[] = [];
 	const attributedAll = new Set<string>();
 	for (const taskId of wave.taskIds) {
 		const resolution = resolutionOf(plan, taskId) ?? 'removed';
@@ -382,10 +362,7 @@ export async function computeWaveClose(args: {
 				actual = changed;
 				attribution = 'git-single-task';
 			}
-			if (actual !== null) {
-				undeclared = computeDivergence(declared, actual).undeclared;
-				divergence.push({ taskId, declared, actual });
-			}
+			if (actual !== null) undeclared = undeclaredFiles(declared, actual);
 		}
 		const snapshot = wave.mergeFailures?.[taskId];
 		outcomes.push({
@@ -398,11 +375,7 @@ export async function computeWaveClose(args: {
 			stageAFailures: counts.stageA,
 			stageBFailures: counts.stageB,
 			mergeFailure: snapshot
-				? {
-						outcome: snapshot.outcome,
-						stage: snapshot.stage,
-						conflictFiles: [],
-					}
+				? { outcome: snapshot.outcome, stage: snapshot.stage }
 				: null,
 			declared,
 			undeclared,
@@ -415,11 +388,11 @@ export async function computeWaveClose(args: {
 	let waveUndeclared: string[] = [];
 	if (changed !== null) {
 		const declaredAll = Object.values(wave.files).flat();
-		waveUndeclared = computeDivergence(declaredAll, changed).undeclared.filter(
+		waveUndeclared = undeclaredFiles(declaredAll, changed).filter(
 			(file) => !attributedAll.has(file),
 		);
 	}
-	return { closeHead, outcomes, waveUndeclared, divergence };
+	return { closeHead, outcomes, waveUndeclared };
 }
 
 /**
@@ -437,7 +410,25 @@ export function applyWaveClose(
 		return record;
 	}
 	const tasks = { ...record.tasks };
-	for (const outcome of computation.outcomes) tasks[outcome.taskId] = outcome;
+	for (const outcome of computation.outcomes) {
+		// A task run again (reopened) keeps its earlier counters so learning
+		// charges only the delta (`learning.ts`).
+		const before = Object.hasOwn(record.tasks, outcome.taskId)
+			? record.tasks[outcome.taskId]
+			: undefined;
+		tasks[outcome.taskId] =
+			before && before.waveSeq !== outcome.waveSeq
+				? {
+						...outcome,
+						previous: {
+							waveSeq: before.waveSeq,
+							generation: before.generation,
+							stageBFailures: before.stageBFailures,
+							reopened: before.reopened,
+						},
+					}
+				: outcome;
+	}
 	return {
 		...record,
 		activeWaveSeq: null,
@@ -457,66 +448,30 @@ export function applyWaveClose(
 }
 
 /**
- * After a committed close: append each completed task's divergence to
- * `.swarm/epic/divergence.jsonl` (idempotent per plan + task) and roll the
- * calibration engine forward when `turbo.epic.calibration.enabled` is not
- * false. Best-effort; never throws.
+ * After a committed close (by the call that closed the wave): apply every
+ * closed wave's outcomes not applied yet to the epic's learning posterior
+ * (idempotent per wave seq, `learning-store.ts`) unless
+ * `turbo.epic.learning.enabled` is false. Never throws: a failure is a
+ * critical warning and the next update (or the epic close) catches it up.
  */
-export function feedEpicCalibration(args: {
+export function recordEpicWaveLearning(args: {
 	directory: string;
 	config: PluginConfig;
-	plan: Plan;
-	wave: EpicWaveRecord;
-	divergence: EpicWaveDivergence[];
-	sessionID: string | undefined;
-}): void {
-	const { directory, config, plan, wave, divergence } = args;
-	const planId = derivePlanId(plan);
-	for (const entry of divergence) {
-		try {
-			_internals.recordTaskDivergence({
-				directory,
-				sessionID: args.sessionID ?? 'epic_next_wave',
-				taskId: entry.taskId,
-				planId,
-				phaseNumber: wave.phase,
-				declaredScope: entry.declared,
-				actualFiles: entry.actual,
-			});
-		} catch (error) {
-			logger.warn(
-				`[epic/wave-close] divergence record for ${entry.taskId} failed: ${errorText(error)}`,
-			);
-		}
-	}
-	const calibrationCfg = config.turbo?.epic?.calibration;
-	if (calibrationCfg?.enabled === false) return;
+	record: EpicRecordV1;
+}): number[] {
+	const settings = resolveEpicLearningSettings(args.config);
+	if (!settings.enabled) return [];
 	try {
-		const state = _internals.loadCalibrationState(directory);
-		if (state === null) {
-			logger.criticalWarn(
-				'[epic/wave-close] calibration state is unreadable; calibration is not rolled forward (see `/swarm epic calibration`).',
-			);
-			return;
-		}
-		// Full read: the engine slices by record COUNT (`processedRecords`).
-		const history = _internals.readDivergenceHistory(directory, {
-			maxBytes: Number.POSITIVE_INFINITY,
-		});
-		const fresh = history.slice(state.processedRecords);
-		if (fresh.length === 0) return;
-		const updated = _internals.applyCalibration(state, fresh, {
-			staticThreshold: config.turbo?.epic?.mode?.activation_threshold ?? 0.3,
-			floorThreshold: calibrationCfg?.floor_threshold,
-			tightenStep: calibrationCfg?.tighten_step,
-			loosenStep: calibrationCfg?.loosen_step,
-			loosenWindow: calibrationCfg?.loosen_window,
-		});
-		_internals.saveCalibrationState(directory, updated);
+		return _internals.applyClosedWavesToPosterior(
+			args.directory,
+			args.record,
+			settings,
+		).appliedWaves;
 	} catch (error) {
 		logger.criticalWarn(
-			`[epic/wave-close] calibration step failed (the wave flow continues): ${errorText(error)}`,
+			`[epic/wave-close] learning update failed (the wave flow continues; the next wave close catches it up): ${errorText(error)}`,
 		);
+		return [];
 	}
 }
 

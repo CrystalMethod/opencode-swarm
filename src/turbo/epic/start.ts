@@ -20,6 +20,13 @@
  *   8. branch-create-failed       `git checkout -b` failed after the row was
  *                                 created — row and sentinel rolled back
  *
+ * Learning (Epic v2 C6, `turbo.epic.learning.enabled` not false): before
+ * the sizing dry-run the Epic v1 calibration files are imported into the
+ * project prior once (`learning-store.ts`); the sizing plans with the
+ * prior's learned signals; the record keeps the prior's digest
+ * (`priorDigest`) and, once the epic is open, the epic's posterior starts
+ * as a copy of that prior.
+ *
  * Commit policy (`turbo.epic.commit_policy`, default `epic-branch`): after
  * the CAS create a git epic checks out `swarm/epic/<epicKey>` and records it
  * (`git.epicBranch`) only once the checkout succeeded (M-e). Non-git
@@ -58,7 +65,6 @@ import { withTimeout } from '../../utils/timeout.js';
 import { listCoderSettlementWalStates } from '../../workflow/coder-settlement.js';
 import type { PlanTask as PartitionTask } from '../lean/partition-common.js';
 import { listRecoveryRecords, recoveryReadErrored } from '../lean/recovery.js';
-import { loadCalibrationState } from './calibration.js';
 import { getCoChangeData } from './cochange-source.js';
 import { dryRunEpicPhase } from './components.js';
 import {
@@ -75,6 +81,18 @@ import {
 	resolveEpicCommitPolicy,
 	undoEpicBranchCreate,
 } from './epic-branch.js';
+import {
+	type EpicLearningSettings,
+	resolveEpicLearningSettings,
+	summarizeEpicLearning,
+} from './learning.js';
+import {
+	type EpicPriorRead,
+	importLegacyEpicCalibrationOnce,
+	initEpicPosterior,
+	loadEpicLearningView,
+	readEpicPrior,
+} from './learning-store.js';
 import {
 	computeEpicKey,
 	createEpicRecord,
@@ -111,8 +129,20 @@ export type EpicStartRefusal =
 	| 'not-epic-sized'
 	| 'branch-create-failed';
 
+/** What the started epic inherited from the project prior. */
+export interface EpicStartLearning {
+	enabled: boolean;
+	prior: EpicPriorRead['status'];
+	/** Learned files / co-write edges / hot files in the inherited prior. */
+	files: number;
+	coWrites: number;
+	hotFiles: number;
+	/** The one-time Epic v1 import done by this start, if any. */
+	imported: { calibrationHotModules: number; divergenceRecords: number } | null;
+}
+
 export type EpicStartResult =
-	| { status: 'started'; record: EpicRecordV1 }
+	| { status: 'started'; record: EpicRecordV1; learning: EpicStartLearning }
 	| { status: 'already-open'; record: EpicRecordV1 }
 	| {
 			status: 'refused';
@@ -138,7 +168,7 @@ function refused(
 	reason: EpicStartRefusal,
 	details: string[],
 	sizing?: EpicSizingVerdict,
-): EpicStartResult {
+): Extract<EpicStartResult, { status: 'refused' }> {
 	return { status: 'refused', reason, details, sizing };
 }
 
@@ -340,7 +370,8 @@ function isPending(status: string | undefined): boolean {
  * step count L of a dry run of the Epic component planner
  * (`components.ts`, the planner `epic_next_wave` issues waves with) over
  * every phase, under `maxParallel`, over the estimated scopes and the same
- * planning signals (hot modules, co-change, density threshold). L = waves
+ * planning signals (learned hot files and co-writes, co-change, density
+ * threshold). L = waves
  * + tasks the planner can never schedule (a dependency cycle). Cross-phase
  * dependencies count as satisfied (phases run in order).
  */
@@ -390,7 +421,8 @@ export function computeEpicSizing(
 			tasks: pending as unknown as PartitionTask[],
 			scopes,
 			leanConfig,
-			hotModules: signals.hotModules,
+			hotFiles: signals.hotFiles,
+			coWrites: signals.coWrites,
 			cochange: signals.cochange,
 			maxParallel,
 			densityThreshold: signals.densityThreshold,
@@ -628,10 +660,38 @@ export async function startEpic(
 					DEFAULT_LEAN_TURBO_CONFIG.max_parallel_coders,
 			)
 		: 1;
-	const signals = await loadEpicPlanningSignals(directory, config, {
-		loadCalibrationState: _internals.loadCalibrationState,
-		getCoChangeData: _internals.getCoChangeData,
-	});
+	// Learning: import Epic v1 files once, then snapshot the prior the
+	// sizing (and, once open, the epic's posterior) inherits.
+	const learningSettings = resolveEpicLearningSettings(config);
+	let imported: EpicStartLearning['imported'] = null;
+	let priorSnapshot: EpicPriorRead = { status: 'absent', digest: null };
+	if (learningSettings.enabled) {
+		const migration = _internals.importLegacyEpicCalibrationOnce(
+			directory,
+			_internals.now(),
+		);
+		if (migration.status === 'imported') {
+			imported = {
+				calibrationHotModules: migration.calibrationHotModules,
+				divergenceRecords: migration.divergenceRecords,
+			};
+		} else if (migration.status === 'failed') {
+			logger.warn(
+				`[epic/start] Epic v1 calibration import failed (retried at the next start): ${migration.detail}`,
+			);
+		}
+		priorSnapshot = _internals.readEpicPrior(directory);
+	}
+	const signals = await loadEpicPlanningSignals(
+		directory,
+		config,
+		{
+			loadLearningView: _internals.loadEpicLearningView,
+			getCoChangeData: _internals.getCoChangeData,
+			now: _internals.now,
+		},
+		null,
+	);
 	const sizing = computeEpicSizing(
 		directory,
 		plan,
@@ -672,6 +732,7 @@ export async function startEpic(
 		},
 		git,
 		sizing,
+		priorDigest: priorSnapshot.digest,
 		waves: [],
 		activeWaveSeq: null,
 		tasks: {},
@@ -698,8 +759,53 @@ export async function startEpic(
 					git.originalBranch,
 					epicBranch,
 				);
-	if (result.status === 'started') writeBaseRef(directory, result.record);
-	return result;
+	if (result.status !== 'started') return result;
+	writeBaseRef(directory, result.record);
+	if (learningSettings.enabled) {
+		try {
+			_internals.initEpicPosterior(directory, result.record, priorSnapshot);
+		} catch (error) {
+			// The first wave close rebuilds the posterior from the prior.
+			logger.warn(
+				`[epic/start] learning posterior for ${result.record.epicKey} not written yet: ${errorText(error)}`,
+			);
+		}
+	}
+	return {
+		...result,
+		learning: describeStartLearning(learningSettings, priorSnapshot, imported),
+	};
+}
+
+function describeStartLearning(
+	settings: EpicLearningSettings,
+	snapshot: EpicPriorRead,
+	imported: EpicStartLearning['imported'],
+): EpicStartLearning {
+	const enabled = settings.enabled;
+	if (!enabled || snapshot.status !== 'ok') {
+		return {
+			enabled,
+			prior: snapshot.status,
+			files: 0,
+			coWrites: 0,
+			hotFiles: 0,
+			imported,
+		};
+	}
+	const summary = summarizeEpicLearning(
+		snapshot.prior.stats,
+		settings.hotExcess,
+		0,
+	);
+	return {
+		enabled,
+		prior: 'ok',
+		files: summary.files,
+		coWrites: summary.edges,
+		hotFiles: summary.hotFiles.length,
+		imported,
+	};
 }
 
 /**
@@ -735,7 +841,9 @@ function switchToEpicBranch(
 	record: EpicRecordV1,
 	originalBranch: string,
 	epicBranch: string,
-): EpicStartResult {
+):
+	| { status: 'started'; record: EpicRecordV1 }
+	| Extract<EpicStartResult, { status: 'refused' }> {
 	const baseCommit = record.git.baseCommit ?? '';
 	const rollbackState = (): string[] => {
 		try {
@@ -818,7 +926,10 @@ export const _internals = {
 	readCurrentBranch,
 	undoEpicBranchCreate,
 	resolveEpicDeclaredScopes,
-	loadCalibrationState,
+	loadEpicLearningView,
+	readEpicPrior,
+	importLegacyEpicCalibrationOnce,
+	initEpicPosterior,
 	getCoChangeData,
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
 	findRunningLeanRun,

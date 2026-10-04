@@ -57,10 +57,10 @@ import {
 import { isTransientProviderError } from '../../utils/provider-error-classification';
 import { invalidateCachedArtifact } from '../../utils/swarm-artifact-cache';
 import {
-	type DivergenceRecord,
-	readDivergenceHistory,
-} from './divergence-recorder';
-import { type EpicRecordV1, getOpenEpic } from './lifecycle';
+	type EpicRecordV1,
+	type EpicTaskOutcome,
+	getOpenEpic,
+} from './lifecycle';
 import { epicPhaseFixPath } from './next-wave-format';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -77,7 +77,6 @@ export const EPIC_PHASE_REVIEW_DISPATCH_TIMEOUT_MS = 300_000;
 export const EPIC_PHASE_REVIEW_TOOL = 'epic_phase_review';
 
 const MAX_REASON_CHARS = 2_000;
-const MAX_DIVERGENCE_RECORDS = 2_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -527,8 +526,12 @@ interface EpicPhaseReviewPackage {
 		depends: string[];
 		divergence?: {
 			declared_scope: string[];
-			actual_files: string[];
 			undeclared: string[];
+			/**
+			 * Where `undeclared` came from; `unavailable` / `no-git` mean the
+			 * actual writes are unknown — an empty `undeclared` is NOT clean.
+			 */
+			attribution: EpicTaskOutcome['attribution'];
 		};
 	}>;
 	files_changed: string[];
@@ -541,25 +544,29 @@ function buildReviewPackage(
 ): EpicPhaseReviewPackage {
 	const target = plan.phases.find((item) => item.id === phase);
 	const tasks = target?.tasks ?? [];
-	const taskIds = new Set(tasks.map((task) => task.id));
-	const latestDivergence = new Map<string, DivergenceRecord>();
+	// Declared (frozen) and undeclared files per task, as the open epic
+	// recorded them when each task's wave closed.
+	let outcomes: Record<string, EpicTaskOutcome> = {};
 	try {
-		for (const record of _internals.readDivergenceHistory(directory, {
-			limit: MAX_DIVERGENCE_RECORDS,
-		})) {
-			if (taskIds.has(record.taskId)) {
-				latestDivergence.set(record.taskId, record);
-			}
-		}
+		outcomes = _internals.getOpenEpic(directory)?.tasks ?? {};
 	} catch (error) {
 		logger.warn(
-			`[epic-phase-readiness] divergence history unreadable; reviewing without it: ${error instanceof Error ? error.message : String(error)}`,
+			`[epic-phase-readiness] epic record unreadable; reviewing without divergence: ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
 	const filesChanged = new Set<string>();
 	const packaged = tasks.map((task) => {
-		const divergence = latestDivergence.get(task.id);
-		for (const file of divergence?.actualFiles ?? task.files_touched) {
+		const outcome = Object.hasOwn(outcomes, task.id)
+			? outcomes[task.id]
+			: undefined;
+		const divergence =
+			outcome && outcome.resolution !== 'removed' ? outcome : undefined;
+		const attributed =
+			divergence?.attribution === 'session' ||
+			divergence?.attribution === 'git-single-task';
+		for (const file of divergence && attributed
+			? [...divergence.declared, ...divergence.undeclared]
+			: [...(divergence?.declared ?? []), ...task.files_touched]) {
 			filesChanged.add(file);
 		}
 		return {
@@ -572,9 +579,9 @@ function buildReviewPackage(
 			...(divergence
 				? {
 						divergence: {
-							declared_scope: divergence.declaredScope,
-							actual_files: divergence.actualFiles,
-							undeclared: divergence.undeclared,
+							declared_scope: [...divergence.declared],
+							undeclared: [...divergence.undeclared],
+							attribution: divergence.attribution,
 						},
 					}
 				: {}),
@@ -892,7 +899,6 @@ export const _internals = {
 	loadPlan: (directory: string): Promise<RuntimePlan | null> =>
 		loadPlan(directory),
 	readEvidence: readEpicPhaseReviewEvidence,
-	readDivergenceHistory,
 	taskEvidenceFingerprint,
 	writeEvidence: (target: string, content: string): Promise<void> =>
 		atomicWriteSwarmFile(target, content),

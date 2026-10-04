@@ -55,7 +55,6 @@ import { runSerializedWithMergeBacks } from '../../hooks/delegation-gate/worktre
 import { readLedgerEvents as readLedgerEvents_import } from '../../plan/ledger.js';
 import { loadPlanJsonOnly as loadPlanJsonOnly_import } from '../../plan/manager.js';
 import * as logger from '../../utils/logger.js';
-import { loadCalibrationState as loadCalibrationState_import } from './calibration.js';
 import { getCoChangeData as getCoChangeData_import } from './cochange-source.js';
 import {
 	EPIC_MODE_CONFIG_DISABLED_MESSAGE,
@@ -64,6 +63,7 @@ import {
 import { resolveEpicDeclaredScopes as resolveEpicDeclaredScopes_import } from './declared-scopes.js';
 import { checkEpicBranch as checkEpicBranch_import } from './epic-branch.js';
 import { computeEpicWaveVerdict as computeEpicWaveVerdict_import } from './gate-policy.js';
+import { loadEpicLearningView as loadEpicLearningView_import } from './learning-store.js';
 import {
 	type EpicRecordV1,
 	type EpicWaveRecord,
@@ -101,7 +101,7 @@ import {
 	applyWaveClose,
 	collectTaskAttribution as collectTaskAttribution_import,
 	computeWaveClose as computeWaveClose_import,
-	feedEpicCalibration as feedEpicCalibration_import,
+	recordEpicWaveLearning as recordEpicWaveLearning_import,
 	releaseWaveAttribution as releaseWaveAttribution_import,
 } from './wave-close.js';
 import { selectNextEpicWave } from './wave-select.js';
@@ -137,10 +137,10 @@ export const _internals = {
 	},
 	resolveEpicDeclaredScopes: resolveEpicDeclaredScopes_import,
 	relevantMergeFailureForProject: relevantMergeFailureForProject_import,
-	loadCalibrationState: loadCalibrationState_import,
+	loadEpicLearningView: loadEpicLearningView_import,
 	getCoChangeData: getCoChangeData_import,
 	computeWaveClose: computeWaveClose_import,
-	feedEpicCalibration: feedEpicCalibration_import,
+	recordEpicWaveLearning: recordEpicWaveLearning_import,
 	releaseWaveAttribution: releaseWaveAttribution_import,
 	computeEpicWaveVerdict: computeEpicWaveVerdict_import,
 	now: (): number => Date.now(),
@@ -474,7 +474,7 @@ async function advanceActiveWave(
 		if (residue) return { result: residue };
 	}
 	// Compute, CAS-close, then (only if this call closed it) mirror the refs,
-	// feed calibration and release attribution.
+	// update the learning posterior and release attribution.
 	const nowIso = new Date(_internals.now()).toISOString();
 	const computation = await _internals.computeWaveClose({
 		directory,
@@ -497,10 +497,10 @@ async function advanceActiveWave(
 	);
 	if (!updated) return { result: await describeNoEpic(directory) };
 	const closedRecord = updated.waves.find((w) => w.seq === wave.seq) ?? wave;
-	// Best-effort, AFTER the close is committed and only by the call that
-	// closed the wave: a crash between the CAS above and these side effects
-	// loses this wave's divergence records / calibration step (outcomes,
-	// including `undeclared`, are already in the record) — never blocks.
+	// AFTER the close is committed and only by the call that closed the
+	// wave. The outcomes are in the record, so a crash between the CAS above
+	// and the learning update is caught up before the next wave is planned
+	// (idempotent per wave seq) — never blocks.
 	if (closedHere) {
 		if (updated.git.isRepo) {
 			try {
@@ -513,14 +513,7 @@ async function advanceActiveWave(
 				);
 			}
 		}
-		_internals.feedEpicCalibration({
-			directory,
-			config,
-			plan,
-			wave: closedRecord,
-			divergence: computation.divergence,
-			sessionID,
-		});
+		_internals.recordEpicWaveLearning({ directory, config, record: updated });
 		_internals.releaseWaveAttribution(directory, sessionID, wave.taskIds);
 	}
 	return {
@@ -775,10 +768,20 @@ async function issueNextWave(
 		}
 	}
 
-	const signals = await loadEpicPlanningSignals(directory, config, {
-		loadCalibrationState: _internals.loadCalibrationState,
-		getCoChangeData: _internals.getCoChangeData,
-	});
+	// Plan with every closed wave learned: catch up an update a crash lost
+	// between a wave's close and its learning step (idempotent per wave seq;
+	// nothing pending ⇒ one posterior read, no write).
+	_internals.recordEpicWaveLearning({ directory, config, record: epic });
+	const signals = await loadEpicPlanningSignals(
+		directory,
+		config,
+		{
+			loadLearningView: _internals.loadEpicLearningView,
+			getCoChangeData: _internals.getCoChangeData,
+			now: _internals.now,
+		},
+		{ epicKey: epic.epicKey, token: epic.token },
+	);
 	const cochange = signals.cochange;
 	const selection = selectNextEpicWave({
 		directory,
@@ -788,7 +791,8 @@ async function issueNextWave(
 		maxParallel: epic.config.maxParallel,
 		leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG, ...(config.turbo?.lean ?? {}) },
 		isCommitted,
-		hotModules: signals.hotModules,
+		hotFiles: signals.hotFiles,
+		coWrites: signals.coWrites,
 		cochange,
 		densityThreshold: signals.densityThreshold,
 		waveHistory: epic.waves.filter((wave) => wave.phase === phaseId),

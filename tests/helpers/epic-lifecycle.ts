@@ -58,6 +58,7 @@ export function stubEpicRecord(
 			scopedTasks: 6,
 			serialSteps: 2,
 		}),
+		priorDigest: null,
 		closing: null,
 		waves: [],
 		activeWaveSeq: null,

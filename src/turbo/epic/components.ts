@@ -26,16 +26,24 @@
  *     conflict in the verdict;
  *   - a task with no usable scope (the verdict's `unknown`) is exclusive
  *     here, so it never shares a wave.
+ *   - learned scope expansion (Epic v2 C6, `learning.ts`) only ADDS edges:
+ *     the path half runs over scope*(t) = scope(t) ∪ the files tasks
+ *     declaring scope(t) were learned to co-write, a superset of the
+ *     declared scope the verdict reads (path overlap is monotone in the
+ *     scopes); the co-change half keeps the declared scopes (its rule is
+ *     not monotone in the scope). The planner is stricter than the verdict.
  * Hence every wave of ≥ 2 tasks picked here is `all_disjoint` under the
  * verdict (`epic_next_wave` still asserts it before issuing).
  *
  * Model:
  *   - exclusive task: its scope touches a global file or a protected path
  *     (`isGlobalFile` / `isProtectedPath`, classified by the shared
- *     partition preflight), has no usable scope, or touches a learned hot
- *     module (calibration). It is its own component (mode `exclusive`) and
+ *     partition preflight), has no usable scope, or its declared scope
+ *     lists a learned hot file (`learning.ts`; exact normalized path). It is its own component
+ *     (mode `exclusive`) and
  *     always runs ALONE, before any other ready task;
- *   - every other task is a vertex; E = pairs that conflict (above);
+ *   - every other task is a vertex; E = pairs that conflict (above, over
+ *     the learned scope* for the path half);
  *     C = connected components of (vertices, E) (union-find);
  *   - density d_C = |E_C| / (|C| choose 2) (0 for a single task);
  *   - mode(C) = `serial-component` when d_C > `turbo.epic.mode.
@@ -68,6 +76,7 @@ import {
 	runPartitionPreflight,
 } from '../lean/partition-common.js';
 import type { CoChangeThreshold } from './cochange-conflict.js';
+import { type EpicCoWriteIndex, expandEpicScope } from './learning.js';
 
 /** Default intra-component density threshold (`mode.activation_threshold`). */
 export const DEFAULT_EPIC_DENSITY_THRESHOLD = 0.3;
@@ -81,7 +90,7 @@ export type EpicExclusiveReason =
 	| 'global-file'
 	| 'protected-path'
 	| 'no-scope'
-	| 'hot-module';
+	| 'hot-file';
 
 /** Co-change signal (null = disabled by config ⇒ path-only conflicts). */
 export interface EpicCochangeSignal {
@@ -120,8 +129,13 @@ export interface EpicConflictGraphInput {
 	scopes: Record<string, string[]>;
 	/** Lean config (risk policy of the shared preflight). */
 	leanConfig: LeanTurboConfig;
-	/** Learned hot modules (calibration): tasks touching them are exclusive. */
-	hotModules: readonly string[];
+	/** Learned hot files (`learning.ts`): tasks declaring them are exclusive. */
+	hotFiles: readonly string[];
+	/**
+	 * Learned co-writes (`learning.ts`): the path half of the conflict graph
+	 * runs over each task's expanded scope*. Null ⇒ no expansion.
+	 */
+	coWrites: EpicCoWriteIndex | null;
 	cochange: EpicCochangeSignal | null;
 }
 
@@ -136,27 +150,18 @@ export interface EpicConflictGraph {
 	topoIndex: Map<string, number>;
 }
 
-function touchesAny(
-	files: readonly string[],
-	targets: readonly string[],
-): boolean {
-	return files.some((file) =>
-		targets.some((target) =>
-			pathsConflict(normalizePath(file), normalizePath(target)),
-		),
-	);
-}
-
 function exclusiveReasonOf(
 	category: string,
 	scope: readonly string[],
-	hotModules: readonly string[],
+	hotFiles: readonly string[],
 ): EpicExclusiveReason | null {
 	if (category === 'global') return 'global-file';
 	if (category === 'protected') return 'protected-path';
 	if (category !== 'normal' || scope.length === 0) return 'no-scope';
-	if (hotModules.length > 0 && touchesAny(scope, hotModules)) {
-		return 'hot-module';
+	if (hotFiles.length > 0) {
+		// Exact (normalized) path: a hot file never makes its directory hot.
+		const hot = new Set(hotFiles.map(normalizePath));
+		if (scope.some((file) => hot.has(normalizePath(file)))) return 'hot-file';
 	}
 	return null;
 }
@@ -264,13 +269,17 @@ export function buildEpicConflictGraph(
 		const reason = exclusiveReasonOf(
 			classified.category,
 			scopes[id] ?? [],
-			input.hotModules,
+			input.hotFiles,
 		);
 		if (reason) exclusive.set(id, reason);
 		else vertices.push(id);
 	}
 	const normalized = new Map<string, string[]>();
-	for (const id of vertices) normalized.set(id, scopes[id].map(normalizePath));
+	const expanded = new Map<string, string[]>();
+	for (const id of vertices) {
+		normalized.set(id, scopes[id].map(normalizePath));
+		expanded.set(id, expandEpicScope(scopes[id], input.coWrites));
+	}
 	const partners = cochangePartners(vertices, normalized, input.cochange);
 	const adjacency = new Map<string, Set<string>>();
 	for (const id of vertices) adjacency.set(id, new Set());
@@ -279,7 +288,7 @@ export function buildEpicConflictGraph(
 			const a = vertices[i];
 			const b = vertices[j];
 			if (
-				pathOverlap(normalized.get(a) ?? [], normalized.get(b) ?? []) ||
+				pathOverlap(expanded.get(a) ?? [], expanded.get(b) ?? []) ||
 				crossCoupled(partners.get(a), partners.get(b))
 			) {
 				adjacency.get(a)?.add(b);

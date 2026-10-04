@@ -879,5 +879,5 @@ It plans every wave, closes finished waves, and keeps phases in order. Never pla
 - \`epic-complete\` → tell the user to close the epic with \`/swarm epic close\`.
 - \`refused\` → relay \`message\`; run tasks per-task serially.
 
-Per-task QA (Stage A + Stage B) is NEVER waived in Epic. Audit (no architect needed): \`/swarm epic status | calibration\`.
+Per-task QA (Stage A + Stage B) is NEVER waived in Epic. Audit (no architect needed): \`/swarm epic status | learning\`.
 `;

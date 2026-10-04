@@ -2,8 +2,9 @@
  * Epic v2 C5 — seeded property test of the component planner through
  * `selectNextEpicWave`, driven wave by wave to the end of random phases
  * (random scopes over a small file pool, global / protected files, random
- * DAG dependencies, co-change pairs, hot modules, widths and density
- * thresholds). Every issued wave must be:
+ * DAG dependencies, co-change pairs, learned hot files and learned
+ * co-writes (Epic v2 C6 scope expansion), widths and density thresholds).
+ * Every issued wave must be:
  *   - pairwise conflict-free under THE predicate (`epicPairConflict`, path
  *     ∪ co-change with the full pair set),
  *   - at most `maxParallel` tasks (an exclusive wave is one task),
@@ -11,7 +12,10 @@
  *   - at most one task per `serial-component` component,
  *   - and `all_disjoint` under THE wave verdict (`computeEpicWaveVerdict`,
  *     the call the delegation gate repeats at dispatch) over the frozen
- *     scopes and frozen co-change pairs — the C4 parity invariant.
+ *     DECLARED scopes and frozen co-change pairs — the C4 parity invariant,
+ *     which learned expansion must never break (it only adds planner edges);
+ *   - and conflict-free over the EXPANDED scopes too (the learned co-write
+ *     edges are honoured).
  * Every task is eventually issued (no starvation, no lost task).
  */
 import { describe, expect, test } from 'bun:test';
@@ -24,7 +28,12 @@ import {
 	type EpicWaveHistoryEntry,
 } from '../../../../src/turbo/epic/components';
 import { computeEpicWaveVerdict } from '../../../../src/turbo/epic/gate-policy';
+import {
+	type EpicCoWriteIndex,
+	expandEpicScope,
+} from '../../../../src/turbo/epic/learning';
 import { selectNextEpicWave } from '../../../../src/turbo/epic/wave-select';
+import { pathsConflict } from '../../../../src/turbo/lean/conflicts';
 import { phasePlan, type TaskSpec } from './next-wave-fixture';
 
 /** Deterministic LCG (Numerical Recipes constants). */
@@ -55,7 +64,8 @@ interface Scenario {
 	maxParallel: number;
 	threshold: number;
 	cochange: EpicCochangeSignal | null;
-	hotModules: string[];
+	hotFiles: string[];
+	coWrites: EpicCoWriteIndex | null;
 }
 
 function scenario(seed: number): Scenario {
@@ -101,8 +111,27 @@ function scenario(seed: number): Scenario {
 			pairs.length > 0
 				? { pairs, threshold: { npmi: 0.5, minCoChanges: 3 } }
 				: null,
-		hotModules: r() < 0.2 ? [pick(POOL)] : [],
+		hotFiles: r() < 0.2 ? [pick(POOL)] : [],
+		coWrites: r() < 0.6 ? randomCoWrites(r, pick) : null,
 	};
+}
+
+/** Random learned co-writes; weights straddle the expansion threshold 1. */
+function randomCoWrites(
+	r: () => number,
+	pick: <T>(items: readonly T[]) => T,
+): EpicCoWriteIndex {
+	const index = new Map<string, Map<string, number>>();
+	const count = 1 + Math.floor(r() * 6);
+	for (let k = 0; k < count; k += 1) {
+		const from = pick(POOL);
+		const to = pick(POOL);
+		if (from === to) continue;
+		const targets = index.get(from) ?? new Map<string, number>();
+		targets.set(to, pick([0.4, 0.6, 1, 2]));
+		index.set(from, targets);
+	}
+	return index;
 }
 
 /** The issued wave sequence of `epic_next_wave` driven to the phase end. */
@@ -124,7 +153,8 @@ function runScenario(seed: number): string[][] {
 			maxParallel: s.maxParallel,
 			leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG },
 			isCommitted: () => true,
-			hotModules: s.hotModules,
+			hotFiles: s.hotFiles,
+			coWrites: s.coWrites,
 			cochange: s.cochange,
 			densityThreshold: s.threshold,
 			waveHistory: history,
@@ -162,6 +192,11 @@ function runScenario(seed: number): string[][] {
 						s.cochange?.threshold ?? { npmi: 1, minCoChanges: 1 },
 					).conflict,
 				).toBe(false);
+				// The learned co-writes are honoured: no path overlap between
+				// the expanded scopes of two tasks of one wave.
+				const a = expandEpicScope(selection.files[ids[i]], s.coWrites);
+				const b = expandEpicScope(selection.files[ids[j]], s.coWrites);
+				expect(a.some((x) => b.some((y) => pathsConflict(x, y)))).toBe(false);
 			}
 		}
 		if (ids.length >= 2) {
@@ -222,7 +257,8 @@ describe('sizing dry-run replays epic_next_wave', () => {
 					plan.phases[0].tasks.map((t) => [t.id, [...t.files_touched]]),
 				),
 				leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG },
-				hotModules: s.hotModules,
+				hotFiles: s.hotFiles,
+				coWrites: s.coWrites,
 				cochange: s.cochange,
 				maxParallel: s.maxParallel,
 				densityThreshold: s.threshold,

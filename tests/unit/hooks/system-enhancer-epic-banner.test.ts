@@ -93,7 +93,7 @@ describe('EPIC_MODE_BANNER content', () => {
 		expect(EPIC_MODE_BANNER).not.toContain('/swarm turbo epic');
 		expect(EPIC_MODE_BANNER).not.toContain('/swarm epic on');
 		expect(EPIC_MODE_BANNER).toContain('`/swarm epic close`');
-		expect(EPIC_MODE_BANNER).toContain('/swarm epic status | calibration');
+		expect(EPIC_MODE_BANNER).toContain('/swarm epic status | learning');
 	});
 
 	test('narration: talk to the user before each step', () => {

@@ -18,6 +18,7 @@ import {
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	GateConfigSchema,
 	PluginConfigSchema,
+	RETIRED_EPIC_KEY_REPLACEMENTS,
 	stripKnownSwarmPrefix,
 } from '../config/schema';
 import { loadPlanJsonOnly } from '../plan/manager';
@@ -519,7 +520,7 @@ function collectRawStrictSectionFindings(directory: string): ConfigFinding[] {
  * (with a precise "retired" loader warning instead of an unrecognized-key
  * recovery), so the parsed config the doctor walks no longer has them; read
  * the raw user + project files instead. Only when the parsed config has a
- * `turbo.epic.mode` object (a retired key lives there): a non-Epic doctor
+ * `turbo.epic` object (every retired key lives there): a non-Epic doctor
  * run reads no extra file. Report-only: nothing reads the key, and removing
  * it is the user's edit (no auto-fix writes the config for a no-op key).
  */
@@ -528,7 +529,7 @@ export function collectRawRetiredEpicKeyFindings(
 	directory: string,
 ): ConfigFinding[] {
 	const findings: ConfigFinding[] = [];
-	if (config.turbo?.epic?.mode === undefined) return findings;
+	if (config.turbo?.epic === undefined) return findings;
 	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
 	const seen = new Set<string>();
 	for (const configPath of [userConfigPath, projectConfigPath]) {
@@ -547,7 +548,7 @@ export function collectRawRetiredEpicKeyFindings(
 				findings.push({
 					id: 'retired-config-key',
 					title: 'Retired config key',
-					description: `"${dotted}" in ${configPath} was retired by Epic Mode v2 and is ignored. Remove it.`,
+					description: `"${dotted}" in ${configPath} was retired by Epic Mode v2 and is ignored.${RETIRED_EPIC_KEY_REPLACEMENTS[dotted] ? ` ${RETIRED_EPIC_KEY_REPLACEMENTS[dotted]}` : ''} Remove it.`,
 					severity: 'warn',
 					path: dotted,
 					currentValue: undefined,

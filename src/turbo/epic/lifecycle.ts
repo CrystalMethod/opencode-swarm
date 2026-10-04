@@ -144,10 +144,10 @@ export interface EpicTaskOutcome {
 	 */
 	stageAFailures: number;
 	stageBFailures: number;
+	/** Merge-back failure snapshot observed while the wave was blocked. */
 	mergeFailure: {
 		outcome: string;
 		stage: string;
-		conflictFiles: string[];
 	} | null;
 	declared: string[];
 	undeclared: string[];
@@ -155,6 +155,16 @@ export interface EpicTaskOutcome {
 	attribution: 'session' | 'git-single-task' | 'unavailable' | 'no-git';
 	/** Ledger transitions out of `completed` for this task since the epic started. */
 	reopened: number;
+	/**
+	 * Epic v2 C6: the counters of this task's earlier outcome when it ran
+	 * again (reopened) — learning charges only the delta.
+	 */
+	previous?: {
+		waveSeq: number;
+		generation: number;
+		stageBFailures: number;
+		reopened: number;
+	};
 	/**
 	 * The commit proving the task's work is on the epic branch (Epic v2 C3),
 	 * mirrored to `ref` (`refs/swarm/epics/<epicKey>/tasks/<id>`, see
@@ -261,6 +271,12 @@ export interface EpicRecordV1 {
 	config: EpicRecordConfig;
 	git: EpicRecordGit;
 	sizing: EpicSizingVerdict;
+	/**
+	 * Epic v2 C6: sha256 of the project prior (`.swarm/epic-prior/
+	 * learning.json`) the epic's posterior was copied from at start; null
+	 * when there was no readable prior or learning is disabled.
+	 */
+	priorDigest: string | null;
 	closing: EpicClosingInfo | null;
 	/** Waves issued by `epic_next_wave`, in issue order (Epic v2 C2). */
 	waves: EpicWaveRecord[];
@@ -328,7 +344,18 @@ const waveSchema = z
 				density: z.record(z.string(), z.number()),
 				exclusive: z.record(
 					z.string(),
-					z.enum(['global-file', 'protected-path', 'no-scope', 'hot-module']),
+					z
+						// Pre-C6 records named the learned reason `hot-module`.
+						.enum([
+							'global-file',
+							'protected-path',
+							'no-scope',
+							'hot-file',
+							'hot-module',
+						])
+						.transform((reason) =>
+							reason === 'hot-module' ? ('hot-file' as const) : reason,
+						),
 				),
 				threshold: z.number(),
 				truncated: z.boolean(),
@@ -372,8 +399,9 @@ const taskOutcomeSchema = z
 			.object({
 				outcome: z.string(),
 				stage: z.string(),
-				conflictFiles: z.array(z.string()),
 			})
+			// Records written before C6 carry an always-empty `conflictFiles`.
+			.passthrough()
 			.nullable(),
 		declared: z.array(z.string()),
 		undeclared: z.array(z.string()),
@@ -384,6 +412,14 @@ const taskOutcomeSchema = z
 			'no-git',
 		]),
 		reopened: z.number(),
+		previous: z
+			.object({
+				waveSeq: z.number(),
+				generation: z.number(),
+				stageBFailures: z.number(),
+				reopened: z.number(),
+			})
+			.optional(),
 		marker: z
 			.object({
 				ref: z.string().nullable(),
@@ -439,6 +475,7 @@ const recordSchema = z
 			})
 			.passthrough(),
 		sizing: sizingSchema,
+		priorDigest: z.string().nullable().default(null),
 		closing: z
 			.object({
 				requestedAt: z.string(),

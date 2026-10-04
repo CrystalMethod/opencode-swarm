@@ -19,10 +19,12 @@
  *     estimate); the chosen members must all have a live binding, otherwise
  *     the result is `declare-scopes` (suggested files = `files_touched`);
  *   - components over the batch: a task touching a global file, a
- *     protected path or a learned hot module (calibration), or with no
+ *     protected path or a learned hot file (`learning.ts`), or with no
  *     usable scope, is exclusive and runs ALONE first; other tasks are
  *     grouped into conflict components (path ∪ co-change, the wave
- *     verdict's predicate) and a densely coupled component
+ *     verdict's predicate, with each scope expanded by learned co-writes
+ *     for the path half — stricter than the verdict, never looser) and a
+ *     densely coupled component
  *     (`serial-component`) contributes at most one task per wave;
  *   - the wave records every batch task's component and each component's
  *     mode (`components`), shown by `/swarm epic status`; past waves'
@@ -40,6 +42,7 @@ import {
 	planNextEpicWave,
 	toWaveComponents,
 } from './components.js';
+import type { EpicCoWriteIndex } from './learning.js';
 import type { EpicCochangePair } from './lifecycle.js';
 
 /** Max co-change pairs frozen into one wave record. */
@@ -61,8 +64,10 @@ export interface EpicWaveSelectionInput {
 	 * caller, which maps a git failure to `git-failed`.
 	 */
 	isCommitted: (taskId: string) => boolean;
-	/** Learned hot modules (calibration); tasks touching them run alone. */
-	hotModules: readonly string[];
+	/** Learned hot files (`learning.ts`); tasks declaring them run alone. */
+	hotFiles: readonly string[];
+	/** Learned co-writes expanding scopes in the conflict graph (null: none). */
+	coWrites: EpicCoWriteIndex | null;
 	/** Co-change signal (null = disabled by config). */
 	cochange: EpicCochangeSignal | null;
 	/** Intra-component density above which a component runs serially. */
@@ -201,7 +206,8 @@ export function selectNextEpicWave(
 		tasks: batch as unknown as PartitionTask[],
 		scopes: estimated,
 		leanConfig: input.leanConfig,
-		hotModules: input.hotModules,
+		hotFiles: input.hotFiles,
+		coWrites: input.coWrites,
 		cochange: input.cochange,
 		maxParallel: input.maxParallel,
 		densityThreshold: input.densityThreshold,

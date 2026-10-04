@@ -185,7 +185,7 @@ describe('config doctor collector — BOM and no extra reads', () => {
 		).toEqual(['turbo.epic.mode.min_commits_for_signal']);
 	});
 
-	it('without turbo.epic.mode in the parsed config it reads no file', () => {
+	it('without turbo.epic in the parsed config it reads no file', () => {
 		writeProjectConfig(RETIRED_CONFIG);
 		const spy = spyOn(fs, 'readFileSync');
 		try {

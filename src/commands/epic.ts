@@ -20,7 +20,12 @@
  *                            `epic_next_wave`);
  *                            `--repair-refs` re-adopts task commits a rebase
  *                            or amend made unreachable (Epic v2 C3)
- *   /swarm epic calibration — Capability D calibration state
+ *   /swarm epic learning   — what the Epic planner learned (hot files,
+ *                            learned co-writes) and uses now (Epic v2 C6)
+ *   /swarm epic prior [show|reset [--confirm=<token>]]
+ *                          — the project prior `.swarm/epic-prior/
+ *                            learning.json`; `reset` previews without
+ *                            `--confirm`
  *   /swarm epic clear-merge-failure <taskId> [--confirm]
  *                          — clear a recorded worktree merge failure that
  *                            blocks an epic wave (read-only without --confirm)
@@ -29,20 +34,21 @@
  * bound to one plan and every Epic behaviour is driven by the sentinel-first
  * project probe (`isEpicOpenForProject`). `decide` / `last` were removed in
  * Epic v2 C2 with the activation gate: `epic_next_wave` plans every wave and
- * `status` shows what it recorded. `close`, `status`, and `calibration` work
- * regardless of the config gate.
+ * `status` shows what it recorded. `calibration` was renamed `learning` in
+ * Epic v2 C6 (the v1 self-calibration was replaced). `close`, `status`,
+ * `learning`, and `prior` work regardless of the config gate.
  */
 
 import { loadPluginConfigWithMeta } from '../config/index.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
-import {
-	isCalibrationStateUnreadable,
-	loadCalibrationState,
-} from '../turbo/epic/calibration.js';
 import { closeEpic, type EpicLandingSummary } from '../turbo/epic/close.js';
 import { EPIC_MODE_CONFIG_DISABLED_MESSAGE } from '../turbo/epic/config-gate.js';
-import { readDivergenceHistory } from '../turbo/epic/divergence-recorder.js';
 import { checkEpicBranch } from '../turbo/epic/epic-branch.js';
+import {
+	type EpicLearningSettings,
+	resolveEpicLearningSettings,
+} from '../turbo/epic/learning.js';
+import { describeEpicPriorMerge } from '../turbo/epic/learning-store.js';
 import {
 	describeLegacyEpicMigration,
 	retireLegacyEpicSessionState,
@@ -75,6 +81,11 @@ import {
 	summarizeEpicSizing,
 } from '../turbo/epic/sizing.js';
 import { startEpic } from '../turbo/epic/start.js';
+import {
+	EPIC_PRIOR_USAGE,
+	renderEpicLearning,
+	renderEpicPrior,
+} from './epic-learning.js';
 
 /**
  * Test-only DI seam. Production code calls `_internals.fn(...)` so tests can
@@ -83,9 +94,6 @@ import { startEpic } from '../turbo/epic/start.js';
 export const _internals = {
 	loadPluginConfigWithMeta,
 	loadPlanJsonOnly,
-	loadCalibrationState,
-	isCalibrationStateUnreadable,
-	readDivergenceHistory,
 	resolvePlanMarkerScope,
 	describeMergeFailuresForStatus,
 	clearMergeFailureCommand,
@@ -105,7 +113,7 @@ export const _internals = {
 };
 
 const USAGE =
-	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | calibration | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
+	'Usage:\n  /swarm epic start [--force] | close [--abandon] [--land squash|merge|none] | status [--repair-refs] | learning | prior [show|reset [--confirm=<token>]] | clear-merge-failure <taskId> [--confirm]\n  /swarm epic         (shows status)';
 
 export async function handleEpicCommand(
 	directory: string,
@@ -141,8 +149,20 @@ export async function handleEpicCommand(
 		case 'decide':
 		case 'last':
 			return `\`/swarm epic ${arg0}\` was removed in Epic v2: the activation gate is gone and the architect's \`epic_next_wave\` plans every wave. Run \`/swarm epic status\` to see the epic's waves, phases and recorded divergence.\n\n${USAGE}`;
+		case 'learning': {
+			if (args.length > 1) {
+				return `\`/swarm epic learning\` takes no options.\n\n${USAGE}`;
+			}
+			return renderEpicLearning(directory, learningSettings(directory));
+		}
+		case 'prior':
+			return renderEpicPrior(
+				directory,
+				args.slice(1),
+				learningSettings(directory),
+			);
 		case 'calibration':
-			return renderCalibration(directory);
+			return `\`/swarm epic calibration\` was renamed in Epic v2: the self-calibration was replaced by Epic learning. Run \`/swarm epic learning\` (what the planner learned and uses now) or \`/swarm epic prior\` (the project prior). ${EPIC_PRIOR_USAGE}\n\n${USAGE}`;
 		case 'clear-merge-failure':
 			return _internals.clearMergeFailureCommand(directory, args.slice(1));
 		case 'on':
@@ -150,6 +170,17 @@ export async function handleEpicCommand(
 			return `\`/swarm epic ${arg0}\` was removed in Epic v2: an epic is now bound to one plan. Use \`/swarm epic start\` to open an epic for the current plan and \`/swarm epic close\` to close it.\n\n${USAGE}`;
 		default:
 			return `Unknown subcommand '${arg0}'.\n\n${USAGE}`;
+	}
+}
+
+/** `turbo.epic.learning.*` (schema defaults when the config is unreadable). */
+function learningSettings(directory: string): EpicLearningSettings {
+	try {
+		return resolveEpicLearningSettings(
+			_internals.loadPluginConfigWithMeta(directory).config,
+		);
+	} catch {
+		return resolveEpicLearningSettings(undefined);
 	}
 }
 
@@ -213,10 +244,33 @@ async function renderStart(
 		'',
 		...renderSizingLines(record.sizing),
 		renderExecutionLine(record),
+		renderStartLearningLine(result.learning),
 		'',
 		'The architect now follows the Epic wave flow (Epic enables neither Lean nor Turbo; per-task QA is never waived). Close with `/swarm epic close` once every task is completed or closed.',
 	];
 	return lines.join('\n');
+}
+
+function renderStartLearningLine(
+	learning: Extract<
+		Awaited<ReturnType<typeof startEpic>>,
+		{ status: 'started' }
+	>['learning'],
+): string {
+	if (!learning.enabled) {
+		return 'Learning: disabled (`turbo.epic.learning.enabled: false`) — no learned signals.';
+	}
+	const imported = learning.imported
+		? ` (imported once from Epic v1: ${learning.imported.calibrationHotModules} hot module(s), ${learning.imported.divergenceRecords} divergence record(s))`
+		: '';
+	switch (learning.prior) {
+		case 'ok':
+			return `Learning: inherited the project prior${imported} — ${learning.files} file statistic(s), ${learning.coWrites} learned co-write(s), ${learning.hotFiles} hot file(s). See \`/swarm epic learning\`.`;
+		case 'unreadable':
+			return 'Learning: ⚠️ the project prior is unreadable — this epic plans without learned signals; `/swarm epic prior reset` clears it.';
+		default:
+			return 'Learning: no project prior yet — a neutral start (no hot files, no learned co-writes).';
+	}
 }
 
 function renderExecutionLine(record: EpicRecordV1): string {
@@ -366,6 +420,7 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 	} catch {
 		retainRefs = false;
 	}
+	const learning = learningSettings(directory);
 	let result: Awaited<ReturnType<typeof closeEpic>>;
 	try {
 		result = await _internals.closeEpic({
@@ -373,6 +428,7 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 			abandon: parsed.abandon,
 			land: parsed.land,
 			retainRefs,
+			learning,
 		});
 	} catch (error) {
 		return `Error closing the epic: ${error instanceof Error ? error.message : String(error)}`;
@@ -402,6 +458,9 @@ async function renderClose(directory: string, args: string[]): Promise<string> {
 					: 'Tasks: not summarized (the plan no longer matches the epic).',
 				...renderLandingLines(result.report.landing),
 				...renderRefLines(result.report.refs),
+				...(result.report.learning
+					? [describeEpicPriorMerge(result.report.learning)]
+					: []),
 				`Report: \`.swarm/epic/reports/${result.report.reportKey}.json\` (kept across /swarm close at \`.swarm/epic-prior/reports/${result.report.reportKey}.json\`).`,
 			].join('\n');
 		}
@@ -604,6 +663,9 @@ function renderRecordLines(
 		);
 	}
 	lines.push(`- Sizing at start: ${summarizeEpicSizing(record.sizing)}`);
+	lines.push(
+		`- Learning: ${record.priorDigest ? `inherited the project prior \`${record.priorDigest.slice(0, 12)}\`` : 'no project prior at start (neutral)'} — see \`/swarm epic learning\``,
+	);
 	if (orphaned && inspection.orphanReason) {
 		lines.push(
 			'',
@@ -628,7 +690,7 @@ const EXCLUSIVE_REASON_TEXT: Record<string, string> = {
 	'global-file': 'global file',
 	'protected-path': 'protected path',
 	'no-scope': 'no usable scope',
-	'hot-module': 'learned hot module',
+	'hot-file': 'learned hot file',
 };
 
 const MODE_ORDER: Record<string, number> = {
@@ -776,128 +838,5 @@ async function renderStatus(directory: string): Promise<string> {
 	}
 	lines.push(...describeLegacyEpicMigration(legacy));
 	lines.push(...(await renderMergeFailureLines(directory)));
-	return lines.join('\n');
-}
-
-function renderCalibration(directory: string): string {
-	// `/swarm epic calibration` — surfaces the full M4 self-calibration
-	// state: the learned threshold override (vs. the static config), the
-	// monotonically-growing hot-module additions, the consecutive-clean
-	// counter, the count of processed divergence records, and a tail of
-	// the divergent tasks that drove the threshold to where it is.
-	//
-	// This is the user's pull-on-demand visibility into the feedback loop:
-	//  - WHY the activation threshold is below static (which divergent
-	//    tasks tightened it)
-	//  - WHICH modules have been auto-promoted to the hot-module list
-	//    (one-way ratchet — never auto-shrinks)
-	//  - HOW many clean tasks are needed before the next loosening (counter
-	//    + window from config)
-	if (_internals.isCalibrationStateUnreadable(directory)) {
-		return [
-			'## Epic Mode — Calibration',
-			'',
-			'⚠️ Calibration state file is unreadable (fail-closed).',
-			'',
-			'`.swarm/epic/calibration.json` exists but failed shape validation. The calibration engine is using the static config defaults for this directory until the file is repaired or removed.',
-		].join('\n');
-	}
-
-	let state: ReturnType<typeof _internals.loadCalibrationState>;
-	try {
-		state = _internals.loadCalibrationState(directory);
-	} catch (err) {
-		return `Error reading calibration state: ${err instanceof Error ? err.message : String(err)}`;
-	}
-
-	// Static config for the comparison (so the user can see "current is
-	// tighter than static by N points").
-	const { config } = _internals.loadPluginConfigWithMeta(directory);
-	const staticThreshold = config.turbo?.epic?.mode?.activation_threshold ?? 0.3;
-	const calibrationCfg = config.turbo?.epic?.calibration;
-	const loosenWindow = calibrationCfg?.loosen_window ?? 10;
-
-	if (!state) {
-		return [
-			'## Epic Mode — Calibration',
-			'',
-			'No calibration state yet at `.swarm/epic/calibration.json`.',
-			'',
-			`Static activation threshold: ${staticThreshold.toFixed(3)} (from \`turbo.epic.mode.activation_threshold\`)`,
-			'',
-			'The calibration engine writes state when `epic_next_wave` closes a wave that recorded divergence. Until then, no hot modules are learned.',
-		].join('\n');
-	}
-
-	const effectiveThreshold =
-		state.activationThresholdOverride ?? staticThreshold;
-	const delta = staticThreshold - effectiveThreshold;
-
-	const lines: string[] = ['## Epic Mode — Calibration', ''];
-	lines.push('### Knobs');
-	lines.push(`- Static threshold (config): ${staticThreshold.toFixed(3)}`);
-	if (state.activationThresholdOverride !== undefined) {
-		lines.push(
-			`- **Effective threshold (learned)**: ${effectiveThreshold.toFixed(3)} — tightened by ${delta.toFixed(3)} from static`,
-		);
-	} else {
-		lines.push(
-			`- **Effective threshold**: ${effectiveThreshold.toFixed(3)} (using static — no calibration override)`,
-		);
-	}
-	lines.push(
-		`- Consecutive clean tasks: ${state.consecutiveCleanCount} / ${loosenWindow} (next loosening at ${loosenWindow})`,
-	);
-	lines.push(`- Processed divergence records: ${state.processedRecords}`);
-	if (state.lastCalibrationAt) {
-		lines.push(`- Last calibration at: ${state.lastCalibrationAt}`);
-	}
-	lines.push('');
-
-	lines.push('### Hot-module additions (learned)');
-	if (state.hotModuleAdditions.length === 0) {
-		lines.push(
-			"_None._ The calibration loop hasn't promoted any modules to the hot list yet.",
-		);
-	} else {
-		const sample = state.hotModuleAdditions.slice(0, 10);
-		for (const m of sample) lines.push(`- ${m}`);
-		if (state.hotModuleAdditions.length > 10) {
-			lines.push(`- _… +${state.hotModuleAdditions.length - 10} more_`);
-		}
-		lines.push('');
-		lines.push(
-			'_(Monotonically grows; never auto-shrinks. To remove an entry, edit `.swarm/epic/calibration.json` by hand and restart the session.)_',
-		);
-	}
-	lines.push('');
-
-	// Divergent-tail context — WHY the threshold tightened. Read at most
-	// the tail of the divergence log so this is fast even on long-running
-	// projects.
-	let recentDivergent: ReturnType<typeof _internals.readDivergenceHistory> = [];
-	try {
-		const all = _internals.readDivergenceHistory(directory, { limit: 50 });
-		recentDivergent = all.filter((r) => !r.isClean).slice(-5);
-	} catch {
-		// best-effort
-	}
-
-	lines.push('### Recent divergent tasks (tightened the threshold)');
-	if (recentDivergent.length === 0) {
-		lines.push(
-			'_None recent._ Either no divergence has been recorded, or recent tasks have all been clean.',
-		);
-	} else {
-		for (const r of recentDivergent) {
-			const sample = r.undeclared.slice(0, 3).join(', ');
-			const more =
-				r.undeclared.length > 3 ? `, +${r.undeclared.length - 3} more` : '';
-			lines.push(
-				`- ${r.taskId} (${r.timestamp.slice(0, 19)}Z, ratio=${r.divergenceRatio.toFixed(2)}) — undeclared: ${sample}${more}`,
-			);
-		}
-	}
-
 	return lines.join('\n');
 }

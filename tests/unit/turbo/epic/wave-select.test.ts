@@ -30,7 +30,8 @@ function input(
 		maxParallel: 4,
 		leanConfig: { ...DEFAULT_LEAN_TURBO_CONFIG },
 		isCommitted: () => true,
-		hotModules: [],
+		hotFiles: [],
+		coWrites: null,
 		cochange: null,
 		densityThreshold: 0.3,
 		waveHistory: [],
@@ -126,14 +127,14 @@ describe('waves', () => {
 		});
 	});
 
-	test('learned hot modules make a task exclusive: it runs alone, first', () => {
-		const hot = { hotModules: ['src/t1_2.ts'] };
+	test('learned hot files make a task exclusive: it runs alone, first', () => {
+		const hot = { hotFiles: ['src/t1_2.ts'] };
 		expect(
 			selectNextEpicWave(input([[{ id: '1.1' }, { id: '1.2' }]], hot)),
 		).toMatchObject({
 			waveKind: 'exclusive',
 			taskIds: ['1.2'],
-			components: { exclusive: { '1.2': 'hot-module' } },
+			components: { exclusive: { '1.2': 'hot-file' } },
 		});
 		expect(
 			selectNextEpicWave(

@@ -4593,35 +4593,37 @@
                   "additionalProperties": false
                 },
                 "calibration": {
+                  "deprecated": true,
+                  "description": "Retired (Epic v2): accepted and ignored with a warning — Epic learning replaced it (turbo.epic.learning). Remove it.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "learning": {
                   "type": "object",
                   "properties": {
                     "enabled": {
                       "default": true,
                       "type": "boolean"
                     },
-                    "floor_threshold": {
-                      "default": 0.05,
+                    "decay_per_epic": {
+                      "default": 0.7,
                       "type": "number",
                       "minimum": 0,
                       "maximum": 1
                     },
-                    "tighten_step": {
-                      "default": 0.02,
+                    "half_life_days": {
+                      "default": 60,
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "hot_excess": {
+                      "default": 0.25,
                       "type": "number",
                       "minimum": 0,
                       "maximum": 1
-                    },
-                    "loosen_step": {
-                      "default": 0.01,
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "loosen_window": {
-                      "default": 10,
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9007199254740991
                     }
                   },
                   "additionalProperties": false
@@ -4832,35 +4834,37 @@
                   "additionalProperties": false
                 },
                 "calibration": {
+                  "deprecated": true,
+                  "description": "Retired (Epic v2): accepted and ignored with a warning — Epic learning replaced it (turbo.epic.learning). Remove it.",
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "learning": {
                   "type": "object",
                   "properties": {
                     "enabled": {
                       "default": true,
                       "type": "boolean"
                     },
-                    "floor_threshold": {
-                      "default": 0.05,
+                    "decay_per_epic": {
+                      "default": 0.7,
                       "type": "number",
                       "minimum": 0,
                       "maximum": 1
                     },
-                    "tighten_step": {
-                      "default": 0.02,
+                    "half_life_days": {
+                      "default": 60,
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "hot_excess": {
+                      "default": 0.25,
                       "type": "number",
                       "minimum": 0,
                       "maximum": 1
-                    },
-                    "loosen_step": {
-                      "default": 0.01,
-                      "type": "number",
-                      "minimum": 0,
-                      "maximum": 1
-                    },
-                    "loosen_window": {
-                      "default": 10,
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 9007199254740991
                     }
                   },
                   "additionalProperties": false

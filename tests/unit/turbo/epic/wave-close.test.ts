@@ -7,20 +7,20 @@
  *     fallback (real repository) for a single-task wave, and wave-level
  *     undeclared files otherwise;
  *   - `applyWaveClose` is idempotent (a concurrent close wins once);
- *   - calibration is fed from the close (divergence record + hot module).
+ *   - the learning posterior applies each closed wave once
+ *     (`recordEpicWaveLearning`), and not at all with learning disabled.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plan } from '../../../../src/config/plan-schema';
-import { loadCalibrationState } from '../../../../src/turbo/epic/calibration';
-import { readDivergenceHistory } from '../../../../src/turbo/epic/divergence-recorder';
+import { readEpicPosterior } from '../../../../src/turbo/epic/learning-store';
 import type { EpicWaveRecord } from '../../../../src/turbo/epic/lifecycle';
 import {
 	_internals,
 	applyWaveClose,
 	computeWaveClose,
-	feedEpicCalibration,
+	recordEpicWaveLearning,
 	releaseWaveAttribution,
 } from '../../../../src/turbo/epic/wave-close';
 import { stubEpicRecord } from '../../../helpers/epic-lifecycle';
@@ -169,7 +169,6 @@ describe('outcome fields', () => {
 			resolvedAt: '2026-08-02T03:00:00.000Z',
 			generation: 0,
 		});
-		expect(result.divergence).toEqual([]);
 	});
 
 	test('a task missing from the plan resolves as removed', async () => {
@@ -219,14 +218,6 @@ describe('divergence: session attribution', () => {
 			undeclared: [],
 			attribution: 'session',
 		});
-		expect(result.divergence).toEqual([
-			{
-				taskId: '1.1',
-				declared: ['src/a.ts'],
-				actual: ['src/a.ts', 'src/extra.ts'],
-			},
-			{ taskId: '1.2', declared: ['src/b.ts'], actual: ['src/b.ts'] },
-		]);
 	});
 });
 
@@ -293,7 +284,7 @@ describe('divergence: git fallback (real repository)', () => {
 			'unavailable',
 			'unavailable',
 		]);
-		expect(result.divergence).toEqual([]);
+		expect(result.outcomes.map((o) => o.undeclared)).toEqual([[], []]);
 		expect(result.waveUndeclared).toEqual(['src/stray.ts']);
 	});
 });
@@ -305,7 +296,6 @@ describe('applyWaveClose', () => {
 			closeHead: null,
 			outcomes: [],
 			waveUndeclared: ['src/x.ts'],
-			divergence: [],
 		};
 		const closed = applyWaveClose(record, 1, computation, NOW);
 		expect(closed).not.toBe(record);
@@ -317,58 +307,125 @@ describe('applyWaveClose', () => {
 		});
 		expect(applyWaveClose(closed, 1, computation, NOW)).toBe(closed);
 	});
+
+	test('a task run again keeps its earlier counters as `previous` (learning charges the delta)', () => {
+		const first = {
+			taskId: '1.1',
+			phase: 1,
+			waveSeq: 1,
+			resolution: 'completed' as const,
+			resolvedAt: NOW,
+			generation: 2,
+			stageAFailures: 0,
+			stageBFailures: 1,
+			mergeFailure: null,
+			declared: ['src/a.ts'],
+			undeclared: [],
+			attribution: 'session' as const,
+			reopened: 0,
+			marker: null,
+		};
+		const record = stubEpicRecord({
+			waves: [
+				{ ...wave(), status: 'closed' },
+				wave({ seq: 2, taskIds: ['1.1'] }),
+			],
+			activeWaveSeq: 2,
+			tasks: { '1.1': first },
+		});
+		const closed = applyWaveClose(
+			record,
+			2,
+			{
+				closeHead: null,
+				outcomes: [{ ...first, waveSeq: 2, generation: 3, reopened: 1 }],
+				waveUndeclared: [],
+			},
+			NOW,
+		);
+		expect(closed.tasks['1.1']).toMatchObject({
+			waveSeq: 2,
+			generation: 3,
+			previous: { waveSeq: 1, generation: 2, stageBFailures: 1, reopened: 0 },
+		});
+	});
 });
 
-describe('feedEpicCalibration', () => {
-	const epicConfig = (enabled: boolean) =>
+describe('recordEpicWaveLearning', () => {
+	const config = (learning: Record<string, unknown> = {}) =>
 		({
 			turbo: {
 				strategy: 'standard',
-				epic: { mode: { enabled: true }, calibration: { enabled } },
+				epic: { mode: { enabled: true }, learning },
 			},
 		}) as never;
-	const divergence = [
-		{
-			taskId: '1.1',
-			declared: ['src/a.ts'],
-			actual: ['src/a.ts', 'src/hot.ts'],
-		},
-	];
+	const closedRecord = () =>
+		stubEpicRecord({
+			waves: [{ ...wave(), status: 'closed', closedAt: NOW }],
+			activeWaveSeq: null,
+			tasks: {
+				'1.1': {
+					taskId: '1.1',
+					phase: 1,
+					waveSeq: 1,
+					resolution: 'completed',
+					resolvedAt: NOW,
+					generation: 1,
+					stageAFailures: 0,
+					stageBFailures: 0,
+					mergeFailure: null,
+					declared: ['src/a.ts'],
+					undeclared: ['src/hot.ts'],
+					attribution: 'session',
+					reopened: 0,
+					marker: null,
+				},
+			},
+		});
 
-	test('records divergence and learns the undeclared file as a hot module', () => {
-		feedEpicCalibration({
-			directory: dir,
-			config: epicConfig(true),
-			plan: plan({ '1.1': 'completed' }),
-			wave: wave(),
-			divergence,
-			sessionID: 'ses_x',
+	test('applies the closed wave to the posterior exactly once', () => {
+		const record = closedRecord();
+		expect(
+			recordEpicWaveLearning({ directory: dir, config: config(), record }),
+		).toEqual([1]);
+		expect(
+			recordEpicWaveLearning({ directory: dir, config: config(), record }),
+		).toEqual([]);
+		const posterior = readEpicPosterior(dir);
+		expect(posterior?.lastAppliedWaveSeq).toBe(1);
+		expect(posterior?.increments.files.get('src/hot.ts')).toEqual({
+			alpha: 1,
+			beta: 0,
 		});
-		const history = readDivergenceHistory(dir);
-		expect(history).toHaveLength(1);
-		expect(history[0]).toMatchObject({
-			taskId: '1.1',
-			undeclared: ['src/hot.ts'],
-			phaseNumber: 1,
-		});
-		const state = loadCalibrationState(dir);
-		expect(state?.hotModuleAdditions).toEqual(['src/hot.ts']);
-		expect(state?.processedRecords).toBe(1);
+		expect(posterior?.increments.edges.get('src/a.ts')?.get('src/hot.ts')).toBe(
+			1,
+		);
 	});
 
-	test('calibration disabled: divergence is still recorded, the engine does not run', () => {
-		feedEpicCalibration({
-			directory: dir,
-			config: epicConfig(false),
-			plan: plan({ '1.1': 'completed' }),
-			wave: wave(),
-			divergence,
-			sessionID: undefined,
-		});
-		expect(readDivergenceHistory(dir)).toHaveLength(1);
+	test('learning disabled: nothing is learned or written', () => {
 		expect(
-			fs.existsSync(path.join(dir, '.swarm', 'epic', 'calibration.json')),
+			recordEpicWaveLearning({
+				directory: dir,
+				config: config({ enabled: false }),
+				record: closedRecord(),
+			}),
+		).toEqual([]);
+		expect(
+			fs.existsSync(path.join(dir, '.swarm', 'epic', 'posterior.json')),
 		).toBe(false);
+	});
+
+	test('a failing update never throws (the wave flow continues)', () => {
+		_internals.applyClosedWavesToPosterior = () => {
+			throw new Error('disk full');
+		};
+		expect(
+			recordEpicWaveLearning({
+				directory: dir,
+				config: config(),
+				record: closedRecord(),
+			}),
+		).toEqual([]);
 	});
 });
 

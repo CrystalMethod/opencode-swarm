@@ -4,7 +4,7 @@
  *  - `start` renders the start refusal `epic-disabled-by-config` as
  *    EPIC_MODE_CONFIG_DISABLED_MESSAGE (the gate itself is tested in
  *    tests/unit/turbo/epic/start-refusals.test.ts).
- *  - `close`, `status`, `calibration` keep working with the mode gate off —
+ *  - `close`, `status`, `learning`, `prior` keep working with the mode gate off —
  *    a user can always inspect or close an epic. (The co-change gate and
  *    v2 declared scopes are exercised through `epic_next_wave`:
  *    tests/unit/turbo/epic/next-wave-*.test.ts.)
@@ -27,8 +27,6 @@ beforeEach(() => {
 		fileArchivedTo: null,
 		errors: [],
 	})) as never;
-	_internals.isCalibrationStateUnreadable = (() => false) as never;
-	_internals.loadCalibrationState = (() => null) as never;
 });
 
 afterEach(() => {
@@ -59,8 +57,8 @@ describe('/swarm epic — other subcommands work with the mode gate off', () => 
 		expect(out).toBe('No epic is open.');
 	});
 
-	test('status / calibration render without the opt-in', async () => {
-		for (const sub of [[], ['status'], ['calibration']]) {
+	test('status / learning / prior render without the opt-in', async () => {
+		for (const sub of [[], ['status'], ['learning'], ['prior']]) {
 			const out = await handleEpicCommand('/fake', sub, 'sess-1');
 			expect(out).not.toContain(EPIC_MODE_CONFIG_DISABLED_MESSAGE);
 			expect(out).toContain('Epic Mode');

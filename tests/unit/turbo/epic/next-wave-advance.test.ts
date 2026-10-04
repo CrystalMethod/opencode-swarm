@@ -204,7 +204,6 @@ describe('blocked wave tasks', () => {
 		expect(project.record().tasks['1.2']?.mergeFailure).toEqual({
 			outcome: 'failed',
 			stage: 'merge',
-			conflictFiles: [],
 		});
 	});
 

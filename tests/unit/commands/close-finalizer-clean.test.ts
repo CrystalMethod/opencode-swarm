@@ -13,6 +13,7 @@ import { loadDatabaseCtor } from '../../../src/db/sqlite-loader.js';
 import { derivePlanId } from '../../../src/plan/utils.js';
 import { EPIC_LIFECYCLE_NAMESPACE } from '../../../src/turbo/epic/lifecycle.js';
 import { openEpicForTest } from '../../helpers/epic-lifecycle';
+import { freezeClock } from '../../helpers/test-clock';
 import { initializeCloseFinalizerHarness } from './close-finalizer.shared.ts';
 
 const h = await initializeCloseFinalizerHarness();
@@ -193,6 +194,56 @@ describe('handleCloseCommand — open epic finalization (Epic v2)', () => {
 			).toBe(false);
 		} finally {
 			h.closeInternals.closeSnapshotCoordinationInitialization = originalClose;
+			closeAllProjectDbs();
+		}
+	});
+
+	it('the learning prior survives /swarm close: merged once, kept, posterior archived away', async () => {
+		await h.writePlan(testDir);
+		writeEpicConfig(testDir);
+		const epic = openEpicForTest(testDir);
+		const priorPath = path.join(
+			h.swarmDir(testDir),
+			'epic-prior',
+			'learning.json',
+		);
+		mkdirSync(path.dirname(priorPath), { recursive: true });
+		writeFileSync(
+			priorPath,
+			JSON.stringify({
+				schema: 'epic-learning-v1',
+				updatedAt: '2026-01-01T00:00:00.000Z',
+				importedFrom: null,
+				mergedEpics: [],
+				files: [{ path: 'src/hot.ts', alpha: 10, beta: 0 }],
+				edges: [],
+			}),
+		);
+		writeFileSync(
+			path.join(h.swarmDir(testDir), 'epic', 'posterior.json'),
+			'{}',
+		);
+		// Frozen clock: the age decay applied at the merge is deterministic.
+		const restoreClock = freezeClock({
+			isoNow: '2026-01-02T00:00:00.000Z',
+			fixedNow: Date.parse('2026-01-02T00:00:00.000Z'),
+		});
+		try {
+			const output = await h.handleCloseCommand(testDir, []);
+			expect(output).toContain('Project prior kept');
+			const prior = JSON.parse(readFileSync(priorPath, 'utf-8'));
+			expect(prior.mergedEpics).toHaveLength(1);
+			expect(prior.mergedEpics[0]).toStartWith(epic.epicKey);
+			expect(prior.files[0].path).toBe('src/hot.ts');
+			// The abandoned epic learned nothing: no per-epic decay (and the
+			// prior keeps its own write time for the age decay).
+			expect(prior.files[0].alpha).toBe(10);
+			expect(prior.updatedAt).toBe('2026-01-01T00:00:00.000Z');
+			expect(
+				existsSync(path.join(h.swarmDir(testDir), 'epic', 'posterior.json')),
+			).toBe(false);
+		} finally {
+			restoreClock();
 			closeAllProjectDbs();
 		}
 	});

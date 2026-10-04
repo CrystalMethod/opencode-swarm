@@ -1,13 +1,15 @@
 /**
  * Epic v2 C5 — the sizing dry-run (`computeEpicSizing`, `/swarm epic
  * start`) runs the component planner with the SAME planning signals as
- * `epic_next_wave` (`loadEpicPlanningSignals`): hot modules, co-change and
- * the density threshold all change the serial step count L.
+ * `epic_next_wave` (`loadEpicPlanningSignals`): learned hot files and
+ * co-writes, co-change and the density threshold all change the serial
+ * step count L.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import type { PluginConfig } from '../../../../src/config/schema';
 import type { CoChangeEntry } from '../../../../src/tools/co-change-analyzer';
-import type { CalibrationState } from '../../../../src/turbo/epic/calibration';
+import { emptyEpicLearning } from '../../../../src/turbo/epic/learning';
+import type { EpicLearningView } from '../../../../src/turbo/epic/learning-store';
 import {
 	type EpicPlanningSignals,
 	loadEpicPlanningSignals,
@@ -25,7 +27,8 @@ afterEach(() => {
 });
 
 const NO_SIGNALS: EpicPlanningSignals = {
-	hotModules: [],
+	hotFiles: [],
+	coWrites: null,
 	cochange: null,
 	densityThreshold: 0.3,
 };
@@ -97,13 +100,22 @@ describe('computeEpicSizing — component planner dry-run', () => {
 		expect(verdict.reasons).toContain('insufficient-parallelism');
 	});
 
-	test('hot modules make tasks exclusive (one step each)', () => {
+	test('hot files make tasks exclusive (one step each)', () => {
 		expect(
 			sizing([SIX], {
 				...NO_SIGNALS,
-				hotModules: ['src/t1_1.ts', 'src/t1_2.ts'],
+				hotFiles: ['src/t1_1.ts', 'src/t1_2.ts'],
 			}).serialSteps,
 		).toBe(3);
+	});
+
+	test('learned co-writes add conflict edges (expanded scopes)', () => {
+		// 1.1 was learned to co-write 1.2's file: they conflict (a 2-task
+		// component of density 1 ⇒ serial), so at width 6 the six otherwise
+		// disjoint tasks need 2 steps instead of 1.
+		const coWrites = new Map([['src/t1_1.ts', new Map([['src/t1_2.ts', 1]])]]);
+		expect(sizing([SIX], { ...NO_SIGNALS, coWrites }, 6).serialSteps).toBe(2);
+		expect(sizing([SIX], NO_SIGNALS, 6).serialSteps).toBe(1);
 	});
 
 	test('the density threshold decides serial components', () => {
@@ -139,64 +151,101 @@ describe('computeEpicSizing — component planner dry-run', () => {
 });
 
 describe('loadEpicPlanningSignals', () => {
-	const calibration = (): CalibrationState => ({
-		version: 1,
-		updatedAt: '2026-01-01T00:00:00.000Z',
-		hotModuleAdditions: ['src/hot.ts'],
-		consecutiveCleanCount: 0,
-		processedRecords: 1,
-	});
+	const learned = (): EpicLearningView => {
+		const stats = emptyEpicLearning();
+		stats.files.set('src/hot.ts', { alpha: 2, beta: 0 });
+		stats.files.set('src/cold.ts', { alpha: 0, beta: 9 });
+		stats.edges.set('src/a.ts', new Map([['src/b.ts', 1]]));
+		return { source: 'prior', stats };
+	};
+	const calls: Array<{ epic: unknown; now: number }> = [];
 	const sources = {
-		loadCalibrationState: calibration,
+		loadLearningView: (
+			_directory: string,
+			epic: unknown,
+			_settings: unknown,
+			now: number,
+		) => {
+			calls.push({ epic, now });
+			return learned();
+		},
 		getCoChangeData: async () => ({
 			pairs: [entry('src/a.ts', 'src/b.ts')],
 			commitsObserved: 30,
 		}),
+		now: () => 1234,
 	};
 
-	test('defaults: hot modules on, co-change off, threshold 0.3', async () => {
-		expect(await loadEpicPlanningSignals('/p', {}, sources)).toEqual({
-			hotModules: ['src/hot.ts'],
-			cochange: null,
-			densityThreshold: 0.3,
-		});
+	test('defaults: learning on (hot files + co-writes), co-change off, threshold 0.3', async () => {
+		calls.length = 0;
+		const epic = { epicKey: 'k', token: 't' };
+		const signals = await loadEpicPlanningSignals('/p', {}, sources, epic);
+		expect(signals.hotFiles).toEqual(['src/hot.ts']);
+		expect(signals.coWrites?.get('src/a.ts')?.get('src/b.ts')).toBe(1);
+		expect(signals.cochange).toBeNull();
+		expect(signals.densityThreshold).toBe(0.3);
+		// The open epic's identity and the injected clock reach the source.
+		expect(calls).toEqual([{ epic, now: 1234 }]);
 	});
 
-	test('config: co-change on with its thresholds, calibration off, threshold', async () => {
+	test('config: co-change on with its thresholds, learning off, threshold', async () => {
+		calls.length = 0;
 		const config = {
 			turbo: {
 				strategy: 'standard',
 				epic: {
 					mode: { enabled: true, activation_threshold: 0.6 },
 					cochange: { enabled: true, threshold: 0.7, min_co_changes: 4 },
-					calibration: { enabled: false },
+					learning: { enabled: false },
 				},
 			},
 		} as unknown as PluginConfig;
-		expect(await loadEpicPlanningSignals('/p', config, sources)).toEqual({
-			hotModules: [],
+		expect(await loadEpicPlanningSignals('/p', config, sources, null)).toEqual({
+			hotFiles: [],
+			coWrites: null,
 			cochange: {
 				pairs: [entry('src/a.ts', 'src/b.ts')],
 				threshold: { npmi: 0.7, minCoChanges: 4 },
 			},
 			densityThreshold: 0.6,
 		});
+		// Learning off ⇒ the learning source is never read.
+		expect(calls).toEqual([]);
+	});
+
+	test('hot_excess decides which files are hot', async () => {
+		const config = {
+			turbo: {
+				strategy: 'standard',
+				epic: { learning: { hot_excess: 0.9 } },
+			},
+		} as unknown as PluginConfig;
+		expect(
+			(await loadEpicPlanningSignals('/p', config, sources, null)).hotFiles,
+		).toEqual([]);
 	});
 
 	test('a failed source degrades to no signal', async () => {
 		const config = {
 			turbo: { strategy: 'standard', epic: { cochange: { enabled: true } } },
 		} as unknown as PluginConfig;
-		const signals = await loadEpicPlanningSignals('/p', config, {
-			loadCalibrationState: () => {
-				throw new Error('unreadable');
+		const signals = await loadEpicPlanningSignals(
+			'/p',
+			config,
+			{
+				loadLearningView: () => {
+					throw new Error('unreadable');
+				},
+				getCoChangeData: async () => {
+					throw new Error('git failed');
+				},
+				now: () => 0,
 			},
-			getCoChangeData: async () => {
-				throw new Error('git failed');
-			},
-		});
+			null,
+		);
 		expect(signals).toEqual({
-			hotModules: [],
+			hotFiles: [],
+			coWrites: null,
 			cochange: null,
 			densityThreshold: 0.3,
 		});

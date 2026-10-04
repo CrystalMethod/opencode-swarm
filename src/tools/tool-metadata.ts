@@ -1040,7 +1040,7 @@ export const TOOL_METADATA = {
 	},
 	epic_next_wave: {
 		description:
-			'Epic Mode: the single, idempotent way forward while an epic is open. Closes the active wave once every task is resolved (recording per-task outcomes and declared-vs-actual divergence, feeding calibration), keeps phases in order, and issues the next wave of disjoint tasks with dispatch instructions. Returns a status: dispatch | declare-scopes | in-progress | blocked | phase-ready-for-review | epic-complete | refused. Requires `turbo.epic.mode.enabled: true` and an epic opened by `/swarm epic start`.',
+			'Epic Mode: the single, idempotent way forward while an epic is open. Closes the active wave once every task is resolved (recording per-task outcomes and declared-vs-actual divergence, which Epic learning uses to plan later waves), keeps phases in order, and issues the next wave of disjoint tasks with dispatch instructions. Returns a status: dispatch | declare-scopes | in-progress | blocked | phase-ready-for-review | epic-complete | refused. Requires `turbo.epic.mode.enabled: true` and an epic opened by `/swarm epic start`.',
 		agents: [],
 	},
 	epic_phase_review: {
