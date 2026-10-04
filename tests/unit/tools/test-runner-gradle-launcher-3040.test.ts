@@ -200,4 +200,26 @@ describe('#3040: win32 gradlew.bat routes through the contained launcher', () =>
 			Object.defineProperty(process, 'platform', { value: realPlatform });
 		}
 	});
+
+	test('win32 with only a POSIX-named gradlew (no .bat) keeps the pre-fix ./gradlew fallthrough', () => {
+		// Pins the PRR-004-reviewed case: the historical chain also applies on
+		// win32 when gradlew.bat is absent — deliberate pre-#3040 behavior
+		// preservation, previously unpinned.
+		Object.defineProperty(process, 'platform', { value: 'win32' });
+		try {
+			const noBatDir = path.join(tempDir, 'win-no-bat');
+			fs.mkdirSync(noBatDir, { recursive: true });
+			fs.writeFileSync(path.join(noBatDir, 'build.gradle'), 'plugins {}\n');
+			fs.writeFileSync(path.join(noBatDir, 'gradlew'), '#!/bin/sh\n');
+
+			const cmd = defaultBuildTestCommand(javaProfile, 'gradle', [], noBatDir, {
+				scope: 'all',
+			});
+
+			expect(cmd![0]).toBe('./gradlew');
+			expect(isCmdExeLauncher(cmd!)).toBe(false);
+		} finally {
+			Object.defineProperty(process, 'platform', { value: realPlatform });
+		}
+	});
 });

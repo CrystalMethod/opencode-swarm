@@ -32,9 +32,12 @@ guard and the three scope branches (no `TypeError`, correct structured error, no
 spawn) for a nested-Maven project and for a Bun project, on both the default
 dispatch path and `SWARM_LANG_BACKEND=legacy` for the Bun project.
 
-### Known caveat
+### Former caveat, since fixed
 
-When `targets` is given without `files`, the structured error still reads
-"Provided files contain…", which is misleading since no files were provided.
-Whether `targets` should bypass the `files` requirement in `convention` scope is
-an open design question, not addressed here (tracked in #3041).
+When `targets` was given without `files`, the structured error still read
+"Provided files contain…", which was misleading since no files were provided.
+That was fixed later in this same release cycle: targets-only calls in the
+`convention`, `graph`, and `impact` scopes are now rejected up front by the
+scope guard with one accurate message (see the test_runner
+spawn-classification and targets-only rejection note in this release;
+#3041).

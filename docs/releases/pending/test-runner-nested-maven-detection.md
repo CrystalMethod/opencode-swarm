@@ -88,12 +88,13 @@ is passed through either way.
   length` error and does not fall back to `mvn`. Long `-Dtest` lists for Windows
   projects with a wrapper can therefore hit the 500-character limit sooner than
   plain `mvn` would, and the run then errors instead of falling back.
-- `test_runner`'s Gradle wrapper (`gradlew.bat`) command on Windows is unchanged
-  by this release and still has the bare-name spawn problem the Maven wrapper had
-  (tracked in #3040).
-- A failed spawn (for example a wrapper that cannot be launched) is still
-  reported by `test_runner` as a test regression, because spawn errors are not
-  yet classified separately from test failures (pre-existing, tracked in #3039).
+- `test_runner`'s Gradle wrapper (`gradlew.bat`) command on Windows had the same
+  bare-name spawn problem the Maven wrapper had, and a failed spawn was still
+  reported as a test regression. Both were fixed later in this same release
+  cycle — the Gradle wrapper now uses the same contained Windows launcher as
+  Maven, and spawn failures are classified as launch errors rather than test
+  regressions (see the test_runner spawn-classification and targets-only
+  rejection note in this release; #3039, #3040).
 
 Detection remains bounded — no recursive or unbounded scans (AGENTS.md
 invariant 1).

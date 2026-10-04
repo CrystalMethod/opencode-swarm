@@ -3434,9 +3434,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		// provided, the pre-existing class-based structured error
 		// ('maven does not support targeted test-file execution') is intentionally
 		// retained unchanged — deriving -Dtest class names from file paths is out of
-		// scope. A file-less run needs scope:'all' (convention/graph/impact without
-		// files or targets are rejected by the guard above); scope:'all' with no
-		// files uses the one-level nested module probe to pick the module dir.
+		// scope. A file-less run needs scope:'all' (convention/graph/impact
+		// without files are rejected by the guard above — targets cannot
+		// substitute); scope:'all' with no files uses the one-level nested
+		// module probe to pick the module dir.
 		if (scope !== 'target' && framework === 'maven') {
 			const mavenModuleDir = resolveNestedMavenModuleDir(workingDir, _files);
 			if (mavenModuleDir) {
@@ -3547,7 +3548,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			);
 			selectionSourceFiles = sourceFiles;
 
-			// Guard: If no source files are present (files omitted with targets, or files provided but all non-source), reject
+			// Guard: reject when none of the provided files is a recognized
+			// source file. Files are always present here (the guard above
+			// rejects an empty files array before discovery), so this only
+			// fires when every entry was non-source.
 			if (sourceFiles.length === 0) {
 				const errorResult: TestErrorResult = {
 					success: false,

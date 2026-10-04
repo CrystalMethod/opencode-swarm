@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.188.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.7...v7.188.8) (2026-10-03)
+
+
+### Bug Fixes
+
+* **knowledge:** authorize dispatched-child knowledge_receipt filing via dispatch lineage ([7ef36ea](https://github.com/ZaxbyHub/opencode-swarm/commit/7ef36ea9ed22ebba6d9c289b067497e0be7deeb4))
+* **knowledge:** close swarm-pr-review findings on [#3036](https://github.com/ZaxbyHub/opencode-swarm/issues/3036) — lineage sweep clear, sanitization, test pins ([a6794d5](https://github.com/ZaxbyHub/opencode-swarm/commit/a6794d5777aaa1e7cac31f2389a9e219c1314205))
+
 ## [7.188.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.6...v7.188.7) (2026-10-03)
 
 

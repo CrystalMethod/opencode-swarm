@@ -118,6 +118,7 @@ import {
 	markStageBRouteRequired,
 	recordStageBCompletion,
 	reserveStageBRouteEvidence,
+	setDispatchParent,
 	swarmState,
 	updateTaskWorkflowCache,
 } from '../state';
@@ -3500,22 +3501,27 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
  * recoveries — recover_stage_a_task / stage-a-repair from idle, or a
  * mechanical Stage A write landing on another session's map — whose views
  * are absent, rework_required, or rank below the durable eligible state.
- * NOT covered: recovery from a BLOCKED in-memory view (recover_stage_a_task
- * / stage-a-repair also accept blocked starts) — blocked is at-or-above and
- * this guard refuses to overwrite it, so that shape still needs a fresh
- * session; a writer-side refresh is tracked as a follow-up issue. A stale
- * view is repairable when it is absent, rework_required (WORKFLOW_STATE_RANK
- * is a plan-vs-evidence PRECEDENCE order, not a workflow progress order —
- * rework_required ranks ABOVE the Stage B eligible states even though
- * rework_required -> pre_check_passed is forward progress), or ranks below
- * the durable eligible state (idle / coder_delegated always, and
- * pre_check_passed when the durable state is reviewer_run). An at-or-above
- * view (tests_run / blocked / closed / complete) is never overwritten:
- * completion permissively admits only tests_run / complete (blocked and
- * closed are terminal), a tests_run-ahead view needs its missing non-Stage
- * B gate rather than a reviewer/test_engineer re-run, and a blocked view
- * over eligible durable evidence is the uncovered blocked-start recovery
- * above.
+ * Recovery from a BLOCKED in-memory view (recover_stage_a_task /
+ * stage-a-repair also accept blocked starts) is covered WRITER-SIDE by issue
+ * #3043: both writers refresh the recovering/invoking session's view in
+ * the same call (see workflow/session-view.ts; the /swarm recover
+ * skip-outcome branch verifies durable via one bounded re-read), so this
+ * consumer-side guard
+ * keeps refusing to overwrite it — an at-or-above view in a session that did
+ * NOT run the recovery (cross-session divergence) is still never repaired
+ * here and needs a fresh session or a re-run of the recovery in that
+ * session. A stale view is repairable when it is absent, rework_required
+ * (WORKFLOW_STATE_RANK is a plan-vs-evidence PRECEDENCE order, not a
+ * workflow progress order — rework_required ranks ABOVE the Stage B
+ * eligible states even though rework_required -> pre_check_passed is
+ * forward progress), or ranks below the durable eligible state (idle /
+ * coder_delegated always, and pre_check_passed when the durable state is
+ * reviewer_run). An at-or-above view (tests_run / blocked / closed /
+ * complete) is never overwritten: completion permissively admits only
+ * tests_run / complete (blocked and closed are terminal), a tests_run-ahead
+ * view needs its missing non-Stage B gate rather than a reviewer/
+ * test_engineer re-run, and a blocked view over eligible durable evidence
+ * without a writer-side refresh is the cross-session residual above.
  */
 function isRepairableStageBView(
 	existingView: TaskWorkflowState | undefined,
@@ -3868,6 +3874,13 @@ export function createDelegationGateHook(
 		parentSessionID: string;
 		childSessionID: string;
 	}): Promise<void> => {
+		// Issue #3036: record the host-observed dispatch pair BEFORE any early
+		// return below — reviewer/test-engineer children return at the
+		// SCOPE_NOT_DECLARED guard and never reach ensureAgentSession, yet their
+		// knowledge_receipt filings still need the lineage to authorize against
+		// the architect-stamped membership. The parent id here is the host's
+		// `part.sessionID`, never tool-controlled metadata.
+		setDispatchParent(input.childSessionID, input.parentSessionID);
 		const bindRouteChildSession = (): void => {
 			const routeBindings = stageBRouteSlotByCallID.get(input.callID);
 			if (!routeBindings) return;

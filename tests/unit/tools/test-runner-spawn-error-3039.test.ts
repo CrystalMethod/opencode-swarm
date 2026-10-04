@@ -34,12 +34,20 @@ function streamOf(text: string): ReadableStream<Uint8Array> {
 /** Fake proc carrying a spawn-creation failure (the contract shape). */
 function makeSpawnErrorProc(
 	reason: string,
-	over: Partial<{ exitCode: number | null; stderrText: string }> = {},
+	over: Partial<{
+		exitCode: number | null;
+		stderrText: string;
+		stdoutText: string;
+	}> = {},
 ): ReturnType<typeof _internals.bunSpawn> {
 	return {
-		stdout: streamOf(''),
+		stdout: streamOf(over.stdoutText ?? ''),
 		stderr: streamOf(over.stderrText ?? ''),
-		exited: Promise.resolve(1),
+		// `runTests` reads the exit code from `exited` (not the `exitCode`
+		// property), so both fields must honor the override — otherwise the
+		// contract-violating-proc test (spawnError AND exit 0) is vacuous
+		// (PRR/PR-review-#2 F-001).
+		exited: Promise.resolve(over.exitCode === 0 ? 0 : 1),
 		exitCode: over.exitCode ?? 1,
 		spawnError: new Error(reason),
 		kill: () => {},
@@ -105,6 +113,10 @@ describe('#3039: launch failures classify as error, not regression', () => {
 			expect(result.error).toContain(
 				'Executable not found in $PATH: "definitely-missing-runner-3039"',
 			);
+			// The message carries the user-facing "launch failure, not a test
+			// regression" guidance (PRR-006).
+			expect(result.message).toContain('could not be started');
+			expect(result.message).toContain('not a test regression');
 		});
 	}
 
