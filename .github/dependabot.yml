@@ -1,6 +1,8 @@
 version: 2
 updates:
-  - package-ecosystem: npm
+  # This project is managed by Bun (bun.lock, no package-lock.json). The `npm`
+  # ecosystem cannot update a bun.lockfile, so use the `bun` ecosystem here.
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: weekly
@@ -11,7 +13,7 @@ updates:
       dev-dependencies:
         dependency-type: development
 
-  - package-ecosystem: github-actions
+  - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: weekly

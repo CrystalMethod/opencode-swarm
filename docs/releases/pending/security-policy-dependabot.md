@@ -9,11 +9,14 @@ Adds the two repository-hygiene files the project was missing:
   for this plugin's actual trust position: it runs inside another agent host,
   writes to your project, and spawns subprocesses, so the relevant classes are
   write-scope escape, command execution, secret exposure, untrusted external
-  skill/content ingestion, and plugin load-path compromise. It points at the
-  actual implementation files for each so a reporter can self-scope.
-- **`.github/dependabot.yml`** — weekly updates for `npm` (root, dev
+  skill/content ingestion, and plugin load-path compromise. Each class points at
+  the implementing file(s) so a reporter can self-scope.
+- **`.github/dependabot.yml`** — weekly updates for `bun` (root, dev
   dependencies grouped into a single PR) and `github-actions`, so pinned action
-  SHAs and runtime dependencies are tracked automatically.
+  SHAs and runtime dependencies are tracked automatically. The `bun` ecosystem
+  is used rather than `npm` because this project is Bun-managed (`bun.lock`, no
+  `package-lock.json`); the `npm` ecosystem cannot update a `bun.lock`, and CI
+  runs `bun install --frozen-lockfile`, so an npm-ecosystem update would fail.
 
 ## Why
 
