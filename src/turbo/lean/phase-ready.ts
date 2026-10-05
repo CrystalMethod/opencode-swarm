@@ -9,6 +9,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { DEFAULT_LEAN_TURBO_CONFIG } from '../../config/constants';
 import { listActiveLocks } from '../../parallel/file-locks';
 import { listLaneEvidence } from './evidence';
 import type {
@@ -32,20 +33,19 @@ export interface LeanTurboPhaseReadyConfig {
 /**
  * Default configuration for phase readiness checks.
  *
- * NOTE (Issue #7 - integrated_diff_required Default Safety Gap):
- * Currently defaults to `false` for backward compatibility with existing projects.
- * For NEW projects and safety-critical lanes, it is recommended to:
- * - Set integrated_diff_required: true explicitly in caller configurations, or
- * - Implement project-level default configuration to enforce this safety check
- *
- * Integrated diff validation ensures that parallel lane changes integrate cleanly
- * back to the primary branch. Setting to true requires diff evidence before phase advance.
+ * Defaults are projected from DEFAULT_LEAN_TURBO_CONFIG (src/config/constants.ts)
+ * — the single source of truth for Lean Turbo defaults (v7.4.x config-drift
+ * directive). Exported (frozen) so the defaults pin test can assert
+ * schema == constants == local
+ * (tests/unit/turbo/lean/phase-ready-defaults.test.ts).
  */
-const DEFAULT_CONFIG: Required<LeanTurboPhaseReadyConfig> = {
-	phase_reviewer: true,
-	phase_critic: true,
-	integrated_diff_required: false,
-};
+export const DEFAULT_CONFIG: Readonly<Required<LeanTurboPhaseReadyConfig>> =
+	Object.freeze({
+		phase_reviewer: DEFAULT_LEAN_TURBO_CONFIG.phase_reviewer,
+		phase_critic: DEFAULT_LEAN_TURBO_CONFIG.phase_critic,
+		integrated_diff_required:
+			DEFAULT_LEAN_TURBO_CONFIG.integrated_diff_required,
+	});
 
 /**
  * Result of the Lean Turbo phase readiness check.
@@ -336,10 +336,14 @@ function validateDegradedTasksArray(
  * - New: verifyLeanTurboPhaseReady(dir, phase, sessionID?, config?)
  * - Legacy: verifyLeanTurboPhaseReady(dir, phase, config?) — config was previously the 3rd param
  *
+ * The two conventions are mutually exclusive: when sessionIDOrConfig is a
+ * config object, any fourth-argument config is ignored.
+ *
  * @param directory - Project root directory
  * @param phase     - Phase number to verify readiness for
  * @param sessionIDOrConfig - Optional session ID (string) OR config object (legacy 3rd-param style)
- * @param config    - Optional config; defaults to { phase_reviewer: true, phase_critic: true, integrated_diff_required: true }
+ * @param config    - Optional config; defaults are projected from DEFAULT_LEAN_TURBO_CONFIG
+ *   (src/config/constants.ts); an omitted or undefined field falls back to the projected default.
  */
 export function verifyLeanTurboPhaseReady(
 	directory: string,
@@ -355,9 +359,16 @@ export function verifyLeanTurboPhaseReady(
 			? sessionIDOrConfig
 			: (config ?? DEFAULT_CONFIG);
 
+	// Field-wise fallback (not a bare spread): an explicitly-undefined field in
+	// a caller-supplied config must fall back to the projected default instead
+	// of silently disabling the gate it controls.
 	const mergedConfig: Required<LeanTurboPhaseReadyConfig> = {
-		...DEFAULT_CONFIG,
-		...actualConfig,
+		phase_reviewer:
+			actualConfig.phase_reviewer ?? DEFAULT_CONFIG.phase_reviewer,
+		phase_critic: actualConfig.phase_critic ?? DEFAULT_CONFIG.phase_critic,
+		integrated_diff_required:
+			actualConfig.integrated_diff_required ??
+			DEFAULT_CONFIG.integrated_diff_required,
 	};
 
 	// ── 1. Read turbo-state.json via readPersisted ─────────────────────────────

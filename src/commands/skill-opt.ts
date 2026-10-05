@@ -15,6 +15,7 @@
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
+import { loadPluginConfigWithMeta } from '../config/loader.js';
 import {
 	DEFAULT_SKILL_OPT_CONFIG,
 	type SkillOptConfig,
@@ -64,20 +65,6 @@ function validateIds(
 	return null;
 }
 
-/** Resolve the skill_opt config from raw plugin config, fail-open to defaults. */
-export function resolveSkillOptConfig(input: unknown): SkillOptConfig {
-	if (
-		input === undefined ||
-		input === null ||
-		typeof input !== 'object' ||
-		Array.isArray(input)
-	) {
-		return { ...DEFAULT_SKILL_OPT_CONFIG };
-	}
-	const cfg = input as Partial<SkillOptConfig>;
-	return { ...DEFAULT_SKILL_OPT_CONFIG, ...cfg };
-}
-
 interface ParsedArgs {
 	json: boolean;
 	confirm: boolean;
@@ -123,18 +110,24 @@ function emit(result: unknown, json: boolean): string {
 	return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
 }
 
-function readSkillOptConfigFromProject(directory: string): SkillOptConfig {
-	// The config is normally injected via plugin load; for the CLI path we read
-	// opencode.json's skill_opt block best-effort. Command-context callers pass
-	// the resolved config through the handler signature.
+function readSkillOptConfigFromProject(directory: string): {
+	config: SkillOptConfig;
+	blockPresent: boolean;
+} {
+	// Fallback for dispatch without an injected runtime config (standalone CLI
+	// invocation): opencode-swarm.json (project + user, deep-merged) is the
+	// only config surface for this family (issue #2949); opencode.json is
+	// never read. Command-context callers pass the resolved config through
+	// the handler signature. The loader is fail-open by design; the catch is
+	// defensive.
 	try {
-		const cfgPath = path.join(directory, 'opencode.json');
-		if (!existsSync(cfgPath)) return { ...DEFAULT_SKILL_OPT_CONFIG };
-		const raw = JSON.parse(readFileSync(cfgPath, 'utf8'));
-		const block = (raw?.skill_opt ?? raw?.swarm?.skill_opt) as unknown;
-		return resolveSkillOptConfig(block);
+		const { config: pluginConfig } = loadPluginConfigWithMeta(directory);
+		if (pluginConfig.skill_opt === undefined) {
+			return { config: { ...DEFAULT_SKILL_OPT_CONFIG }, blockPresent: false };
+		}
+		return { config: pluginConfig.skill_opt, blockPresent: true };
 	} catch {
-		return { ...DEFAULT_SKILL_OPT_CONFIG };
+		return { config: { ...DEFAULT_SKILL_OPT_CONFIG }, blockPresent: false };
 	}
 }
 
@@ -153,7 +146,11 @@ export async function handleSkillOptPlan(
 	const parsed = parseSkillOptArgs(args);
 	if (!parsed.skillSlug)
 		return emit({ status: 'error', error: 'missing skill slug' }, parsed.json);
-	const config = runtime.config ?? readSkillOptConfigFromProject(directory);
+	const config = (
+		runtime.config
+			? { config: runtime.config }
+			: readSkillOptConfigFromProject(directory)
+	).config;
 	const models = parsed.models.length > 0 ? parsed.models : ['default'];
 	const result = await runOptimizationRound({
 		directory,
@@ -181,13 +178,16 @@ export async function handleSkillOptRun(
 	const parsed = parseSkillOptArgs(args);
 	if (!parsed.skillSlug)
 		return emit({ status: 'error', error: 'missing skill slug' }, parsed.json);
-	const config = runtime.config ?? readSkillOptConfigFromProject(directory);
-	if (!config.enabled) {
+	const resolved = runtime.config
+		? { config: runtime.config, blockPresent: true }
+		: readSkillOptConfigFromProject(directory);
+	if (!resolved.config.enabled) {
 		return emit(
 			{
 				status: 'disabled',
-				error:
-					'skill_opt.enabled is false — set to true to execute rounds (proposal-only by default)',
+				error: resolved.blockPresent
+					? 'skill_opt.enabled is false — set to true to execute rounds (proposal-only by default)'
+					: 'skill_opt block not found in .opencode/opencode-swarm.json (project) or the user-level config — set skill_opt.enabled: true there to execute rounds',
 			},
 			parsed.json,
 		);
@@ -202,6 +202,7 @@ export async function handleSkillOptRun(
 			parsed.json,
 		);
 	}
+	const config = resolved.config;
 	const models = parsed.models.length > 0 ? parsed.models : ['default'];
 	// Materialize the skill-eval task set into a fresh inputRoot. The evaluation
 	// substrate resolves ALL task paths (instruction, environment, scorer argv)

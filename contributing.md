@@ -334,7 +334,7 @@ All tests use `bun:test`. Do not use Jest, Vitest, or any other framework. See `
 
 ### Test file size limits
 
-- **Maximum 500 lines per test file** (FR-006 SC-006.1), enforced by `scripts/check-test-file-cap.ts` as a diff-scoped ratchet (new over-cap files and grown over-cap files fail CI; pre-existing violators are non-blocking). Escape hatch: `TEST_CAP_ENFORCE=0` soft-warns. Verify locally on any platform — Windows PowerShell included — with `bun run check:test-file-cap` (fetch `origin/main` first; the check is diff-scoped and reads committed changes).
+- **Maximum 500 lines per test file** (FR-006 SC-006.1), enforced by `scripts/check-test-file-cap.ts` as a diff-scoped ratchet (new over-cap files and grown over-cap files fail CI; pre-existing violators are non-blocking). Escape hatch: `TEST_CAP_ENFORCE=0` soft-warns. The config-consumption ratchet (`scripts/check-config-consumption.ts`, issue #2904) has the same escape hatch: `CONFIG_CONSUMPTION_ENFORCE=0` soft-warns for a deliberate declaration-growth PR. Verify locally on any platform — Windows PowerShell included — with `bun run check:test-file-cap` (fetch `origin/main` first; the check is diff-scoped and reads committed changes).
 - `delegation-gate.test.ts` was the monolith — 2835 lines split into 45 focused files, each under 500 lines
 - When a test file exceeds 500 lines, split it by behavior/feature into focused files
 - SME tests (FR-008) use parameterization to keep files lean while maximizing coverage
@@ -351,7 +351,7 @@ If your code change alters the behavior of an existing function (new error messa
 
 ### Opt-in tool maps
 
-Some tools are gated behind feature flags and use **opt-in tool maps** (e.g., `MEMORY_AGENT_TOOL_MAP` when `memory.enabled === true`, `EXTERNAL_SKILL_AGENT_TOOL_MAP` when `external_skills.curation_enabled === true`). These tools must still be fully registered (export, `TOOL_NAMES`, `tool-metadata`, manifest entry), but are merged into agent configs conditionally at build time. See AGENTS.md invariant #11 (Tool registration + agent-map coherence) for the complete checklist.
+Some tools are gated behind feature flags and use **opt-in tool maps** (e.g., `MEMORY_AGENT_TOOL_MAP` when `memory.enabled === true`, `EXTERNAL_SKILL_AGENT_TOOL_MAP` when `external_skills.curation_enabled === true`, `EPIC_AGENT_TOOL_MAP` — architect-only `epic_next_wave` / `epic_phase_review` — when `epic.mode.enabled === true`). These tools must still be fully registered (export, `TOOL_NAMES`, `tool-metadata`, manifest entry), but are merged into agent configs conditionally at build time. See AGENTS.md invariant #11 (Tool registration + agent-map coherence) for the complete checklist.
 
 ### Adding adversarial tests
 
