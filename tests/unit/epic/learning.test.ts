@@ -30,6 +30,7 @@ import {
 	clearRetentionCapOverrides,
 	setRetentionCapOverrides,
 } from '../../../src/retention/caps';
+import { normalizePath } from '../../../src/utils/path';
 
 const HOT_EXCESS = 0.25;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -120,7 +121,11 @@ describe('increments from outcomes', () => {
 		expect(stats.files.has('src')).toBe(false);
 		expect(stats.files.has('lib/util')).toBe(false);
 		expect(stats.files.get('lib/util/x.ts')).toEqual({ alpha: 1.5, beta: 1 });
-		expect(stats.files.get('README')).toEqual({ alpha: 1.5, beta: 1 });
+		// Keys are `normalizePath`d, which case-folds on win32.
+		expect(stats.files.get(normalizePath('README'))).toEqual({
+			alpha: 1.5,
+			beta: 1,
+		});
 		// Co-writes are still learned from every declared entry.
 		expect(edgeWeights(stats)['src->docs/n.md']).toBe(1);
 		expect(epicHotFiles(stats, HOT_EXCESS)).not.toContain('src');

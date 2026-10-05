@@ -41,6 +41,7 @@ import { projectDbExists } from '../db/project-db.js';
 import { _internals as gitBranchInternals } from '../git/branch.js';
 import { loadPlanJsonOnly } from '../plan/manager.js';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write.js';
+import { listCoderSettlementWalStates } from '../workflow/coder-settlement.js';
 import { type EpicConfigSource, resolveEpicConfig } from './config.js';
 import { isEpicModeConfigEnabled } from './config-gate.js';
 import {
@@ -174,6 +175,10 @@ export interface EpicCloseReport {
 	learning: (EpicPriorMergeResult & { priorPath: string }) | null;
 }
 
+/** Mirrors `UNSETTLED_WAL_STATES` in `src/epic/start.ts`: a settlement in one of
+ * these states has not reached a terminal outcome yet. */
+const UNSETTLED_WAL_STATES = new Set(['DISPATCHED', 'PREPARED', 'unreadable']);
+
 export type EpicCloseResult =
 	| { status: 'no-epic'; repairedSentinel: boolean }
 	| {
@@ -182,6 +187,7 @@ export type EpicCloseResult =
 				| 'epic-incomplete'
 				| 'epic-orphaned'
 				| 'epic-state-unreadable'
+				| 'coders-live'
 				| 'dirty-worktree'
 				| 'epic-branch-missing'
 				| 'original-branch-missing'
@@ -378,6 +384,38 @@ export async function closeEpic(
 				details: [
 					`${tasks.pending.length} task(s) are not completed or closed: ${tasks.pending.slice(0, 10).join(', ')}${tasks.pending.length > 10 ? ', …' : ''}.`,
 					'Finish them (or set them to `closed`), or run `/swarm epic close --abandon`.',
+				],
+			};
+		}
+	}
+
+	// Abandon tears the Epic down: it steps off the epic branch and deletes the
+	// lifecycle sentinel. A coder that is still running would then settle with
+	// no Epic context (`epicCommitLandingFor` returns undefined) and take the
+	// ordinary merge-back path onto the original branch — landing "abandoned"
+	// work the user never asked to land. Refuse while a coder is still owned by
+	// a live dispatch. This is the close-side twin of the start-side guard in
+	// `src/epic/start.ts`.
+	if (abandon) {
+		const wal = await _internals.listCoderSettlementWalStates(directory);
+		const live = wal.states.filter(
+			(state) =>
+				state.state !== 'unreadable' &&
+				UNSETTLED_WAL_STATES.has(state.state) &&
+				(state.ownedInProcess || state.ownedByLiveForeignPid),
+		);
+		if (live.length > 0) {
+			return {
+				status: 'refused',
+				reason: 'coders-live',
+				details: [
+					`${live.length} coder settlement(s) are still owned by a running dispatch: ${live
+						.slice(0, 5)
+						.map((state) => `${state.taskId} (${state.state})`)
+						.join(
+							', ',
+						)} — abandoning now would let them land on the original branch as ordinary merge-backs.`,
+					'Let them settle first, then re-run `/swarm epic close --abandon`.',
 				],
 			};
 		}
@@ -707,6 +745,7 @@ export const _internals = {
 	deleteEpicRefs,
 	mergeEpicPosteriorIntoPrior,
 	loadEpicLearningView,
+	listCoderSettlementWalStates,
 	completedBeforeEpic,
 	gitExec: (args: string[], cwd: string): string =>
 		gitBranchInternals.gitExec(args, cwd),

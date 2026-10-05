@@ -15,6 +15,7 @@ import {
 	estimateEpicScopes,
 	sizeEpicPlan,
 } from '../../../src/epic/shaping-sizing';
+import { normalizePath } from '../../../src/utils/path';
 import {
 	applySuggestion,
 	CONTEXT,
@@ -250,8 +251,9 @@ describe('cycle safety and directory entries', () => {
 			),
 		}));
 		const report = shape(makefile, { isDirectory: () => false });
+		// Paths are `normalizePath`d, which case-folds on win32.
 		expect(ofType(report.suggestions, 'extract-prerequisite')?.file).toBe(
-			'Makefile',
+			normalizePath('Makefile'),
 		);
 	});
 });
