@@ -11,8 +11,7 @@ issue: 2948
   `configHadErrors` fail-closed guard and the `full_auto.locked`
   administrative hard-off. On a project whose config was locked or unreadable,
   `on` was correctly refused while `resume` still re-armed the run — defeating
-  the lock exactly where it was supposed to refuse activation, including
-  re-arms issued by the paused agent itself.
+  the lock exactly where it was supposed to refuse activation.
 - The enable path's preflight is now a single shared predicate in
   `src/commands/full-auto.ts` that both activation paths consult: `resume` is
   activation for lock purposes and is refused identically to `on` when the

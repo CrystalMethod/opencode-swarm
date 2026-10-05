@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { canonicalMkdtemp } from '../../tests/helpers/tmpdir.js';
 import { handleFullAutoCommand } from '../commands/full-auto';
 import { _internals as recoveryInternals } from '../full-auto/recovery';
 import {
@@ -350,6 +351,10 @@ describe('handleFullAutoCommand — first-class toggle & locked guard', () => {
 			const runGen = await seedPausedRunWithProbe('2999-01-01T00:00:00.000Z');
 			writeConfig({ full_auto: { locked: true } });
 			const flagBefore = getSession().fullAutoMode;
+			const probeBefore = loadFullAutoRunState(
+				tmpDir,
+				testSessionId,
+			)?.lastRecoveryProbe;
 
 			const result = await handleFullAutoCommand(
 				tmpDir,
@@ -363,14 +368,20 @@ describe('handleFullAutoCommand — first-class toggle & locked guard', () => {
 			expect(after?.runGeneration).toBe(runGen);
 			// A refusal mutates nothing: the legacy flag keeps its pre-call
 			// value (true in the seeded paused state — `on` sets it and no
-			// production pause site clears it).
+			// production pause site clears it), and the recovery probe stays
+			// intact so the fix-config-then-resume loop still works.
 			expect(getSession().fullAutoMode).toBe(flagBefore);
+			expect(after?.lastRecoveryProbe).toEqual(probeBefore);
 		});
 
 		it('refuses resume when the config is unreadable (fail-closed) and leaves the paused run untouched', async () => {
 			const runGen = await seedPausedRunWithProbe('2999-01-01T00:00:00.000Z');
 			writeCorruptConfig();
 			const flagBefore = getSession().fullAutoMode;
+			const probeBefore = loadFullAutoRunState(
+				tmpDir,
+				testSessionId,
+			)?.lastRecoveryProbe;
 
 			const result = await handleFullAutoCommand(
 				tmpDir,
@@ -383,6 +394,7 @@ describe('handleFullAutoCommand — first-class toggle & locked guard', () => {
 			expect(after?.status).toBe('paused');
 			expect(after?.runGeneration).toBe(runGen);
 			expect(getSession().fullAutoMode).toBe(flagBefore);
+			expect(after?.lastRecoveryProbe).toEqual(probeBefore);
 		});
 
 		it('still resumes with a clean config and a valid probe (no over-blocking)', async () => {
@@ -407,9 +419,7 @@ describe('handleFullAutoCommand — first-class toggle & locked guard', () => {
 			// regression-F7 pattern) plus a corrupt project config, so BOTH
 			// refusal predicates fire — configHadErrors must win, same as `on`.
 			await seedPausedRunWithProbe('2999-01-01T00:00:00.000Z');
-			const userConfigHome = fs.mkdtempSync(
-				path.join(os.tmpdir(), 'resume-auth-xdg-'),
-			);
+			const userConfigHome = canonicalMkdtemp('resume-auth-xdg-');
 			const prevXdg = process.env.XDG_CONFIG_HOME;
 			process.env.XDG_CONFIG_HOME = userConfigHome;
 			try {
