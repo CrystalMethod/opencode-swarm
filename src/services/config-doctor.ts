@@ -10,6 +10,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ALL_AGENT_NAMES } from '../config/constants';
+import {
+	CONFIG_CONSUMERS,
+	type ConfigConsumerDeclaration,
+} from '../config/consumers';
 import type { PluginConfig } from '../config/schema';
 import {
 	FALLBACK_MODELS_MAX,
@@ -193,6 +197,68 @@ function emitObjectTypeMismatch(
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Inert config-key advisories (issue #2904), driven by the RAW config files so
+ * they fire ONLY when the user explicitly wrote the key — schema defaults never
+ * produce noise (same contract as the #2102 raw collectors above). The inert set
+ * comes from CONFIG_CONSUMERS (`src/config/consumers.ts`), the single
+ * declaration of consumer truth enforced by `bun run scripts/check-config-consumption.ts`.
+ *
+ * The `consumers` parameter is a default-parameter DI seam (issue #2957): tests
+ * inject declaration states so both arms of `ConfigConsumerDeclaration`
+ * (inert / consumed) are provable on any tree, without `mock.module` — the same
+ * pattern as `collectLeanTurboGateSatisfiabilityFindings`'s
+ * `registeredToolNames` seam below.
+ */
+export function collectRawInertKeyFindings(
+	directory: string,
+	consumers: Readonly<
+		Record<string, ConfigConsumerDeclaration>
+	> = CONFIG_CONSUMERS,
+): ConfigFinding[] {
+	const findings: ConfigFinding[] = [];
+	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
+	// One dedupe set across both files so an inert key present in user AND
+	// project configs is reported once (same convention as the
+	// collectRawValueConstraintFindings collector below).
+	const seen = new Set<string>();
+
+	for (const configPath of [userConfigPath, projectConfigPath]) {
+		if (!fs.existsSync(configPath)) continue;
+		try {
+			const stats = fs.statSync(configPath);
+			if (stats.size > CONFIG_DOCTOR_MAX_CONFIG_FILE_BYTES) continue;
+			const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as unknown;
+			if (!isPlainObject(raw)) continue;
+
+			for (const key of Object.keys(raw)) {
+				if (seen.has(key)) continue;
+				// Own-property read: raw config keys are attacker-controlled
+				// strings, so a prototype-named key must never resolve through
+				// the declaration map's prototype chain.
+				const declaration = Object.hasOwn(consumers, key)
+					? consumers[key]
+					: undefined;
+				if (!declaration || !('inert' in declaration)) continue;
+				seen.add(key);
+				findings.push({
+					id: 'inert-config-key',
+					title: `Inert config key: ${key}`,
+					description: `Config key "${key}" (in ${configPath}) is declared inert: ${declaration.inert}`,
+					severity: 'warn',
+					path: key,
+					currentValue: raw[key],
+					autoFixable: false,
+				});
+			}
+		} catch {
+			// Malformed config files are reported by the strict-section collector;
+			// this advisory never blocks on them.
+		}
+	}
+	return findings;
 }
 
 /**
@@ -2216,6 +2282,7 @@ export function runConfigDoctor(
 	findings.push(...collectRawStrictSectionFindings(directory));
 	findings.push(...collectRawValueConstraintFindings(directory));
 	findings.push(...collectRawAutoReviewCompatibilityFindings(directory));
+	findings.push(...collectRawInertKeyFindings(directory));
 	findings.push(...collectLeanTurboGateSatisfiabilityFindings(config));
 	emitWorktreeIsolationLayeringAdvisory(
 		config,

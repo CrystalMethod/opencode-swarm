@@ -522,6 +522,8 @@ Lean Turbo is configured via `turbo` and `turbo.lean` in `.opencode/opencode-swa
 
 > ⚠️ **Behavior change (FR-107 / SC-121):** `worktree_isolation` now defaults to `true`. Lean Turbo phases provision per-lane worktrees by default. To retain the previous behavior, set `turbo.lean.worktree_isolation: false` explicitly.
 
+> ⚠️ **Behavior change (#2954):** `integrated_diff_required` now defaults to `true` on every path, including projects with no `turbo` config block — a lean phase advance requires the integrated-diff evidence artifact. To retain the previous permissive behavior, set `turbo.lean.integrated_diff_required: false` explicitly in `.opencode/opencode-swarm.json`.
+
 ### Tests
 
 111 tests covering: lane partitioning, conflict detection, parent/child path resolution, global file classification, protected path matching, cycle detection, cross-lane dependencies, scope resolution priority, Windows path normalization, and degradation summaries.
