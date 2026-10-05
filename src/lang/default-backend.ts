@@ -18,6 +18,7 @@ import {
 	tokenizeCommand,
 } from '../build/command-resolution';
 import { isCommandAvailable } from '../build/discovery';
+import { resolveContainedWindowsBatchCommand } from '../utils/windows-batch';
 import type {
 	BuildCommandSelection,
 	BuildTestCommandOpts,
@@ -104,6 +105,111 @@ export async function defaultSelectTestFramework(
  * `opts.scope` defaults to `'all'`; `opts.coverage` defaults to `false`.
  * Returns null when the framework name is not in the supported set.
  */
+/**
+ * Build the Gradle test argv for `dir` (issue #3040). On win32 with a
+ * `gradlew.bat` wrapper, route through the contained cmd.exe launcher
+ * (`resolveContainedWindowsBatchCommand`) — Bun resolves a bare executable
+ * name against PATH only, never the spawn cwd, so a bare `gradlew.bat` can
+ * never start. Falls back to plain `gradle` from PATH when the helper rejects
+ * the wrapper or an argument (including a token ending in a backslash, which
+ * the launcher's quoting would mangle — the same guard `buildMavenTestCommand`
+ * carries). When `gradlew.bat` is absent, the historical chain applies on ANY
+ * platform — `./gradlew` when a `gradlew` file exists (yes, even on win32,
+ * preserving the pre-#3040 behavior), else `gradle`. Shared by
+ * `defaultBuildTestCommand` and the test-runner's legacy
+ * (`SWARM_LANG_BACKEND=legacy`) switch so both routes emit identical argv.
+ */
+export function buildGradleTestCommand(
+	dir: string,
+	targets?: string[],
+): string[] {
+	const args: string[] = ['test'];
+	if (targets && targets.length > 0) {
+		for (const target of targets) {
+			args.push('--tests', target);
+		}
+	}
+	if (process.platform === 'win32') {
+		const hasGradlewBat = fs.existsSync(path.join(dir, 'gradlew.bat'));
+		if (hasGradlewBat) {
+			// The win32 launcher quotes every token inside one cmd.exe command
+			// string, so a token ending in a backslash would turn its closing
+			// quote into `\"` and be mangled; plain `gradle` argv keeps it
+			// intact.
+			if (args.some((arg) => arg.endsWith('\\'))) {
+				return ['gradle', ...args];
+			}
+			return (
+				resolveContainedWindowsBatchCommand(dir, 'gradlew.bat', args) ?? [
+					'gradle',
+					...args,
+				]
+			);
+		}
+	}
+	const hasGradlew = fs.existsSync(path.join(dir, 'gradlew'));
+	return hasGradlew ? ['./gradlew', ...args] : ['gradle', ...args];
+}
+
+/**
+ * Build the argv for a Composer `vendor/bin` tool (`phpunit`, `pest`) for `dir`
+ * (issue #3050).
+ *
+ * On win32 a Composer `.bat` shim must never become a raw spawn target: Node's
+ * `child_process.spawn` rejects a batch file outright (EINVAL), and although
+ * Bun tolerates one, that tolerance is a runtime accident rather than a
+ * contract, so behaviour must not depend on which runtime is hosting the
+ * plugin. Route the wrapper through the contained cmd.exe launcher
+ * (`resolveContainedWindowsBatchCommand`), the same path the Maven (#3021) and
+ * Gradle (#3040) wrappers already take.
+ *
+ * When the launcher declines — no shim present, a symlink escaping `dir`, an
+ * unresolvable `ComSpec`, or an argument carrying a cmd.exe metacharacter — the
+ * fallback runs the PHP interpreter against the extensionless Composer proxy
+ * rather than re-emitting the batch file. Composer writes both, the proxy is
+ * what the `.bat` itself invokes, and the `php-artisan` arm of the very same
+ * switch already hardcodes `php`.
+ *
+ * Non-win32 is unchanged: the historical cwd-relative extensionless proxy.
+ * Shared by `defaultBuildTestCommand`, the test-runner's legacy
+ * (`SWARM_LANG_BACKEND=legacy`) switch, and the PHP backend's
+ * `selectTestFramework`, so all three routes emit identical argv.
+ */
+export function buildPhpVendorCommand(
+	dir: string,
+	name: string,
+	args: string[] = [],
+): string[] {
+	const proxy = path.join('vendor', 'bin', name);
+	if (process.platform !== 'win32') return [proxy, ...args];
+
+	// When neither the `.bat` shim nor the extensionless proxy exists there is
+	// nothing to launch. Emitting the bare proxy makes the spawn fail with a
+	// launch error (`bunSpawn`'s `spawnError`), which the runner reports as
+	// `outcome: 'error'` — "the process could not be started", not "your tests
+	// regressed". Returning `['php', proxy]` instead would let `php` start
+	// successfully and then exit 1 on the missing file, which reads as a
+	// regression with 0/0 tests run. The `.bat` is never re-emitted either way.
+	const interpreterFallback = (): string[] =>
+		fs.existsSync(path.join(dir, proxy))
+			? ['php', proxy, ...args]
+			: [proxy, ...args];
+
+	// The win32 launcher quotes every token inside one cmd.exe command string,
+	// so a token ending in a backslash would turn its closing quote into `\"`
+	// and be mangled. Same guard `buildGradleTestCommand` and
+	// `buildMavenTestCommand` carry; the interpreter fallback is immune to the
+	// launcher quoting, which makes it the right target here.
+	if (args.some((arg) => arg.endsWith('\\'))) return interpreterFallback();
+	return (
+		resolveContainedWindowsBatchCommand(
+			dir,
+			path.join('vendor', 'bin', `${name}.bat`),
+			args,
+		) ?? interpreterFallback()
+	);
+}
+
 export function defaultBuildTestCommand(
 	profile: LanguageProfile,
 	framework: string,
@@ -224,20 +330,12 @@ export function defaultBuildTestCommand(
 			return args;
 		}
 		case 'gradle': {
-			const isWindows = process.platform === 'win32';
-			const hasGradlewBat = fs.existsSync(path.join(dir, 'gradlew.bat'));
-			const hasGradlew = fs.existsSync(path.join(dir, 'gradlew'));
-			const args: string[] = [];
-			if (hasGradlewBat && isWindows) args.push('gradlew.bat');
-			else if (hasGradlew) args.push('./gradlew');
-			else args.push('gradle');
-			args.push('test');
-			if (targets && targets.length > 0) {
-				for (const target of targets) {
-					args.push('--tests', target);
-				}
-			}
-			return args;
+			// gradle has no bail support — silently ignore. Shared with the
+			// test-runner's legacy switch via `buildGradleTestCommand` so both
+			// paths emit identical argv (runnable wrapper first — the
+			// cmd.exe launcher for gradlew.bat on win32, an executable
+			// ./gradlew on POSIX — otherwise gradle).
+			return buildGradleTestCommand(dir, targets);
 		}
 		case 'dotnet-test': {
 			const args: string[] = ['dotnet', 'test'];
@@ -302,14 +400,18 @@ export function defaultBuildTestCommand(
 				'Dir.glob("test/**/*_test.rb").sort.each { |f| require_relative f }',
 			];
 		case 'pest': {
-			const args: string[] = [phpVendorBin('pest')];
-			if (scope !== 'all' && files.length > 0) args.push(...files);
-			return args;
+			return buildPhpVendorCommand(
+				dir,
+				'pest',
+				scope !== 'all' && files.length > 0 ? files : [],
+			);
 		}
 		case 'phpunit': {
-			const args: string[] = [phpVendorBin('phpunit')];
-			if (scope !== 'all' && files.length > 0) args.push(...files);
-			return args;
+			return buildPhpVendorCommand(
+				dir,
+				'phpunit',
+				scope !== 'all' && files.length > 0 ? files : [],
+			);
 		}
 		case 'php-artisan': {
 			const args: string[] = ['php', 'artisan', 'test'];
@@ -355,14 +457,6 @@ export function buildNativeTargetCommand(target: NativeTestTarget): string[] {
 				? target.path
 				: `./${target.path.replace(/\\/g, '/')}`;
 	return ['go', 'test', '-v', '-run', selector, packagePath];
-}
-
-function phpVendorBin(name: string): string {
-	return path.join(
-		'vendor',
-		'bin',
-		process.platform === 'win32' ? `${name}.bat` : name,
-	);
 }
 
 /**

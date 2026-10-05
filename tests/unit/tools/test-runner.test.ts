@@ -510,7 +510,7 @@ describe('test-runner.ts - Security Validation', () => {
 		const parsed = JSON.parse(result);
 		expect(parsed.success).toBe(false);
 		expect(parsed.scope).toBe('convention');
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 		expect(parsed.error).toContain('unsafe full-project discovery');
 	});
 
@@ -519,7 +519,7 @@ describe('test-runner.ts - Security Validation', () => {
 		const parsed = JSON.parse(result);
 		expect(parsed.success).toBe(false);
 		expect(parsed.scope).toBe('graph');
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 		expect(parsed.error).toContain('unsafe full-project discovery');
 	});
 
@@ -531,7 +531,7 @@ describe('test-runner.ts - Security Validation', () => {
 		const parsed = JSON.parse(result);
 		expect(parsed.success).toBe(false);
 		expect(parsed.scope).toBe('convention');
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 	});
 
 	test('rejects graph scope with empty files array', async () => {
@@ -542,7 +542,7 @@ describe('test-runner.ts - Security Validation', () => {
 		const parsed = JSON.parse(result);
 		expect(parsed.success).toBe(false);
 		expect(parsed.scope).toBe('graph');
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 	});
 
 	test('rejects non-source files array for convention scope', async () => {

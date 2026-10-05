@@ -2641,8 +2641,8 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/hooks/knowledge-validator.ts'],
 		writerCitations: [
-			'src/hooks/knowledge-validator.ts:869 quarantineEntry (cap 100, lock, atomic store rewrite + sidecar append) / :788 appendUnactionable (cap 200, Jaccard dedupe) / :1026 restoreEntry / :1178 unarchiveEntry',
-			'rejected + rewrites written via knowledge-store.ts:1010 (cap 20) / :325 (MAX_REWRITE_HISTORY 2000)',
+			'src/hooks/knowledge-validator.ts:881 quarantineEntry (cap 100, lock, atomic store rewrite + sidecar append) / :788 appendUnactionable (cap 200, Jaccard dedupe) / :1045 restoreEntry / :1197 unarchiveEntry',
+			'rejected + rewrites written via knowledge-store.ts:1054 (cap 20) / :369 (MAX_REWRITE_HISTORY 2000)',
 		],
 		readerCitations: ['readKnowledge delegates (knowledge-store.ts:288-353); curator-postmortem reads unactionable ≤1000 (curator-postmortem.ts:43,1213)'],
 		schemaVersion: 'per-list schemas',
@@ -2651,7 +2651,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writeLimits: {
 			bound: 'rejected FIFO 20 (default); quarantined FIFO 100; unactionable FIFO 200 (deduped); rewrites FIFO 2000',
 			scope: 'global',
-			citation: 'src/hooks/knowledge-store.ts:1013,330; src/hooks/knowledge-validator.ts:810,991-999',
+			citation: 'src/hooks/knowledge-store.ts:1057,374; src/hooks/knowledge-validator.ts:810,1009-1017',
 		},
 		readBound: { pattern: 'full-file', bound: '≤ cap per list (20/100/200/2000)', sync: true, citation: 'citations above' },
 		lockModel: 'directory proper-lockfile (retries 5, stale 5000) — same knowledge lock domain',
@@ -2664,7 +2664,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		legacyCompatibility: 'restore/unarchive paths return quarantined/archived entries',
 		healthSignal: 'n/a',
 		owner: 'this-gate',
-		disposition: { kind: 'not-a-defect', proof: 'Every list has a hard FIFO cap (20/100/200/2000) enforced under the knowledge lock (knowledge-store.ts:330,1013; knowledge-validator.ts:810,991-999).' },
+		disposition: { kind: 'not-a-defect', proof: 'Every list has a hard FIFO cap (20/100/200/2000) enforced under the knowledge lock (knowledge-store.ts:1057,374; knowledge-validator.ts:810,1009-1017).' },
 	},
 	{
 		id: 'knowledge-retractions',
@@ -3525,6 +3525,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		readerCitations: [
 			'src/full-auto/state.ts:readPersisted — full-file mtime-cached parser with .bak recovery and unreadable fail-closed marker',
 			'src/full-auto/state.ts:loadFullAutoRunState, isFullAutoRunActive — session readers',
+			'src/full-auto/state.ts:maxPersistedOversightEvidenceSequence — allocation-time catch-up readdir over .swarm/evidence/<numeric-phase> full-auto-N.json names (bounded by phase count; PR #3024 review F3)',
 		],
 		schemaVersion: 'state schema with unreadable fail-closed marker',
 		stateClass: 'authoritative',

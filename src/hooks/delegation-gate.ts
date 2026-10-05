@@ -56,6 +56,7 @@ import {
 	readTaskGateRequirementsReceiptsSync,
 } from '../evidence/task-gate-requirements.js';
 import { isReadOnlyTool } from '../full-auto/policy';
+import { compareTaskWorkflowStateRank } from '../gate-evidence';
 import { isMarkdownOnlyTaskChange } from '../gate-evidence-classification.js';
 import {
 	routeReviewForChanges,
@@ -102,7 +103,7 @@ import {
 	resolveScopeBindingFromDisk,
 } from '../scope/scope-persistence';
 import { formatScopeResolutionDiagnostic } from '../scope/scope-resolution-diagnostic';
-import type { AgentSessionState } from '../state';
+import type { AgentSessionState, TaskWorkflowState } from '../state';
 import {
 	advanceTaskState,
 	ensureAgentSession,
@@ -117,6 +118,7 @@ import {
 	markStageBRouteRequired,
 	recordStageBCompletion,
 	reserveStageBRouteEvidence,
+	setDispatchParent,
 	swarmState,
 	updateTaskWorkflowCache,
 } from '../state';
@@ -3492,6 +3494,47 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
 };
 
 /**
+ * Issue #3032: a Stage B settlement admits tasks by the session's in-memory
+ * workflow view while the dispatch side reads the durable evidence, so a
+ * durable-only writer can wedge every later verdict silently. The COVERED
+ * writers: recover_rework_task (rework_required views) and the idle-start
+ * recoveries — recover_stage_a_task / stage-a-repair from idle, or a
+ * mechanical Stage A write landing on another session's map — whose views
+ * are absent, rework_required, or rank below the durable eligible state.
+ * Recovery from a BLOCKED in-memory view (recover_stage_a_task /
+ * stage-a-repair also accept blocked starts) is covered WRITER-SIDE by issue
+ * #3043: both writers refresh the recovering/invoking session's view in
+ * the same call (see workflow/session-view.ts; the /swarm recover
+ * skip-outcome branch verifies durable via one bounded re-read), so this
+ * consumer-side guard
+ * keeps refusing to overwrite it — an at-or-above view in a session that did
+ * NOT run the recovery (cross-session divergence) is still never repaired
+ * here and needs a fresh session or a re-run of the recovery in that
+ * session. A stale view is repairable when it is absent, rework_required
+ * (WORKFLOW_STATE_RANK is a plan-vs-evidence PRECEDENCE order, not a
+ * workflow progress order — rework_required ranks ABOVE the Stage B
+ * eligible states even though rework_required -> pre_check_passed is
+ * forward progress), or ranks below the durable eligible state (idle /
+ * coder_delegated always, and pre_check_passed when the durable state is
+ * reviewer_run). An at-or-above view (tests_run / blocked / closed /
+ * complete) is never overwritten: completion permissively admits only
+ * tests_run / complete (blocked and closed are terminal), a tests_run-ahead
+ * view needs its missing non-Stage B gate rather than a reviewer/
+ * test_engineer re-run, and a blocked view over eligible durable evidence
+ * without a writer-side refresh is the cross-session residual above.
+ */
+function isRepairableStageBView(
+	existingView: TaskWorkflowState | undefined,
+	durableEligibleState: 'pre_check_passed' | 'reviewer_run',
+): boolean {
+	return (
+		existingView === undefined ||
+		existingView === 'rework_required' ||
+		compareTaskWorkflowStateRank(durableEligibleState, existingView) > 0
+	);
+}
+
+/**
  * Queue the session-visible advisory for one dropped Stage B settlement and
  * record the task on the per-invocation collector so the host-log warning can
  * be aggregated (one stderr line per drop class per settlement invocation —
@@ -3831,6 +3874,13 @@ export function createDelegationGateHook(
 		parentSessionID: string;
 		childSessionID: string;
 	}): Promise<void> => {
+		// Issue #3036: record the host-observed dispatch pair BEFORE any early
+		// return below — reviewer/test-engineer children return at the
+		// SCOPE_NOT_DECLARED guard and never reach ensureAgentSession, yet their
+		// knowledge_receipt filings still need the lineage to authorize against
+		// the architect-stamped membership. The parent id here is the host's
+		// `part.sessionID`, never tool-controlled metadata.
+		setDispatchParent(input.childSessionID, input.parentSessionID);
 		const bindRouteChildSession = (): void => {
 			const routeBindings = stageBRouteSlotByCallID.get(input.callID);
 			if (!routeBindings) return;
@@ -4871,6 +4921,22 @@ export function createDelegationGateHook(
 						workflow.state === 'reviewer_run')
 				) {
 					generations.set(taskId, workflow.generation);
+					// Issue #3032: this dispatch is admitted from the DURABLE
+					// workflow, but the settlement loop filters on the session's
+					// in-memory view. Repair a lagging view here so a durable-only
+					// Stage A writer (recovery tool, or a mechanical write landing
+					// on another session's map) can never wedge this dispatch's
+					// settlement. Never overwrite an at-or-above view — see
+					// isRepairableStageBView.
+					if (
+						isRepairableStageBView(
+							stageBSession.taskWorkflowStates.get(taskId),
+							workflow.state,
+						)
+					) {
+						stageBSession.taskWorkflowStates.set(taskId, workflow.state);
+						updateTaskWorkflowCache(stageBSession, taskId, workflow);
+					}
 					continue;
 				}
 				if (taskId === resolvedTaskId) {
@@ -6454,14 +6520,63 @@ export function createDelegationGateHook(
 										transitionTaskWorkflowEvidence,
 									} = await import('../gate-evidence');
 									for (const [taskId, state] of session.taskWorkflowStates) {
+										if (!attributionResult.verdicts.has(taskId)) continue;
+										let effectiveState = state;
 										if (
 											!(stageBEligibleStates as readonly string[]).includes(
 												state,
 											)
-										)
-											continue;
-										if (!attributionResult.verdicts.has(taskId)) continue;
-										const eligibleState = state as EligibleState;
+										) {
+											// Issue #3032: the in-memory view may lag the durable
+											// evidence when a durable-only writer (recovery tool,
+											// or a mechanical Stage A write landing on another
+											// session's map) advanced the task between dispatch
+											// and settlement. Re-read durable for THIS
+											// verdict-carrying, in-context task only; a genuinely
+											// ineligible durable state still skips (fail-closed),
+											// and an at-or-above in-memory view is never
+											// downgraded (isRepairableStageBView).
+											const dispatchCtxTasks =
+												stageBDispatchContextByCallID.get(
+													input.callID,
+												)?.taskIds;
+											if (dispatchCtxTasks?.has(taskId)) {
+												const durableSnapshot = getTaskWorkflowSnapshot(
+													await readTaskEvidence(directory, taskId),
+												);
+												if (
+													durableSnapshot.authoritative &&
+													(stageBEligibleStates as readonly string[]).includes(
+														durableSnapshot.state,
+													) &&
+													isRepairableStageBView(
+														state,
+														durableSnapshot.state as EligibleState,
+													)
+												) {
+													session.taskWorkflowStates.set(
+														taskId,
+														durableSnapshot.state,
+													);
+													updateTaskWorkflowCache(
+														session,
+														taskId,
+														durableSnapshot,
+													);
+													effectiveState = durableSnapshot.state;
+													logger.log(
+														`[delegation-gate] resynced Stage B settlement view for ${taskId} from durable evidence (in-memory said ${state})`,
+													);
+												}
+											}
+											if (
+												!(stageBEligibleStates as readonly string[]).includes(
+													effectiveState,
+												)
+											)
+												continue;
+										}
+										const eligibleState = effectiveState as EligibleState;
 										let launchGeneration = stageBDispatchGenerationsByCallID
 											.get(input.callID)
 											?.get(taskId);
@@ -6522,7 +6637,7 @@ export function createDelegationGateHook(
 											verdictEntry?.verdict === 'SKIPPED'
 										) {
 											logger.warn(
-												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${state} for test-gate re-dispatch; reviewer proof preserved`,
+												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${effectiveState} for test-gate re-dispatch; reviewer proof preserved`,
 											);
 											continue;
 										}

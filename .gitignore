@@ -79,3 +79,4 @@ events.jsonl
 # graphify exploration output (local, transient)
 graphify-out/
 .zvec-grep/
+.tmp-host-contract-*/

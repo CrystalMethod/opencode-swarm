@@ -25,11 +25,13 @@
  *    this) must only construct candidate sets from ownership-gated,
  *    base-scoped directories.
  */
+import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { validateSwarmPath } from '../hooks/utils';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write';
+import { resolveGitExecutable } from '../utils/git-executable.js';
 import * as logger from '../utils/logger.js';
 
 // validateSwarmPath joins `.swarm/` itself — keep this filename-only.
@@ -70,7 +72,119 @@ export const _internals = {
 	now: (): number => Date.now(),
 	randomBytes,
 	scopeDigest,
+	runGitStatus: runGitStatusSync,
 };
+
+/**
+ * Shared argv for every tracked-dirty measurement (issue #2953): the close
+ * gate and the pre-destruction re-check run the identical status command and
+ * feed the same parser, so the two measurements parse identically. (The two
+ * reads still go through separate spawn wrappers; equivalence is by
+ * convention + review, not a single shared call site.)
+ */
+export const GIT_STATUS_ARGS = ['status', '--porcelain'] as const;
+
+/** Default bounded status read (invariant 3: array form, cwd, timeout, ignore
+ * stdin, bounded stdout, windowsHide). Exposed via `_internals` for tests. */
+function runGitStatusSync(args: readonly string[], cwd: string): string | null {
+	const result = spawnSync(resolveGitExecutable(), args, {
+		cwd,
+		encoding: 'utf8',
+		timeout: 10_000,
+		maxBuffer: 1024 * 1024,
+		windowsHide: true,
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
+	if (result.error || result.status !== 0) return null;
+	return result.stdout ?? '';
+}
+
+/**
+ * Parse `git status --porcelain` (newline) output into repo-relative
+ * tracked-dirty paths: untracked (`??`) entries are skipped (they survive the
+ * align reset), surrounding quotes are stripped, and rename/copy records are
+ * split into BOTH sides. R/C may appear in EITHER status column (`R  old ->
+ * new` staged, ` R old -> new` worktree renames via `git add -N`) — both
+ * columns are tested, never just the first (the codebase porcelain-parser
+ * rule from the #2976 rollback-gate review). Sibling module
+ * `src/commands/rollback-gate.ts` exports a same-named parser for
+ * NUL-terminated `--porcelain -z` output (J1/#2946); the two are deliberately
+ * not consolidated in this PR.
+ */
+export function parseTrackedDirtyPaths(statusOutput: string): string[] {
+	const dirtyPaths: string[] = [];
+	for (const line of statusOutput.split('\n')) {
+		if (!line) continue;
+		if (line.startsWith('??')) continue;
+		const filePath = line.slice(3).trim().replace(/^"|"$/g, '');
+		if (!filePath) continue;
+		if (/[RC]/.test(line.slice(0, 2)) && filePath.includes(' -> ')) {
+			for (const side of filePath.split(' -> ')) {
+				const cleaned = side.trim().replace(/^"|"$/g, '');
+				if (cleaned) dirtyPaths.push(cleaned);
+			}
+		} else {
+			dirtyPaths.push(filePath);
+		}
+	}
+	return dirtyPaths;
+}
+
+/**
+ * Shared tracked-dirty read (issue #2953): GIT_STATUS_ARGS + the shared
+ * parser around the default runner (test seam: `_internals.runGitStatus`).
+ * The close gate composes the same argv + parser directly through its own
+ * long-standing `_closeGateInternals.runGit` seam rather than calling this
+ * helper, so its existing #2508 fail-closed tests keep their injection point.
+ */
+export function readTrackedDirtyPaths(directory: string):
+	| {
+			ok: true;
+			dirtyPaths: string[];
+	  }
+	| {
+			ok: false;
+	  } {
+	const statusOutput = _internals.runGitStatus(GIT_STATUS_ARGS, directory);
+	if (statusOutput === null) return { ok: false };
+	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(statusOutput) };
+}
+
+/**
+ * Issue #2953 TOCTOU re-check: re-measure the tracked-dirty set immediately
+ * before a destructive reset and compare it to the set the operator actually
+ * confirmed (or the empty clean-tree set). Fail-closed in both directions
+ * that matter: ANY newly-dirty tracked path refuses, and an unreadable
+ * status refuses (a measurement that cannot be taken must never read as
+ * "unchanged"). A file that got cleaner passes — strictly less destruction
+ * than confirmed.
+ */
+export function recheckBeforeDestructive(
+	directory: string,
+	expectedDirtyPaths: readonly string[],
+):
+	| { ok: true; dirtyPaths: string[] }
+	| { ok: false; reason: string; newDirtyPaths: string[] } {
+	const read = readTrackedDirtyPaths(directory);
+	if (!read.ok) {
+		return {
+			ok: false,
+			reason:
+				'git status could not be re-read before the destructive reset — the confirmed scope cannot be re-verified',
+			newDirtyPaths: [],
+		};
+	}
+	const expected = new Set(expectedDirtyPaths);
+	const newDirtyPaths = read.dirtyPaths.filter((p) => !expected.has(p));
+	if (newDirtyPaths.length > 0) {
+		return {
+			ok: false,
+			reason: `${newDirtyPaths.length} tracked file(s) changed after the close gate was verified`,
+			newDirtyPaths,
+		};
+	}
+	return { ok: true, dirtyPaths: read.dirtyPaths };
+}
 
 function pendingPath(directory: string): string {
 	return validateSwarmPath(directory, PENDING_PURGE_PATH);

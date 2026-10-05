@@ -81,6 +81,6 @@ describe('test_runner missing-files guard remediation advice (#2756)', () => {
 			{} as any,
 		);
 		const parsed = JSON.parse(result) as { error?: string };
-		expect(parsed.error ?? '').toContain('require explicit files');
+		expect(parsed.error ?? '').toContain('require a non-empty files array');
 	});
 });
