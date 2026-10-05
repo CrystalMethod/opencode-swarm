@@ -393,7 +393,7 @@ describe('recordAndAnalyzeResults backward compatibility', () => {
 
 		// Should fail because files array is empty (guard in execute)
 		expect(parsed.success).toBe(false);
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 	});
 
 	/**

@@ -71,7 +71,8 @@ validation; draft/smoke retries are the only looped steps.
 
 ## Configuration
 
-`opencode.json`:
+`.opencode/opencode-swarm.json` (project) or `opencode-swarm.json` in your
+user config directory (e.g. `~/.config/opencode/`):
 
 ```json
 {
@@ -89,7 +90,8 @@ validation; draft/smoke retries are the only looped steps.
 ```
 
 Disabled by default. The config is consulted only inside command handlers —
-never on the plugin init path (AGENTS.md invariant #1).
+never on the plugin init path (AGENTS.md invariant #1). `opencode.json` is
+not a config surface for this family (issue #2949).
 
 ## Workstream A (lifecycle closure)
 
