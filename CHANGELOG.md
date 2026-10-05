@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.189.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.12...v7.189.0) (2026-10-05)
+
+
+### Features
+
+* **ci:** expiry-aware quarantine census, renewal-requires-issue policy, and weekly aging workflow ([#2905](https://github.com/ZaxbyHub/opencode-swarm/issues/2905)) ([377fcdc](https://github.com/ZaxbyHub/opencode-swarm/commit/377fcdcf13d44220d211ce4bb456ada70d8967d5))
+
+
+### Bug Fixes
+
+* **ci:** resolve swarm-pr-review findings on [#3067](https://github.com/ZaxbyHub/opencode-swarm/issues/3067) ([76da8b6](https://github.com/ZaxbyHub/opencode-swarm/commit/76da8b66104ad5e2f6147b491c411bcb418d311f))
+
 ## [7.188.12](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.11...v7.188.12) (2026-10-04)
 
 
