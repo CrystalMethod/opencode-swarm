@@ -10,6 +10,7 @@ import type {
 	LeanTurboLane,
 	LeanTurboPersistedState,
 } from '../../../../src/turbo/lean/state';
+import { writeLeanDiffEvidence } from '../../../helpers/lean-phase-evidence';
 
 // Keep originals so we can restore after each test
 const _originalListActiveLocks = _internals.listActiveLocks;
@@ -21,6 +22,7 @@ function mkdtemp(): string {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lean-phase-ready-test-'));
 	// Seed .swarm dir
 	fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+	writeLeanDiffEvidence(dir, 1); // check-7 default flipped true (#2954)
 	return dir;
 }
 
@@ -1164,7 +1166,6 @@ describe('verifyLeanTurboPhaseReady', () => {
 			'APPROVED',
 		);
 		writeTurboState(dir, state);
-
 		// New calling convention: sessionID as 3rd arg, config as 4th
 		// Config disables reviewer/critic checks - function should still succeed even without verdicts
 		const state2: LeanTurboPersistedState = {
@@ -1178,7 +1179,6 @@ describe('verifyLeanTurboPhaseReady', () => {
 			},
 		};
 		writeTurboState(dir, state2);
-
 		const result = verifyLeanTurboPhaseReady(dir, 1, 'test-session', {
 			phase_reviewer: false,
 			phase_critic: false,

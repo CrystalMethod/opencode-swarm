@@ -19,10 +19,10 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
+import { loadPluginConfigWithMeta } from '../config/loader.js';
 import {
 	DEFAULT_HARNESS_OPT_CONFIG,
 	type HarnessOptConfig,
-	HarnessOptConfigSchema,
 } from '../config/schema.js';
 import type { EvaluationModelDispatcher } from '../evaluation/model-dispatcher.js';
 import { createModelEvaluationExecutor } from '../evaluation/runner.js';
@@ -89,22 +89,22 @@ function emit(result: unknown, json: boolean): string {
 	return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
 }
 
-function resolveHarnessOptConfig(block: unknown): HarnessOptConfig {
-	const parsed = HarnessOptConfigSchema.safeParse(block ?? {});
-	return parsed.success ? parsed.data : { ...DEFAULT_HARNESS_OPT_CONFIG };
-}
-
-function readHarnessOptConfigFromProject(directory: string): HarnessOptConfig {
-	// The config is normally injected via plugin load; for the CLI path read
-	// opencode.json's harness_opt block best-effort (mirrors skill-opt).
+function readHarnessOptConfigFromProject(directory: string): {
+	config: HarnessOptConfig;
+	blockPresent: boolean;
+} {
+	// Fallback for dispatch without an injected runtime config (standalone CLI
+	// invocation): opencode-swarm.json (project + user, deep-merged) is the
+	// only config surface for this family (issue #2949); opencode.json is
+	// never read. The loader is fail-open by design; the catch is defensive.
 	try {
-		const cfgPath = path.join(directory, 'opencode.json');
-		if (!existsSync(cfgPath)) return { ...DEFAULT_HARNESS_OPT_CONFIG };
-		const raw = JSON.parse(readFileSync(cfgPath, 'utf8'));
-		const block = (raw?.harness_opt ?? raw?.swarm?.harness_opt) as unknown;
-		return resolveHarnessOptConfig(block);
+		const { config: pluginConfig } = loadPluginConfigWithMeta(directory);
+		if (pluginConfig.harness_opt === undefined) {
+			return { config: { ...DEFAULT_HARNESS_OPT_CONFIG }, blockPresent: false };
+		}
+		return { config: pluginConfig.harness_opt, blockPresent: true };
 	} catch {
-		return { ...DEFAULT_HARNESS_OPT_CONFIG };
+		return { config: { ...DEFAULT_HARNESS_OPT_CONFIG }, blockPresent: false };
 	}
 }
 
@@ -254,17 +254,21 @@ export async function handleHarnessOptRun(
 			parsed.json,
 		);
 	}
-	const config = runtime.config ?? readHarnessOptConfigFromProject(directory);
-	if (!config.enabled) {
+	const resolved = runtime.config
+		? { config: runtime.config, blockPresent: true }
+		: readHarnessOptConfigFromProject(directory);
+	if (!resolved.config.enabled) {
 		return emit(
 			{
 				status: 'disabled',
-				error:
-					'harness_opt.enabled is false — set to true to execute governed rounds (proposal-only by default)',
+				error: resolved.blockPresent
+					? 'harness_opt.enabled is false — set to true to execute governed rounds (proposal-only by default)'
+					: 'harness_opt block not found in .opencode/opencode-swarm.json (project) or the user-level config — set harness_opt.enabled: true there to execute governed rounds',
 			},
 			parsed.json,
 		);
 	}
+	const config = resolved.config;
 	const loaded = loadTasksFile(directory, parsed.tasksFile);
 	if ('error' in loaded) {
 		return emit({ status: 'error', error: loaded.error }, parsed.json);
@@ -487,10 +491,14 @@ export async function handleHarnessOptCompare(
 		runtime.parentSessionId,
 	);
 	// Arm toggles resolve the same way the run handler resolves budgets:
-	// runtime config first, then the project's opencode.json harness_opt
-	// block — so a user's run_ablation_arm/run_simple_agent_arm settings
-	// reach the protocol through the registered command path.
-	const config = runtime.config ?? readHarnessOptConfigFromProject(directory);
+	// the registry injects ctx.config's harness_opt block; a dispatch without
+	// one falls back to the project or user opencode-swarm.json harness_opt block
+	// (issue #2949) — never opencode.json.
+	const config = (
+		runtime.config
+			? { config: runtime.config }
+			: readHarnessOptConfigFromProject(directory)
+	).config;
 	const comparative = await runComparativeProtocol({
 		projectRoot: directory,
 		tasks: loaded.tasks,

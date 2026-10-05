@@ -26,6 +26,7 @@ manual approval → atomic activation (or rollback).
   held-out test single-use enforcement.
 
 Disabled by default (`skill_opt.enabled: false`). New config block
-`skill_opt` in `opencode.json`. See `docs/skill-optimizer.md`.
+`skill_opt` in `.opencode/opencode-swarm.json` (project) or the user-level
+config. See `docs/skill-optimizer.md`.
 
 Closes #1822.

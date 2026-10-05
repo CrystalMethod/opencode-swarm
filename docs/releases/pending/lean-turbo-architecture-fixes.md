@@ -15,7 +15,7 @@ Fixed 7 post-merge architectural concerns identified during Lean Turbo parallel 
 6. **Phase-Ready Scalability** — Documented safe operational limits (≤5 lanes, ≤50 tasks per phase) pending future streaming/async validation optimization
 
 ### LOW Priority (now addressed)
-7. **integrated_diff_required Default Safety Gap** — Default was already `false`; added documentation recommending `true` for safety-critical projects and explaining the option's role in ensuring parallel lane changes integrate cleanly
+7. **integrated_diff_required Default Safety Gap** — At the time of this fix the default was `false`; added documentation recommending `true` for safety-critical projects and explaining the option's role in ensuring parallel lane changes integrate cleanly. (Later in this same release, `lean-integrated-diff-single-default.md` unified the default to a single `true` via `DEFAULT_LEAN_TURBO_CONFIG` — see that fragment for the current behavior and the explicit `false` opt-out.)
 
 ## Why
 
@@ -31,7 +31,7 @@ These fixes restore fail-closed semantics and add coordination primitives for sa
 No migration required. All changes maintain backward compatibility:
 - File-based lock is transparent to callers
 - Retry logic is internal to evidence writing
-- `integrated_diff_required` default unchanged (already `false`); added opt-in guidance only
+- `integrated_diff_required` default was unchanged at the time (already `false`); added opt-in guidance only. The default has since been unified to `true` in this release (see `lean-integrated-diff-single-default.md`)
 - Integration test documents expected caller behavior
 
 ## Breaking changes
@@ -44,7 +44,7 @@ None.
 
 2. **Cross-runner coordination** — The file-based lock adds a small latency (typically <50ms per operation due to exponential backoff strategy). High contention (10+ concurrent runners) may degrade lock acquisition time.
 
-3. **Backward compatibility** — `integrated_diff_required` default is `false`. Existing projects should review whether they need to opt-in to stricter diff validation (setting to `true`). Recommended for safety-critical lanes.
+3. **Backward compatibility** — `integrated_diff_required` defaulted to `false` at the time of this fix. As of this release the default is a single unified `true` (`lean-integrated-diff-single-default.md`); projects that need the permissive behavior set `turbo.lean.integrated_diff_required: false` explicitly.
 
 ## Testing
 
