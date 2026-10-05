@@ -235,7 +235,12 @@ export function collectRawInertKeyFindings(
 
 			for (const key of Object.keys(raw)) {
 				if (seen.has(key)) continue;
-				const declaration = consumers[key];
+				// Own-property read: raw config keys are attacker-controlled
+				// strings, so a prototype-named key must never resolve through
+				// the declaration map's prototype chain.
+				const declaration = Object.hasOwn(consumers, key)
+					? consumers[key]
+					: undefined;
 				if (!declaration || !('inert' in declaration)) continue;
 				seen.add(key);
 				findings.push({
