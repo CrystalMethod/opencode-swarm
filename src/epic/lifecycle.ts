@@ -949,9 +949,44 @@ function listLifecycleRowsRawKeys(directory: string): string[] {
 const MAX_RECORD_UPDATE_ATTEMPTS = 5;
 
 /**
+ * The epic row would outgrow the store payload cap. Distinct from a generic
+ * store failure so callers can surface the remedy instead of the raw
+ * `payload must contain 1..1048576 characters`.
+ */
+export class EpicRecordTooLargeError extends Error {
+	constructor(epicKey: string) {
+		super(
+			`Epic \`${epicKey}\`'s lifecycle row is near its size limit (over ${MAX_EPIC_RECORD_PAYLOAD_CHARS} serialized characters), so no further wave can be recorded. Close the epic (\`/swarm epic close\`) to land or abandon it, then start a new epic for the remaining work.`,
+		);
+		this.name = 'EpicRecordTooLargeError';
+	}
+}
+
+/**
+ * Soft ceiling for the serialized epic row, checked before the store write.
+ *
+ * The record grows per wave (frozen file scopes, cochange pairs, a per-wave
+ * component snapshot, merge failures) and the store rejects any payload over
+ * `MAX_PAYLOAD_CHARS` (1 MiB) with a bare `payload must contain 1..1048576
+ * characters`. On a long epic that surfaces as a raw store exception with no
+ * remedy, and every later transition — including both close variants — throws
+ * the same way. Refusing here, with a threshold below the hard cap, keeps a
+ * headroom band so the failure is actionable while transitions are still
+ * possible.
+ */
+const MAX_EPIC_RECORD_PAYLOAD_CHARS = 786_432;
+
+/** True when `record` would serialize past {@link MAX_EPIC_RECORD_PAYLOAD_CHARS}. */
+export function epicRecordPayloadTooLarge(record: EpicRecordV1): boolean {
+	return JSON.stringify(record).length > MAX_EPIC_RECORD_PAYLOAD_CHARS;
+}
+
+/**
  * Revision-checked read-modify-write of the epic row. Returns the updated
  * record, or null when the row vanished or (with `expectedToken`) belongs to
- * a different start of the same epicKey. Throws on contention/corruption.
+ * a different start of the same epicKey. Throws on contention/corruption, and
+ * throws {@link EpicRecordTooLargeError} when the row would outgrow the store
+ * payload cap.
  */
 export function updateEpicRecord(
 	directory: string,
@@ -972,6 +1007,9 @@ export function updateEpicRecord(
 		// pins the row this check saw.
 		if (expectedToken !== null && record.token !== expectedToken) return null;
 		const next = mutate(record);
+		if (epicRecordPayloadTooLarge(next)) {
+			throw new EpicRecordTooLargeError(epicKey);
+		}
 		const result = transitionCoordinationState(directory, {
 			namespace: EPIC_LIFECYCLE_NAMESPACE,
 			entityKey: epicKey,

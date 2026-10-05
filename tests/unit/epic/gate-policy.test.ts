@@ -122,6 +122,67 @@ describe('no open epic ⇒ null', () => {
 	});
 });
 
+describe('a closing epic refuses dispatch (EPIC_CLOSING)', () => {
+	/**
+	 * `getOpenEpic` returns null for any row that is not `open`, so a `closing`
+	 * row left by an interrupted close silently ungated dispatch for the whole
+	 * window between `markEpicClosing` and `deleteEpicState` — the window in
+	 * which a dispatched coder would settle with no Epic context and merge back
+	 * onto the branch the close is stepping off.
+	 */
+	function withClosingEpic(): void {
+		withEpic(null);
+		_internals.inspectEpic = (() => ({
+			sentinelPresent: true,
+			sentinel: null,
+			record: stubEpicRecord({ status: 'closing' }),
+			rowKeys: ['k'],
+			unreadable: null,
+			orphanReason: null,
+			configEnabled: true,
+		})) as never;
+	}
+
+	test('a closing row is refused, not treated as "no epic"', () => {
+		withClosingEpic();
+		const policy = resolveEpicDispatchPolicy('/p', plan(), '1.1', []);
+		expect(policy).toMatchObject({ kind: 'reject', code: 'EPIC_CLOSING' });
+		if (policy?.kind === 'reject') {
+			expect(policy.message).toContain('is closing');
+			expect(policy.message).toContain('/swarm epic close');
+		}
+	});
+
+	test('a genuinely absent epic is still null (the control)', () => {
+		withEpic(null);
+		_internals.inspectEpic = (() => ({
+			sentinelPresent: true,
+			sentinel: null,
+			record: null,
+			rowKeys: [],
+			unreadable: null,
+			orphanReason: null,
+			configEnabled: true,
+		})) as never;
+		expect(resolveEpicDispatchPolicy('/p', plan(), '1.1', [])).toBeNull();
+	});
+
+	test('an open record never reaches the closing probe', () => {
+		// The allow path must be unchanged: the probe only runs when
+		// `getOpenEpic` came back null.
+		withEpic(openWave());
+		let inspected = 0;
+		_internals.inspectEpic = (() => {
+			inspected += 1;
+			return { record: null } as never;
+		}) as never;
+		expect(resolveEpicDispatchPolicy('/p', plan(), '1.1', [])).toMatchObject({
+			kind: 'allow',
+		});
+		expect(inspected).toBe(0);
+	});
+});
+
 describe('reject codes', () => {
 	test('EPIC_STATE_UNREADABLE', () => {
 		withEpic(new Error('multiple Epic lifecycle rows present'));

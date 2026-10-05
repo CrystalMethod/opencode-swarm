@@ -38,6 +38,7 @@ import {
 	type EpicWaveRecord,
 	epicSentinelExists as epicSentinelExists_import,
 	getOpenEpic as getOpenEpic_import,
+	inspectEpic as inspectEpic_import,
 } from './lifecycle.js';
 import { epicPhaseFixSteps } from './next-wave-format.js';
 
@@ -47,6 +48,7 @@ export const _internals = {
 	isEpicModeConfigEnabledForDirectory:
 		isEpicModeConfigEnabledForDirectory_import,
 	getOpenEpic: getOpenEpic_import,
+	inspectEpic: inspectEpic_import,
 	checkEpicBranch: checkEpicBranch_import,
 	computeParallelVerdict: computeParallelVerdict_import,
 };
@@ -57,6 +59,7 @@ export type EpicDispatchRejectCode =
 	| 'EPIC_TASK_UNKNOWN'
 	| 'EPIC_WAVE_SCOPE_DRIFT'
 	| 'EPIC_STATE_UNREADABLE'
+	| 'EPIC_CLOSING'
 	| 'EPIC_BRANCH_MISMATCH';
 
 export type EpicDispatchPolicy =
@@ -184,7 +187,32 @@ export function resolveEpicDispatchPolicy(
 			`Epic Mode is enabled and an epic sentinel exists, but the epic's lifecycle state is unreadable (${errorText(error)}). Coder dispatch is refused (fail closed) until it is repaired, because it cannot be told whether the coder belongs to an epic wave. Remedy: ask the user to run \`/swarm epic status\` (diagnose) and \`/swarm epic close --abandon\` (repair).`,
 		);
 	}
-	if (!epic) return null;
+	if (!epic) {
+		// `getOpenEpic` returns null for any row that is not `open` — including a
+		// `closing` row left by an interrupted close. That silently ungated
+		// dispatch for the whole window between `markEpicClosing` and
+		// `deleteEpicState`, which is exactly the window in which a dispatched
+		// coder would settle with no Epic context. Refuse while the epic is
+		// closing, mirroring the next-wave gate in `describeNoEpic`
+		// (`src/epic/next-wave.ts`).
+		let closingKey: string | null = null;
+		try {
+			const record = _internals.inspectEpic(directory, null).record;
+			if (record?.status === 'closing') closingKey = record.epicKey;
+		} catch (error) {
+			return reject(
+				'EPIC_STATE_UNREADABLE',
+				`Epic Mode is enabled and an epic sentinel exists, but the epic's lifecycle state could not be read to determine whether a close is in progress (${errorText(error)}). Coder dispatch is refused (fail closed). Remedy: ask the user to run \`/swarm epic status\` (diagnose) and \`/swarm epic close --abandon\` (repair).`,
+			);
+		}
+		if (closingKey !== null) {
+			return reject(
+				'EPIC_CLOSING',
+				`Epic \`${closingKey}\` is closing (an interrupted \`/swarm epic close\`), so a coder dispatched now would settle with no Epic context and merge back onto the branch the close is stepping off. Remedy: ask the user to rerun \`/swarm epic close\`.`,
+			);
+		}
+		return null;
+	}
 
 	const branch = _internals.checkEpicBranch(directory, epic);
 	if (!branch.ok) {

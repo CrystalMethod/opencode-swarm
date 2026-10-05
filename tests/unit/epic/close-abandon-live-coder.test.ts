@@ -19,24 +19,32 @@ import {
 	closeEpic,
 	_internals as closeInternals,
 } from '../../../src/epic/close';
-import { epicSentinelExists } from '../../../src/epic/lifecycle';
+import {
+	type EpicRecordV1,
+	epicSentinelExists,
+	markEpicClosing,
+} from '../../../src/epic/lifecycle';
 import { openEpicForTest } from '../../helpers/epic-lifecycle';
 import { freezeClock, type Restore } from '../../helpers/test-clock';
 import { createStartProject } from './start-fixture';
 
 let dir: string;
+let epic: EpicRecordV1;
 let restoreClock: Restore | null = null;
 let realList: typeof closeInternals.listCoderSettlementWalStates;
+let realInspect: typeof closeInternals.inspectEpic;
 
 beforeEach(async () => {
 	restoreClock = freezeClock({ isoNow: '2026-05-01T08:00:00.000Z' });
 	dir = await createStartProject('epic-close-live-', { git: false });
-	openEpicForTest(dir);
+	epic = openEpicForTest(dir);
 	realList = closeInternals.listCoderSettlementWalStates;
+	realInspect = closeInternals.inspectEpic;
 });
 
 afterEach(() => {
 	closeInternals.listCoderSettlementWalStates = realList;
+	closeInternals.inspectEpic = realInspect;
 	restoreClock?.();
 	restoreClock = null;
 	closeAllProjectDbs();
@@ -109,5 +117,94 @@ describe('closeEpic --abandon refuses while a coder is live', () => {
 		expect(await closeEpic({ directory: dir, abandon: true })).toMatchObject({
 			status: 'closed',
 		});
+	});
+
+	test('a truncated settlement scan fails closed even with no live coder', async () => {
+		// The scan truncates alphabetically, so a live coder past the cap is
+		// invisible to the filter. `src/epic/start.ts` refuses on exactly this
+		// condition; the close guard must not disagree with it.
+		stubWal([], true);
+
+		const result = await closeEpic({ directory: dir, abandon: true });
+
+		expect(result).toMatchObject({ status: 'refused', reason: 'coders-live' });
+		if (result.status === 'refused') {
+			expect(result.details[0]).toContain('scan bound');
+		}
+		expect(epicSentinelExists(dir)).toBe(true);
+	});
+});
+
+describe('closeEpic refuses to tear down a closing epic while a coder is live', () => {
+	test('a close resumed WITHOUT --abandon is still guarded', async () => {
+		// The teardown predicate is `abandoning` (abandon OR a resumed close whose
+		// decided outcome was not `completed`), not `abandon`. Keying the guard on
+		// `abandon` left this path — the one `next-wave.ts` tells the user to take
+		// after an interrupted close — unguarded.
+		const record = markEpicClosing(dir, epic.epicKey, 'abandoned');
+		expect(record?.status).toBe('closing');
+		stubWal([{ taskId: '1.1', state: 'DISPATCHED' }]);
+
+		const result = await closeEpic({ directory: dir, abandon: false });
+
+		expect(result).toMatchObject({ status: 'refused', reason: 'coders-live' });
+		expect(epicSentinelExists(dir)).toBe(true);
+	});
+
+	test('the same resumed close proceeds once the coder has settled', async () => {
+		markEpicClosing(dir, epic.epicKey, 'abandoned');
+		stubWal([{ taskId: '1.1', state: 'COMMITTED' }]);
+
+		expect(await closeEpic({ directory: dir, abandon: false })).toMatchObject({
+			status: 'closed',
+		});
+		expect(epicSentinelExists(dir)).toBe(false);
+	});
+});
+
+describe('the unreadable-state repair is guarded too', () => {
+	test('--abandon on corrupt state refuses while a coder is live', async () => {
+		// `/swarm epic close --abandon` is the documented repair for corrupt Epic
+		// state (`lifecycle.ts` remedy text, and `gate-policy.ts` recommends it on
+		// EPIC_STATE_UNREADABLE). It deletes the row outright, so it strands a
+		// live coder exactly as the teardown does.
+		const real = closeInternals.inspectEpic;
+		closeInternals.inspectEpic = (() => ({
+			...real(dir, null),
+			record: null,
+			unreadable: 'row payload is corrupt',
+		})) as never;
+		stubWal([{ taskId: '1.1', state: 'DISPATCHED' }]);
+
+		try {
+			const result = await closeEpic({ directory: dir, abandon: true });
+			expect(result).toMatchObject({
+				status: 'refused',
+				reason: 'coders-live',
+			});
+			// The row must survive the refusal.
+			expect(epicSentinelExists(dir)).toBe(true);
+		} finally {
+			closeInternals.inspectEpic = real;
+		}
+	});
+
+	test('the same repair deletes the state once the coder has settled', async () => {
+		const real = closeInternals.inspectEpic;
+		closeInternals.inspectEpic = (() => ({
+			...real(dir, null),
+			record: null,
+			unreadable: 'row payload is corrupt',
+		})) as never;
+		stubWal([{ taskId: '1.1', state: 'COMMITTED' }]);
+
+		try {
+			expect(await closeEpic({ directory: dir, abandon: true })).toMatchObject({
+				status: 'repaired-unreadable',
+			});
+			expect(epicSentinelExists(dir)).toBe(false);
+		} finally {
+			closeInternals.inspectEpic = real;
+		}
 	});
 });

@@ -321,6 +321,49 @@ function writeReport(directory: string, report: EpicCloseReport): string[] {
 	return paths;
 }
 
+/**
+ * The `coders-live` refusal detail lines, or null when no coder settlement is
+ * still owned by a running dispatch.
+ *
+ * Every terminal `closeEpic` path reaches `deleteEpicState`, which steps the
+ * tree off the epic branch and drops the lifecycle sentinel. A coder still
+ * running settles afterwards with no Epic context (`epicCommitLandingFor`
+ * returns undefined) and takes the ordinary merge-back path onto the original
+ * branch — landing work the user explicitly abandoned. Both the unreadable-state
+ * repair and the resumed-teardown path destroy state, so both consult this.
+ * This is the close-side twin of the start-side guard in `src/epic/start.ts`.
+ */
+async function liveCoderRefusal(directory: string): Promise<string[] | null> {
+	const wal = await _internals.listCoderSettlementWalStates(directory);
+	// `truncated` means the directory held more matching files than
+	// MAX_SETTLEMENT_WAL_SCAN, and the scan truncates alphabetically — so a
+	// live coder past the cap is invisible to the filter below. Fail closed on
+	// the same condition `src/epic/start.ts` refuses on: we cannot prove every
+	// settlement is final, so we must not tear the epic down.
+	if (wal.truncated) {
+		return [
+			'coder settlement directory exceeds the scan bound — cannot prove every settlement is final.',
+			'Run `/swarm recover` to settle stale WALs, then re-run `/swarm epic close`.',
+		];
+	}
+	const live = wal.states.filter(
+		(state) =>
+			state.state !== 'unreadable' &&
+			UNSETTLED_WAL_STATES.has(state.state) &&
+			(state.ownedInProcess || state.ownedByLiveForeignPid),
+	);
+	if (live.length === 0) return null;
+	return [
+		`${live.length} coder settlement(s) are still owned by a running dispatch: ${live
+			.slice(0, 5)
+			.map((state) => `${state.taskId} (${state.state})`)
+			.join(
+				', ',
+			)} — closing now would let them land on the original branch as ordinary merge-backs.`,
+		'Let them settle first, then re-run `/swarm epic close`.',
+	];
+}
+
 export async function closeEpic(
 	options: EpicCloseOptions,
 ): Promise<EpicCloseResult> {
@@ -344,6 +387,14 @@ export async function closeEpic(
 				],
 			};
 		}
+		// This path deletes the lifecycle state outright, so it is subject to the
+		// same live-coder refusal as the teardown below. It is the documented
+		// remedy for corrupted Epic state (`/swarm epic close --abandon`) and is
+		// also reached by `finalizeOpenEpicOnSwarmClose`, which always abandons.
+		const live = await liveCoderRefusal(directory);
+		if (live) {
+			return { status: 'refused', reason: 'coders-live', details: live };
+		}
 		const deleted = deleteEpicState(directory, null, null);
 		return {
 			status: 'repaired-unreadable',
@@ -364,6 +415,11 @@ export async function closeEpic(
 	}
 
 	const resuming = record.status === 'closing' && record.closing !== null;
+	// A resumed close that was decided as an abandon never lands, even when
+	// rerun without `--abandon` — and it still tears the epic down, so this is
+	// also the predicate for the live-coder refusal below.
+	const abandoning =
+		abandon || (resuming && record.closing?.outcome !== 'completed');
 	const tasks =
 		plan && inspection.orphanReason === null ? summarizePlanTasks(plan) : null;
 	if (!abandon && !resuming) {
@@ -389,45 +445,28 @@ export async function closeEpic(
 		}
 	}
 
-	// Abandon tears the Epic down: it steps off the epic branch and deletes the
+	// Tearing down the Epic steps the tree off the epic branch and deletes the
 	// lifecycle sentinel. A coder that is still running would then settle with
 	// no Epic context (`epicCommitLandingFor` returns undefined) and take the
 	// ordinary merge-back path onto the original branch — landing "abandoned"
 	// work the user never asked to land. Refuse while a coder is still owned by
 	// a live dispatch. This is the close-side twin of the start-side guard in
 	// `src/epic/start.ts`.
-	if (abandon) {
-		const wal = await _internals.listCoderSettlementWalStates(directory);
-		const live = wal.states.filter(
-			(state) =>
-				state.state !== 'unreadable' &&
-				UNSETTLED_WAL_STATES.has(state.state) &&
-				(state.ownedInProcess || state.ownedByLiveForeignPid),
-		);
-		if (live.length > 0) {
-			return {
-				status: 'refused',
-				reason: 'coders-live',
-				details: [
-					`${live.length} coder settlement(s) are still owned by a running dispatch: ${live
-						.slice(0, 5)
-						.map((state) => `${state.taskId} (${state.state})`)
-						.join(
-							', ',
-						)} — abandoning now would let them land on the original branch as ordinary merge-backs.`,
-					'Let them settle first, then re-run `/swarm epic close --abandon`.',
-				],
-			};
+	//
+	// Gated on `abandoning`, not on `abandon`: a close resumed after an
+	// interrupted run tears the epic down even when the user did not re-pass
+	// `--abandon`, so keying the guard on `abandon` alone left that path
+	// unguarded.
+	if (abandoning) {
+		const live = await liveCoderRefusal(directory);
+		if (live) {
+			return { status: 'refused', reason: 'coders-live', details: live };
 		}
 	}
 
 	// Landing preflight (C1b, M-f): read-only, BEFORE the row is marked
 	// closing, so a dirty tree is refused before anything changes.
 	const pair = epicBranchPair(record);
-	// A resumed close that was decided as an abandon never lands, even when
-	// rerun without `--abandon`.
-	const abandoning =
-		abandon || (resuming && record.closing?.outcome !== 'completed');
 	const landMode: EpicLandMode | null = abandoning
 		? null
 		: (options.land ?? record.closing?.land ?? DEFAULT_EPIC_LAND_MODE);
