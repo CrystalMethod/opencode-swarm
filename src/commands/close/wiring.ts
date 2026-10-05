@@ -24,6 +24,7 @@ import {
 } from '../../state';
 import { closeRepoMemory } from '../../tools/repo-graph/indexed-storage';
 import { collectGarbageBestEffort, sleep } from '../../utils/bun-compat.js';
+import { guardResetWithRecheck } from './align-stage.js';
 import { _internals, closeReceiptLifecycleInternals } from './internals.js';
 
 /** Wire concrete dependencies only after the close facade has loaded its stages. */
@@ -40,7 +41,15 @@ export function wireCloseInternals(): void {
 		sleep,
 		collectGarbageBestEffort,
 		getGitRepositoryStatus,
-		resetToMainAfterMerge,
+		// #2953: install the guard as the seam value — every dispatch through
+		// _internals.resetToMainAfterMerge re-verifies the confirmed
+		// tracked-dirty scope immediately before the real aggressive reset.
+		// Tests that replace this seam value capture the guard as their
+		// `real`, so write-then-delegate injections stay observable to it.
+		resetToMainAfterMerge: (
+			cwd: string,
+			options?: Parameters<typeof guardResetWithRecheck>[2],
+		) => guardResetWithRecheck(resetToMainAfterMerge, cwd, options),
 		resetToRemoteBranch,
 		loadPluginConfigWithMeta,
 		curateAndStoreSwarm,
