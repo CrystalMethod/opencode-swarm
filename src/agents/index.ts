@@ -13,6 +13,7 @@ import {
 	COUNCIL_AGENT_TOOL_MAP,
 	DEFAULT_MODELS,
 	EPIC_AGENT_TOOL_MAP,
+	EPIC_TOOL_NAMES,
 	EXTERNAL_SKILL_AGENT_TOOL_MAP,
 	GENERAL_COUNCIL_AGENT_TOOL_MAP,
 	MEMORY_AGENT_TOOL_MAP,
@@ -1443,14 +1444,21 @@ export function getAgentConfigs(
 				}
 			}
 
-			// Feature-gate: Epic Mode tools — only when epic.mode.enabled
+			// Feature-gate: Epic Mode tools — only for the roles in
+			// EPIC_AGENT_TOOL_MAP (the architect) and only when epic.mode.enabled
 			// is explicitly true (top-level `epic`, or the legacy `turbo.epic`).
-			if (isEpicModeConfigEnabled(config)) {
+			// Strip first, then add (the skill-gate precedent below), so a
+			// tool_filter override cannot grant an Epic tool the gate withholds.
+			{
+				if (allowedTools) {
+					const epicToolSet = new Set<string>(EPIC_TOOL_NAMES);
+					allowedTools = allowedTools.filter((t) => !epicToolSet.has(t));
+				}
 				const epicTools =
 					EPIC_AGENT_TOOL_MAP[
 						baseAgentName as keyof typeof EPIC_AGENT_TOOL_MAP
 					] ?? [];
-				if (epicTools.length > 0) {
+				if (isEpicModeConfigEnabled(config) && epicTools.length > 0) {
 					allowedTools = Array.from(
 						new Set([...(allowedTools ?? []), ...epicTools]),
 					);

@@ -139,6 +139,39 @@ describe('getAgentConfigs — Epic tools gated by epic.mode.enabled', () => {
 		}
 	});
 
+	// Review F-005: the gate strips before it adds (the skill-gate precedent),
+	// so a tool_filter override cannot grant an Epic tool the gate withholds.
+	test('disabled: a tool_filter override naming Epic tools does not grant them', () => {
+		const agents = getAgentConfigs(
+			parse({
+				tool_filter: {
+					enabled: true,
+					overrides: { architect: ['save_plan', ...EPIC_TOOL_NAMES] },
+				},
+			}),
+		);
+		expect(agents.architect.permission?.save_plan).not.toBe('deny');
+		for (const tool of EPIC_TOOL_NAMES) {
+			expect(agents.architect.permission?.[tool], tool).toBe('deny');
+		}
+	});
+
+	test('enabled: a tool_filter override cannot grant Epic tools to another role', () => {
+		const agents = getAgentConfigs(
+			parse({
+				...EPIC_ON,
+				tool_filter: {
+					enabled: true,
+					overrides: { coder: ['write', ...EPIC_TOOL_NAMES] },
+				},
+			}),
+		);
+		for (const tool of EPIC_TOOL_NAMES) {
+			expect(agents.coder.permission?.[tool], tool).toBe('deny');
+			expect(agents.architect.permission?.[tool], tool).not.toBe('deny');
+		}
+	});
+
 	test('multi-swarm prefixed architects follow the same gate', () => {
 		const disabled = getAgentConfigs(parse({ swarms: SWARMS }));
 		const enabled = getAgentConfigs(parse({ ...EPIC_ON, swarms: SWARMS }));
