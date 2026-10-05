@@ -420,7 +420,7 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Symptom:** guardrail advisories, knowledge and memory recall, delegation guidance and issue-trace directives were silently absent from the model's input while plugin telemetry recorded them as delivered; a `--trace` turn in which only issue-trace injected failed the host prompt build with `TypeError: undefined is not an object (evaluating 'msg.parts.length')`.
 - **Root cause:** the OpenCode host's message→request converter (`toModelMessagesEffect`, pinned @opencode-ai 1.18.3; host repo `anomalyco/opencode` tag `v1.18.3`, commit `127bdb30784d508cc556c71a0f32b508a3061517`, session module `message-v2`, the `toModelMessagesEffect` loop at lines 195-244) branches only on `user` and `assistant` with no `else`, and its `Message` union (`@opencode-ai/sdk` `types.gen.d.ts:128`) has no `system` member — every synthetic `role:'system'` entry the plugin spliced into `experimental.chat.messages.transform` output was discarded before the request was built. The flat `{role, content}` entries issue-trace pushed have no `parts`, and the loop head dereferences `msg.parts.length` unconditionally — hence the TypeError. Delivery predicates asserted presence in the plugin's own output array, so telemetry lied. The sibling `chat.system.transform` surface (plain `string[]`) DOES render (host `llm/request` module, the `system.map` spread), which masked the total loss.
 - **Fix:** all plugin injections ride USER-role guidance carriers built by `src/hooks/system-guidance-carrier.ts` (`info.id` prefix `swarm-guidance:<kind>`, role `user`, one text part wrapped in the `<swarm_system_directive>` provenance fence; detection by id prefix, never text). The final structure-mutating transform handler now runs `materializeSystemGuidanceInPlace` — a boundary that converts any remaining system entry to a carrier in place (or drops tool-result-shaped / whitespace-only ones), so the transformed array contains zero system entries: a strictly stronger form of the #608/#628 local-model guarantee. Delivery telemetry gates on `deliveredGuidanceDelta` (non-empty text delta + host-renderable carrier shape). The knowledge-application and skill-propagation transform scans skip carriers so injected directives can never be parsed as architect/reviewer acknowledgements, and `classifyMessage` treats carriers as CRITICAL (never pruned), matching the old system-role exemption.
-- **Durable guards:** `tests/helpers/host-contract-v1_18_3.ts` (provenance-headed distillation of the host loop) + `tests/unit/hooks/host-message-role-contract-2526.test.ts` (renders user/assistant only; system never; flat throws; AND a version tripwire asserting the installed `@opencode-ai/plugin` + `@opencode-ai/sdk` equal `1.18.3` — a lockfile bump fails loudly and forces re-verification of the fixture against the new host source); `tests/unit/hooks/system-splice-ratchet-2526.test.ts` (source scan: no `role:'system'` construction outside the role-filter system-string adapter and the materializer); `tests/unit/hooks/host-rendered-guidance-2526.test.ts` (exit gate: real registered plugin chain + pinned host converter — guardrail advisory, knowledge recall, memory recall each render; `--trace` turn completes with the MODE directive).
+- **Durable guards:** `tests/helpers/host-contract-v1_18_3.ts` (provenance-headed distillation of the host loop) + `tests/unit/hooks/host-message-role-contract-2526.test.ts` (renders user/assistant only; system never; flat throws; AND a version tripwire asserting the installed `@opencode-ai/plugin` + `@opencode-ai/sdk` equal `1.18.3` — a lockfile bump fails loudly and forces re-verification of the fixture against the new host source; host releases are covered independently of the lockfile by the weekly `host-contract-check.yml` scheduled check (`scripts/check-host-contract.ts`), which compares the converter loop's structural digest against the host source at npm-latest and is the re-verification trigger on a host release); `tests/unit/hooks/system-splice-ratchet-2526.test.ts` (source scan: no `role:'system'` construction outside the role-filter system-string adapter and the materializer); `tests/unit/hooks/host-rendered-guidance-2526.test.ts` (exit gate: real registered plugin chain + pinned host converter — guardrail advisory, knowledge recall, memory recall each render; `--trace` turn completes with the MODE directive).
 - **Maps to AGENTS.md:** invariant 10 (chat/system-message hook contracts).
 
 ### Issue #2673 — system render capability at the final request boundary
@@ -597,9 +597,71 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Maps to AGENTS.md:** none (no operational rule changes; this entry is the
   long-form home AGENTS.md's charter assigns to this doc). Related open
   siblings from the same review: #2925 (normalize attribution paths at the
-  write site), #2926 (session-mismatch attribution fallback — its repo-wide
-  fallback partially re-exposes shell side-effects by design of the legacy
-  leg; any resolution there must stay consistent with this decision).
+  write site — delivered; see its entry below), #2926 (session-mismatch
+  attribution fallback — its repo-wide fallback partially re-exposes shell
+  side-effects by design of the legacy leg; any resolution there must stay
+  consistent with this decision).
+
+### Issue #2925 — Attribution file paths canonicalized at the write site
+
+- **Contract:** the per-task file-attribution record
+  (`AgentSessionState.modifiedFilesByTask`) stores ONE portable form:
+  repo-relative against the writer's workspace directory, forward-slashed,
+  win32-case-folded (`normalizePath`, `src/utils/path.ts`). Canonicalization
+  lives at the write boundary — both setter spellings
+  (`recordModifiedFilesForTask` / `recordModifiedFileForTask`,
+  `src/state.ts`) accept an optional `workspaceDirectory` and the two
+  pinned producers pass it: the foreground singular writer
+  (`src/hooks/guardrails/tool-before.ts`, the #2002 one-base
+  `sessionWorkspaceDirectory`) and the background plural writer
+  (`src/background/stage-b-gates.ts`, `args.directory`). The producer
+  spellings/sites remain exactly the #2927 boundary.
+- **Drop rule:** entries that cannot be proven canonical drop silently
+  (entries are advisory): absolute input without a base (no
+  `workspaceDirectory` — storing it raw is the pre-#2925 defect), any input
+  resolving outside the workspace (`..`-prefixed or different-drive
+  relative), relative `..`-bearing input without a base, entries over 4,096
+  characters, and entries containing control characters (mirroring the
+  sibling boundaries `normalizeAttributionPath` / `isBoundedGenerationValue`;
+  both bounds apply to the trimmed entry, and drive-relative win32 inputs
+  like `D:foo` drop deterministically regardless of base geometry). The singular
+  setter returns `true` for a dropped entry (advisory no-op) while its
+  pre-existing invalid-taskId guard still returns `false`; its input guard
+  widened from length-only to trim-based, so whitespace-only input (previously
+  stored verbatim) now returns `false`. Appends canonicalize only the
+  incoming entry; stored legacy raw entries persist verbatim until the task's
+  list is atomically replaced.
+- **Boundary exceptions (deliberate):** the snapshot deserializer
+  (`deserializeModifiedFilesByTask`, `src/session/snapshot-reader.ts`) builds
+  the map directly — legacy raw-absolute entries round-trip verbatim from
+  old snapshots and stay covered by read-side canonicalization; and the
+  pre-Map legacy backfill in `ensureAgentSession` (`src/state.ts`) copies
+  `modifiedFilesThisCoderTask` verbatim (legacy-data preservation).
+- **Per-consumer double-normalization dispositions (audit, all idempotent on
+  canonical input or repaired):** `validateDiffScope`
+  (`canonicaliseAttributionEntry` + `normalizePath` membership) — idempotent,
+  kept as defense-in-depth; `src/full-auto/severe-result.ts` (resolve →
+  relative → `normalizePath`, `..`-escape drop) — idempotent;
+  `epic-record-divergence` via `normalizePath` on both sides — idempotent;
+  `review-receipt-scope` (`path.resolve` + containment + `canonicalPath`) and
+  `guardrails/index` (`isInDeclaredScope` resolve + path-identity) —
+  idempotent; `delegation-gate` → `routeReviewForChanges`
+  (`path.join(directory, file)` + `git show HEAD:<file>`) — repaired
+  upstream by canonical storage (raw absolute entries previously produced
+  doubled-root joins); `update-task-status` (`getModifiedFilesForTask` at
+  src/tools/update-task-status.ts:1181 feeds `validateDiffScope` and the
+  #2926 advisory) — pass-through, covered by the diff-scope disposition; `full-auto-permission`'s `changedFiles` classifier field is dead
+  (`src/full-auto/policy.ts` declares it, nothing reads it) — disclosed,
+  unchanged. Future cased-path test fixtures must expect the win32-folded
+  form.
+- **Guardrail:** `tests/unit/hooks/attribution-canonicalization-2925.test.ts`
+  (helper table, setter drop/guard-order/dedupe/legacy-append semantics,
+  producer wiring through the real guardrails hook, consumer idempotence,
+  deserializer verbatim tolerance); the issue-tracer frozen checks C1-C8
+  (see `.agents/issue-traces/2925-write-site-attribution-path-canonicalization/`)
+  gate the RED→GREEN transitions.
+- **Maps to AGENTS.md:** invariant 8 (session state — the record stays
+  session-keyed and bounded; the helper is pure).
 
 
 ## Invariants — anti-pattern, required pattern, verification

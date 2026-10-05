@@ -16,8 +16,10 @@ import { resolveGitExecutable } from '../../utils/git-executable.js';
 import { log } from '../../utils/logger';
 import {
 	consumeConfirmToken,
+	GIT_STATUS_ARGS,
 	issueConfirmToken,
 	type PurgeCandidate,
+	parseTrackedDirtyPaths,
 } from '../destructive-purge.js';
 import { runAlignStage } from './align-stage.js';
 import { emitCloseArchiveResult, runArchiveStage } from './archive-stage.js';
@@ -66,6 +68,7 @@ function runCloseGateGit(args: string[], cwd: string): string | null {
 		cwd,
 		encoding: 'utf8',
 		timeout: 10_000,
+		maxBuffer: 1024 * 1024,
 		windowsHide: true,
 		stdio: ['ignore', 'pipe', 'pipe'],
 	});
@@ -96,31 +99,17 @@ export function evaluateClosePurgeGate(
 	directory: string,
 	swarmDir: string,
 ): ClosePurgeGate {
+	// #2953: the gate measurement consumes the SAME argv (GIT_STATUS_ARGS) and
+	// the SAME parser (parseTrackedDirtyPaths) as the align-stage guard's
+	// pre-destruction re-check — both live in destructive-purge.ts, so both
+	// reads parse identically. (Separate spawn wrappers by design: this one
+	// keeps the #2508 test seam.)
 	const statusOutput = _closeGateInternals.runGit(
-		['status', '--porcelain'],
+		[...GIT_STATUS_ARGS],
 		directory,
 	);
-	const dirtyPaths: string[] = [];
-	if (statusOutput !== null) {
-		for (const line of statusOutput.split('\n')) {
-			if (!line) continue;
-			// Untracked ('??') entries survive the align reset; every other
-			// porcelain code (staged, unstaged, conflicted) is tracked work
-			// that `git reset --hard` + `checkout -- .` would discard.
-			if (line.startsWith('??')) continue;
-			const filePath = line.slice(3).trim().replace(/^"|"$/g, '');
-			if (!filePath) continue;
-			// #2508: porcelain renames ('R  old -> new') put BOTH sides at
-			// risk — list each side so the preview and digest stay exact.
-			if (line.startsWith('R') && filePath.includes(' -> ')) {
-				for (const side of filePath.split(' -> ')) {
-					if (side) dirtyPaths.push(side);
-				}
-			} else {
-				dirtyPaths.push(filePath);
-			}
-		}
-	}
+	const dirtyPaths =
+		statusOutput === null ? [] : parseTrackedDirtyPaths(statusOutput);
 	const candidates: PurgeCandidate[] = dirtyPaths.map((p) => ({
 		path: path.join(directory, p),
 		reason: 'uncommitted tracked change — discarded by git alignment',
@@ -422,6 +411,10 @@ export async function handleCloseCommand(
 			archiveDir: '',
 			archiveSuffix: '',
 			args,
+			// #2953: carry the gate's tracked-dirty measurement so the align
+			// guard can re-verify exactly the scope the operator confirmed
+			// (empty on the clean-tree fast path) right before the reset.
+			purgeGateDirtyPaths: purgeGate.dirtyPaths,
 		};
 
 		// Issue #2077: compute full-auto state ONCE (guarded by sessionID to

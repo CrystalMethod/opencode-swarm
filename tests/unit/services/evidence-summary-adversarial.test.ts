@@ -878,8 +878,8 @@ describe('ATTACK: Event Spam / Resource Exhaustion', () => {
 		await eventBus.publish('preflight.completed', { phase: 1 });
 		const duration = Date.now() - start;
 
-		// Should complete within reasonable time (slowest handler + margin)
-		expect(duration).toBeLessThan(500);
+		// Reasonable time = slowest handler + margin (#2973: widened 500 -> 2000)
+		expect(duration).toBeLessThan(2000);
 		expect(fastHandlerCompleted).toBe(true);
 	});
 

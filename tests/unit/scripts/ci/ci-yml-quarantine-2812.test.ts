@@ -37,10 +37,21 @@ const INTEGRATION_LEDGER_PATH = join(
 // the literal `$path` string for every iteration, masking which path
 // failed; sibling pinning tests like ci-yml-quarantine-2740.test.ts and
 // ci-yml-quarantine-2761.test.ts use the same destructured object form).
+// #2973 retirement (2026-09-27): all five #2812 windows entries were retired
+// (phase-complete.lock-adversarial's safeRmRecursive fix had already landed via
+// PR #2807; archive + write-receipts-feedback got safeRmRecursive teardown and
+// pr-subscriptions-checkpoint + recall-evaluation-profile-isolation got the
+// POLLS reduction / per-test floor in the retiring PR). The three former
+// entries and the two previously-unpinned rows (pr-subscriptions-checkpoint,
+// recall-evaluation-profile-isolation — pinned by no test before this) are all
+// absence guards now: no silent re-add without fresh merge-group
+// windows-latest failure evidence.
 const ISSUE_2812_THIS_PR_QUARANTINED_PATHS: ReadonlyArray<{ path: string }> = [
 	{ path: 'tests/unit/commands/archive.test.ts' },
 	{ path: 'tests/unit/mcp/write-receipts-feedback-2500.test.ts' },
 	{ path: 'tests/unit/tools/phase-complete.lock-adversarial.test.ts' },
+	{ path: 'tests/unit/background/pr-subscriptions-checkpoint.test.ts' },
+	{ path: 'tests/unit/memory/recall-evaluation-profile-isolation.test.ts' },
 ];
 
 // Mirror ci.yml's active-entry extraction exactly:
@@ -58,14 +69,9 @@ function activeEntries(ledgerPath: string): string[] {
 describe('ci.yml integration — windows quarantine ledger entries for issue #2812 (this PR)', () => {
 	test.each(
 		ISSUE_2812_THIS_PR_QUARANTINED_PATHS,
-	)('$path is an active entry in the windows ledger', ({ path }) => {
-		// Regression guard for the three net-new #2812 entries added by this
-		// PR: without them, the windows-latest unit shards would keep
-		// flaking on these files and Rule A would re-file duplicate issues
-		// on every detection (it only drops candidates already present in
-		// a ledger).
+	)('$path is retired from the windows ledger (#2973)', ({ path }) => {
 		expect(existsSync(WINDOWS_LEDGER_PATH)).toBe(true);
-		expect(activeEntries(WINDOWS_LEDGER_PATH)).toContain(path);
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(path);
 	});
 
 	test.each(
@@ -107,10 +113,10 @@ describe('ci.yml integration — windows quarantine ledger entries for issue #28
 		// a "# STATUS: N active entr(y|ies)" header line. Drift between the
 		// declared count and the actual active-entry count (e.g. an entry
 		// removed without updating the header, or a count bumped without the
-		// matching entries) makes the header lie to triage. Note: this only
-		// catches count drift; the presence tests above are the cross-PR
-		// overwrite guard. Post-#2812 count is 9 (6 pre-existing on main
-		// from PRs #2774/#2811 + 3 net-new from this PR).
+		// matching entries) makes the header lie to triage. Post-#2973 the
+		// ledger is empty (0 active entries), the tests above are absence
+		// guards, and this test pins the header's declared 0 against the
+		// actual active-entry count.
 		const raw = readFileSync(WINDOWS_LEDGER_PATH, 'utf8').replace(
 			/\r\n/g,
 			'\n',

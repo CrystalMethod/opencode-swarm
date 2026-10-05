@@ -59,17 +59,17 @@ function activeEntries(ledgerPath: string): string[] {
 describe('ci.yml integration — quarantine ledger entries for issue #2740', () => {
 	test.each(
 		ISSUE_2740_QUARANTINED_PATHS,
-	)('$path is an active entry in its ledger', ({
+	)('$path is retired from its ledger (#2973)', ({
 		path: quarantinedPath,
 		expectedLedger,
 	}) => {
-		// Regression guard for issue #2740: the merge-group flake-detection
-		// workflow (#1782) auto-filed all three paths as flaky candidates.
-		// Without these entries, Rule A would re-file duplicate issues on
-		// every detection (it only drops candidates already present in a
-		// ledger) and the unit/coverage shards would keep flaking.
+		// #2973 retirement (2026-09-27): each path's named remedy landed in
+		// the retiring PR (evidence-summary budget widened to 2000ms; bun-compat
+		// PROBE_TIMEOUT_MS raised to 30s; promote-registration canonical
+		// mkdtemp + safeRmRecursive teardown). Absence guard: no silent
+		// re-add without fresh merge-group failure evidence.
 		expect(existsSync(expectedLedger)).toBe(true);
-		expect(activeEntries(expectedLedger)).toContain(quarantinedPath);
+		expect(activeEntries(expectedLedger)).not.toContain(quarantinedPath);
 	});
 
 	test.each(

@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+	normalizeModelChain,
+	resolveScopedModelSelection,
+} from '../../../src/models/model-override-state';
+import {
 	advancePendingTaskModelRoute,
+	advanceSessionFallbackSelection,
 	bindPendingTaskModelRouteChild,
 	clearPendingTaskModelRoutesForSession,
 	getTaskModelRoutingStateSnapshot,
+	recordSessionChatAgent,
 	registerPendingTaskModelRoute,
 	resetTaskModelRoutingStateForTests,
+	resolveSessionChatAgent,
+	resolveSessionChatModelOverride,
 	resolveTaskChatModelOverride,
 } from '../../../src/models/task-model-routing';
 
@@ -171,5 +179,54 @@ describe('task model routing', () => {
 			}),
 		]);
 		expect(snapshot.scopedSelections).toEqual([]);
+	});
+});
+
+describe('session chat-agent cache and primary-session resolver (#2989 review)', () => {
+	test('records and resolves the chat-boundary agent, cleared on session-end clear only', () => {
+		recordSessionChatAgent('sess-a', 'cloud_architect');
+		expect(resolveSessionChatAgent('sess-a')).toBe('cloud_architect');
+		expect(resolveSessionChatAgent('sess-unknown')).toBeUndefined();
+
+		clearPendingTaskModelRoutesForSession('sess-a', 'invocation');
+		expect(resolveSessionChatAgent('sess-a')).toBe('cloud_architect');
+		clearPendingTaskModelRoutesForSession('sess-a');
+		expect(resolveSessionChatAgent('sess-a')).toBeUndefined();
+	});
+
+	test('resolver returns primary for a selection still at index 0 (F-002 branch pin)', () => {
+		resolveScopedModelSelection(
+			{ sessionID: 'sess-p', invocationID: '', role: 'architect' },
+			normalizeModelChain('prov/primary', ['prov/fb1']),
+		);
+		const resolution = resolveSessionChatModelOverride({
+			sessionID: 'sess-p',
+			role: 'architect',
+			primaryModel: 'prov/primary',
+			fallbackModels: ['prov/fb1'],
+		});
+		expect(resolution.status).toBe('primary');
+		expect(resolution.fallbackIndex).toBe(0);
+	});
+
+	test('advance seeds then steps: first advance accepted at fb1, second exhausts', () => {
+		const first = advanceSessionFallbackSelection({
+			sessionID: 'sess-adv',
+			role: 'architect',
+			primaryModel: 'prov/primary',
+			fallbackModels: ['prov/fb1'],
+		});
+		expect(first).toMatchObject({
+			accepted: true,
+			exhausted: false,
+			modelString: 'prov/fb1',
+		});
+		const second = advanceSessionFallbackSelection({
+			sessionID: 'sess-adv',
+			role: 'architect',
+			primaryModel: 'prov/primary',
+			fallbackModels: ['prov/fb1'],
+		});
+		expect(second).toMatchObject({ accepted: true, exhausted: true });
 	});
 });

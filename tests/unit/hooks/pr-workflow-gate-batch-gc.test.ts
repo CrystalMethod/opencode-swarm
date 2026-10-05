@@ -40,7 +40,10 @@ import {
  * mutation lock changed or escaped .swarm"). A generous explicit budget is the
  * fix; the work itself cannot be shrunk without making the cap injectable.
  */
-const CAP_TEST_TIMEOUT_MS = 60_000;
+// 150s floor (#2973 retirement of the #2761 slowness flake): local runs measured
+// 56.35s against the former 60s cap and merge-group pressure (all-retry timeouts)
+// blew past it; the criterion's named remedy is raising the cold-shard floor.
+const CAP_TEST_TIMEOUT_MS = 150_000;
 const { MAX_WORKFLOW_BATCHES } = gateInternals;
 const [DIM_A] = PR_REVIEW_BASE_DIMENSION_IDS;
 const REVIEW_ITEM_IDS = PR_REVIEW_BASE_DIMENSION_IDS.map(

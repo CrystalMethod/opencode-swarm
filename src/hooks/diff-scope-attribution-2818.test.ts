@@ -435,9 +435,12 @@ describe('validateDiffScope per-task attribution (#2818)', () => {
 		recordStageBCompletion(session, '1.1', 'reviewer');
 		recordStageBCompletion(session, '1.1', 'test_engineer');
 		expect(
-			recordModifiedFilesForTask(session, '1.1', [
-				path.join(dir, 'src', 'a.ts'),
-			]),
+			recordModifiedFilesForTask(
+				session,
+				'1.1',
+				[path.join(dir, 'src', 'a.ts')],
+				dir,
+			),
 		).toBe(true);
 
 		const result = await checkReviewerGateWithScope('1.1', dir, sessionID);
@@ -455,10 +458,12 @@ describe('validateDiffScope per-task attribution (#2818)', () => {
 		recordStageBCompletion(session, '1.1', 'reviewer');
 		recordStageBCompletion(session, '1.1', 'test_engineer');
 		expect(
-			recordModifiedFilesForTask(session, '1.1', [
-				path.join(dir, 'src', 'a.ts'),
-				path.join(dir, 'src', 'x.ts'),
-			]),
+			recordModifiedFilesForTask(
+				session,
+				'1.1',
+				[path.join(dir, 'src', 'a.ts'), path.join(dir, 'src', 'x.ts')],
+				dir,
+			),
 		).toBe(true);
 
 		const result = await checkReviewerGateWithScope('1.1', dir, sessionID);

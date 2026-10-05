@@ -1,5 +1,166 @@
 # Changelog
 
+## [7.189.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.12...v7.189.0) (2026-10-05)
+
+
+### Features
+
+* **ci:** expiry-aware quarantine census, renewal-requires-issue policy, and weekly aging workflow ([#2905](https://github.com/ZaxbyHub/opencode-swarm/issues/2905)) ([377fcdc](https://github.com/ZaxbyHub/opencode-swarm/commit/377fcdcf13d44220d211ce4bb456ada70d8967d5))
+
+
+### Bug Fixes
+
+* **ci:** resolve swarm-pr-review findings on [#3067](https://github.com/ZaxbyHub/opencode-swarm/issues/3067) ([76da8b6](https://github.com/ZaxbyHub/opencode-swarm/commit/76da8b66104ad5e2f6147b491c411bcb418d311f))
+
+## [7.188.12](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.11...v7.188.12) (2026-10-04)
+
+
+### Bug Fixes
+
+* **commands:** review-round corrections for harness/skill-opt config wiring ([8c5b7a3](https://github.com/ZaxbyHub/opencode-swarm/commit/8c5b7a3a42b778ed4accd34e08f46341da5be754))
+* **commands:** wire ctx.config into harness-opt/skill-opt registry closures ([1c52e55](https://github.com/ZaxbyHub/opencode-swarm/commit/1c52e555f6ab7e5270b1f3a94e764b0db3321f74))
+
+## [7.188.11](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.10...v7.188.11) (2026-10-04)
+
+
+### Bug Fixes
+
+* **turbo/lean:** unify integrated_diff_required default via DEFAULT_LEAN_TURBO_CONFIG ([#2954](https://github.com/ZaxbyHub/opencode-swarm/issues/2954)) ([a347d99](https://github.com/ZaxbyHub/opencode-swarm/commit/a347d994d5da4754043b795bf969277a877b3532))
+
+## [7.188.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.9...v7.188.10) (2026-10-04)
+
+
+### Bug Fixes
+
+* **3050:** close swarm-pr-review findings from both review passes ([88c74ce](https://github.com/ZaxbyHub/opencode-swarm/commit/88c74ce677227ae67271be59b9d6f32e139d1ed7))
+* **3050:** close two reviewer findings on the feedback round ([3fdd501](https://github.com/ZaxbyHub/opencode-swarm/commit/3fdd50187b0f0a45055be39a5a951b459c47d583))
+* **lang,build-check:** route Composer wrappers through the contained launcher; surface spawnError ([#3050](https://github.com/ZaxbyHub/opencode-swarm/issues/3050)) ([3cbff55](https://github.com/ZaxbyHub/opencode-swarm/commit/3cbff55556180ebf81a4e220caa000328e6ecc79))
+
+## [7.188.9](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.8...v7.188.9) (2026-10-03)
+
+
+### Bug Fixes
+
+* **test-runner:** spawn-error outcome, win32 gradle launcher, targets-only guard ([#3039](https://github.com/ZaxbyHub/opencode-swarm/issues/3039), [#3040](https://github.com/ZaxbyHub/opencode-swarm/issues/3040), [#3041](https://github.com/ZaxbyHub/opencode-swarm/issues/3041)) ([1061828](https://github.com/ZaxbyHub/opencode-swarm/commit/1061828a55f3adcbaedfa827958b9196809caecd))
+* **workflow:** writer-side session-view refresh for blocked-start Stage A recovery ([#3043](https://github.com/ZaxbyHub/opencode-swarm/issues/3043)) ([24f611f](https://github.com/ZaxbyHub/opencode-swarm/commit/24f611f098df528799e93bded8b370b5ec90c70c))
+
+## [7.188.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.7...v7.188.8) (2026-10-03)
+
+
+### Bug Fixes
+
+* **knowledge:** authorize dispatched-child knowledge_receipt filing via dispatch lineage ([7ef36ea](https://github.com/ZaxbyHub/opencode-swarm/commit/7ef36ea9ed22ebba6d9c289b067497e0be7deeb4))
+* **knowledge:** close swarm-pr-review findings on [#3036](https://github.com/ZaxbyHub/opencode-swarm/issues/3036) — lineage sweep clear, sanitization, test pins ([a6794d5](https://github.com/ZaxbyHub/opencode-swarm/commit/a6794d5777aaa1e7cac31f2389a9e219c1314205))
+
+## [7.188.7](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.6...v7.188.7) (2026-10-03)
+
+
+### Bug Fixes
+
+* **config:** close reviewer round-2 findings on the ratchet fix round ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([18832bb](https://github.com/ZaxbyHub/opencode-swarm/commit/18832bb5156cea58343dd00118c6dcfc0c565c56))
+* **config:** close swarm-pr-review findings F-001..F-004 on the config-consumption ratchet ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([d848998](https://github.com/ZaxbyHub/opencode-swarm/commit/d848998b88718f6aac572e3b34ee4562c806d566))
+* **config:** config-consumption ratchet for every PluginConfigSchema key ([#2904](https://github.com/ZaxbyHub/opencode-swarm/issues/2904)) ([a9e60ca](https://github.com/ZaxbyHub/opencode-swarm/commit/a9e60ca707fbaad54038724a60d8b0935b1d0475))
+* **workflow:** resync Stage B settlement view from durable evidence ([#3032](https://github.com/ZaxbyHub/opencode-swarm/issues/3032)) ([9cb9eee](https://github.com/ZaxbyHub/opencode-swarm/commit/9cb9eee7011c822042767dca97d5b5c0f56ddcc6))
+
+## [7.188.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.5...v7.188.6) (2026-10-02)
+
+
+### Bug Fixes
+
+* **ci:** diff release-owned files from the merge-base ([#2997](https://github.com/ZaxbyHub/opencode-swarm/issues/2997)) ([de21735](https://github.com/ZaxbyHub/opencode-swarm/commit/de21735d56cbd4b00a02e083146443e8b31cdb0f))
+* **ci:** diff release-owned files from the merge-base ([#2997](https://github.com/ZaxbyHub/opencode-swarm/issues/2997)) ([eb8ec26](https://github.com/ZaxbyHub/opencode-swarm/commit/eb8ec268573f923e80c5186e413f1a3e52f57813))
+* **models:** rotate default models onto the verified zen keyless roster and fire model-unavailable fallback on v2 ([17d4d53](https://github.com/ZaxbyHub/opencode-swarm/commit/17d4d538c16748cda66bccd6009d936c64ebf8fd))
+* **models:** rotate default models onto the verified zen keyless roster and fire model-unavailable fallback on v2 ([#3022](https://github.com/ZaxbyHub/opencode-swarm/issues/3022)) ([785064a](https://github.com/ZaxbyHub/opencode-swarm/commit/785064add0493b23348e35dd482e572d7735aecd))
+* **v2:** per-agent registration hold, sticky-error narrowing, and normalized fallback modelString ([#3029](https://github.com/ZaxbyHub/opencode-swarm/issues/3029) review followup) ([a57d0bf](https://github.com/ZaxbyHub/opencode-swarm/commit/a57d0bf771a7049f96ef4fc1ec37fc07e5869d0f))
+* **v2:** per-agent registration hold, sticky-error narrowing, normalized fallback modelString ([#3029](https://github.com/ZaxbyHub/opencode-swarm/issues/3029) review followup) ([115c8d3](https://github.com/ZaxbyHub/opencode-swarm/commit/115c8d33f6e8372a1e0bb592f6e5f916f0de8a0d))
+
+## [7.188.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.4...v7.188.5) (2026-10-02)
+
+
+### Bug Fixes
+
+* **full-auto:** durable mirror oversight sequence across restarts ([#3011](https://github.com/ZaxbyHub/opencode-swarm/issues/3011)) ([0196644](https://github.com/ZaxbyHub/opencode-swarm/commit/0196644045850d4ea5f58e6853f3c6025791fc1e))
+
+## [7.188.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.3...v7.188.4) (2026-10-02)
+
+
+### Bug Fixes
+
+* **context-map:** record and surface decisions end-to-end ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([66e91f6](https://github.com/ZaxbyHub/opencode-swarm/commit/66e91f645cfe304b6dfbcff379514bd089f692c0))
+* **context-map:** record and surface decisions end-to-end ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([9d0efd8](https://github.com/ZaxbyHub/opencode-swarm/commit/9d0efd814b51fdb7acf5600cd88cde92d8616afe))
+* **context-map:** resolve review findings on decisions wiring ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([b7a53ef](https://github.com/ZaxbyHub/opencode-swarm/commit/b7a53ef01809304d58b856681368575f9f758c85))
+* **context-map:** resolve swarm-pr-review findings on decisions pipeline ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([fd0ce4d](https://github.com/ZaxbyHub/opencode-swarm/commit/fd0ce4d8e9d702a6dd3904c350abe092a50e1711))
+* **context-map:** restore RoleProfile import in capsule types test ([#3016](https://github.com/ZaxbyHub/opencode-swarm/issues/3016)) ([91b818f](https://github.com/ZaxbyHub/opencode-swarm/commit/91b818f7393cd18da69642babcff93748b5c6cd8))
+* **lang:** parse .tsx with the tsx grammar in syntax_check ([#3013](https://github.com/ZaxbyHub/opencode-swarm/issues/3013)) ([b5bc780](https://github.com/ZaxbyHub/opencode-swarm/commit/b5bc780749b4ae195c2788a7ab8f62d1d97451de))
+
+## [7.188.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.2...v7.188.3) (2026-10-01)
+
+
+### Bug Fixes
+
+* **context-map:** durable decision identity across restarts ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([103f809](https://github.com/ZaxbyHub/opencode-swarm/commit/103f809bc0ccec33db0131406ae9f37355042be1))
+* **context-map:** durable decision identity across restarts ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([55eb264](https://github.com/ZaxbyHub/opencode-swarm/commit/55eb26494a8de06b589a64e3d6d3b3968c7e947e))
+* **context-map:** resolve PR-review feedback on decision-id allocation ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([58c7a8b](https://github.com/ZaxbyHub/opencode-swarm/commit/58c7a8b68ae1a12b5ea0e7592fdde1be8fc39de4))
+* **context-map:** resolve review findings on decision-id allocation ([#2720](https://github.com/ZaxbyHub/opencode-swarm/issues/2720)) ([e9aff0a](https://github.com/ZaxbyHub/opencode-swarm/commit/e9aff0a515023473ca54cc7e0c5fb5bc7a62dd4f))
+
+## [7.188.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.1...v7.188.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **ci:** check-test-clock scans src/** tests and emits a raw-clock ratchet ([#2951](https://github.com/ZaxbyHub/opencode-swarm/issues/2951)) ([062e9ba](https://github.com/ZaxbyHub/opencode-swarm/commit/062e9babac3cfb71c83a544e6ffc2457fe7eb0b7))
+
+## [7.188.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.0...v7.188.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **test:** add vacuous-assertion ratchet and clean up 18 cannot-fail sites ([#2903](https://github.com/ZaxbyHub/opencode-swarm/issues/2903)) ([a631469](https://github.com/ZaxbyHub/opencode-swarm/commit/a63146949d8cf90a932ef9999de8251b7afbe142))
+* **test:** close swarm-pr-review findings PRR-001..010 on the vacuous ratchet ([#2903](https://github.com/ZaxbyHub/opencode-swarm/issues/2903)) ([cd0dc7f](https://github.com/ZaxbyHub/opencode-swarm/commit/cd0dc7fea0f01929b0dc64ad18fbd4e9364f9c37))
+
+## [7.188.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.3...v7.188.0) (2026-09-29)
+
+
+### Features
+
+* **observability:** track bounded supersession counts for restart recovery ([#2794](https://github.com/ZaxbyHub/opencode-swarm/issues/2794)) ([4bdda24](https://github.com/ZaxbyHub/opencode-swarm/commit/4bdda240e4154eb11c5fdbf9921046b25e915215))
+* **observability:** track bounded supersession counts for restart recovery ([#2794](https://github.com/ZaxbyHub/opencode-swarm/issues/2794)) ([79f9743](https://github.com/ZaxbyHub/opencode-swarm/commit/79f974337bbd20e09fe04a025c8d4c4d01553098))
+
+
+### Bug Fixes
+
+* **ci:** add weekly host-contract drift check against npm-latest host source ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([f38a747](https://github.com/ZaxbyHub/opencode-swarm/commit/f38a747af391ebcf8e3d1ac5e42a00dfac97a29c))
+* **ci:** add weekly host-contract drift check against npm-latest host source ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([b135518](https://github.com/ZaxbyHub/opencode-swarm/commit/b135518ea93d3bde3ce9226afd83fc8fdf5c760c))
+* **ci:** address implementation-review MINORs in check-host-contract ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([b902925](https://github.com/ZaxbyHub/opencode-swarm/commit/b90292527a78e2ee01773fc71ed57affed60bc96))
+* **ci:** close swarm-pr-review findings on the host-contract check ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([46486f3](https://github.com/ZaxbyHub/opencode-swarm/commit/46486f3407c626e8397a12ccaa3014e4409d9ca5))
+* **ci:** review nits — drop dead loader, pin INPUT_TAG wiring, ignore test scratch dir ([#2902](https://github.com/ZaxbyHub/opencode-swarm/issues/2902)) ([822c42d](https://github.com/ZaxbyHub/opencode-swarm/commit/822c42d5f66b539e9574fed969a2147122ec3372))
+* **close:** re-verify tree cleanliness before the destructive align reset ([4fdbc40](https://github.com/ZaxbyHub/opencode-swarm/commit/4fdbc4091e40aaeaf60f85bd0486ad634abc133f))
+* **close:** resolve review findings on [#2953](https://github.com/ZaxbyHub/opencode-swarm/issues/2953) (refusal hint, test hygiene) ([6ad6dc1](https://github.com/ZaxbyHub/opencode-swarm/commit/6ad6dc19f592695f6c0f1eadfe9132a49e68961a))
+* **knowledge:** truthful quarantine outcomes in knowledge_archive ([#2950](https://github.com/ZaxbyHub/opencode-swarm/issues/2950)) ([fc18d21](https://github.com/ZaxbyHub/opencode-swarm/commit/fc18d2187881599ae84ba8bcfb59d09e9c5aad94))
+* **knowledge:** truthful quarantine outcomes in knowledge_archive ([#2950](https://github.com/ZaxbyHub/opencode-swarm/issues/2950)) ([5fd5fe5](https://github.com/ZaxbyHub/opencode-swarm/commit/5fd5fe586d619e235507fc3e65589beb46d9a627))
+* **observability:** close PR [#2999](https://github.com/ZaxbyHub/opencode-swarm/issues/2999) review findings (PRR2-001..006) ([5ba80e5](https://github.com/ZaxbyHub/opencode-swarm/commit/5ba80e50c93503821d1270fec06fadf7522d159e))
+
+## [7.187.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.2...v7.187.3) (2026-09-28)
+
+
+### Bug Fixes
+
+* **models:** primary-session fallback on provider quota errors ([#2989](https://github.com/ZaxbyHub/opencode-swarm/issues/2989)) ([cf9203e](https://github.com/ZaxbyHub/opencode-swarm/commit/cf9203e6a16f5721f70c7644c30ca348e558ec19))
+* **models:** primary-session fallback on provider quota errors ([#2989](https://github.com/ZaxbyHub/opencode-swarm/issues/2989)) ([54d53e4](https://github.com/ZaxbyHub/opencode-swarm/commit/54d53e4983fb12e2e7014c09c443d31043cad7ba))
+* **review:** resolve PR [#2991](https://github.com/ZaxbyHub/opencode-swarm/issues/2991) review findings (bot F-001/F-002 + PRR-001/002/013) ([150f87d](https://github.com/ZaxbyHub/opencode-swarm/commit/150f87d56537e0b98b7c3ade08b711981b588464))
+
+## [7.187.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.1...v7.187.2) (2026-09-28)
+
+
+### Bug Fixes
+
+* **ci:** restore general-ledger format header; normalize macos EOF ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973) review r1) ([29ebf2d](https://github.com/ZaxbyHub/opencode-swarm/commit/29ebf2d34b9b074ee0c943e2163cc4fe22868ce3))
+* **ci:** retire 13 of 16 renewed quarantine-ledger entries ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973)) ([58c431b](https://github.com/ZaxbyHub/opencode-swarm/commit/58c431b5067fdaae399f5b9d0da1b32925ce32e4))
+* **ci:** retire 13 of 16 renewed quarantine-ledger entries ([#2973](https://github.com/ZaxbyHub/opencode-swarm/issues/2973)) ([269078d](https://github.com/ZaxbyHub/opencode-swarm/commit/269078dadd8873f95ae77810b64c12454c735ef7))
+* **state:** canonicalize attribution file paths at the write site ([6259052](https://github.com/ZaxbyHub/opencode-swarm/commit/62590524ade6eb739c484710b054cbd37b2388c2))
+* **state:** deterministic drive-relative drop in attribution canonicalization ([8a9548e](https://github.com/ZaxbyHub/opencode-swarm/commit/8a9548ea4f8cbab5fa0512ba6cc720434db7384d))
+* **state:** harden attribution canonicalization bounds per PR review ([980a9f7](https://github.com/ZaxbyHub/opencode-swarm/commit/980a9f74bf4b02dd1726cbf274aa5dd57e71f899))
+
 ## [7.187.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.187.0...v7.187.1) (2026-09-27)
 
 

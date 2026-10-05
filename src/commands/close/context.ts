@@ -114,6 +114,14 @@ export interface CloseStageContext {
 	archiveDir: string;
 	archiveSuffix: string;
 	args: string[];
+	/**
+	 * Issue #2953: the tracked-dirty set the close gate measured at the top of
+	 * this invocation — exactly the scope the operator's confirm token
+	 * certified (or the empty set on the clean-tree fast path). The align
+	 * stage's guard re-verifies it immediately before the destructive reset
+	 * and aborts fail-closed if tracked files changed in the window.
+	 */
+	purgeGateDirtyPaths?: string[];
 }
 export interface GitAlignResult {
 	gitAlignResult: string;

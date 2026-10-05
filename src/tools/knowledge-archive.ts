@@ -63,6 +63,23 @@ async function loadConfigForPolicy(directory: string) {
 	return KnowledgeConfigSchema.parse(loaded.knowledge ?? {});
 }
 
+/**
+ * #2950: ONE result contract for archive/purge/quarantine denials so the three
+ * modes cannot drift apart again. Accepts either the policy decision's
+ * unauthorized arm or the denied outcome from `quarantineEntry` (same shape).
+ * The message prefix is pinned by tests — keep it verbatim.
+ */
+function mapCurationDenial(
+	mode: ArchiveMode,
+	denial: { basis: string; detail: string },
+): { success: false; error: string; basis: string } {
+	return {
+		success: false,
+		error: `Cohort-safety policy blocked this ${mode}: ${denial.detail}`,
+		basis: denial.basis,
+	};
+}
+
 export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		allowWorkingDirectoryOverride: true,
@@ -151,10 +168,11 @@ export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 				}
 				try {
 					// PRR-003: verify the entry exists before calling quarantineEntry.
-					// quarantineEntry silently returns void on not-found (it only
-					// warns), so without this check the tool would report
-					// `success:true` for a missing id — diverging from the archive
-					// mode which returns `{success:false, message:'entry not found'}`.
+					// Since #2950 the callee reports {status:'not_found'} and the
+					// outcome arm below maps it to the same
+					// `{success:false, message:'entry not found'}` shape this
+					// pre-check returns — the pre-check stays as defense in depth
+					// (a friendlier miss before any lock is taken).
 					const swarmEntries = await readKnowledge<KnowledgeEntryBase>(
 						resolveSwarmKnowledgePath(directory),
 					);
@@ -180,9 +198,48 @@ export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 						config: await loadConfigForPolicy(directory),
 						entry: target,
 					};
-					await quarantineEntry(directory, id, reason, reportedBy, {
-						input: curationInput,
-						context: curationContext,
+					const outcome = await quarantineEntry(
+						directory,
+						id,
+						reason,
+						reportedBy,
+						{
+							input: curationInput,
+							context: curationContext,
+						},
+					);
+					if (outcome.status === 'quarantined') {
+						// Short-circuit BEFORE the events tombstone +
+						// queueMicrotask below: those side-effects are
+						// archive/purge-only, and skill-retirement is
+						// irreversible (wrong for a reversible quarantine).
+						return JSON.stringify({
+							success: true,
+							id,
+							tier,
+							mode,
+							status: 'quarantined',
+						});
+					}
+					if (outcome.status === 'denied') {
+						// #2950: the cohort-safety policy denied INSIDE the
+						// lock; the rejected-file tombstone was NOT written
+						// (success path only) — the proposal persisted inside
+						// authorizeCuration is the operator-side audit.
+						return JSON.stringify(mapCurationDenial('quarantine', outcome));
+					}
+					if (outcome.status === 'not_found') {
+						// The entry vanished between the PRR-003 pre-check and
+						// the locked read. Same shape the pre-check returns.
+						return JSON.stringify({
+							success: false,
+							message: 'entry not found',
+						});
+					}
+					return JSON.stringify({
+						success: false,
+						error:
+							'quarantine rejected: invalid directory, entry id, or reporter',
 					});
 				} catch (err) {
 					return JSON.stringify({
@@ -193,17 +250,6 @@ export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 								: 'Unknown error during quarantine',
 					});
 				}
-				// Short-circuit BEFORE the events tombstone + queueMicrotask below:
-				// those side-effects are archive/purge-only. `quarantineEntry`
-				// already wrote its own audit trail (rejected-file tombstone), and
-				// skill-retirement is irreversible (wrong for a reversible quarantine).
-				return JSON.stringify({
-					success: true,
-					id,
-					tier,
-					mode,
-					status: 'quarantined',
-				});
 			}
 
 			const knowledgePath =
@@ -269,11 +315,9 @@ export const knowledge_archive: ReturnType<typeof createSwarmTool> =
 						curationContext,
 					);
 					if (!decision.authorized) {
-						return JSON.stringify({
-							success: false,
-							error: `Cohort-safety policy blocked this ${mode}: ${decision.detail}`,
-							basis: decision.basis,
-						});
+						// #2950: shared mapping so archive/purge/quarantine
+						// denials cannot drift apart again.
+						return JSON.stringify(mapCurationDenial(mode, decision));
 					}
 					// PRR-002: capture the authorized entry's revision + content_hash so
 					// the swarm archive mutation below can CAS against them (rejecting a
