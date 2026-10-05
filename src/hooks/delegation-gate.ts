@@ -45,7 +45,10 @@ import {
 	getProfileForIdentity,
 	type QaGates,
 } from '../db/qa-gate-profile.js';
-import { resolveEpicDispatchPolicy } from '../epic/gate-policy.js';
+import {
+	resolveEpicDispatchPolicy,
+	resolveEpicPrFeedbackConflict,
+} from '../epic/gate-policy.js';
 import { epicSentinelExists, isEpicOpenForProject } from '../epic/lifecycle.js';
 import { commitEpicResidueAfterDelegation } from '../epic/residue-commit.js';
 import { epicIsolationDegradedMessage } from '../epic/task-landing.js';
@@ -3411,6 +3414,7 @@ export const _internals = {
 	isEpicOpenForProject,
 	/** Epic v2 C4: wave-only coder admission + the wave's parallel/isolation policy. */
 	resolveEpicDispatchPolicy,
+	resolveEpicPrFeedbackConflict,
 	/** Epic v2 C3 (X1): commit a non-coder writer's residue for an epic task. */
 	commitEpicResidueAfterDelegation,
 	/** Epic sentinel probe (one existsSync) gating the residue seam. */
@@ -5271,6 +5275,16 @@ export function createDelegationGateHook(
 			backgroundCoderReservationByCallID.set(input.callID, claim.reservation);
 		};
 		if (preparedScope.kind === 'pr_feedback') {
+			// Review F-007: outside the wave gate, so check it does not write
+			// files a running Epic wave owns. Sentinel-first: no I/O beyond one
+			// existsSync when Epic is off.
+			if (_internals.epicSentinelExists(directory)) {
+				const conflict = _internals.resolveEpicPrFeedbackConflict(
+					directory,
+					preparedScope.declaredFiles,
+				);
+				if (conflict) throw new Error(`${conflict.code}: ${conflict.message}`);
+			}
 			await reserveBackgroundCoderIfNeeded(1);
 			try {
 				if (

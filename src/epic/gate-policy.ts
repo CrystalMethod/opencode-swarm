@@ -338,3 +338,59 @@ export function resolveEpicGateTaskAttribution(
 				: `EPIC STAGE A ATTRIBUTION: the checked files (${list(relative)}) fall inside the frozen scope of several wave-${wave.seq} tasks (${list(owners)}), so this gate run is credited to no task. Run it with files only one task owns (${scopes}).`,
 	};
 }
+
+export type EpicPrFeedbackConflict = {
+	code: 'EPIC_PR_FEEDBACK_SCOPE_OVERLAP' | 'EPIC_STATE_UNREADABLE';
+	message: string;
+};
+
+/**
+ * Review F-007: a PR-feedback coder is admitted outside the wave gate (its
+ * authority is the authenticated PR-feedback declaration, not a plan task),
+ * so nothing stopped it from writing files a running wave task owns. While
+ * an epic has an ISSUED wave, refuse a PR-feedback coder whose declared files
+ * overlap any of that wave's frozen task scopes — in either direction (a
+ * declared directory that contains a frozen file overlaps too). Null when
+ * there is no overlap, no issued wave, or no open epic; unreadable epic state
+ * fails closed. Sentinel-first: one `existsSync` when Epic is off.
+ */
+export function resolveEpicPrFeedbackConflict(
+	directory: string,
+	declaredFiles: readonly string[] | null | undefined,
+): EpicPrFeedbackConflict | null {
+	if (!_internals.epicSentinelExists(directory)) return null;
+	let epic: EpicRecordV1 | null;
+	try {
+		epic = _internals.getOpenEpic(directory);
+	} catch (error) {
+		return {
+			code: 'EPIC_STATE_UNREADABLE',
+			message: `the open epic's lifecycle state is unreadable (${errorText(error)}), so this PR-feedback coder cannot be checked against the running wave (fail closed). Ask the user to run \`/swarm epic status\`.`,
+		};
+	}
+	if (!epic || epic.activeWaveSeq === null) return null;
+	const wave = epic.waves.find(
+		(w) => w.seq === epic.activeWaveSeq && w.status === 'issued',
+	);
+	if (!wave) return null;
+	const declared = (declaredFiles ?? [])
+		.filter((file) => file.trim() !== '')
+		.map((file) =>
+			path.isAbsolute(file) ? path.relative(directory, file) : file,
+		);
+	const owners: string[] = [];
+	for (const taskId of wave.taskIds) {
+		const frozen = wave.files[taskId] ?? [];
+		const overlaps = declared.some(
+			(file) =>
+				scopeContains(frozen, file) ||
+				frozen.some((entry) => scopeContains([file], entry)),
+		);
+		if (overlaps) owners.push(taskId);
+	}
+	if (owners.length === 0) return null;
+	return {
+		code: 'EPIC_PR_FEEDBACK_SCOPE_OVERLAP',
+		message: `this PR-feedback coder's declared files (${list(declared)}) overlap the frozen scope of wave-${wave.seq} task(s) ${list(owners)}, which may be writing them right now. Let the wave finish (epic_next_wave closes it), then dispatch the PR-feedback coder.`,
+	};
+}
