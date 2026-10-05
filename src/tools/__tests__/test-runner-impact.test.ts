@@ -215,7 +215,7 @@ describe('impact scope execution', () => {
 		const parsed = parseResult(result);
 
 		expect(parsed.success).toBe(false);
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 	});
 
 	test('5. Impact scope when analyzeImpact throws → falls back gracefully', async () => {
@@ -280,7 +280,7 @@ describe('impact scope schema validation', () => {
 		const parsed = parseResult(result);
 
 		expect(parsed.success).toBe(false);
-		expect(parsed.error).toContain('require explicit files');
+		expect(parsed.error).toContain('require a non-empty files array');
 
 		fs.rmSync(tempDir, { recursive: true, force: true });
 	});

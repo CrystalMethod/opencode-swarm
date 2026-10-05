@@ -962,6 +962,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt': {
 		handler: (ctx) =>
 			handleSkillOptPlan(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -976,6 +977,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt plan': {
 		handler: (ctx) =>
 			handleSkillOptPlan(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -989,6 +991,7 @@ export const COMMAND_REGISTRY = {
 	'skill-opt run': {
 		handler: (ctx) =>
 			handleSkillOptRun(ctx.directory, ctx.args, {
+				config: ctx.config?.skill_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -1078,6 +1081,7 @@ export const COMMAND_REGISTRY = {
 	'harness-opt run': {
 		handler: (ctx) =>
 			handleHarnessOptRun(ctx.directory, ctx.args, {
+				config: ctx.config?.harness_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -1108,6 +1112,7 @@ export const COMMAND_REGISTRY = {
 	'harness-opt compare': {
 		handler: (ctx) =>
 			handleHarnessOptCompare(ctx.directory, ctx.args, {
+				config: ctx.config?.harness_opt,
 				dispatcher: ctx.evaluationModelDispatcher,
 				parentSessionId: ctx.sessionID,
 			}),
@@ -1858,10 +1863,11 @@ export const COMMAND_REGISTRY = {
 		toolPolicy: 'restricted',
 	},
 	recover: {
-		handler: (ctx) => handleRecoverCommand(ctx.directory, ctx.args),
+		handler: (ctx) =>
+			handleRecoverCommand(ctx.directory, ctx.args, ctx.sessionID),
 		description: 'Recover wedged coder settlements [task_id] [--force]',
 		details:
-			"Settles stale coder-settlement WALs in .swarm/coder-settlements/ — the CODER_DISPATCH_IN_PROGRESS wedge where a dispatch's completion never fired (issue #2268). Safe mode recovers settlements whose owner process is gone. --force also releases ownership keys held by this process: use only when no dispatch is genuinely running (a late completion then reports CODER_SETTLEMENT_IDEMPOTENCY_CONFLICT, safe to ignore). Never interrupts another live OpenCode process. Also repairs tasks wedged at coder_delegated with unattributed green pre_check evidence — the post-reset TASK_WORKFLOW_STAGE_A_REQUIRED wedge — and the settlement-wedge class (issue #2828): a task whose workflow drifted to idle or blocked while a COMMITTED accepted coder settlement and green post-settlement pre-check evidence still justify Stage A gets the missing stage_a_passed written directly, with a settlementRecovery marker and a stage_a_repair audit event in .swarm/events.jsonl; the architect-side audited escape hatch for the same receipts is the recover_stage_a_task tool. Note that --force affects only in-process settlement-WAL ownership and does not override Stage A wedge-classification refusals. Pass [task_id] to scope both phases to one task. Diagnose and repair emit per-category status explanations (missing/stale/ambiguous/corrupt/live_wedge/settlement_wedge) with shell-correct invocation guidance per host — see docs/troubleshooting/recovery-runbook.md (#2665). Human-only.",
+			"Settles stale coder-settlement WALs in .swarm/coder-settlements/ — the CODER_DISPATCH_IN_PROGRESS wedge where a dispatch's completion never fired (issue #2268). Safe mode recovers settlements whose owner process is gone. --force also releases ownership keys held by this process: use only when no dispatch is genuinely running (a late completion then reports CODER_SETTLEMENT_IDEMPOTENCY_CONFLICT, safe to ignore). Never interrupts another live OpenCode process. Also repairs tasks wedged at coder_delegated with unattributed green pre_check evidence — the post-reset TASK_WORKFLOW_STAGE_A_REQUIRED wedge — and the settlement-wedge class (issue #2828): a task whose workflow drifted to idle or blocked while a COMMITTED accepted coder settlement and green post-settlement pre-check evidence still justify Stage A gets the missing stage_a_passed written directly, with a settlementRecovery marker and a stage_a_repair audit event in .swarm/events.jsonl; the architect-side audited escape hatch for the same receipts is the recover_stage_a_task tool. Both recovery surfaces also refresh the invoking session's in-memory task workflow view, so a blocked-start wedge does not survive the recovery in the session that ran it (#3043). Note that --force affects only in-process settlement-WAL ownership and does not override Stage A wedge-classification refusals. Pass [task_id] to scope both phases to one task. Diagnose and repair emit per-category status explanations (missing/stale/ambiguous/corrupt/live_wedge/settlement_wedge) with shell-correct invocation guidance per host — see docs/troubleshooting/recovery-runbook.md (#2665). Human-only.",
 		args: '[task_id] [--force]',
 		category: 'utility',
 		toolPolicy: 'human-only',

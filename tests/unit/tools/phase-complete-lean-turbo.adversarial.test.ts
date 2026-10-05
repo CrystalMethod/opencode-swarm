@@ -23,7 +23,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-
 import { closeAllProjectDbs } from '../../../src/db/project-db';
 import {
 	ensureAgentSession,
@@ -37,6 +36,7 @@ import type {
 	LeanTurboPersistedState,
 } from '../../../src/turbo/lean/state';
 import { writePersisted } from '../../../src/turbo/lean/state';
+import { writeLeanDiffEvidence } from '../../helpers/lean-phase-evidence';
 
 const { phase_complete } = await import('../../../src/tools/phase-complete');
 
@@ -224,20 +224,6 @@ function writeLaneEvidence(dir: string, phase: number, laneId: string): void {
 	);
 }
 
-function writeLeanPhaseEvidence(dir: string, phase: number): void {
-	const evidenceDir = path.join(dir, '.swarm', 'evidence', String(phase));
-	fs.mkdirSync(evidenceDir, { recursive: true });
-	fs.writeFileSync(
-		path.join(evidenceDir, 'lean-turbo-phase.json'),
-		JSON.stringify({
-			phase,
-			status: 'completed',
-			integratedDiffSummary: 'Integrated lane diff summary.',
-			timestamp: new Date().toISOString(),
-		}),
-	);
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -258,7 +244,7 @@ describe('phase_complete — Lean Turbo adversarial', () => {
 		setupSwarmDir(tempDir);
 		writeRetroBundle(tempDir, 1);
 		writeDriftEvidence(tempDir, 1);
-		writeLeanPhaseEvidence(tempDir, 1);
+		writeLeanDiffEvidence(tempDir, 1);
 
 		ensureAgentSession('sess1');
 		recordPhaseAgentDispatch('sess1', 'coder');
