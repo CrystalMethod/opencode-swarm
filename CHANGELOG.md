@@ -1,5 +1,24 @@
 # Changelog
 
+## [7.190.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.189.0...v7.190.0) (2026-10-05)
+
+
+### Features
+
+* **doctor:** pin both inert-config-key arms via a collector DI seam ([#2957](https://github.com/ZaxbyHub/opencode-swarm/issues/2957)) ([16ca396](https://github.com/ZaxbyHub/opencode-swarm/commit/16ca39626d97c545f96de341fa5d91f73384c818))
+* **epic:** epic mode v2 with plan-bound epics, gate-enforced waves, learning and plan shaping ([214c5cd](https://github.com/ZaxbyHub/opencode-swarm/commit/214c5cd304d301cead0892361f2783a70df37ea8))
+
+
+### Bug Fixes
+
+* **epic:** bind the phase review to the epic instance ([7b16040](https://github.com/ZaxbyHub/opencode-swarm/commit/7b16040e37354325964e8f8c8f1eb360822a66a5))
+* **epic:** close the remaining teardown, dispatch, and gating gaps ([8f6b5ec](https://github.com/ZaxbyHub/opencode-swarm/commit/8f6b5ecd79dcebdbde10773a2188d3802cbbf30e))
+* **epic:** refuse --abandon while a coder settlement is still live ([8d8875d](https://github.com/ZaxbyHub/opencode-swarm/commit/8d8875d2ccdda19e97706010ac4c2b342767ed53))
+* **epic:** refuse a PR-feedback coder that overlaps a running wave ([6a7c4fc](https://github.com/ZaxbyHub/opencode-swarm/commit/6a7c4fc6f705ee152e2581ed6777679292bee339))
+* **epic:** strip Epic tools before the gate grants them ([48ec42f](https://github.com/ZaxbyHub/opencode-swarm/commit/48ec42f9156d85f1d63524899c7fccb4769d1905))
+* **guardrails:** a redirect into /dev/null is not a shell write target ([4e58888](https://github.com/ZaxbyHub/opencode-swarm/commit/4e588888d9126e677976b1ce1734db3c1293beea))
+* **guardrails:** keep a temp-suffix mention out of the atomic-write ratchet's text scan ([c5caa88](https://github.com/ZaxbyHub/opencode-swarm/commit/c5caa88b995ffec2b92329074b9179347613c51e))
+
 ## [7.189.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.12...v7.189.0) (2026-10-05)
 
 
