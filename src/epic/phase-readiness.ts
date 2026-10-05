@@ -20,6 +20,9 @@
  * ## Freshness binding
  *
  * The evidence binds to:
+ *   - the epic instance (`epic_key`), so a review recorded under one epic can
+ *     never satisfy phase_complete under another — e.g. after the epic was
+ *     closed and a new one started on the same plan,
  *   - the plan identity (`plan_id`) and status-free plan structure hash,
  *   - the phase's task ids + statuses (`phase_tasks_digest`), and
  *   - the byte content of every phase task's `.swarm/evidence/{taskId}.json`
@@ -164,6 +167,12 @@ export interface EpicRoleVerdict {
 }
 
 export interface EpicPhaseBinding {
+	/**
+	 * Key of the open epic the review ran under (null if none was readable).
+	 * Absent on evidence written before the field existed, which is then
+	 * treated as stale rather than malformed.
+	 */
+	epic_key?: string | null;
 	plan_id: string;
 	plan_structure_hash: string;
 	phase_task_ids: string[];
@@ -219,6 +228,15 @@ function taskEvidenceFingerprint(directory: string, taskId: string): string {
 	}
 }
 
+/** Key of the open epic, or null when none is open or its row is unreadable. */
+function currentEpicKey(directory: string): string | null {
+	try {
+		return _internals.getOpenEpic(directory)?.epicKey ?? null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Compute the freshness binding for `phase` of `plan`. Returns the ids of
  * tasks that are not yet `completed`/`closed` so the review tool can refuse a
@@ -245,6 +263,7 @@ export function computeEpicPhaseBinding(
 			.filter((task) => task.status !== 'completed' && task.status !== 'closed')
 			.map((task) => task.id),
 		binding: {
+			epic_key: currentEpicKey(directory),
 			plan_id: derivePlanId(plan),
 			plan_structure_hash: computePlanStructureHash(plan),
 			phase_task_ids: taskIds,
@@ -305,6 +324,9 @@ function isBinding(value: unknown): value is EpicPhaseBinding {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
 	const v = value as Record<string, unknown>;
 	return (
+		(v.epic_key === undefined ||
+			v.epic_key === null ||
+			typeof v.epic_key === 'string') &&
 		typeof v.plan_id === 'string' &&
 		typeof v.plan_structure_hash === 'string' &&
 		Array.isArray(v.phase_task_ids) &&
@@ -516,6 +538,9 @@ export async function verifyEpicPhaseReadiness(
 	}
 	const recorded = evidence.binding;
 	const drift: string[] = [];
+	if ((recorded.epic_key ?? null) !== current.binding.epic_key) {
+		drift.push('epic instance');
+	}
 	if (recorded.plan_id !== current.binding.plan_id) drift.push('plan identity');
 	if (recorded.plan_structure_hash !== current.binding.plan_structure_hash) {
 		drift.push('plan structure');

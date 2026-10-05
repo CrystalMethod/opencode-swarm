@@ -215,7 +215,7 @@ Epic needs the OpenCode SDK client (`swarmState.opencodeClient`) for worktree-is
 - Call `epic_next_wave` and read `status` and `reason`. `blocked: merge-failed` means a recorded worktree merge failure. Once the task's work is really in the tree, or the record belongs to another plan, run `/swarm epic clear-merge-failure <taskId>` (preview) and then `--confirm`.
 - Task refs that a rebase or amend made unreachable: `/swarm epic status --repair-refs`.
 - `epic-branch-mismatch`: run `git checkout swarm/epic/<epicKey>`.
-- Unreadable or orphaned state, or a plan that is gone: `/swarm epic close --abandon` always works, even with the config gate off. It never lands, and it switches back to the original branch when the tree is clean.
+- Unreadable or orphaned state, or a plan that is gone: `/swarm epic close --abandon` works even with the config gate off, once no coder is still running (it refuses `coders-live` while a coder settlement is owned by a live dispatch). It never lands, and it switches back to the original branch when the tree is clean.
 - To see what the planner learned, use `/swarm epic learning`. To start from a clean prior, use `/swarm epic prior reset`, which prints a single-use confirm token.
 
 ## Design rationale and decisions
