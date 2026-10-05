@@ -116,6 +116,27 @@ describe('gradle convention scope — derived --tests targets', () => {
 		expect(spawnCalls[0].opts.cwd).toBe(path.join(tempDir, 'backend'));
 	});
 
+	test('fail-closed: a non-JVM file in the selection preserves the structured error and spawns nothing', async () => {
+		createFile(tempDir, 'build.gradle', '');
+		createFile(tempDir, 'src/test/java/com/x/FooTest.java', 'class FooTest {}');
+		createFile(tempDir, 'src/test/resources/fixture.json', '{}');
+
+		const result = await run({
+			scope: 'convention',
+			files: [
+				'src/test/java/com/x/FooTest.java',
+				'src/test/resources/fixture.json',
+			],
+		});
+		const parsed = JSON.parse(result);
+
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toBe(
+			'Framework "gradle" does not support targeted test-file execution',
+		);
+		expect(spawnCalls.length).toBe(0);
+	});
+
 	test('explicit targets still win over derivation (regression guard)', async () => {
 		createFile(tempDir, 'build.gradle', '');
 		createFile(tempDir, 'src/test/java/com/x/FooTest.java', 'class FooTest {}');

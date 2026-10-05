@@ -153,8 +153,8 @@ describe('nested Maven module detection and execution', () => {
 		});
 	});
 
-	describe('convention-scope structured error', () => {
-		test('Java test file without targets returns class-based error', async () => {
+	describe('convention-scope derived targets (#3072)', () => {
+		test('Java test file without targets derives -Dtest in the module dir', async () => {
 			createFile(tempDir, 'backend/pom.xml', '<project/>');
 			createFile(
 				tempDir,
@@ -162,17 +162,14 @@ describe('nested Maven module detection and execution', () => {
 				'class FooTest {}',
 			);
 
-			const result = await test_runner.execute(
+			await test_runner.execute(
 				{ scope: 'convention', files: ['backend/src/test/java/FooTest.java'] },
 				{ directory: tempDir },
 			);
-			const parsed = JSON.parse(result);
 
-			expect(parsed.success).toBe(false);
-			expect(parsed.error).toContain(
-				'Framework "maven" does not support targeted test-file execution',
-			);
-			expect(parsed.message).toContain('class-based');
+			expect(spawnCalls.length).toBe(1);
+			expect(spawnCalls[0].cmd).toEqual(['mvn', 'test', '-Dtest=FooTest']);
+			expect(spawnCalls[0].opts.cwd).toBe(path.join(tempDir, 'backend'));
 		});
 	});
 

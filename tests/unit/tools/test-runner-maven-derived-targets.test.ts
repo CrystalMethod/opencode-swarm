@@ -184,6 +184,31 @@ describe('maven convention scope — derived -Dtest targets', () => {
 		expect(spawnCalls[0].cmd).toEqual(['mvn', 'test', '-Dtest=BarTest']);
 	});
 
+	test('fail-closed: a non-JVM file in the selection preserves the structured error and spawns nothing', async () => {
+		createFile(tempDir, 'backend/pom.xml', '<project/>');
+		createFile(
+			tempDir,
+			'backend/src/test/java/com/x/FooTest.java',
+			'class FooTest {}',
+		);
+		createFile(tempDir, 'backend/src/test/resources/fixture.json', '{}');
+
+		const result = await run({
+			scope: 'convention',
+			files: [
+				'backend/src/test/java/com/x/FooTest.java',
+				'backend/src/test/resources/fixture.json',
+			],
+		});
+		const parsed = JSON.parse(result);
+
+		expect(parsed.success).toBe(false);
+		expect(parsed.error).toBe(
+			'Framework "maven" does not support targeted test-file execution',
+		);
+		expect(spawnCalls.length).toBe(0);
+	});
+
 	test('coverage=true adds no maven coverage argument (regression guard)', async () => {
 		createFile(tempDir, 'backend/pom.xml', '<project/>');
 		createFile(
