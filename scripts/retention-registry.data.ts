@@ -1479,9 +1479,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'src/epic/plan-shaping-seam.ts:175 bumpShapingIteration — one small atomic JSON (plan key + iteration) rewritten per save_plan with Epic config on and no epic open',
 			'src/epic/lifecycle.ts:914 createEpicRecord — CAS row create + sentinel write inside one BEGIN IMMEDIATE (the lifecycle lock)',
-			'src/epic/lifecycle.ts:956 updateEpicRecord — revision-CAS row update (waves, task outcomes, phases, epic branch, closing, landing attempt); the row grows with the plan: ≤ one wave + one outcome per task, ≤ 256 co-change pairs and ≤ 256 task → component entries per wave, ≤ 20 review verdicts per phase',
-			'src/epic/lifecycle.ts:1266 deleteEpicState — row delete + sentinel compare-and-delete under the lock',
-			'src/epic/lifecycle.ts:1345 repairEpicSentinel — sentinel restore/remove under the lock (/swarm epic status)',
+			'src/epic/lifecycle.ts:991 updateEpicRecord — revision-CAS row update (waves, task outcomes, phases, epic branch, closing, landing attempt); the row grows with the plan: ≤ one wave + one outcome per task, ≤ 256 co-change pairs and ≤ 256 task → component entries per wave, ≤ 20 review verdicts per phase',
+			'src/epic/lifecycle.ts:1304 deleteEpicState — row delete + sentinel compare-and-delete under the lock',
+			'src/epic/lifecycle.ts:1383 repairEpicSentinel — sentinel restore/remove under the lock (/swarm epic status)',
 			'src/epic/close.ts:306 writeReport — one atomic report (epic-report-v2, embedding the epic scorecard) per closed epic',
 		],
 		readerCitations: [

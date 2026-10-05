@@ -46,28 +46,29 @@ exception with no remedy, and every later transition — including both
 close variants — threw the same way. `updateEpicRecord` now refuses at
 768 KiB with a message naming the epic and the way out.
 
-## Epic tools are stripped when Epic is off
+## Also in this round (author-side, kept as-is)
 
-The Epic tool gate was purely additive, so a `tool_filter.overrides`
-entry naming an Epic tool granted it with `epic.mode.enabled` false.
-Both tools already refused at runtime, so this closed an allow-list
-leak rather than a capability hole. The gate is now strip-then-add,
-matching the skills gate.
+Three further review findings were fixed on the same branch while this
+round was in flight and are carried here unchanged: the Epic tool gate
+is now strip-then-add so a `tool_filter.overrides` entry cannot re-grant
+an Epic tool with Epic off; a phase approval is bound to the epic
+instance so it no longer survives an epic restart on the same plan; and
+the retention-registry citation anchors were re-anchored.
 
-## A phase approval no longer survives an epic restart
-
-Phase readiness was bound only to the plan and its task evidence — both
-of which a restart of the *same* plan reproduces exactly — so an
-approval recorded before an abandon replayed against a new run. The
-binding now carries the epic instance key and drift-checks it.
-
-## Not changed: the PR-feedback coder bypass
+## Not changed here: the PR-feedback coder bypass
 
 The delegation gate returns for `pr_feedback` coders before the Epic
 dispatch seam. That is deliberate, not a hole: the bypass still
 publishes a scope binding and runs the settlement WAL, it is rooted at
 the project root, and in a worktree-isolated epic the primary checkout
-is filesystem-disjoint from the wave coders' worktrees. The behavior
-is documented in the code and pinned by
-`tests/unit/hooks/delegation-gate-epic-pr-feedback.test.ts`. Gating it
-would reverse a tested design decision rather than close a gap.
+is filesystem-disjoint from the wave coders' worktrees. The behavior is
+documented in the code and pinned by
+`tests/unit/hooks/delegation-gate-epic-pr-feedback.test.ts`.
+
+A parallel review round reached the same conclusion and recommended
+leaving it alone, but the author implemented a narrower version of the
+gate in the meantime: a `pr_feedback` coder that *overlaps a running
+wave's frozen scope* is now refused. That is a compatible refinement —
+it keeps the documented bypass for coders outside an active wave and
+only closes the overlap case — so this round did not touch it.
+
