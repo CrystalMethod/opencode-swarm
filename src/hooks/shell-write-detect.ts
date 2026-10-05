@@ -1476,7 +1476,8 @@ function detectInplaceEdit(cmd: unknown): WriteTarget[] {
 	// With a script flag, GNU sed reads the word after a bare `-i` as a file
 	// (`sed -e X -i ../x f` edits ../x and f) while BSD sed reads it as a
 	// backup suffix (`sed -i .bak -e X f`). Only a conventional backup suffix
-	// (`.bak`, `.orig`, `.old`, `.save`, `.backup`, `.tmp`, `.swp`, `.~`) is
+	// (`.bak`, `.orig`, `.old`, `.save`, `.backup`, `.swp`, `.~`, or a temp-file
+	// suffix) is
 	// taken as the BSD suffix; it is reported as the file only when nothing
 	// else is left. Any other dot-word (`.env`, `./x`, `../x`, `.a/b`) is a
 	// file. Without a script flag a dot-word in that slot is GNU's script,
