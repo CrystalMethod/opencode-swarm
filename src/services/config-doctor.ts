@@ -10,7 +10,10 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { ALL_AGENT_NAMES } from '../config/constants';
-import { CONFIG_CONSUMERS, type TopLevelConfigKey } from '../config/consumers';
+import {
+	CONFIG_CONSUMERS,
+	type ConfigConsumerDeclaration,
+} from '../config/consumers';
 import type { PluginConfig } from '../config/schema';
 import {
 	FALLBACK_MODELS_MAX,
@@ -202,8 +205,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * produce noise (same contract as the #2102 raw collectors above). The inert set
  * comes from CONFIG_CONSUMERS (`src/config/consumers.ts`), the single
  * declaration of consumer truth enforced by `bun run scripts/check-config-consumption.ts`.
+ *
+ * The `consumers` parameter is a default-parameter DI seam (issue #2957): tests
+ * inject declaration states so both arms of `ConfigConsumerDeclaration`
+ * (inert / consumed) are provable on any tree, without `mock.module` — the same
+ * pattern as `collectLeanTurboGateSatisfiabilityFindings`'s
+ * `registeredToolNames` seam below.
  */
-function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
+export function collectRawInertKeyFindings(
+	directory: string,
+	consumers: Readonly<
+		Record<string, ConfigConsumerDeclaration>
+	> = CONFIG_CONSUMERS,
+): ConfigFinding[] {
 	const findings: ConfigFinding[] = [];
 	const { userConfigPath, projectConfigPath } = getConfigPaths(directory);
 	// One dedupe set across both files so an inert key present in user AND
@@ -221,7 +235,12 @@ function collectRawInertKeyFindings(directory: string): ConfigFinding[] {
 
 			for (const key of Object.keys(raw)) {
 				if (seen.has(key)) continue;
-				const declaration = CONFIG_CONSUMERS[key as TopLevelConfigKey];
+				// Own-property read: raw config keys are attacker-controlled
+				// strings, so a prototype-named key must never resolve through
+				// the declaration map's prototype chain.
+				const declaration = Object.hasOwn(consumers, key)
+					? consumers[key]
+					: undefined;
 				if (!declaration || !('inert' in declaration)) continue;
 				seen.add(key);
 				findings.push({

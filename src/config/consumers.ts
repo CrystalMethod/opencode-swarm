@@ -594,3 +594,8 @@ export const CONFIG_CONSUMERS: Record<
 		],
 	},
 };
+
+// The map is repo-authored, ratchet-enforced truth; freezing it keeps
+// test files (which read it directly for production-map pins) from ever
+// silently mutating the production declarations.
+Object.freeze(CONFIG_CONSUMERS);
