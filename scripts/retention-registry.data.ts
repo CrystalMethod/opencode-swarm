@@ -1482,7 +1482,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/epic/lifecycle.ts:956 updateEpicRecord — revision-CAS row update (waves, task outcomes, phases, epic branch, closing, landing attempt); the row grows with the plan: ≤ one wave + one outcome per task, ≤ 256 co-change pairs and ≤ 256 task → component entries per wave, ≤ 20 review verdicts per phase',
 			'src/epic/lifecycle.ts:1266 deleteEpicState — row delete + sentinel compare-and-delete under the lock',
 			'src/epic/lifecycle.ts:1345 repairEpicSentinel — sentinel restore/remove under the lock (/swarm epic status)',
-			'src/epic/close.ts:300 writeReport — one atomic report (epic-report-v2, embedding the epic scorecard) per closed epic',
+			'src/epic/close.ts:306 writeReport — one atomic report (epic-report-v2, embedding the epic scorecard) per closed epic',
 		],
 		readerCitations: [
 			'src/epic/lifecycle.ts:801 getOpenEpic — sentinel existsSync first; one row read (≤8 rows listed) only when the sentinel exists',
@@ -1509,7 +1509,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		pathGrammar: '.swarm/epic-prior/reports/<epicKey>-<stamp>.json',
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/epic/close.ts'],
-		writerCitations: ['src/epic/close.ts:300 writeReport — atomic report copy, then pruneEpicPriorReports keeps the newest 50'],
+		writerCitations: ['src/epic/close.ts:306 writeReport — atomic report copy, then pruneEpicPriorReports keeps the newest 50'],
 		readerCitations: [
 			'src/epic/report.ts:77 listEpicPriorReports — /swarm epic report: one directory listing + stat per report (≤ 50 kept)',
 			'src/epic/report.ts:207 readReport — one report read, ≤ MAX_EPIC_REPORT_BYTES (4 MiB); epic-report-v2 only, scorecard validated field by field',
@@ -1567,9 +1567,9 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'src/turbo/lean/evidence.ts:216 writeLaneEvidence / :269 writePhaseEvidence — atomic',
 			'src/turbo/lean/integration.ts:404 writeCriticEvidence / src/turbo/lean/reviewer.ts:381 writeReviewerEvidence — atomic',
-			'src/epic/phase-readiness.ts:851 runEpicPhaseReview — one atomic evidence/{phase}/epic-phase-review.json per phase, overwritten on re-review',
+			'src/epic/phase-readiness.ts:876 runEpicPhaseReview — one atomic evidence/{phase}/epic-phase-review.json per phase, overwritten on re-review',
 		],
-		readerCitations: ['src/turbo/lean/evidence.ts:234,284,320 — per-file + directory listing, sync; integration.ts:249 compileCriticPackage', 'src/epic/phase-readiness.ts:413 verifyEpicPhaseReadiness — single per-phase file read by phase_complete'],
+		readerCitations: ['src/turbo/lean/evidence.ts:234,284,320 — per-file + directory listing, sync; integration.ts:249 compileCriticPackage', 'src/epic/phase-readiness.ts:435 verifyEpicPhaseReadiness — single per-phase file read by phase_complete'],
 		schemaVersion: 'none',
 		stateClass: 'governed-content',
 		privacyClass: 'content',
