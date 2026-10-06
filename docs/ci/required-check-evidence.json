@@ -111,9 +111,15 @@
 		}
 	},
 	"localWorkflowHashes": {
+<<<<<<< HEAD
 		".github/workflows/ci.yml": "f8dadd9f0109602b6854a762f6f48752ad0cfea9f1d36255cf52891575f3a3d8",
 		".github/workflows/pr-standards.yml": "e055a61a1d43c2c3c74f6b263b21fc4c8f80b62cc34669be59163cb7e492b5a1",
 		".github/workflows/drift-check.yml": "0152d2d2603de3748ab08d7f9256af0c3b0c48400158d63acede5fa57a1ecabc"
+=======
+		".github/workflows/ci.yml": "c0aa1321834f368fa73f1e8ea26b661347caf603c6915b719b0f8848cb69af77",
+		".github/workflows/pr-standards.yml": "e055a61a1d43c2c3c74f6b263b21fc4c8f80b62cc34669be59163cb7e492b5a1",
+		".github/workflows/drift-check.yml": "b1ce25c5790245daab68b389812caf9b5588a4b5c9524a7b942c5690193bfa81"
+>>>>>>> origin/main
 	},
 	"capturedAt": "2026-09-11T21:30:25Z",
 	"captureSha": "b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f",
