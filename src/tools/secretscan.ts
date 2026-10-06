@@ -68,10 +68,13 @@ export interface SecretscanResult {
 	 * Skips attributable specifically to scan-policy extension exclusion
 	 * (#2918). The extension-exclusion site in runSecretscanOnFiles is the
 	 * ONLY increment site: binary-content skips, missing files, invalid
-	 * entries, and every incomplete route deliberately do NOT count, so
-	 * `policy_skipped_files === requested_files` with zero findings and zero
-	 * incomplete coverage proves vacuous coverage (nothing the scan policy
-	 * allows scanning was requested).
+	 * entries, .secretscanignore suppressions (#3107), and every incomplete
+	 * route deliberately do NOT count, so `policy_skipped_files ===
+	 * requested_files` with zero findings and zero incomplete coverage proves
+	 * vacuous coverage (nothing the scan policy allows scanning was
+	 * requested). Ignore-file suppressions count toward skipped_files only —
+	 * a repo-writable ignore file can never satisfy the vacuous-coverage
+	 * predicate of the changed-file gate.
 	 */
 	policy_skipped_files: number;
 	/**
@@ -452,6 +455,35 @@ function isExcluded(
 	// Glob / path pattern match against the relative path
 	for (const pattern of globPatterns) {
 		if (path.matchesGlob(relPath, pattern)) return true;
+	}
+	return false;
+}
+
+/**
+ * Exclusion match for an explicitly requested file, with directory-traversal
+ * pruning fidelity (#3107). The directory path tests every traversed entry
+ * (files AND directories) via isExcluded, and a directory hit prunes its whole
+ * subtree; an explicit file under a pruned directory must therefore match on
+ * the file itself OR on any ancestor directory prefix of its root-relative
+ * path (forward slashes, relative to the realpath-resolved scan root).
+ */
+function isIgnoredExplicitPath(
+	relPath: string,
+	ignoreExact: Set<string>,
+	ignoreGlobs: string[],
+): boolean {
+	const segments = relPath.split('/');
+	const file = segments[segments.length - 1] ?? '';
+	if (isExcluded(file, relPath, ignoreExact, ignoreGlobs)) {
+		return true;
+	}
+	let prefix = '';
+	for (let i = 0; i < segments.length - 1; i++) {
+		const segment = segments[i] ?? '';
+		prefix = prefix.length === 0 ? segment : `${prefix}/${segment}`;
+		if (isExcluded(segment, prefix, ignoreExact, ignoreGlobs)) {
+			return true;
+		}
 	}
 	return false;
 }
@@ -1506,6 +1538,13 @@ export async function runSecretscan(
  * Run secretscan over an explicit, already-selected file set.
  * Used by pre_check_batch so changed-file hard gates share the same detector
  * registry and entropy logic as the standalone scanner.
+ *
+ * #3107: also reads `.secretscanignore` at the scan root with the same pattern
+ * language and precedence as the directory scan (exact names + globs; comments,
+ * blanks, and unsafe patterns skipped; ancestor directories prune like
+ * traversal). Ignore-matched files count toward `skipped_files` only — never
+ * `policy_skipped_files` — so the #2918 vacuous-coverage fail-closed arm keeps
+ * biting on all-ignored batches.
  */
 export async function runSecretscanOnFiles(
 	files: string[],
@@ -1553,6 +1592,22 @@ export async function runSecretscanOnFiles(
 		if (!rootStat.isDirectory()) {
 			throw new Error('target must be a directory');
 		}
+		// #3107: load .secretscanignore patterns from the scan root with the
+		// same merge the directory path applies (exact names + globs; this
+		// path has no tool-exclude argument, so ignore-file patterns only).
+		// NOT seeded with DEFAULT_EXCLUDE_DIRS — explicitly requested files
+		// under default-excluded directories stay scannable, as before.
+		const ignoreExact = new Set<string>();
+		const ignoreGlobs: string[] = [];
+		for (const pattern of loadSecretScanIgnore(canonicalRoot)) {
+			if (pattern.length === 0) continue;
+			if (isGlobOrPathPattern(pattern)) {
+				ignoreGlobs.push(pattern);
+			} else {
+				ignoreExact.add(pattern);
+			}
+		}
+		const hasIgnorePatterns = ignoreExact.size > 0 || ignoreGlobs.length > 0;
 		const filesToScan = files.slice(0, MAX_EXPLICIT_FILES_SCANNED);
 		let incompleteFiles = Math.max(0, files.length - filesToScan.length);
 		if (files.length > filesToScan.length) {
@@ -1734,6 +1789,24 @@ export async function runSecretscanOnFiles(
 					'scope_escape',
 				);
 				continue;
+			}
+
+			if (hasIgnorePatterns) {
+				const relPath = path
+					.relative(canonicalRoot, scanPath)
+					.replace(/\\/g, '/');
+				if (isIgnoredExplicitPath(relPath, ignoreExact, ignoreGlobs)) {
+					// #3107: repo-configured ignore suppression. Counts toward
+					// skipped_files ONLY — never policy_skipped_files — so an
+					// all-ignored batch keeps the #2918 zero-coverage
+					// fail-closed arm (a repo-writable ignore file can never
+					// vacuous-pass the changed-file gate). Placement after the
+					// scope check is load-bearing: an ignore match must never
+					// convert a coverage or security failure into a benign
+					// skip.
+					skippedFiles++;
+					continue;
+				}
 			}
 
 			const outcome = scanFileForSecrets(scanPath, 'explicit');
