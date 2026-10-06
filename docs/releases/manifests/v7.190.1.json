@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.190.1",
+  "tagCommit": "6b53442a1bc07afcca2db93e1e76312ce5ee16d1",
+  "targetCommitish": "6b53442a1bc07afcca2db93e1e76312ce5ee16d1",
+  "releaseBodySha256": "5647b2403dea1d03fd62ff51bb988683c5398bf3c222000203c311426769f591",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3072-derived-maven-gradle-targets.md",
+      "sha256": "eed829ca9ebe01d7da63da6a796315ebf831b38ed74f51563a089d0f10d1d14b"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/full-auto-resume-authorization-preflight.md",
+      "sha256": "3b1eb248484a6b012df1b287fc0ccbe69bb11dce5407e7c134e22b7099a2d911"
+    }
+  ]
+}
