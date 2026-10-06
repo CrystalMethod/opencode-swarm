@@ -12,6 +12,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { loadEvidence } from '../../../src/evidence/manager';
+import { decodePreCheckResult } from '../../../src/hooks/guardrails/pre-check-result';
 import { runPreCheckBatch } from '../../../src/tools/pre-check-batch';
 import {
 	runSecretscanOnFiles,
@@ -65,6 +67,7 @@ async function gitProject(dir: string): Promise<string> {
 function scanSlot(result: Awaited<ReturnType<typeof runPreCheckBatch>>): {
 	files_scanned: number;
 	skipped_files: number;
+	ignored_files?: number;
 	policy_skipped_files: number;
 	requested_files: number;
 	incomplete_files: number;
@@ -75,6 +78,7 @@ function scanSlot(result: Awaited<ReturnType<typeof runPreCheckBatch>>): {
 		| {
 				files_scanned: number;
 				skipped_files: number;
+				ignored_files?: number;
 				policy_skipped_files: number;
 				requested_files: number;
 				incomplete_files: number;
@@ -275,6 +279,8 @@ describe('#3107 .secretscanignore on runSecretscanOnFiles', () => {
 		);
 		expect(result.files_scanned).toBe(1);
 		expect(result.skipped_files).toBe(1);
+		// Audit counter (#3107 feedback): suppressions are countable.
+		expect(result.ignored_files).toBe(1);
 		// #2918 fail-closed doctrine: a repo-writable ignore file must never
 		// satisfy the vacuous-coverage predicate.
 		expect(result.policy_skipped_files).toBe(0);
@@ -397,6 +403,7 @@ describe('#3107 pre_check_batch changed-file gate', () => {
 		const scan = scanSlot(result);
 		expect(scan.files_scanned).toBe(1);
 		expect(scan.skipped_files).toBe(1);
+		expect(scan.ignored_files).toBe(1);
 		expect(scan.policy_skipped_files).toBe(0);
 		expect(scan.requested_files).toBe(2);
 		expect(scan.incomplete_files).toBe(0);
@@ -422,10 +429,44 @@ describe('#3107 pre_check_batch changed-file gate', () => {
 		expect(scan.files_scanned).toBe(0);
 		expect(scan.skipped_files).toBe(2);
 		// The ignore file cannot satisfy the vacuous-coverage predicate
-		// (policy 0 < requested 2), so the only failing arm left is the
-		// zero-coverage "zero requested files scanned" arm.
+		// (policy 0 < requested 2), so the failing arm is the zero-coverage
+		// arm — now naming the ignore file (diagnosability, #3107 feedback).
+		expect(scan.ignored_files).toBe(2);
 		expect(scan.policy_skipped_files).toBe(0);
 		expect(scan.requested_files).toBe(2);
 		expect(scan.incomplete_files).toBe(0);
+	});
+
+	test('clean all-ignored batch fails with a reason naming .secretscanignore', async () => {
+		const dir = await gitProject(tempDir);
+		writeIgnore(dir, 'fixtures\n');
+		write(dir, path.join('fixtures', 'a.txt'), 'hello world\n');
+
+		const result = await runPreCheckBatch(
+			{ files: ['fixtures/a.txt'], directory: dir },
+			dir,
+			dir,
+		);
+		// Owner-configured suppression of an entirely-ignored clean batch
+		// still fails (fail-closed), but the failure is diagnosable: the
+		// persisted evidence names .secretscanignore and the count.
+		expect(result.gates_passed).toBe(false);
+		const scan = scanSlot(result);
+		expect(scan.files_scanned).toBe(0);
+		expect(scan.ignored_files).toBe(1);
+		expect(scan.incomplete_files).toBe(0);
+
+		const loaded = await loadEvidence(dir, 'secretscan');
+		if (loaded.status !== 'found') {
+			throw new Error(`secretscan evidence not found: ${loaded.status}`);
+		}
+		const entries = loaded.bundle.entries.filter(
+			(entry) => entry.type === 'secretscan',
+		);
+		expect(entries.length).toBeGreaterThan(0);
+		const last = entries[entries.length - 1];
+		if (!('summary' in last)) throw new Error('no summary on evidence');
+		expect(String(last.summary)).toContain('suppressed by .secretscanignore');
+		expect(String(last.summary)).toContain('1 requested file(s)');
 	});
 });

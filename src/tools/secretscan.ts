@@ -65,6 +65,15 @@ export interface SecretscanResult {
 	files_scanned: number;
 	skipped_files: number;
 	/**
+	 * Files suppressed by `.secretscanignore` patterns (#3107, explicit-files
+	 * path only; optional for legacy producers, treated as 0). Audit/
+	 * diagnosability counter — never part of the #2918 vacuous-coverage
+	 * predicate, which keys on policy_skipped_files. The directory path emits
+	 * literal 0 (traversal prunes at visitation and does not track
+	 * per-suppression counts — see the caution on policy_skipped_files).
+	 */
+	ignored_files?: number;
+	/**
 	 * Skips attributable specifically to scan-policy extension exclusion
 	 * (#2918). The extension-exclusion site in runSecretscanOnFiles is the
 	 * ONLY increment site: binary-content skips, missing files, invalid
@@ -1445,6 +1454,7 @@ export const secretscan: ReturnType<typeof createSwarmTool> = createSwarmTool({
 				// anomalous and must stay fail-closed (see preflight-service).
 				policy_skipped_files: 0,
 				requested_files: 0,
+				ignored_files: 0,
 				incomplete_files: incompleteFiles,
 				incomplete_paths: discovery.incompletePaths,
 			};
@@ -1565,6 +1575,7 @@ export async function runSecretscanOnFiles(
 		let filesScanned = 0;
 		let skippedFiles = 0;
 		let policySkippedFiles = 0;
+		let ignoredFiles = 0;
 		const requestedFiles = Math.max(0, rawRequestedFiles ?? files.length);
 		const incompletePaths: IncompletePath[] = [];
 		const rawRoot = path.resolve(directory);
@@ -1808,6 +1819,7 @@ export async function runSecretscanOnFiles(
 					// convert a coverage or security failure into a benign
 					// skip.
 					skippedFiles++;
+					ignoredFiles++;
 					continue;
 				}
 			}
@@ -1854,6 +1866,7 @@ export async function runSecretscanOnFiles(
 			files_scanned: filesScanned,
 			skipped_files: skippedFiles,
 			policy_skipped_files: policySkippedFiles,
+			ignored_files: ignoredFiles,
 			requested_files: requestedFiles,
 			incomplete_files: incompleteFiles,
 			incomplete_paths: incompletePaths,
