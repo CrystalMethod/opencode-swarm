@@ -1,0 +1,679 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { z } from 'zod';
+import { readCoreEvents } from '../events/core-events.js';
+import { readPrWorkflowGateState } from '../hooks/pr-workflow-gate.js';
+import { validateSwarmPath } from '../hooks/utils.js';
+import {
+	type RenderReviewBodyInput,
+	renderPrReviewSubmissionBody,
+} from '../pr-review/render-review-body.js';
+import type {
+	ExternalToolRunOptions,
+	ExternalToolRunResult,
+} from '../utils/external-tool-runner.js';
+import { runExternalTool } from '../utils/external-tool-runner.js';
+import { createSwarmTool } from './create-tool.js';
+import { resolveGhBinary } from './gh-evidence.js';
+
+/**
+ * Controller-mediated, head-bound PR review submission (issue #3096, Workstream
+ * C PR 1/2).
+ *
+ * Submits a SETTLED PR-review run to GitHub through the PR Review API
+ * (`POST repos/<owner>/<repo>/pulls/<n>/reviews`), bound to the run's exact
+ * `pr_head_sha` (`commit_id` pinning) with inline comments for findings that
+ * carry file:line evidence.
+ *
+ * Authorization (fail-closed ladder, additive to every existing settlement and
+ * gate path): refuses while any PR-workflow gate is active for the session
+ * (submission opens only after `complete_pr_workflow` clears the gate), refuses
+ * when the workflow for this head was aborted at/after the run's settlement
+ * time, refuses unless the trigger-eval receipt and every findings record bind
+ * to the declared head with at least one post_critic settlement record, and is
+ * architect-only (no child-lane exposure). Disclosed residuals: a crashed
+ * (never aborted, never completed) run with settled artifacts still passes, and
+ * a submission invoked from a different session than the workflow session is
+ * not caught by the session-scoped abort match.
+ */
+
+const GH_TIMEOUT_MS = 20_000;
+const GH_MAX_STDOUT_BYTES = 2 * 1024 * 1024;
+const GH_MAX_STDERR_BYTES = 128 * 1024;
+
+const PR_HEAD_SHA_PATTERN = /^[0-9a-f]{6,64}$/i;
+const REPO_SLUG_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const BLOCKING_SEVERITIES = new Set(['CRITICAL', 'HIGH']);
+
+interface SubmissionFailure {
+	success: false;
+	blocked?: boolean;
+	type:
+		| 'invalid-args'
+		| 'gate-active'
+		| 'aborted'
+		| 'head-mismatch'
+		| 'not-settled'
+		| 'nothing-new'
+		| 'gh-not-found'
+		| 'transport-failed';
+	message: string;
+}
+
+function failure(
+	type: SubmissionFailure['type'],
+	message: string,
+	blocked = false,
+): string {
+	const payload: SubmissionFailure = { success: false, type, message };
+	if (blocked) payload.blocked = true;
+	return JSON.stringify(payload, null, 2);
+}
+
+interface TriggerEvalReceipt {
+	run_id?: unknown;
+	pr_head_sha?: unknown;
+	evaluated_at?: unknown;
+	coverage_degradations?: unknown;
+}
+
+interface PersistedFindingRecord {
+	finding_id?: unknown;
+	status?: unknown;
+	file_line?: unknown;
+	evidence?: unknown;
+	next_action?: unknown;
+	severity?: unknown;
+	boundary?: unknown;
+	pr_head_sha?: unknown;
+	recorded_at?: unknown;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function readJsonFile(absolutePath: string): unknown {
+	let raw: string;
+	try {
+		raw = fs.readFileSync(absolutePath, 'utf-8');
+	} catch {
+		return undefined;
+	}
+	try {
+		return JSON.parse(raw) as unknown;
+	} catch {
+		return null;
+	}
+}
+
+function triggerEvalPath(directory: string, runId: string): string {
+	return validateSwarmPath(
+		directory,
+		path.join('pr-review', runId, 'trigger-eval.json'),
+	);
+}
+
+function findingsPath(directory: string, runId: string): string {
+	return validateSwarmPath(
+		directory,
+		path.join('pr-review', runId, 'findings.jsonl'),
+	);
+}
+
+function coverageDisclosurePath(directory: string, runId: string): string {
+	return validateSwarmPath(
+		directory,
+		path.join('pr-review', runId, 'coverage-disclosure.json'),
+	);
+}
+
+function readFindingsRecords(
+	absolutePath: string,
+): PersistedFindingRecord[] | null | undefined {
+	let raw: string;
+	try {
+		raw = fs.readFileSync(absolutePath, 'utf-8');
+	} catch {
+		return undefined;
+	}
+	const records: PersistedFindingRecord[] = [];
+	for (const line of raw.split('\n')) {
+		const trimmed = line.trim();
+		if (trimmed === '') continue;
+		let parsedLine: unknown;
+		try {
+			parsedLine = JSON.parse(trimmed) as unknown;
+		} catch {
+			return null;
+		}
+		const parsed = asRecord(parsedLine);
+		if (parsed === null) return null;
+		records.push(parsed);
+	}
+	return records;
+}
+
+/**
+ * Settlement time = max(findings recorded_at, trigger receipt evaluated_at).
+ * All writers emit isoNow()-style UTC strings, so a lexicographic ISO-8601
+ * comparison is sound; a missing evaluated_at is tolerated (frozen-check
+ * receipts omit it — real receipts always carry it).
+ */
+function settlementTime(
+	records: readonly PersistedFindingRecord[],
+	receipt: TriggerEvalReceipt,
+): string {
+	let latest = '';
+	for (const record of records) {
+		if (typeof record.recorded_at === 'string' && record.recorded_at > latest) {
+			latest = record.recorded_at;
+		}
+	}
+	if (
+		typeof receipt.evaluated_at === 'string' &&
+		receipt.evaluated_at > latest
+	) {
+		latest = receipt.evaluated_at;
+	}
+	return latest;
+}
+
+function hasAbortAfterSettlement(
+	directory: string,
+	sessionID: string,
+	headSha: string,
+	settledAt: string,
+): boolean {
+	const read = readCoreEvents(directory);
+	if (read.coverage === 'empty' || read.text.trim() === '') return false;
+	for (const line of read.text.split('\n')) {
+		const trimmed = line.trim();
+		if (trimmed === '') continue;
+		let parsedEvent: unknown;
+		try {
+			parsedEvent = JSON.parse(trimmed) as unknown;
+		} catch {
+			continue;
+		}
+		const parsed = asRecord(parsedEvent);
+		if (parsed === null) continue;
+		if (parsed.type !== 'pr_workflow_aborted') continue;
+		if (parsed.sessionID !== sessionID) continue;
+		if (
+			typeof parsed.prHeadSha !== 'string' ||
+			parsed.prHeadSha.toLowerCase() !== headSha
+		) {
+			continue;
+		}
+		const timestamp = parsed.timestamp;
+		if (typeof timestamp !== 'string') continue;
+		// The retained-events window is a bounded tail read; an abort scrolled
+		// out of the window escapes this narrowing (disclosed residual class —
+		// same shape as the crashed-run residual).
+		if (settledAt === '' || timestamp >= settledAt) return true;
+	}
+	return false;
+}
+
+function deriveCoverage(
+	directory: string,
+	runId: string,
+	receipt: TriggerEvalReceipt,
+): RenderReviewBodyInput['coverage'] {
+	const disclosure = asRecord(
+		readJsonFile(coverageDisclosurePath(directory, runId)),
+	);
+	const unresolvedFromDisclosure = disclosure?.unresolvedDimensions;
+	if (Array.isArray(unresolvedFromDisclosure)) {
+		const names = unresolvedFromDisclosure.filter(
+			(name): name is string => typeof name === 'string',
+		);
+		if (names.length > 0) {
+			return { kind: 'PARTIAL', unresolved_dimensions: names };
+		}
+	}
+	const degradations = Array.isArray(receipt.coverage_degradations)
+		? receipt.coverage_degradations
+		: [];
+	const reasons: string[] = [];
+	for (const entry of degradations) {
+		const record = asRecord(entry);
+		if (typeof record?.reason === 'string') {
+			reasons.push(
+				typeof record.trigger_id === 'string'
+					? `${record.trigger_id}: ${record.reason}`
+					: record.reason,
+			);
+		}
+	}
+	if (reasons.length > 0) {
+		return { kind: 'PARTIAL', unresolved_dimensions: reasons };
+	}
+	return { kind: 'FULL', unresolved_dimensions: [] };
+}
+
+function reviewEventFor(records: readonly PersistedFindingRecord[]): string {
+	const blocking = records.some((record) => {
+		const severity =
+			typeof record.severity === 'string'
+				? record.severity.toUpperCase()
+				: 'NONE';
+		return BLOCKING_SEVERITIES.has(severity);
+	});
+	return blocking ? 'REQUEST_CHANGES' : 'COMMENT';
+}
+
+async function fetchExistingCommentBodies(
+	executable: string,
+	directory: string,
+	repoSlug: string,
+	prNumber: number,
+): Promise<{ bodies: string[] } | { refusal: string }> {
+	const endpoints = [
+		`repos/${repoSlug}/pulls/${prNumber}/comments?per_page=100`,
+		`repos/${repoSlug}/pulls/${prNumber}/reviews?per_page=100`,
+	];
+	const bodies: string[] = [];
+	for (const endpoint of endpoints) {
+		const run: ExternalToolRunResult = await _internals.runExternalTool({
+			executable,
+			args: ['api', endpoint],
+			cwd: directory,
+			timeoutMs: GH_TIMEOUT_MS,
+			maxStdoutBytes: GH_MAX_STDOUT_BYTES,
+			maxStderrBytes: GH_MAX_STDERR_BYTES,
+		});
+		if (run.status === 'timeout') {
+			return {
+				refusal: failure(
+					'transport-failed',
+					`gh api ${endpoint} timed out after ${GH_TIMEOUT_MS}ms; refusing to submit without dedupe context`,
+					true,
+				),
+			};
+		}
+		if (run.status !== 'completed') {
+			return {
+				refusal: failure(
+					'transport-failed',
+					`gh api ${endpoint} failed to start (${run.message ?? run.status}); refusing to submit without dedupe context`,
+					true,
+				),
+			};
+		}
+		if (run.exitCode !== 0) {
+			return {
+				refusal: failure(
+					'transport-failed',
+					`gh api ${endpoint} exited ${run.exitCode}: ${run.stderr.split('\n')[0] ?? ''}; refusing to submit without dedupe context`,
+					true,
+				),
+			};
+		}
+		// A healthy-but-non-array body degrades to an empty list for this
+		// endpoint (proceed); real GitHub success responses are arrays.
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(run.stdout) as unknown;
+		} catch {
+			continue;
+		}
+		if (!Array.isArray(parsed)) continue;
+		for (const entry of parsed) {
+			const record = asRecord(entry);
+			if (typeof record?.body === 'string' && record.body !== '') {
+				bodies.push(record.body);
+			}
+		}
+	}
+	return { bodies };
+}
+
+export const _internals: {
+	resolveGhBinary: () => string | null;
+	runExternalTool: (
+		options: ExternalToolRunOptions,
+	) => Promise<ExternalToolRunResult>;
+} = {
+	resolveGhBinary,
+	runExternalTool,
+};
+
+export async function executePrReviewSubmission(
+	args: unknown,
+	directory: string,
+	context: { sessionID?: string } = {},
+): Promise<string> {
+	// Step 0 — validate inside execute: callers may bypass the createSwarmTool
+	// schema (tests and direct CLI use), and every refusal must precede any
+	// transport. Message form satisfies /pr_head_sha|Invalid/i on every arm.
+	const raw = asRecord(args);
+	if (raw === null) {
+		return failure(
+			'invalid-args',
+			'Invalid pr_review_submission args: expected an object with pr_number, repo, run_id, pr_head_sha',
+		);
+	}
+	if (
+		typeof raw.pr_number !== 'number' ||
+		!Number.isInteger(raw.pr_number) ||
+		raw.pr_number <= 0
+	) {
+		return failure(
+			'invalid-args',
+			`Invalid pr_review_submission args: pr_number must be a positive integer (got ${JSON.stringify(raw.pr_number) ?? 'null'})`,
+		);
+	}
+	if (
+		typeof raw.repo !== 'string' ||
+		!REPO_SLUG_PATTERN.test(raw.repo.trim())
+	) {
+		return failure(
+			'invalid-args',
+			`Invalid pr_review_submission args: repo must be an owner/name slug (got ${JSON.stringify(raw.repo) ?? 'null'})`,
+		);
+	}
+	if (
+		typeof raw.run_id !== 'string' ||
+		!RUN_ID_PATTERN.test(raw.run_id.trim())
+	) {
+		return failure(
+			'invalid-args',
+			`Invalid pr_review_submission args: run_id must match ${RUN_ID_PATTERN.source} (got ${JSON.stringify(raw.run_id) ?? 'null'})`,
+		);
+	}
+	if (
+		typeof raw.pr_head_sha !== 'string' ||
+		!PR_HEAD_SHA_PATTERN.test(raw.pr_head_sha.trim())
+	) {
+		return failure(
+			'invalid-args',
+			`Invalid pr_review_submission args: pr_head_sha must be 6-64 hex characters (got ${JSON.stringify(raw.pr_head_sha) ?? 'null'})`,
+		);
+	}
+	const prNumber = raw.pr_number;
+	const repoSlug = raw.repo.trim();
+	const runId = raw.run_id.trim();
+	const headSha = raw.pr_head_sha.trim().toLowerCase();
+
+	const sessionID = context.sessionID?.trim();
+	if (!sessionID) {
+		return failure(
+			'invalid-args',
+			'Invalid pr_review_submission args: a session ID is required (controller-only surface)',
+			true,
+		);
+	}
+
+	// Step b — the gate must be cleared: submission opens only after
+	// complete_pr_workflow clears it. Any surviving PR-workflow gate state for
+	// this session (PR_REVIEW or PR_FEEDBACK, including recovery states) means
+	// the gate is still active; completion deletes the state file.
+	const gateState = await readPrWorkflowGateState(directory, sessionID);
+	if (gateState !== null) {
+		return failure(
+			'gate-active',
+			`BLOCKED: an active ${gateState.mode} gate exists for this session; the submission path opens only after complete_pr_workflow clears the gate`,
+			true,
+		);
+	}
+
+	// Read the run's durable artifacts (needed for the abort recency anchor and
+	// the equality checks below). Missing/corrupt artifacts refuse.
+	const receipt = asRecord(
+		readJsonFile(triggerEvalPath(directory, runId)),
+	) as TriggerEvalReceipt | null;
+	if (receipt === null) {
+		return failure(
+			'not-settled',
+			`Invalid pr_review_submission state: trigger evaluation receipt for run ${runId} is missing or unreadable (.swarm/pr-review/${runId}/trigger-eval.json)`,
+			true,
+		);
+	}
+	const records = readFindingsRecords(findingsPath(directory, runId));
+	if (!records) {
+		return failure(
+			'not-settled',
+			`Invalid pr_review_submission state: findings artifact for run ${runId} is missing or corrupt (.swarm/pr-review/${runId}/findings.jsonl)`,
+			true,
+		);
+	}
+
+	// Step b2 — abort narrowing with a recency anchor: an abort at/after the
+	// run's settlement time refuses (the settled run was aborted); an abort
+	// before settlement belongs to an earlier run and does not block a later
+	// re-run's submission (the documented abort-and-retry recovery flow).
+	if (
+		hasAbortAfterSettlement(
+			directory,
+			sessionID,
+			headSha,
+			settlementTime(records, receipt),
+		)
+	) {
+		return failure(
+			'aborted',
+			`BLOCKED: the PR workflow for head ${headSha} was aborted at/after this run's settlement; aborted runs are out of scope (#3097)`,
+			true,
+		);
+	}
+
+	// Step c — head binding against the trigger receipt envelope.
+	if (receipt.run_id !== runId) {
+		return failure(
+			'head-mismatch',
+			`Invalid pr_review_submission state: trigger evaluation receipt run_id ${JSON.stringify(receipt.run_id) ?? 'null'} does not match the requested run ${runId}`,
+			true,
+		);
+	}
+	const receiptHead =
+		typeof receipt.pr_head_sha === 'string'
+			? receipt.pr_head_sha.trim().toLowerCase()
+			: '';
+	if (receiptHead === '' || receiptHead !== headSha) {
+		return failure(
+			'head-mismatch',
+			`Invalid pr_review_submission state: pr_head_sha mismatch — trigger evaluation receipt for run ${runId} is bound to ${JSON.stringify(receipt.pr_head_sha) ?? 'null'}, not ${headSha}`,
+			true,
+		);
+	}
+
+	// Step d — settlement: at least one post_critic record and every record on
+	// the declared head.
+	const hasPostCritic = records.some(
+		(record) => record.boundary === 'post_critic',
+	);
+	if (!hasPostCritic) {
+		return failure(
+			'not-settled',
+			`Invalid pr_review_submission state: run ${runId} has no post_critic boundary record in findings.jsonl (run not settled)`,
+			true,
+		);
+	}
+	const mixedHead = records.some((record) => {
+		const recordHead =
+			typeof record.pr_head_sha === 'string'
+				? record.pr_head_sha.trim().toLowerCase()
+				: '';
+		return recordHead !== headSha;
+	});
+	if (mixedHead) {
+		return failure(
+			'head-mismatch',
+			`Invalid pr_review_submission state: pr_head_sha mismatch — findings.jsonl for run ${runId} contains records bound to a different head`,
+			true,
+		);
+	}
+
+	const coverage = deriveCoverage(directory, runId, receipt);
+	const event = reviewEventFor(records);
+	const rendererInput: RenderReviewBodyInput = {
+		run_id: runId,
+		pr_head_sha: headSha,
+		verdict: event,
+		coverage,
+		findings: records.map((record) => ({
+			finding_id:
+				typeof record.finding_id === 'string' ? record.finding_id : '',
+			status: typeof record.status === 'string' ? record.status : '',
+			file_line: typeof record.file_line === 'string' ? record.file_line : '',
+			evidence: typeof record.evidence === 'string' ? record.evidence : '',
+			next_action:
+				typeof record.next_action === 'string' ? record.next_action : '',
+			severity:
+				typeof record.severity === 'string' ? record.severity : undefined,
+		})),
+	};
+
+	// Transport seam functions are read from _internals at CALL TIME (tests
+	// swap them per-invocation).
+	const executable = _internals.resolveGhBinary();
+	if (!executable) {
+		return failure(
+			'gh-not-found',
+			'gh was not found on PATH and no override is configured; a GitHub submission requires the gh CLI (there is no unauthenticated POST fallback)',
+			true,
+		);
+	}
+
+	// Step f — existing-comments fetch (dedupe context), strictly BEFORE the
+	// POST. Failure refuses rather than risking duplicate posts.
+	const existing = await fetchExistingCommentBodies(
+		executable,
+		directory,
+		repoSlug,
+		prNumber,
+	);
+	if ('refusal' in existing) return existing.refusal;
+	rendererInput.existingComments = existing.bodies;
+
+	const rendered = renderPrReviewSubmissionBody(rendererInput);
+	if (
+		rendered.inlineComments.length === 0 &&
+		rendererInput.findings.length > 0 &&
+		rendererInput.findings.every((finding) =>
+			rendered.skippedAsPosted.includes(finding.finding_id),
+		)
+	) {
+		return failure(
+			'nothing-new',
+			'nothing new to submit — every finding for this run is already present on the PR (idempotent no-op)',
+			true,
+		);
+	}
+
+	// Step g — write the payload under the run directory (provenance copy) and
+	// POST it with commit_id pinned to the exact declared head.
+	const payload = {
+		commit_id: headSha,
+		body: rendered.body,
+		event,
+		comments: rendered.inlineComments.map((comment) => ({
+			path: comment.path,
+			line: comment.line,
+			body: comment.body,
+		})),
+	};
+	const payloadPath = validateSwarmPath(
+		directory,
+		path.join('pr-review', runId, 'submission-payload.json'),
+	);
+	fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
+	fs.writeFileSync(
+		payloadPath,
+		`${JSON.stringify(payload, null, 2)}\n`,
+		'utf-8',
+	);
+
+	const run = await _internals.runExternalTool({
+		executable,
+		args: [
+			'api',
+			`repos/${repoSlug}/pulls/${prNumber}/reviews`,
+			'--method',
+			'POST',
+			'--input',
+			payloadPath,
+		],
+		cwd: directory,
+		timeoutMs: GH_TIMEOUT_MS,
+		maxStdoutBytes: GH_MAX_STDOUT_BYTES,
+		maxStderrBytes: GH_MAX_STDERR_BYTES,
+	});
+	if (run.status === 'timeout') {
+		return failure(
+			'transport-failed',
+			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews timed out after ${GH_TIMEOUT_MS}ms (payload preserved at .swarm/pr-review/${runId}/submission-payload.json)`,
+		);
+	}
+	if (run.status !== 'completed') {
+		return failure(
+			'transport-failed',
+			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews failed to start (${run.message ?? run.status})`,
+		);
+	}
+	if (run.exitCode !== 0) {
+		return failure(
+			'transport-failed',
+			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews exited ${run.exitCode}: ${run.stderr.split('\n')[0] ?? ''}`,
+		);
+	}
+	let review: { id?: unknown; html_url?: unknown } = {};
+	try {
+		review = JSON.parse(run.stdout) as { id?: unknown; html_url?: unknown };
+	} catch {
+		// A non-JSON success body still means the review was created; surface
+		// the raw first line instead of the parsed fields.
+	}
+	return JSON.stringify(
+		{
+			success: true,
+			run_id: runId,
+			pr_head_sha: headSha,
+			event,
+			inline_comment_count: rendered.inlineComments.length,
+			skipped_as_posted: rendered.skippedAsPosted.length,
+			truncated_inline_comments: rendered.truncatedInlineComments,
+			coverage_kind: coverage.kind,
+			posted_review_id: typeof review.id === 'number' ? review.id : null,
+			review_url: typeof review.html_url === 'string' ? review.html_url : null,
+			payload_path: `.swarm/pr-review/${runId}/submission-payload.json`,
+		},
+		null,
+		2,
+	);
+}
+
+export const pr_review_submission: ReturnType<typeof createSwarmTool> =
+	createSwarmTool({
+		allowWorkingDirectoryOverride: true,
+		description:
+			'submit a settled, head-bound PR review to GitHub through the gh PR Review API after the PR_REVIEW gate clears; architect-only, refuses while a gate is active or the run was aborted after settlement',
+		args: {
+			pr_number: z
+				.number()
+				.int()
+				.positive()
+				.describe('Pull request number to submit the review to'),
+			repo: z
+				.string()
+				.trim()
+				.regex(REPO_SLUG_PATTERN)
+				.describe('owner/name repository slug'),
+			run_id: z
+				.string()
+				.trim()
+				.regex(RUN_ID_PATTERN)
+				.describe('settled PR-review run id under .swarm/pr-review/'),
+			pr_head_sha: z
+				.string()
+				.trim()
+				.regex(PR_HEAD_SHA_PATTERN)
+				.describe('exact PR head sha the run is bound to (commit_id pin)'),
+		},
+		execute: executePrReviewSubmission,
+	});
