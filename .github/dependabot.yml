@@ -1,0 +1,30 @@
+version: 2
+updates:
+  # This project is managed by Bun (bun.lock, no package-lock.json). The `npm`
+  # ecosystem cannot update a bun.lockfile, so use the `bun` ecosystem here.
+  - package-ecosystem: "bun"
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    # The host contract is pinned deliberately: tests/helpers/host-contract-v1_18_3.ts
+    # asserts the exact installed version, and a bump requires re-verifying the
+    # v1 message-converter contract by hand. No Dependabot PR opens for these at
+    # all (version or advisory-driven); security alerts still surface on the
+    # Security tab, and host-contract-check.yml is the re-verification trigger.
+    ignore:
+      - dependency-name: "@opencode-ai/*"
+    groups:
+      dev-dependencies:
+        dependency-type: development
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
