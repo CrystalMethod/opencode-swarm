@@ -114,25 +114,26 @@ function readJsonFile(absolutePath: string): unknown {
 	}
 }
 
-function triggerEvalPath(directory: string, runId: string): string {
-	return validateSwarmPath(
-		directory,
-		path.join('pr-review', runId, 'trigger-eval.json'),
-	);
-}
-
-function findingsPath(directory: string, runId: string): string {
-	return validateSwarmPath(
-		directory,
-		path.join('pr-review', runId, 'findings.jsonl'),
-	);
-}
-
-function coverageDisclosurePath(directory: string, runId: string): string {
-	return validateSwarmPath(
-		directory,
-		path.join('pr-review', runId, 'coverage-disclosure.json'),
-	);
+/**
+ * validateSwarmPath throws on traversal-shaped inputs (PRR-015 probe:
+ * run_id 'a..' passes RUN_ID_PATTERN but throws here). Convert that throw
+ * into a typed refusal instead of the generic execution_error envelope.
+ */
+function safePath(
+	directory: string,
+	relativePath: string,
+): { path: string } | { refusal: string } {
+	try {
+		return { path: validateSwarmPath(directory, relativePath) };
+	} catch (error) {
+		return {
+			refusal: failure(
+				'invalid-args',
+				`Invalid pr_review_submission args: artifact path rejected (${error instanceof Error ? error.message : String(error)})`,
+				false,
+			),
+		};
+	}
 }
 
 function readFindingsRecords(
@@ -247,8 +248,12 @@ function deriveCoverage(
 	runId: string,
 	receipt: TriggerEvalReceipt,
 ): CoverageDerivation {
-	const disclosurePath = coverageDisclosurePath(directory, runId);
-	const rawDisclosure = readJsonFile(disclosurePath);
+	const disclosurePath = safePath(
+		directory,
+		path.join('pr-review', runId, 'coverage-disclosure.json'),
+	);
+	if ('refusal' in disclosurePath) return { refusal: disclosurePath.refusal };
+	const rawDisclosure = readJsonFile(disclosurePath.path);
 	// A CORRUPT disclosure (parse failure) must not degrade into the stronger
 	// "Coverage kind: FULL" claim on a public artifact — refuse instead
 	// (review PRR-002 / ma-p3). A MISSING disclosure is normal (no partial
@@ -504,8 +509,13 @@ export async function executePrReviewSubmission(
 
 	// Read the run's durable artifacts (needed for the abort recency anchor and
 	// the equality checks below). Missing/corrupt artifacts refuse.
+	const receiptPath = safePath(
+		directory,
+		path.join('pr-review', runId, 'trigger-eval.json'),
+	);
+	if ('refusal' in receiptPath) return receiptPath.refusal;
 	const receipt = asRecord(
-		readJsonFile(triggerEvalPath(directory, runId)),
+		readJsonFile(receiptPath.path),
 	) as TriggerEvalReceipt | null;
 	if (receipt === null) {
 		return failure(
@@ -514,7 +524,12 @@ export async function executePrReviewSubmission(
 			true,
 		);
 	}
-	const records = readFindingsRecords(findingsPath(directory, runId));
+	const recordPath = safePath(
+		directory,
+		path.join('pr-review', runId, 'findings.jsonl'),
+	);
+	if ('refusal' in recordPath) return recordPath.refusal;
+	const records = readFindingsRecords(recordPath.path);
 	if (!records) {
 		return failure(
 			'not-settled',
@@ -683,14 +698,15 @@ export async function executePrReviewSubmission(
 			body: comment.body,
 		})),
 	};
-	const payloadPath = validateSwarmPath(
+	const payloadPath = safePath(
 		directory,
 		path.join('pr-review', runId, 'submission-payload.json'),
 	);
+	if ('refusal' in payloadPath) return payloadPath.refusal;
 	try {
-		fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
+		fs.mkdirSync(path.dirname(payloadPath.path), { recursive: true });
 		fs.writeFileSync(
-			payloadPath,
+			payloadPath.path,
 			`${JSON.stringify(payload, null, 2)}\n`,
 			'utf-8',
 		);
@@ -709,7 +725,7 @@ export async function executePrReviewSubmission(
 			'--method',
 			'POST',
 			'--input',
-			payloadPath,
+			payloadPath.path,
 		],
 		cwd: directory,
 		timeoutMs: GH_TIMEOUT_MS,

@@ -93,6 +93,23 @@ describe('renderPrReviewSubmissionBody', () => {
 		expect(rendered.body).toContain('no-location-here');
 	});
 
+	test('renders an explicit status marker for non-CONFIRMED findings (PRR-001)', () => {
+		const confirmed = renderPrReviewSubmissionBody(
+			input([finding('PE-1', 'MEDIUM', 'src/pe.ts:5')]),
+		);
+		expect(confirmed.body).not.toContain('(confirmed)');
+		const marked = renderPrReviewSubmissionBody(
+			input([
+				{
+					...finding('PE-2', 'MEDIUM', 'src/pe2.ts:6'),
+					status: 'PRE_EXISTING',
+				},
+			]),
+		);
+		expect(marked.body).toContain('(pre_existing)');
+		expect(marked.body).toContain('PE-2');
+	});
+
 	test('is pure: identical repeat output and no input mutation', () => {
 		const value = input([
 			finding('D-1', 'HIGH', 'src/d.ts:1'),

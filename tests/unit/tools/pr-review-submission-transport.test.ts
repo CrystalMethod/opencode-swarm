@@ -94,7 +94,13 @@ async function seedRun(
 				runId: RUN_ID,
 				prHeadSha: PR_ARTIFACT_HEAD_SHA,
 				revisionDigest: 'rev-1',
-				unresolvedDimensions: ['security-trust'],
+				unresolvedDimensions: [
+					{
+						dimension: 'security-trust',
+						terminalState: 'FAILED',
+						reasonKind: 'lane_failure',
+					},
+				],
 				admittedAt: '2026-10-06T01:00:00.000Z',
 			}),
 			'utf-8',

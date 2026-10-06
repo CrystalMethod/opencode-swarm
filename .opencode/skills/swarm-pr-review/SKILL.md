@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: 0a25f6fa897e
+swarm-contract-digest: c3e787acb35f
 ---
 
 # /swarm-pr-review
@@ -71,7 +71,7 @@ This protocol runs on any agent harness. Before Phase 0, detect which profile
 this session is in by checking the actual tool list — never assume from the
 harness name, and never guess:
 
-- **Profile A — structured PR-workflow controller.** The swarm plugin's controller tools are available in this session: `dispatch_lanes_async`, `collect_lane_results`, `retrieve_lane_output`, `parse_lane_candidates`, `write_pr_review_artifact`, `write_pr_review_trigger_eval`, `complete_pr_workflow`. The child-bound `submit_pr_review_result` overlay is available only to dispatched base/micro lanes. Typical host: OpenCode with the swarm plugin. The controller mechanically enforces this skill's accounting: it computes the
+- **Profile A — structured PR-workflow controller.** The swarm plugin's controller tools are available in this session: `dispatch_lanes_async`, `collect_lane_results`, `retrieve_lane_output`, `parse_lane_candidates`, `write_pr_review_artifact`, `write_pr_review_trigger_eval`, `complete_pr_workflow`, `pr_review_submission`. The child-bound `submit_pr_review_result` overlay is available only to dispatched base/micro lanes. Typical host: OpenCode with the swarm plugin. The controller mechanically enforces this skill's accounting: it computes the
   depth tier itself from the bound merge-base diff (never from caller
   claims), enforces the tier's lane floors and full dimension/family
   partitions for consolidated dispatch, and gates structured reviewer/critic

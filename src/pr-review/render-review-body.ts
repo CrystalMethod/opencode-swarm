@@ -197,8 +197,17 @@ export function renderPrReviewSubmissionBody(
 		for (const entry of group) {
 			const id = singleLine(entry.finding.finding_id ?? '', 128);
 			const location = singleLine(entry.finding.file_line ?? '', 200);
+			// status is findings.jsonl-derived like every other interpolated
+			// field, so it gets the same singleLine flattening/cap before it
+			// can reach the published body.
+			const status =
+				typeof entry.finding.status === 'string' &&
+				entry.finding.status !== '' &&
+				entry.finding.status.toUpperCase() !== 'CONFIRMED'
+					? ` (${singleLine(entry.finding.status, 64).toLowerCase()})`
+					: '';
 			lines.push(
-				`- [${id}] ${location} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
+				`- [${id}]${status} ${location} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
 			);
 		}
 	}

@@ -26,7 +26,8 @@ Adds the missing `pr_review_submission` controller tool plus a pure
   superseded pre-critic records and critic-DISPROVED findings are never
   published, and the REQUEST_CHANGES/COMMENT event is derived from settled
   severities alone). The body is severity-grouped (strongest group first,
-  non-empty groups only; dismissed findings are counted and omitted) with
+  non-empty groups only; dismissed findings are counted and omitted;
+  non-CONFIRMED settled findings carry an explicit status marker) with
   finding ids, locations, and coverage disclosure (partial coverage
   dimensions or trigger-evaluation degradations; a corrupt coverage
   disclosure refuses instead of degrading to FULL). Reviewer-behavior
@@ -60,7 +61,10 @@ artifact path.
   the run's artifacts (the receipt carries no repo/PR identity); GitHub's
   own commit_id-to-PR constraint is the only cross-check.
 - The abort scan refuses (fail closed) when the events store exists but is
-  unreadable or its retained tail is truncated.
+  unreadable or its retained tail is truncated; recorded aborts carrying a
+  different workflow mode (e.g. PR_FEEDBACK) do not block a PR_REVIEW
+  submission. Artifact-path validations return typed refusals on
+  traversal-shaped run ids.
 - The abort scan reads the bounded retained-events window (the same
   `readCoreEvents` tail the gate machinery itself uses); an abort scrolled out
   of that window escapes the narrowing — the same residual class as the
@@ -72,6 +76,11 @@ artifact path.
   documented; a rejection surfaces verbatim through the typed transport
   failure path.
 
+## Skill surface
+
+`pr_review_submission` is named in the swarm-pr-review skill's Profile A
+controller-tool list (added in the feedback round).
+
 ## Verification
 
 - Frozen acceptance checks C1-C4 (RED at base → GREEN) and C5 (PRESERVING,
@@ -79,6 +88,7 @@ artifact path.
   issue #3096.
 - New suites: `tests/unit/tools/pr-review-submission.test.ts`,
   `tests/unit/tools/pr-review-submission-transport.test.ts`,
+  `tests/unit/tools/pr-review-submission-feedback-round2.test.ts`,
   `tests/unit/pr-review/render-review-body.test.ts`.
 - `bun run scripts/check-tool-registration.ts`, `bun run check:bare-spawn`,
   `bun run check:test-file-cap`, `bun run typecheck`, biome clean on touched
