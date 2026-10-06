@@ -115,6 +115,18 @@ function readJsonFile(absolutePath: string): unknown {
 }
 
 /**
+ * Single-return helper so the G2 evidence-class gate can fold the payload
+ * write target; its throw is converted to the same typed refusal safePath
+ * produces (PRR-015 contract).
+ */
+function payloadArtifactPath(directory: string, runId: string): string {
+	return validateSwarmPath(
+		directory,
+		path.join('pr-review', runId, 'submission-payload.json'),
+	);
+}
+
+/**
  * validateSwarmPath throws on traversal-shaped inputs (PRR-015 probe:
  * run_id 'a..' passes RUN_ID_PATTERN but throws here). Convert that throw
  * into a typed refusal instead of the generic execution_error envelope.
@@ -698,15 +710,24 @@ export async function executePrReviewSubmission(
 			body: comment.body,
 		})),
 	};
-	const payloadPath = safePath(
-		directory,
-		path.join('pr-review', runId, 'submission-payload.json'),
-	);
-	if ('refusal' in payloadPath) return payloadPath.refusal;
+	// The payload WRITE target must stay a foldable single-return-helper
+	// local (the G2 evidence-class gate resolves `helper(dir, runId)` locals,
+	// not property reads off union objects), so this site uses the
+	// try/catch form instead of safePath; the refusal contract is identical.
+	let payloadPath: string;
 	try {
-		fs.mkdirSync(path.dirname(payloadPath.path), { recursive: true });
+		payloadPath = payloadArtifactPath(directory, runId);
+	} catch (error) {
+		return failure(
+			'invalid-args',
+			`Invalid pr_review_submission args: artifact path rejected (${error instanceof Error ? error.message : String(error)})`,
+			false,
+		);
+	}
+	try {
+		fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
 		fs.writeFileSync(
-			payloadPath.path,
+			payloadPath,
 			`${JSON.stringify(payload, null, 2)}\n`,
 			'utf-8',
 		);
@@ -725,7 +746,7 @@ export async function executePrReviewSubmission(
 			'--method',
 			'POST',
 			'--input',
-			payloadPath.path,
+			payloadPath,
 		],
 		cwd: directory,
 		timeoutMs: GH_TIMEOUT_MS,
