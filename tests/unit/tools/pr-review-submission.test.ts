@@ -144,12 +144,9 @@ beforeEach(() => {
 	submissionInternals.resolveGhBinary = () => '/fake/gh';
 	submissionInternals.runExternalTool = async (options) => {
 		calls.push(options);
-		const endpoint = options.args[1] ?? '';
 		const isGet = !options.args.includes('POST');
 		const stdout = isGet
-			? endpoint.includes('/reviews')
-				? '[]'
-				: '[]'
+			? '[]'
 			: '{"id":7,"html_url":"https://example.com/review/7"}';
 		return {
 			status: 'completed',
@@ -219,7 +216,9 @@ describe('pr_review_submission args contract (AC1)', () => {
 		for (const args of cases) {
 			const raw = await execute(args);
 			expect(/pr_head_sha|Invalid/i.test(raw)).toBe(true);
-			expect(JSON.parse(raw).success).toBe(false);
+			const parsed = JSON.parse(raw);
+			expect(parsed.success).toBe(false);
+			expect(parsed.type).toBe('invalid-args');
 		}
 		expect(calls).toHaveLength(0);
 	});
@@ -318,6 +317,144 @@ describe('pr_review_submission authorization ladder (AC2)', () => {
 		);
 		const raw = await execute(validArgs());
 		expect(JSON.parse(raw).success).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
+});
+
+describe('pr_review_submission feedback round (PRR fixes)', () => {
+	test('renders only the settled post_critic records, never superseded ones (PRR-001)', async () => {
+		await seedSettledRun(directory);
+		const runDir = join(directory, '.swarm', 'pr-review', RUN_ID);
+		const superseded = [
+			JSON.stringify({
+				finding_id: 'SUP-1',
+				status: 'CONFIRMED',
+				file_line: 'src/sup.ts:1',
+				evidence: 'stale pre-critic evidence',
+				next_action: 'report',
+				severity: 'HIGH',
+				boundary: 'post_explorer',
+				pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+				recorded_at: '2026-10-06T00:00:00.000Z',
+			}),
+			JSON.stringify({
+				finding_id: 'DEAD-1',
+				status: 'DISPROVED',
+				file_line: 'src/dead.ts:2',
+				evidence: 'disproved by critic',
+				next_action: 'suppress_with_reason',
+				severity: 'NONE',
+				boundary: 'post_critic',
+				pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+				recorded_at: '2026-10-06T01:00:00.000Z',
+			}),
+		].join('\n');
+		const settledRecord = JSON.stringify({
+			finding_id: 'SET-1',
+			status: 'CONFIRMED',
+			file_line: 'src/set.ts:3',
+			evidence: 'settled low finding',
+			next_action: 'report',
+			severity: 'LOW',
+			boundary: 'post_critic',
+			pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+			recorded_at: '2026-10-06T01:00:00.000Z',
+		});
+		await fs.writeFile(
+			join(runDir, 'findings.jsonl'),
+			`${superseded}\n${settledRecord}\n`,
+			'utf-8',
+		);
+		const raw = await execute(validArgs());
+		const payload = JSON.parse(
+			await fs.readFile(join(runDir, 'submission-payload.json'), 'utf-8'),
+		) as { event: string; body: string; comments: unknown[] };
+		// Settled severities only: the stale HIGH explorer record must not
+		// force REQUEST_CHANGES, and the DISPROVED record must not render.
+		expect(payload.event).toBe('COMMENT');
+		expect(payload.body).not.toContain('stale pre-critic evidence');
+		expect(payload.body).not.toContain('DEAD-1');
+		expect(payload.body).toContain('SET-1');
+		expect(JSON.parse(raw).success).toBe(true);
+	});
+
+	test('refuses on a corrupt coverage disclosure instead of claiming FULL (PRR-002/ma-p3)', async () => {
+		await seedSettledRun(directory);
+		const runDir = join(directory, '.swarm', 'pr-review', RUN_ID);
+		await fs.writeFile(
+			join(runDir, 'coverage-disclosure.json'),
+			'{ truncated json',
+			'utf-8',
+		);
+		const raw = await execute(validArgs());
+		const parsed = JSON.parse(raw) as { success: boolean; type: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.type).toBe('not-settled');
+		expect(calls).toHaveLength(0);
+	});
+
+	test('maps V2 object-shaped unresolvedDimensions to dimension names (PRR-002)', async () => {
+		await seedSettledRun(directory);
+		const runDir = join(directory, '.swarm', 'pr-review', RUN_ID);
+		await fs.writeFile(
+			join(runDir, 'coverage-disclosure.json'),
+			JSON.stringify({
+				schemaVersion: 2,
+				runId: RUN_ID,
+				prHeadSha: PR_ARTIFACT_HEAD_SHA,
+				revisionDigest: 'rev-1',
+				unresolvedDimensions: [
+					{
+						dimension: 'security-trust',
+						terminalState: 'FAILED',
+						reasonKind: 'lane_failure',
+					},
+					{
+						dimension: 'reliability-performance',
+						terminalState: 'CANCELLED',
+						reasonKind: 'cancelled',
+					},
+				],
+				admittedAt: '2026-10-06T01:00:00.000Z',
+			}),
+			'utf-8',
+		);
+		const raw = await execute(validArgs());
+		const runDirPayload = JSON.parse(
+			await fs.readFile(join(runDir, 'submission-payload.json'), 'utf-8'),
+		) as { body: string };
+		expect(runDirPayload.body).toContain('PARTIAL');
+		expect(runDirPayload.body).toContain('security-trust');
+		expect(runDirPayload.body).toContain('reliability-performance');
+		expect(JSON.parse(raw).success).toBe(true);
+	});
+
+	test('refuses with aborted-indeterminate when the events file is unreadable (PRR-009)', async () => {
+		await seedSettledRun(directory);
+		await fs.mkdir(join(directory, '.swarm'), { recursive: true });
+		// An events file that exists but yields no readable window.
+		await fs.writeFile(
+			join(directory, '.swarm', 'events.jsonl'),
+			'   \n',
+			'utf-8',
+		);
+		const raw = await execute(validArgs());
+		const parsed = JSON.parse(raw) as { success: boolean; type: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.type).toBe('aborted-indeterminate');
+		expect(calls).toHaveLength(0);
+	});
+
+	test('refuses a PR_FEEDBACK-mode gate the same as PR_REVIEW (md-3)', async () => {
+		await seedSettledRun(directory);
+		await activatePrWorkflow(directory, PR_ARTIFACT_SESSION_ID, 'PR_FEEDBACK', {
+			prHeadSha: PR_ARTIFACT_HEAD_SHA,
+		});
+		const raw = await execute(validArgs());
+		const parsed = JSON.parse(raw) as { success: boolean; type: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.type).toBe('gate-active');
+		expect(parsed.blocked).toBe(true);
 		expect(calls).toHaveLength(0);
 	});
 });

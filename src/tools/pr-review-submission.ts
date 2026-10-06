@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
-import { readCoreEvents } from '../events/core-events.js';
+import { coreEventsFilePath, readCoreEvents } from '../events/core-events.js';
 import { readPrWorkflowGateState } from '../hooks/pr-workflow-gate.js';
 import { validateSwarmPath } from '../hooks/utils.js';
 import {
@@ -52,12 +52,15 @@ interface SubmissionFailure {
 	type:
 		| 'invalid-args'
 		| 'gate-active'
+		| 'gate-indeterminate'
 		| 'aborted'
+		| 'aborted-indeterminate'
 		| 'head-mismatch'
 		| 'not-settled'
 		| 'nothing-new'
 		| 'gh-not-found'
-		| 'transport-failed';
+		| 'transport-failed'
+		| 'payload-write-failed';
 	message: string;
 }
 
@@ -75,6 +78,7 @@ interface TriggerEvalReceipt {
 	run_id?: unknown;
 	pr_head_sha?: unknown;
 	evaluated_at?: unknown;
+	base_verification?: unknown;
 	coverage_degradations?: unknown;
 }
 
@@ -182,14 +186,23 @@ function settlementTime(
 	return latest;
 }
 
+type AbortScanResult = 'aborted' | 'clean' | 'indeterminate';
+
 function hasAbortAfterSettlement(
 	directory: string,
 	sessionID: string,
 	headSha: string,
 	settledAt: string,
-): boolean {
+): AbortScanResult {
+	// Fail closed on an indeterminate read: the events file existing but
+	// yielding no readable window, or a truncated tail, means an abort may be
+	// invisible — "not aborted" would be a fail-open authorization decision
+	// (review PRR-009).
+	const eventsFileExists = fs.existsSync(coreEventsFilePath(directory));
 	const read = readCoreEvents(directory);
-	if (read.coverage === 'empty' || read.text.trim() === '') return false;
+	if (read.coverage === 'truncated') return 'indeterminate';
+	if (!eventsFileExists) return 'clean';
+	if (read.text.trim() === '') return 'indeterminate';
 	for (const line of read.text.split('\n')) {
 		const trimmed = line.trim();
 		if (trimmed === '') continue;
@@ -203,6 +216,12 @@ function hasAbortAfterSettlement(
 		if (parsed === null) continue;
 		if (parsed.type !== 'pr_workflow_aborted') continue;
 		if (parsed.sessionID !== sessionID) continue;
+		// A PR_FEEDBACK abort for the same session must not over-block a
+		// PR_REVIEW submission; match only when the recorded mode is absent
+		// (conservative) or is this tool's mode.
+		if (typeof parsed.mode === 'string' && parsed.mode !== 'PR_REVIEW') {
+			continue;
+		}
 		if (
 			typeof parsed.prHeadSha !== 'string' ||
 			parsed.prHeadSha.toLowerCase() !== headSha
@@ -214,27 +233,65 @@ function hasAbortAfterSettlement(
 		// The retained-events window is a bounded tail read; an abort scrolled
 		// out of the window escapes this narrowing (disclosed residual class —
 		// same shape as the crashed-run residual).
-		if (settledAt === '' || timestamp >= settledAt) return true;
+		if (settledAt === '' || timestamp >= settledAt) return 'aborted';
 	}
-	return false;
+	return 'clean';
 }
+
+type CoverageDerivation =
+	| { coverage: RenderReviewBodyInput['coverage'] }
+	| { refusal: string };
 
 function deriveCoverage(
 	directory: string,
 	runId: string,
 	receipt: TriggerEvalReceipt,
-): RenderReviewBodyInput['coverage'] {
-	const disclosure = asRecord(
-		readJsonFile(coverageDisclosurePath(directory, runId)),
-	);
+): CoverageDerivation {
+	const disclosurePath = coverageDisclosurePath(directory, runId);
+	const rawDisclosure = readJsonFile(disclosurePath);
+	// A CORRUPT disclosure (parse failure) must not degrade into the stronger
+	// "Coverage kind: FULL" claim on a public artifact — refuse instead
+	// (review PRR-002 / ma-p3). A MISSING disclosure is normal (no partial
+	// base coverage was admitted) and falls through to the receipt.
+	if (rawDisclosure === null) {
+		return {
+			refusal: failure(
+				'not-settled',
+				`Invalid pr_review_submission state: coverage disclosure for run ${runId} is corrupt (.swarm/pr-review/${runId}/coverage-disclosure.json); refusing to claim coverage`,
+				true,
+			),
+		};
+	}
+	const disclosure = asRecord(rawDisclosure);
+	const dimensionNames: string[] = [];
 	const unresolvedFromDisclosure = disclosure?.unresolvedDimensions;
 	if (Array.isArray(unresolvedFromDisclosure)) {
-		const names = unresolvedFromDisclosure.filter(
-			(name): name is string => typeof name === 'string',
-		);
-		if (names.length > 0) {
-			return { kind: 'PARTIAL', unresolved_dimensions: names };
+		// V2 records are objects {dimension, terminalState, reasonKind, ...};
+		// tolerate string entries for forward compatibility.
+		for (const entry of unresolvedFromDisclosure) {
+			const record = asRecord(entry);
+			const name =
+				typeof record?.dimension === 'string'
+					? record.dimension
+					: typeof entry === 'string'
+						? entry
+						: null;
+			if (typeof name === 'string') dimensionNames.push(name);
 		}
+	}
+	const missingDimension = disclosure?.missingDimension;
+	if (
+		dimensionNames.length === 0 &&
+		typeof missingDimension === 'string' &&
+		missingDimension !== ''
+	) {
+		// Legacy V1 singular record.
+		dimensionNames.push(missingDimension);
+	}
+	if (dimensionNames.length > 0) {
+		return {
+			coverage: { kind: 'PARTIAL', unresolved_dimensions: dimensionNames },
+		};
 	}
 	const degradations = Array.isArray(receipt.coverage_degradations)
 		? receipt.coverage_degradations
@@ -251,9 +308,11 @@ function deriveCoverage(
 		}
 	}
 	if (reasons.length > 0) {
-		return { kind: 'PARTIAL', unresolved_dimensions: reasons };
+		return {
+			coverage: { kind: 'PARTIAL', unresolved_dimensions: reasons },
+		};
 	}
-	return { kind: 'FULL', unresolved_dimensions: [] };
+	return { coverage: { kind: 'FULL', unresolved_dimensions: [] } };
 }
 
 function reviewEventFor(records: readonly PersistedFindingRecord[]): string {
@@ -310,6 +369,15 @@ async function fetchExistingCommentBodies(
 				refusal: failure(
 					'transport-failed',
 					`gh api ${endpoint} exited ${run.exitCode}: ${run.stderr.split('\n')[0] ?? ''}; refusing to submit without dedupe context`,
+					true,
+				),
+			};
+		}
+		if (run.stdoutTruncated) {
+			return {
+				refusal: failure(
+					'transport-failed',
+					`gh api ${endpoint} stdout exceeded the ${GH_MAX_STDOUT_BYTES}-byte read cap; dedupe context would be silently incomplete — refusing to submit`,
 					true,
 				),
 			};
@@ -413,7 +481,19 @@ export async function executePrReviewSubmission(
 	// complete_pr_workflow clears it. Any surviving PR-workflow gate state for
 	// this session (PR_REVIEW or PR_FEEDBACK, including recovery states) means
 	// the gate is still active; completion deletes the state file.
-	const gateState = await readPrWorkflowGateState(directory, sessionID);
+	let gateState: Awaited<ReturnType<typeof readPrWorkflowGateState>>;
+	try {
+		gateState = await readPrWorkflowGateState(directory, sessionID);
+	} catch (error) {
+		// A corrupt/unreadable gate state is an indeterminate authorization
+		// signal — fail closed with a typed refusal instead of the generic
+		// execution_error envelope (review PRR-015).
+		return failure(
+			'gate-indeterminate',
+			`BLOCKED: PR workflow gate state for this session could not be read safely (${error instanceof Error ? error.message : String(error)}); repair or abort the gate before submitting`,
+			true,
+		);
+	}
 	if (gateState !== null) {
 		return failure(
 			'gate-active',
@@ -446,15 +526,23 @@ export async function executePrReviewSubmission(
 	// Step b2 — abort narrowing with a recency anchor: an abort at/after the
 	// run's settlement time refuses (the settled run was aborted); an abort
 	// before settlement belongs to an earlier run and does not block a later
-	// re-run's submission (the documented abort-and-retry recovery flow).
-	if (
-		hasAbortAfterSettlement(
-			directory,
-			sessionID,
-			headSha,
-			settlementTime(records, receipt),
-		)
-	) {
+	// re-run's submission (the documented abort-and-retry recovery flow). An
+	// INDERTERMINATE read (existing events file, no readable window, or a
+	// truncated tail) also refuses — "not aborted" would be fail-open.
+	const abortScan = hasAbortAfterSettlement(
+		directory,
+		sessionID,
+		headSha,
+		settlementTime(records, receipt),
+	);
+	if (abortScan === 'indeterminate') {
+		return failure(
+			'aborted-indeterminate',
+			`BLOCKED: the aborted-run scan for head ${headSha} could not be completed (events store unreadable or truncated); refusing to submit without a determinate authorization signal`,
+			true,
+		);
+	}
+	if (abortScan === 'aborted') {
 		return failure(
 			'aborted',
 			`BLOCKED: the PR workflow for head ${headSha} was aborted at/after this run's settlement; aborted runs are out of scope (#3097)`,
@@ -509,14 +597,31 @@ export async function executePrReviewSubmission(
 		);
 	}
 
-	const coverage = deriveCoverage(directory, runId, receipt);
-	const event = reviewEventFor(records);
+	// PRR-001: findings.jsonl ACCUMULATES one record per finding per boundary
+	// (post_explorer → post_reviewer → post_critic), so rendering all records
+	// would publish superseded pre-critic versions and derive the event from
+	// stale severities. Only post_critic records are the settled authoritative
+	// view (the gate's exact-inventory enforcement guarantees every finding id
+	// is present there), and DISPROVED records are not findings — drop them.
+	const settledRecords = records.filter(
+		(record) =>
+			record.boundary === 'post_critic' && record.status !== 'DISPROVED',
+	);
+
+	const derived = deriveCoverage(directory, runId, receipt);
+	if ('refusal' in derived) return derived.refusal;
+	const coverage = derived.coverage;
+	const event = reviewEventFor(settledRecords);
 	const rendererInput: RenderReviewBodyInput = {
 		run_id: runId,
 		pr_head_sha: headSha,
 		verdict: event,
+		base_verification:
+			typeof receipt.base_verification === 'string'
+				? receipt.base_verification
+				: undefined,
 		coverage,
-		findings: records.map((record) => ({
+		findings: settledRecords.map((record) => ({
 			finding_id:
 				typeof record.finding_id === 'string' ? record.finding_id : '',
 			status: typeof record.status === 'string' ? record.status : '',
@@ -582,12 +687,19 @@ export async function executePrReviewSubmission(
 		directory,
 		path.join('pr-review', runId, 'submission-payload.json'),
 	);
-	fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
-	fs.writeFileSync(
-		payloadPath,
-		`${JSON.stringify(payload, null, 2)}\n`,
-		'utf-8',
-	);
+	try {
+		fs.mkdirSync(path.dirname(payloadPath), { recursive: true });
+		fs.writeFileSync(
+			payloadPath,
+			`${JSON.stringify(payload, null, 2)}\n`,
+			'utf-8',
+		);
+	} catch (error) {
+		return failure(
+			'payload-write-failed',
+			`failed to persist the submission payload copy (.swarm/pr-review/${runId}/submission-payload.json): ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
 
 	const run = await _internals.runExternalTool({
 		executable,
@@ -607,19 +719,22 @@ export async function executePrReviewSubmission(
 	if (run.status === 'timeout') {
 		return failure(
 			'transport-failed',
-			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews timed out after ${GH_TIMEOUT_MS}ms (payload preserved at .swarm/pr-review/${runId}/submission-payload.json)`,
+			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews timed out after ${GH_TIMEOUT_MS}ms (the review may or may not have been created; dedupe on resubmit; payload preserved at .swarm/pr-review/${runId}/submission-payload.json)`,
+			true,
 		);
 	}
 	if (run.status !== 'completed') {
 		return failure(
 			'transport-failed',
 			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews failed to start (${run.message ?? run.status})`,
+			true,
 		);
 	}
 	if (run.exitCode !== 0) {
 		return failure(
 			'transport-failed',
 			`gh api repos/${repoSlug}/pulls/${prNumber}/reviews exited ${run.exitCode}: ${run.stderr.split('\n')[0] ?? ''}`,
+			true,
 		);
 	}
 	let review: { id?: unknown; html_url?: unknown } = {};
@@ -638,6 +753,8 @@ export async function executePrReviewSubmission(
 			inline_comment_count: rendered.inlineComments.length,
 			skipped_as_posted: rendered.skippedAsPosted.length,
 			truncated_inline_comments: rendered.truncatedInlineComments,
+			dismissed_findings: rendered.dismissedCount,
+			body_truncated: rendered.bodyTruncated,
 			coverage_kind: coverage.kind,
 			posted_review_id: typeof review.id === 'number' ? review.id : null,
 			review_url: typeof review.html_url === 'string' ? review.html_url : null,

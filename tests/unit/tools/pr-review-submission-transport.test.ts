@@ -125,7 +125,7 @@ function defaultRunResult(call: ExternalToolCall): ExternalToolRunResult {
 		return {
 			status: 'completed',
 			exitCode: 0,
-			stdout: endpoint.includes('/reviews') ? '[]' : '[]',
+			stdout: '[]',
 			stderr: '',
 			stdoutTruncated: false,
 			stderrTruncated: false,
@@ -187,7 +187,13 @@ describe('pr_review_submission transport (AC1)', () => {
 			`repos/${REPO_SLUG}/pulls/${PR_NUMBER}/reviews`,
 		);
 		expect(last.args).toContain('POST');
-		expect(getCalls.length).toBe(2);
+		expect(getCalls).toHaveLength(2);
+		expect(getCalls[0].args[1]).toBe(
+			`repos/${REPO_SLUG}/pulls/${PR_NUMBER}/comments?per_page=100`,
+		);
+		expect(getCalls[1].args[1]).toBe(
+			`repos/${REPO_SLUG}/pulls/${PR_NUMBER}/reviews?per_page=100`,
+		);
 		const payload = await readPayload(last);
 		expect(payload.commit_id).toBe(PR_ARTIFACT_HEAD_SHA);
 	});
@@ -402,8 +408,8 @@ describe('pr_review_submission existing-comments fetch (AC4)', () => {
 			}
 			const endpoint = options.args[1] ?? '';
 			const stdout = endpoint.includes('/reviews')
-				? JSON.stringify([{ body: 'review body mentioning G-3' }])
-				: JSON.stringify([{ body: 'comment body mentioning G-3' }]);
+				? JSON.stringify([{ body: '[G-3] settled evidence for G-3' }])
+				: JSON.stringify([{ body: '[G-3] settled evidence for G-3' }]);
 			return {
 				status: 'completed',
 				exitCode: 0,

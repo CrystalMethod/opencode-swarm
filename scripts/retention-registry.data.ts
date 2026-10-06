@@ -1031,7 +1031,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'src/tools/write-pr-review-artifact.ts:198/:255 — findings JSONL append (≤1000 records/call) + handoff JSON, atomic',
 			'src/tools/write-pr-review-trigger-eval.ts:574-591 — atomic write, refuses overwrite (:567-570)',
-			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — one submission-payload.json provenance copy per POST attempt (validateSwarmPath-contained, run_id-charset-bounded path)',
+			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — a run-scoped submission-payload.json provenance copy, overwritten per attempt (validateSwarmPath-contained, run_id-charset-bounded path; direct write, not temp+rename)',
 			'src/background/pr-feedback-event-queue.ts:331 — feedback-handoff lock/content writes',
 			'src/review/routing-enforcement.ts:481 persistReviewRouteReceipt — schema-validated route-receipt replacement, atomic, ≤64 KiB',
 		],
@@ -1044,7 +1044,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		stateClass: 'governed-content',
 		privacyClass: 'mixed',
 		writeLimits: {
-			bound: 'per-run: findings ≤1000 records/call + 10 MiB read guard; route receipts ≤64 KiB/file and each receipt age-prunes at 30 d; run directories age-prune at 30 d via separate retention-sweep families (src/retention/sweep.ts:154-164)',
+			bound: 'per-run: findings ≤1000 records/call + 10 MiB read guard; route receipts ≤64 KiB/file and each receipt age-prunes at 30 d; submission-payload.json bounded by renderer caps (≤20 inline comments, evidence ≤400 chars, body ≤60000 chars) and overwritten per attempt; run directories age-prune at 30 d via separate retention-sweep families (src/retention/sweep.ts:154-164)',
 			scope: 'per-key',
 			keyspaceBound:
 				'FINITE BY REAPER: the retention sweep age-prunes run directories and independently age-prunes each .swarm/pr-review/route-receipts/{encoded-session}--{encoded-task}.json or sha256_<pair-hex>.json file at 30 d, so one fresh receipt cannot keep stale project receipts alive (src/retention/sweep.ts:154-164).',
@@ -1052,7 +1052,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 		readBound: { pattern: 'line-bounded', bound: '10 MiB findings read guard; route receipts 64 KiB hard read bound', sync: true, citation: 'src/tools/write-pr-review-artifact.ts:89; src/review/routing-enforcement.ts:319-345,388-416' },
 		lockModel: 'artifact-boundary assertions rather than file locks; route receipts use canonical atomic replacement',
-		crashBehavior: 'atomic temp+rename',
+		crashBehavior: 'atomic temp+rename (findings, handoff, trigger-eval, route receipts); submission-payload.json is a direct per-attempt overwrite (non-atomic, renderer-cap bounded)',
 		closePolicy: 'untouched by close — the 30 d sweep owns the run-dir reap',
 		resetPolicy: 'not reset',
 		legacyCompatibility: 'records matched against authoritative verdicts on read',

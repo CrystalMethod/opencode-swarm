@@ -125,14 +125,15 @@ describe('renderPrReviewSubmissionBody', () => {
 		expect(ids).toContain('KEEP');
 	});
 
-	test('skips findings whose id already appears in existing comments', () => {
+	test('skips findings whose rendered marker already appears in existing comments', () => {
 		const rendered = renderPrReviewSubmissionBody(
 			input(
 				[
 					finding('POSTED', 'HIGH', 'src/p.ts:4'),
 					finding('FRESH', 'LOW', 'src/f.ts:8'),
 				],
-				['earlier review comment mentioning POSTED'],
+				// The marker is the exact rendered prefix this renderer emits.
+				['earlier review comment: [POSTED] already posted evidence'],
 			),
 		);
 		expect(rendered.inlineComments.some((c) => c.finding_id === 'POSTED')).toBe(
@@ -142,6 +143,22 @@ describe('renderPrReviewSubmissionBody', () => {
 			true,
 		);
 		expect(rendered.skippedAsPosted).toEqual(['POSTED']);
+	});
+
+	test('does not suppress on bare-id or substring collisions (PRR-003/PRR-007)', () => {
+		const rendered = renderPrReviewSubmissionBody(
+			input(
+				[
+					finding('HIGH-1', 'HIGH', 'src/h1.ts:1'),
+					finding('T-1', 'LOW', 'src/t1.ts:2'),
+				],
+				// A bare id mention and a longer id both existed on the PR; neither
+				// is the rendered marker for these findings, so neither suppresses.
+				['someone commented about HIGH-11 and T-10 earlier'],
+			),
+		);
+		expect(rendered.skippedAsPosted).toEqual([]);
+		expect(rendered.inlineComments).toHaveLength(2);
 	});
 
 	test('caps inline comments and discloses the truncation', () => {

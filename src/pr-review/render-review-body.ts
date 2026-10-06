@@ -10,6 +10,9 @@
 
 export const PR_REVIEW_INLINE_COMMENT_CAP = 20;
 
+/** GitHub rejects oversized review bodies (~64 KiB); cap the rendered body below it. */
+export const PR_REVIEW_BODY_CHAR_CAP = 60_000;
+
 const SEVERITY_ORDER = [
 	'CRITICAL',
 	'HIGH',
@@ -39,9 +42,10 @@ export interface RenderReviewBodyInput {
 	run_id: string;
 	pr_head_sha: string;
 	verdict?: string;
+	base_verification?: string;
 	coverage: RendererCoverage;
 	findings: RendererFinding[];
-	/** Previously posted comment/review bodies; findings whose id already appears are skipped (AC4 dedupe). */
+	/** Previously posted comment/review bodies; findings whose rendered marker already appears are skipped (AC4 dedupe). */
 	existingComments?: string[];
 }
 
@@ -55,10 +59,14 @@ export interface RenderedInlineComment {
 export interface RenderedReviewBody {
 	body: string;
 	inlineComments: RenderedInlineComment[];
-	/** finding ids skipped because they already appear in existingComments. */
+	/** finding ids skipped because their rendered marker already appears in existingComments. */
 	skippedAsPosted: string[];
 	/** inline comments dropped by the cap (disclosed in the body). */
 	truncatedInlineComments: number;
+	/** findings omitted from the body as dismissed (severity NONE at settlement). */
+	dismissedCount: number;
+	/** true when the body exceeded PR_REVIEW_BODY_CHAR_CAP and was truncated with a disclosure. */
+	bodyTruncated: boolean;
 }
 
 interface ParsedLocation {
@@ -98,8 +106,19 @@ interface SurvivingFinding {
 }
 
 /**
+ * The canonical already-posted marker: exactly what this renderer emits for a
+ * finding in a body line or inline comment. Anchoring dedupe on the rendered
+ * marker (bracket + trailing space) rather than the bare id prevents both
+ * substring over-match (T-1 vs T-10) and gameable bare-id pre-posting.
+ */
+function postedMarker(findingId: string): string {
+	return `[${findingId}] `;
+}
+
+/**
  * Renderer-behavior constraints (AC4), applied in order:
- * 1. skip findings whose finding_id already appears in an existing comment body;
+ * 1. skip findings whose rendered marker already appears in an existing
+ *    comment/review body (anchored match, not bare-substring);
  * 2. consolidate a repeated finding_id to its first record;
  * 3. consolidate distinct findings with identical location + evidence into one
  *    comment (the first finding_id wins and names the group).
@@ -113,8 +132,9 @@ function selectSurvivors(
 	const seenLocations = new Set<string>();
 	const survivors: SurvivingFinding[] = [];
 	for (const finding of findings) {
-		const id = finding.finding_id;
-		if (existingComments.some((comment) => comment.includes(id))) {
+		const id = singleLine(finding.finding_id ?? '', 128);
+		const marker = postedMarker(id);
+		if (existingComments.some((comment) => comment.includes(marker))) {
 			if (!seenIds.has(id)) skippedAsPosted.push(id);
 			seenIds.add(id);
 			continue;
@@ -139,8 +159,12 @@ export function renderPrReviewSubmissionBody(
 	const existingComments = Array.isArray(input.existingComments)
 		? input.existingComments
 		: [];
+	const liveFindings = (input.findings ?? []).filter(
+		(finding) => severityOf(finding) !== 'NONE',
+	);
+	const dismissedCount = (input.findings ?? []).length - liveFindings.length;
 	const { survivors, skippedAsPosted } = selectSurvivors(
-		input.findings ?? [],
+		liveFindings,
 		existingComments,
 	);
 
@@ -163,6 +187,7 @@ export function renderPrReviewSubmissionBody(
 	lines.push('');
 	lines.push('## Findings');
 	for (const severity of SEVERITY_ORDER) {
+		if (severity === 'NONE') continue;
 		const group = grouped.filter(
 			(entry) => severityOf(entry.finding) === severity,
 		);
@@ -170,10 +195,18 @@ export function renderPrReviewSubmissionBody(
 		lines.push('');
 		lines.push(`### ${severity}`);
 		for (const entry of group) {
+			const id = singleLine(entry.finding.finding_id ?? '', 128);
+			const location = singleLine(entry.finding.file_line ?? '', 200);
 			lines.push(
-				`- [${entry.finding.finding_id}] ${entry.finding.file_line} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
+				`- [${id}] ${location} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
 			);
 		}
+	}
+	if (dismissedCount > 0) {
+		lines.push('');
+		lines.push(
+			`> ${dismissedCount} settled finding(s) with no live severity (dismissed) omitted.`,
+		);
 	}
 
 	lines.push('');
@@ -186,10 +219,17 @@ export function renderPrReviewSubmissionBody(
 	) {
 		lines.push(`- Coverage kind: ${input.coverage.kind}`);
 		lines.push(
-			`- Unresolved dimensions: ${input.coverage.unresolved_dimensions.join(', ')}`,
+			`- Unresolved dimensions: ${input.coverage.unresolved_dimensions
+				.map((name) => singleLine(name, 120))
+				.join(', ')}`,
 		);
 	} else {
 		lines.push('- Coverage kind: FULL');
+	}
+	if (input.base_verification === 'bound_fallback') {
+		lines.push(
+			'- Base verification: bound fallback (scope bound without live verification)',
+		);
 	}
 
 	const commentable = grouped.filter((entry) => entry.location !== null);
@@ -202,17 +242,26 @@ export function renderPrReviewSubmissionBody(
 		);
 	}
 
+	let body = lines.join('\n');
+	let bodyTruncated = false;
+	if (body.length > PR_REVIEW_BODY_CHAR_CAP) {
+		body = `${body.slice(0, PR_REVIEW_BODY_CHAR_CAP)}\n\n> Truncated: review body exceeded the ${PR_REVIEW_BODY_CHAR_CAP}-character cap; remaining findings omitted.`;
+		bodyTruncated = true;
+	}
+
 	const inlineComments: RenderedInlineComment[] = capped.map((entry) => ({
-		path: entry.location!.path,
+		path: singleLine(entry.location!.path, 300),
 		line: entry.location!.line,
-		body: `[${entry.finding.finding_id}] ${singleLine(entry.finding.evidence ?? '', 400)}`,
+		body: `[${singleLine(entry.finding.finding_id ?? '', 128)}] ${singleLine(entry.finding.evidence ?? '', 400)}`,
 		finding_id: entry.finding.finding_id,
 	}));
 
 	return {
-		body: lines.join('\n'),
+		body,
 		inlineComments,
 		skippedAsPosted,
 		truncatedInlineComments,
+		dismissedCount,
+		bodyTruncated,
 	};
 }
