@@ -1018,11 +1018,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		id: 'pr-review-run-artifacts',
 		category: 2,
 		pathGrammar:
-			'.swarm/pr-review/{run_id}/{findings.jsonl, feedback-handoff.json, trigger-eval.json} + .swarm/pr-review/route-receipts/{encoded-session}--{encoded-task}.json (or sha256_<pair-hex>.json when the complete basename would exceed 255 bytes)',
+			'.swarm/pr-review/{run_id}/{findings.jsonl, feedback-handoff.json, trigger-eval.json, submission-payload.json} + .swarm/pr-review/route-receipts/{encoded-session}--{encoded-task}.json (or sha256_<pair-hex>.json when the complete basename would exceed 255 bytes)',
 		canonicalRoot: 'project-swarm',
 		writerModules: [
 			'src/tools/write-pr-review-artifact.ts',
 			'src/tools/write-pr-review-trigger-eval.ts',
+			'src/tools/pr-review-submission.ts',
 			'src/background/pr-feedback-event-queue.ts',
 			'src/review/evidence.ts',
 			'src/review/routing-enforcement.ts',
@@ -1030,6 +1031,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerCitations: [
 			'src/tools/write-pr-review-artifact.ts:198/:255 — findings JSONL append (≤1000 records/call) + handoff JSON, atomic',
 			'src/tools/write-pr-review-trigger-eval.ts:574-591 — atomic write, refuses overwrite (:567-570)',
+			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — one submission-payload.json provenance copy per POST attempt (validateSwarmPath-contained, run_id-charset-bounded path)',
 			'src/background/pr-feedback-event-queue.ts:331 — feedback-handoff lock/content writes',
 			'src/review/routing-enforcement.ts:481 persistReviewRouteReceipt — schema-validated route-receipt replacement, atomic, ≤64 KiB',
 		],
