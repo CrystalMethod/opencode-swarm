@@ -46,6 +46,10 @@ artifact path.
   passes the artifact-based authorization; a submission invoked from a
   different session than the workflow session is not caught by the
   session-scoped abort match.
+- The abort scan reads the bounded retained-events window (the same
+  `readCoreEvents` tail the gate machinery itself uses); an abort scrolled out
+  of that window escapes the narrowing — the same residual class as the
+  crashed-run case.
 - The existing-comments dedupe fetch reads one bounded page (100 items) of PR
   comments and review bodies per endpoint; larger PRs may under-dedupe, and
   the review body itself is never auto-deduped across invocations.

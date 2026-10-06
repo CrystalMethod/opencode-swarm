@@ -316,6 +316,83 @@ describe('pr_review_submission existing-comments fetch (AC4)', () => {
 		expect(calls.filter((call) => call.args.includes('POST'))).toHaveLength(0);
 	});
 
+	test('a timed-out GET refuses instead of degrading to an empty list', async () => {
+		await seedRun(directory, [record('G-4', 'LOW', 'src/g4.ts:4')]);
+		submissionInternals.runExternalTool = async (options) => {
+			calls.push(options);
+			if (options.args.includes('POST')) {
+				return defaultRunResult(options);
+			}
+			return {
+				status: 'timeout',
+				exitCode: null,
+				stdout: '',
+				stderr: '',
+				stdoutTruncated: false,
+				stderrTruncated: false,
+			};
+		};
+		const raw = await execute(validArgs());
+		const parsed = JSON.parse(raw) as { success: boolean; type: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.type).toBe('transport-failed');
+		expect(calls.filter((call) => call.args.includes('POST'))).toHaveLength(0);
+	});
+
+	test('a spawn-error GET refuses instead of degrading to an empty list', async () => {
+		await seedRun(directory, [record('G-5', 'LOW', 'src/g5.ts:5')]);
+		submissionInternals.runExternalTool = async (options) => {
+			calls.push(options);
+			if (options.args.includes('POST')) {
+				return defaultRunResult(options);
+			}
+			return {
+				status: 'spawn-error',
+				exitCode: null,
+				stdout: '',
+				stderr: '',
+				stdoutTruncated: false,
+				stderrTruncated: false,
+				message: 'ENOENT',
+			};
+		};
+		const raw = await execute(validArgs());
+		const parsed = JSON.parse(raw) as { success: boolean; type: string };
+		expect(parsed.success).toBe(false);
+		expect(parsed.type).toBe('transport-failed');
+		expect(calls.filter((call) => call.args.includes('POST'))).toHaveLength(0);
+	});
+
+	test('POST transport failures surface typed refusals', async () => {
+		const outcomes: Array<Partial<ExternalToolRunResult>> = [
+			{ status: 'timeout', exitCode: null },
+			{ status: 'spawn-error', exitCode: null, message: 'ENOENT' },
+			{ status: 'completed', exitCode: 1, stderr: 'gh: 422 Validation Failed' },
+		];
+		for (const outcome of outcomes) {
+			calls = [];
+			getCalls = [];
+			await seedRun(directory, [record('G-6', 'LOW', 'src/g6.ts:6')]);
+			submissionInternals.runExternalTool = async (options) => {
+				calls.push(options);
+				if (!options.args.includes('POST')) {
+					return defaultRunResult(options);
+				}
+				return {
+					...defaultRunResult(options),
+					...outcome,
+				} as ExternalToolRunResult;
+			};
+			const raw = await execute(validArgs());
+			const parsed = JSON.parse(raw) as { success: boolean; type: string };
+			expect(parsed.success).toBe(false);
+			expect(parsed.type).toBe('transport-failed');
+			expect(calls.filter((call) => call.args.includes('POST'))).toHaveLength(
+				1,
+			);
+		}
+	});
+
 	test('refuses as an idempotent no-op when every finding is already posted', async () => {
 		await seedRun(directory, [record('G-3', 'LOW', 'src/g3.ts:3')]);
 		submissionInternals.runExternalTool = async (options) => {

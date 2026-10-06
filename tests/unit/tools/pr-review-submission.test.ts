@@ -296,4 +296,28 @@ describe('pr_review_submission authorization ladder (AC2)', () => {
 		expect(JSON.parse(raw).type).toBe('head-mismatch');
 		expect(calls).toHaveLength(0);
 	});
+
+	test('refuses without a session ID', async () => {
+		await seedSettledRun(directory);
+		const raw = await executePrReviewSubmission(validArgs(), directory, {});
+		expect(/Invalid/i.test(raw)).toBe(true);
+		expect(JSON.parse(raw).success).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
+
+	test('refuses a trigger receipt bound to a different run_id', async () => {
+		await seedSettledRun(directory);
+		const runDir = join(directory, '.swarm', 'pr-review', RUN_ID);
+		await fs.writeFile(
+			join(runDir, 'trigger-eval.json'),
+			JSON.stringify({
+				run_id: 'a-different-run',
+				pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+			}),
+			'utf-8',
+		);
+		const raw = await execute(validArgs());
+		expect(JSON.parse(raw).success).toBe(false);
+		expect(calls).toHaveLength(0);
+	});
 });
