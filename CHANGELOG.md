@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.190.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.190.0...v7.190.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **commands:** /swarm full-auto resume runs the same authorization preflight as on ([e562e56](https://github.com/ZaxbyHub/opencode-swarm/commit/e562e565a17f1aefda3ce0e5356440340b42306f))
+* **review:** canonical tmpdir fixture, probe-preservation assertions, docs order + fragment accuracy ([60b7b7d](https://github.com/ZaxbyHub/opencode-swarm/commit/60b7b7d303c9e544c89a50581dd5106f71a4e7ba))
+* **test-runner:** derive maven and gradle targets from resolved test files ([9db4a7d](https://github.com/ZaxbyHub/opencode-swarm/commit/9db4a7dc24588a1db24bb764d71022de409b37f9))
+* **test-runner:** derive maven and gradle targets from resolved test files ([616994e](https://github.com/ZaxbyHub/opencode-swarm/commit/616994e7255275965cf9edfc102edcfcff37aae0))
+
 ## [7.190.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.189.0...v7.190.0) (2026-10-05)
 
 
