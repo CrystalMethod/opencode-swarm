@@ -156,6 +156,109 @@ describe('#3107 .secretscanignore on runSecretscanOnFiles', () => {
 		expect(result.incomplete_files).toBe(0);
 	});
 
+	test('cross-engine parity for exact-name ancestor pruning (drift guard)', async () => {
+		// Issue #3107 ask (b): both engines must honor the SAME pattern
+		// language — this pins the plain-name/ancestor-pruning shape
+		// cross-engine, complementing the glob-shape parity test above.
+		writeIgnore(tempDir, 'generated\n');
+		write(
+			tempDir,
+			path.join('nested', 'generated', 'token.txt'),
+			'password=genSecret\n',
+		);
+		write(tempDir, path.join('src', 'config.txt'), 'password=appSecret\n');
+
+		const explicit = successful(
+			await runSecretscanOnFiles(
+				[
+					path.join(tempDir, 'nested', 'generated', 'token.txt'),
+					path.join(tempDir, 'src', 'config.txt'),
+				],
+				tempDir,
+			),
+		);
+		const directory = JSON.parse(
+			String(
+				await secretscan.execute(
+					{ directory: tempDir },
+					{} as unknown as never,
+				),
+			),
+		) as { findings: Array<{ path: string }> };
+
+		expect(findingsFor(explicit, 'generated')).toBe(0);
+		expect(
+			directory.findings.filter((f) => f.path.includes('generated')),
+		).toHaveLength(0);
+		expect(findingsFor(explicit, 'config.txt')).toBe(1);
+		expect(
+			directory.findings.filter((f) => f.path.includes('config.txt')),
+		).toHaveLength(1);
+		expect(explicit.files_scanned).toBe(1);
+		expect(explicit.skipped_files).toBe(1);
+	});
+
+	test('explicitly requested files under default-excluded directories stay scannable (non-seeding pin)', async () => {
+		// Pins the deliberate NOT-seeding of DEFAULT_EXCLUDE_DIRS on the
+		// explicit path: changed-file coverage must not silently darken for
+		// files the caller explicitly requested.
+		write(
+			tempDir,
+			path.join('node_modules', 'pkg', 'secret.txt'),
+			'password=nestedSecret\n',
+		);
+
+		const result = successful(
+			await runSecretscanOnFiles(
+				[path.join(tempDir, 'node_modules', 'pkg', 'secret.txt')],
+				tempDir,
+			),
+		);
+		expect(result.files_scanned).toBe(1);
+		expect(result.findings).toHaveLength(1);
+		expect(result.skipped_files).toBe(0);
+	});
+
+	test('comment lines are skipped, not treated as patterns', async () => {
+		// The raw comment line doubles as an exact-name pattern for the
+		// '#abc.txt' fixture file: if the loader ever stopped skipping
+		// comments, that raw line would suppress '#abc.txt' and this test
+		// would go red (PRR-007).
+		writeIgnore(tempDir, '#abc.txt\n');
+		write(tempDir, '#abc.txt', 'password=hashSecret\n');
+		write(tempDir, 'config.txt', 'password=appSecret\n');
+
+		const result = successful(
+			await runSecretscanOnFiles(
+				[path.join(tempDir, '#abc.txt'), path.join(tempDir, 'config.txt')],
+				tempDir,
+			),
+		);
+		expect(findingsFor(result, '#abc.txt')).toBe(1);
+		expect(findingsFor(result, 'config.txt')).toBe(1);
+		expect(result.files_scanned).toBe(2);
+		expect(result.skipped_files).toBe(0);
+	});
+
+	test('CRLF line endings in .secretscanignore are honored', async () => {
+		writeIgnore(tempDir, '**/generated/**\r\n');
+		write(tempDir, path.join('generated', 'token.txt'), 'password=genSecret\n');
+		write(tempDir, 'app.txt', 'nothing here\n');
+
+		const result = successful(
+			await runSecretscanOnFiles(
+				[
+					path.join(tempDir, 'generated', 'token.txt'),
+					path.join(tempDir, 'app.txt'),
+				],
+				tempDir,
+			),
+		);
+		expect(findingsFor(result, 'generated')).toBe(0);
+		expect(result.files_scanned).toBe(1);
+		expect(result.skipped_files).toBe(1);
+	});
+
 	test('ignore suppression counts skipped_files only — never a policy or incomplete skip', async () => {
 		writeIgnore(tempDir, '**/generated/**\n');
 		write(tempDir, path.join('generated', 'token.txt'), 'password=genSecret\n');

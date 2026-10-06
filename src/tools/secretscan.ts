@@ -1542,9 +1542,12 @@ export async function runSecretscan(
  * #3107: also reads `.secretscanignore` at the scan root with the same pattern
  * language and precedence as the directory scan (exact names + globs; comments,
  * blanks, and unsafe patterns skipped; ancestor directories prune like
- * traversal). Ignore-matched files count toward `skipped_files` only — never
- * `policy_skipped_files` — so the #2918 vacuous-coverage fail-closed arm keeps
- * biting on all-ignored batches.
+ * traversal). Ignore-matched files that reach the ignore check count toward
+ * `skipped_files` only — never `policy_skipped_files` — so the #2918
+ * vacuous-coverage fail-closed arm keeps biting on all-ignored batches. One
+ * deliberate carve-out: the docs-safe extension-exclusion route is evaluated
+ * FIRST (#2918, pinned by test), so an ignore-matched `.md`/`.markdown`/`.mdx`
+ * file keeps its extension accounting and the ignore file is inert for it.
  */
 export async function runSecretscanOnFiles(
 	files: string[],
