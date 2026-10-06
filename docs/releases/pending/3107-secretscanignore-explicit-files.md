@@ -29,15 +29,13 @@ changed-file scans.
 Ignore suppressions increment `skipped_files` only — never
 `policy_skipped_files` — so the vacuous-coverage predicate's meaning is
 unchanged at all four enforcing sites (gate, decoder, `check_gate_status`,
-stage-a-repair) and a batch whose every requested file is ignore-suppressed
-still fails the gate via the existing "zero requested files scanned" arm. A
-repo-writable `.secretscanignore` (e.g. `**/*`) can therefore never
-vacuous-pass the changed-file gate. The precise boundary: a batch where
-every requested file is ignore-suppressed fails the gate — the failure names
-`.secretscanignore` and the suppression count — while a mixed batch passes
-with ignore-matched files unscanned, which is the owner's configured policy,
-auditable via the new `ignored_files` counter on the scan result and
-evidence. The extension-exclusion route is
+stage-a-repair). A repo-writable `.secretscanignore` (e.g. `**/*`) can
+never vacuous-pass the changed-file gate. The precise boundary: a batch
+where every requested file is ignore-suppressed still fails the gate — the
+failure names `.secretscanignore` and the suppression count — while a mixed
+batch passes with ignore-matched files unscanned, which is the owner's
+configured policy, auditable via the new `ignored_files` counter on the
+scan result and evidence. The extension-exclusion route is
 evaluated first and unchanged: a docs-safe ignore-matched file keeps the
 same #2918 accounting and outcome it has at base (pinned by test).
 Ignore-matched missing files, symlinks, and scope-escaping realpaths keep

@@ -13,7 +13,6 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { loadEvidence } from '../../../src/evidence/manager';
-import { decodePreCheckResult } from '../../../src/hooks/guardrails/pre-check-result';
 import { runPreCheckBatch } from '../../../src/tools/pre-check-batch';
 import {
 	runSecretscanOnFiles,
