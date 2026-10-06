@@ -1,5 +1,68 @@
 # Changelog
 
+## [7.190.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.189.0...v7.190.0) (2026-10-05)
+
+
+### Features
+
+* **doctor:** pin both inert-config-key arms via a collector DI seam ([#2957](https://github.com/ZaxbyHub/opencode-swarm/issues/2957)) ([16ca396](https://github.com/ZaxbyHub/opencode-swarm/commit/16ca39626d97c545f96de341fa5d91f73384c818))
+* **epic:** epic mode v2 with plan-bound epics, gate-enforced waves, learning and plan shaping ([214c5cd](https://github.com/ZaxbyHub/opencode-swarm/commit/214c5cd304d301cead0892361f2783a70df37ea8))
+
+
+### Bug Fixes
+
+* **epic:** bind the phase review to the epic instance ([7b16040](https://github.com/ZaxbyHub/opencode-swarm/commit/7b16040e37354325964e8f8c8f1eb360822a66a5))
+* **epic:** close the remaining teardown, dispatch, and gating gaps ([8f6b5ec](https://github.com/ZaxbyHub/opencode-swarm/commit/8f6b5ecd79dcebdbde10773a2188d3802cbbf30e))
+* **epic:** refuse --abandon while a coder settlement is still live ([8d8875d](https://github.com/ZaxbyHub/opencode-swarm/commit/8d8875d2ccdda19e97706010ac4c2b342767ed53))
+* **epic:** refuse a PR-feedback coder that overlaps a running wave ([6a7c4fc](https://github.com/ZaxbyHub/opencode-swarm/commit/6a7c4fc6f705ee152e2581ed6777679292bee339))
+* **epic:** strip Epic tools before the gate grants them ([48ec42f](https://github.com/ZaxbyHub/opencode-swarm/commit/48ec42f9156d85f1d63524899c7fccb4769d1905))
+* **guardrails:** a redirect into /dev/null is not a shell write target ([4e58888](https://github.com/ZaxbyHub/opencode-swarm/commit/4e588888d9126e677976b1ce1734db3c1293beea))
+* **guardrails:** keep a temp-suffix mention out of the atomic-write ratchet's text scan ([c5caa88](https://github.com/ZaxbyHub/opencode-swarm/commit/c5caa88b995ffec2b92329074b9179347613c51e))
+
+## [7.189.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.12...v7.189.0) (2026-10-05)
+
+
+### Features
+
+* **ci:** expiry-aware quarantine census, renewal-requires-issue policy, and weekly aging workflow ([#2905](https://github.com/ZaxbyHub/opencode-swarm/issues/2905)) ([377fcdc](https://github.com/ZaxbyHub/opencode-swarm/commit/377fcdcf13d44220d211ce4bb456ada70d8967d5))
+
+
+### Bug Fixes
+
+* **ci:** resolve swarm-pr-review findings on [#3067](https://github.com/ZaxbyHub/opencode-swarm/issues/3067) ([76da8b6](https://github.com/ZaxbyHub/opencode-swarm/commit/76da8b66104ad5e2f6147b491c411bcb418d311f))
+
+## [7.188.12](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.11...v7.188.12) (2026-10-04)
+
+
+### Bug Fixes
+
+* **commands:** review-round corrections for harness/skill-opt config wiring ([8c5b7a3](https://github.com/ZaxbyHub/opencode-swarm/commit/8c5b7a3a42b778ed4accd34e08f46341da5be754))
+* **commands:** wire ctx.config into harness-opt/skill-opt registry closures ([1c52e55](https://github.com/ZaxbyHub/opencode-swarm/commit/1c52e555f6ab7e5270b1f3a94e764b0db3321f74))
+
+## [7.188.11](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.10...v7.188.11) (2026-10-04)
+
+
+### Bug Fixes
+
+* **turbo/lean:** unify integrated_diff_required default via DEFAULT_LEAN_TURBO_CONFIG ([#2954](https://github.com/ZaxbyHub/opencode-swarm/issues/2954)) ([a347d99](https://github.com/ZaxbyHub/opencode-swarm/commit/a347d994d5da4754043b795bf969277a877b3532))
+
+## [7.188.10](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.9...v7.188.10) (2026-10-04)
+
+
+### Bug Fixes
+
+* **3050:** close swarm-pr-review findings from both review passes ([88c74ce](https://github.com/ZaxbyHub/opencode-swarm/commit/88c74ce677227ae67271be59b9d6f32e139d1ed7))
+* **3050:** close two reviewer findings on the feedback round ([3fdd501](https://github.com/ZaxbyHub/opencode-swarm/commit/3fdd50187b0f0a45055be39a5a951b459c47d583))
+* **lang,build-check:** route Composer wrappers through the contained launcher; surface spawnError ([#3050](https://github.com/ZaxbyHub/opencode-swarm/issues/3050)) ([3cbff55](https://github.com/ZaxbyHub/opencode-swarm/commit/3cbff55556180ebf81a4e220caa000328e6ecc79))
+
+## [7.188.9](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.8...v7.188.9) (2026-10-03)
+
+
+### Bug Fixes
+
+* **test-runner:** spawn-error outcome, win32 gradle launcher, targets-only guard ([#3039](https://github.com/ZaxbyHub/opencode-swarm/issues/3039), [#3040](https://github.com/ZaxbyHub/opencode-swarm/issues/3040), [#3041](https://github.com/ZaxbyHub/opencode-swarm/issues/3041)) ([1061828](https://github.com/ZaxbyHub/opencode-swarm/commit/1061828a55f3adcbaedfa827958b9196809caecd))
+* **workflow:** writer-side session-view refresh for blocked-start Stage A recovery ([#3043](https://github.com/ZaxbyHub/opencode-swarm/issues/3043)) ([24f611f](https://github.com/ZaxbyHub/opencode-swarm/commit/24f611f098df528799e93bded8b370b5ec90c70c))
+
 ## [7.188.8](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.188.7...v7.188.8) (2026-10-03)
 
 

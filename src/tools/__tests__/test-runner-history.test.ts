@@ -109,7 +109,7 @@ describe('History integration - unit style tests', () => {
 			const parsed = parseResult(result);
 
 			expect(parsed.success).toBe(false);
-			expect(parsed.error).toContain('require explicit files');
+			expect(parsed.error).toContain('require a non-empty files array');
 		} finally {
 			fs.rmSync(tempDir, { recursive: true, force: true });
 		}

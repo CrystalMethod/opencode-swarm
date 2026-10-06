@@ -5,11 +5,14 @@
  * `taskWorkflowStates` while the dispatch side reads the durable evidence.
  * Covered durable-only writers: recover_rework_task (rework_required views)
  * and the idle-start recoveries (recover_stage_a_task / stage-a-repair from
- * idle, or a mechanical write landing on another session's map). NOT covered
- * (unchanged behavior): recovery from a BLOCKED in-memory view — the
- * at-or-above guard refuses to overwrite it (writer-side refresh tracked as
- * a follow-up issue). Such a writer leaves the views diverged, and every
- * later reviewer/test_engineer verdict was silently skipped before any
+ * idle, or a mechanical write landing on another session's map). Recovery
+ * from a BLOCKED in-memory view is covered WRITER-SIDE by issue #3043 (both
+ * settlement-wedge writers refresh the recovering session's view in the
+ * same call — see tests/unit/workflow/settlement-recovery-blocked-start-view-3043.test.ts);
+ * this consumer-side guard still refuses at-or-above views, so a blocked view
+ * in a session that did NOT run the recovery stays unrepaired — the pinned
+ * cross-session residual: in such a diverged view every later
+ * reviewer/test_engineer verdict is silently skipped before any
  * #2817 drop site — no gate write, no advisory, no recovery short of a
  * fresh session (the frozen checks in
  * .agents/issue-traces/3032-reset-session-stage-b-gate-persistence/repro/

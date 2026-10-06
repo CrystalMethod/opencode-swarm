@@ -5,7 +5,15 @@ import { z } from 'zod';
 import { resolveLocalNodeTool } from '../build/command-resolution';
 import { isCommandAvailable } from '../build/discovery';
 import type { NativeTestTarget, TestScope } from '../lang/backend';
-import { buildNativeTargetCommand } from '../lang/default-backend';
+import {
+	buildMavenTestCommand,
+	resolveMavenWrapperCommand,
+} from '../lang/backends/java';
+import {
+	buildGradleTestCommand,
+	buildNativeTargetCommand,
+	buildPhpVendorCommand,
+} from '../lang/default-backend';
 import {
 	analyzeImpact,
 	getImpactCacheStatus,
@@ -29,6 +37,7 @@ import {
 	containsControlChars,
 	containsPathTraversal,
 } from '../utils/path-security';
+import { isWindowsCommandInterpreterLaunch } from '../utils/windows-batch';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
 
@@ -43,6 +52,7 @@ export const MAX_SAFE_SOURCE_FILES = 1;
 export const MAX_RAW_FILE_ENTRIES = 512;
 export const MAX_FILE_PATH_LENGTH = 4096;
 export const MAX_GRAPH_FILE_BYTES = 4 * 1024 * 1024;
+export const MAX_MAVEN_MODULE_PROBE_ENTRIES = 100; // one-level nested module scan cap
 
 const DEFAULT_LOAD_IMPACT_MAP = loadImpactMap;
 
@@ -889,7 +899,190 @@ export async function parseTestOutputViaDispatch(
 	}
 }
 
-export async function detectTestFramework(cwd: string): Promise<TestFramework> {
+/**
+ * True when a `path.relative(root, x)` result points outside `root`. Matches
+ * only a real `..` path SEGMENT, so an in-root entry whose name merely starts
+ * with `..` (e.g. `..foo/`) is not misclassified as an escape.
+ */
+function relativeEscapesRoot(relative: string): boolean {
+	return (
+		relative === '..' ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	);
+}
+
+/** Marker files that identify a Maven module directory. */
+const MAVEN_BUILD_FILES: string[] = ['pom.xml'];
+/** Marker files that identify a Gradle module directory (Groovy + Kotlin DSL). */
+const GRADLE_BUILD_FILES: string[] = ['build.gradle', 'build.gradle.kts'];
+
+/**
+ * Resolve the nearest Maven module directory under `root`.
+ *
+ * When `files` is provided, each file is resolved against `root`, paths
+ * outside `root` are dropped, and the directory containing each remaining file
+ * is walked upward toward `root` until a `pom.xml` is found. The first match
+ * wins (files are tried in the given order; later files are consulted only
+ * when an earlier one resolves to no module).
+ *
+ * When `files` is absent/empty, the immediate entries of `root` are probed one
+ * level deep for a `pom.xml`: hidden entries (any name starting with `.`) and
+ * `node_modules` are skipped, the remaining entries are sorted by name and at
+ * most {@link MAX_MAVEN_MODULE_PROBE_ENTRIES} of them are inspected.
+ *
+ * Containment is checked on canonical paths: a candidate module directory is
+ * accepted only when its realpath stays inside the realpath of `root`, so a
+ * symlink or junction that leads outside the project is skipped (the walk /
+ * probe continues with the next candidate). If `root` itself cannot be
+ * realpath'd, no module is resolved (fail closed). The returned path is the
+ * LEXICAL module path under `root`.
+ *
+ * Known limitations:
+ * - Multi-module reactor: nearest `pom.xml` wins. A child module that depends
+ *   on sibling reactor modules may require the aggregator pom (out of scope).
+ * - `scope:'target'` native execution remains rooted at the project root; this
+ *   resolver does not change native target handling.
+ */
+export function resolveMavenModuleDir(
+	root: string,
+	files?: string[],
+): string | null {
+	return resolveModuleDirByMarkers(root, files, MAVEN_BUILD_FILES);
+}
+
+/**
+ * Shared walk-up / one-level-probe resolver behind the Maven and Gradle
+ * module resolvers (issue #3072): identical containment, fail-closed, and
+ * bounded-probe rules — only the marker files differ. See
+ * {@link resolveMavenModuleDir} for the full contract.
+ */
+function resolveModuleDirByMarkers(
+	root: string,
+	files: string[] | undefined,
+	markerNames: string[],
+): string | null {
+	const hasMarker = (dir: string): boolean =>
+		markerNames.some((marker) => _internals.existsSync(path.join(dir, marker)));
+	const resolvedRoot = path.resolve(root);
+
+	// Canonical root, computed once on first use; null = root not resolvable.
+	let rootReal: string | null | undefined;
+	const isContainedModuleDir = (dir: string): boolean => {
+		if (rootReal === undefined) {
+			try {
+				rootReal = _internals.realpathSync(resolvedRoot);
+			} catch {
+				rootReal = null;
+			}
+		}
+		if (rootReal === null) return false;
+		let dirReal: string;
+		try {
+			dirReal = _internals.realpathSync(dir);
+		} catch {
+			return false;
+		}
+		return !relativeEscapesRoot(path.relative(rootReal, dirReal));
+	};
+
+	if (files && files.length > 0) {
+		for (const file of files) {
+			const resolvedFile = path.resolve(resolvedRoot, file);
+			const relativeToRoot = path.relative(resolvedRoot, resolvedFile);
+			if (relativeEscapesRoot(relativeToRoot)) {
+				continue;
+			}
+
+			let current = path.dirname(resolvedFile);
+			while (true) {
+				if (hasMarker(current) && isContainedModuleDir(current)) {
+					return current;
+				}
+				if (current === resolvedRoot) break;
+				const parent = path.dirname(current);
+				if (parent === current) break;
+				if (relativeEscapesRoot(path.relative(resolvedRoot, parent))) {
+					break;
+				}
+				current = parent;
+			}
+		}
+		return null;
+	}
+
+	// File-less probe: one level deep, bounded, sorted for deterministic ties.
+	let entries: string[];
+	try {
+		entries = _internals.readdirSync(resolvedRoot);
+	} catch {
+		return null;
+	}
+
+	entries.sort((a, b) => a.localeCompare(b));
+	let inspected = 0;
+	for (const entry of entries) {
+		// Hidden entries (.git, .idea, .github, ...) and node_modules are never
+		// build modules; skip them BEFORE the cap so they cannot exhaust it.
+		if (entry.startsWith('.') || entry === 'node_modules') continue;
+		if (inspected >= MAX_MAVEN_MODULE_PROBE_ENTRIES) break;
+		inspected++;
+		const candidate = path.join(resolvedRoot, entry);
+		if (hasMarker(candidate) && isContainedModuleDir(candidate)) {
+			return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * Nested module directory for `root`, or null when `root` itself holds any of
+ * `markerNames`. A root-level build manifest keeps precedence: detection and
+ * execution both stay at the project root, so the nested fallback must never
+ * apply there.
+ */
+function resolveNestedModuleDir(
+	root: string,
+	files: string[] | undefined,
+	markerNames: string[],
+): string | null {
+	if (
+		markerNames.some((marker) => _internals.existsSync(path.join(root, marker)))
+	) {
+		return null;
+	}
+	return resolveModuleDirByMarkers(root, files, markerNames);
+}
+
+/**
+ * Nested Maven module directory for `root` ({@link MAVEN_BUILD_FILES}).
+ * Shared by `detectTestFramework`'s nested Maven fallback and the
+ * test_runner cwd override so the two cannot diverge.
+ */
+function resolveNestedMavenModuleDir(
+	root: string,
+	files?: string[],
+): string | null {
+	return resolveNestedModuleDir(root, files, MAVEN_BUILD_FILES);
+}
+
+/**
+ * Nested Gradle module directory for `root` ({@link GRADLE_BUILD_FILES}) —
+ * the Gradle dual of resolveNestedMavenModuleDir (issue #3072). Shared by
+ * detectTestFramework's nested Gradle fallback and the test_runner cwd
+ * override so the two cannot diverge.
+ */
+function resolveNestedGradleModuleDir(
+	root: string,
+	files?: string[],
+): string | null {
+	return resolveNestedModuleDir(root, files, GRADLE_BUILD_FILES);
+}
+
+export async function detectTestFramework(
+	cwd: string,
+	files?: string[],
+): Promise<TestFramework> {
 	const baseDir = cwd;
 	// Check for package.json to detect JS/TS frameworks
 	try {
@@ -1004,6 +1197,40 @@ export async function detectTestFramework(cwd: string): Promise<TestFramework> {
 	if (detectDartTest(baseDir)) return 'dart-test';
 	if (detectRSpec(baseDir)) return 'rspec';
 	if (detectMinitest(baseDir)) return 'minitest';
+
+	// Last-resort nested Maven fallback: only after every root-level detector
+	// has returned no match, and never when the root itself has a pom.xml (the
+	// root keeps precedence; execution would stay at the root, where only a
+	// root-level `mvn` could run). This covers projects where the Maven module
+	// lives in a nested directory (e.g. backend/pom.xml or
+	// services/backend/pom.xml) and `mvn` is on PATH or a RUNNABLE wrapper
+	// exists in that module directory — the same wrapper predicate the command
+	// builder uses, so detection never accepts a wrapper that would not launch.
+	const mavenModuleDir = resolveNestedMavenModuleDir(baseDir, files);
+	if (
+		mavenModuleDir &&
+		(_internals.isCommandAvailable('mvn') ||
+			resolveMavenWrapperCommand(mavenModuleDir, ['test']) !== null)
+	) {
+		return 'maven';
+	}
+
+	// Last-resort nested Gradle fallback (#3072): same shape as the Maven
+	// fallback above — only after every root-level detector has failed and
+	// never when the root itself has a Gradle build file (root keeps
+	// precedence). Accepts a nested module (e.g. backend/build.gradle) when a
+	// launcher exists there: `gradle` on PATH or a gradlew/gradlew.bat file,
+	// the same predicate detectGradle uses at the root and the same one
+	// buildGradleTestCommand launches from the module cwd.
+	const gradleModuleDir = resolveNestedGradleModuleDir(baseDir, files);
+	if (
+		gradleModuleDir &&
+		(_internals.isCommandAvailable('gradle') ||
+			_internals.existsSync(path.join(gradleModuleDir, 'gradlew')) ||
+			_internals.existsSync(path.join(gradleModuleDir, 'gradlew.bat')))
+	) {
+		return 'gradle';
+	}
 
 	return 'none';
 }
@@ -1124,6 +1351,22 @@ function buildLanguageSpecificTestNames(
 	}
 }
 
+/**
+ * Index of `segment` in `normalizedPath` when it starts at index 0 or right
+ * after a `/` (a whole-path-segment match), else -1. Substring hits inside a
+ * segment (e.g. `xsrc/main/java`) do not match.
+ */
+function findPathSegmentIndex(normalizedPath: string, segment: string): number {
+	for (
+		let index = normalizedPath.indexOf(segment);
+		index !== -1;
+		index = normalizedPath.indexOf(segment, index + 1)
+	) {
+		if (index === 0 || normalizedPath[index - 1] === '/') return index;
+	}
+	return -1;
+}
+
 function getRepoLevelCandidateDirectories(
 	workingDir: string,
 	relativePath: string,
@@ -1139,26 +1382,46 @@ function getRepoLevelCandidateDirectories(
 	});
 
 	const normalizedRelativePath = relativePath.replace(/\\/g, '/');
-	if (ext === '.java' && normalizedRelativePath.startsWith('src/main/java/')) {
-		directories.push(
-			path.join(
-				workingDir,
-				'src/test/java',
-				path.dirname(normalizedRelativePath.slice('src/main/java/'.length)),
-			),
+	// Issue #3072 R2: match the `src/main/{java,kotlin}/` segment anywhere on
+	// a path boundary, not only at the repo root, so a nested-module source
+	// (`backend/src/main/java/...`) maps to its module's sibling test tree
+	// (`backend/src/test/java/...`). A root-relative path matches at index 0
+	// and behaves exactly as before.
+	if (ext === '.java') {
+		const index = findPathSegmentIndex(
+			normalizedRelativePath,
+			'src/main/java/',
 		);
+		if (index !== -1) {
+			directories.push(
+				path.join(
+					workingDir,
+					normalizedRelativePath.slice(0, index),
+					'src/test/java',
+					path.dirname(
+						normalizedRelativePath.slice(index + 'src/main/java/'.length),
+					),
+				),
+			);
+		}
 	}
-	if (
-		(ext === '.kt' || ext === '.java') &&
-		normalizedRelativePath.startsWith('src/main/kotlin/')
-	) {
-		directories.push(
-			path.join(
-				workingDir,
-				'src/test/kotlin',
-				path.dirname(normalizedRelativePath.slice('src/main/kotlin/'.length)),
-			),
+	if (ext === '.kt' || ext === '.java') {
+		const index = findPathSegmentIndex(
+			normalizedRelativePath,
+			'src/main/kotlin/',
 		);
+		if (index !== -1) {
+			directories.push(
+				path.join(
+					workingDir,
+					normalizedRelativePath.slice(0, index),
+					'src/test/kotlin',
+					path.dirname(
+						normalizedRelativePath.slice(index + 'src/main/kotlin/'.length),
+					),
+				),
+			);
+		}
 	}
 
 	return [...new Set(directories)];
@@ -1538,6 +1801,32 @@ function getTargetedExecutionUnsupportedReason(
 	}
 }
 
+/** File extensions whose basename is a runnable JVM test class name for
+ * class-based maven/gradle selection (#3072). */
+const CLASS_BASED_TEST_EXTENSIONS = new Set(['.java', '.kt', '.groovy']);
+
+/**
+ * Derive framework-native class selectors from a resolved test-file
+ * selection (#3072 R1): each file maps to its basename minus extension
+ * (`com/x/FooTest.java` → `FooTest`), input order preserved, duplicates
+ * dropped. Returns [] when any file is not a JVM test source or yields an
+ * empty class name, so callers fail closed to the pre-existing structured
+ * error instead of spawning a selection that silently drops files.
+ */
+function deriveClassBasedTargets(files: string[]): string[] {
+	const derived: string[] = [];
+	const seen = new Set<string>();
+	for (const file of files) {
+		const ext = path.extname(file);
+		if (!CLASS_BASED_TEST_EXTENSIONS.has(ext.toLowerCase())) return [];
+		const className = path.basename(file, ext);
+		if (!className || seen.has(className)) continue;
+		seen.add(className);
+		derived.push(className);
+	}
+	return derived;
+}
+
 function buildTestCommand(
 	framework: TestFramework,
 	scope: TestScope,
@@ -1673,29 +1962,19 @@ function buildTestCommand(
 			return args;
 		}
 		case 'maven': {
-			// maven has no bail support — silently ignore
-			const args: string[] = ['mvn', 'test'];
-			if (targets && targets.length > 0) {
-				args.push(`-Dtest=${targets.join(',')}`);
-			}
-			return args;
+			// maven has no bail support — silently ignore. Shared with the Java
+			// backend's dispatch buildTestCommand so both paths emit identical
+			// argv (runnable wrapper first — the cmd.exe launcher for mvnw.cmd on
+			// win32, an executable ./mvnw on POSIX — otherwise mvn).
+			return buildMavenTestCommand(baseDir, targets);
 		}
 		case 'gradle': {
-			// gradle has no bail support — silently ignore
-			const isWindows = process.platform === 'win32';
-			const hasGradlewBat = fs.existsSync(path.join(baseDir, 'gradlew.bat'));
-			const hasGradlew = fs.existsSync(path.join(baseDir, 'gradlew'));
-			const args: string[] = [];
-			if (hasGradlewBat && isWindows) args.push('gradlew.bat');
-			else if (hasGradlew) args.push('./gradlew');
-			else args.push('gradle');
-			args.push('test');
-			if (targets && targets.length > 0) {
-				for (const target of targets) {
-					args.push('--tests', target);
-				}
-			}
-			return args;
+			// gradle has no bail support — silently ignore. Shared with the
+			// default backend's dispatch buildTestCommand via
+			// `buildGradleTestCommand` so both paths emit identical argv
+			// (runnable wrapper first — the cmd.exe launcher for gradlew.bat
+			// on win32, an executable ./gradlew on POSIX — otherwise gradle).
+			return buildGradleTestCommand(baseDir, targets);
 		}
 		case 'dotnet-test': {
 			// dotnet-test has no bail support — silently ignore
@@ -1774,14 +2053,18 @@ function buildTestCommand(
 				'Dir.glob("test/**/*_test.rb").sort.each { |f| require_relative f }',
 			];
 		case 'pest': {
-			const args: string[] = [phpVendorBin('pest')];
-			if (scope !== 'all' && files.length > 0) args.push(...files);
-			return args;
+			return buildPhpVendorCommand(
+				baseDir,
+				'pest',
+				scope !== 'all' && files.length > 0 ? files : [],
+			);
 		}
 		case 'phpunit': {
-			const args: string[] = [phpVendorBin('phpunit')];
-			if (scope !== 'all' && files.length > 0) args.push(...files);
-			return args;
+			return buildPhpVendorCommand(
+				baseDir,
+				'phpunit',
+				scope !== 'all' && files.length > 0 ? files : [],
+			);
 		}
 		case 'php-artisan': {
 			const args: string[] = ['php', 'artisan', 'test'];
@@ -1791,14 +2074,6 @@ function buildTestCommand(
 		default:
 			return null;
 	}
-}
-
-function phpVendorBin(name: string): string {
-	return path.join(
-		'vendor',
-		'bin',
-		process.platform === 'win32' ? `${name}.bat` : name,
-	);
 }
 
 function mapFrameworkStatusToResult(
@@ -2396,11 +2671,30 @@ export async function runTests(
 		resolvedNativeTarget = resolvedTarget.target;
 		executionCwd = resolvedTarget.executionDirectory;
 	}
+	// Issue #3072 R1: class-based frameworks cannot take file paths, but a
+	// resolved JVM test-file selection maps 1:1 to test class names. When the
+	// caller passed no explicit `targets`, derive them here so the dispatch
+	// and legacy command builders both receive the same argv. Explicit
+	// `targets` keep precedence; a selection containing a non-class file
+	// derives nothing and keeps the structured error below (fail closed).
+	let effectiveTargets = targets;
 	if (
 		scope !== 'all' &&
 		scope !== 'target' &&
 		files.length > 0 &&
-		!(targets && targets.length > 0)
+		!(targets && targets.length > 0) &&
+		(framework === 'maven' || framework === 'gradle')
+	) {
+		const derivedTargets = deriveClassBasedTargets(files);
+		if (derivedTargets.length > 0) {
+			effectiveTargets = derivedTargets;
+		}
+	}
+	if (
+		scope !== 'all' &&
+		scope !== 'target' &&
+		files.length > 0 &&
+		!(effectiveTargets && effectiveTargets.length > 0)
 	) {
 		const unsupportedReason = getTargetedExecutionUnsupportedReason(framework);
 		if (unsupportedReason) {
@@ -2429,7 +2723,7 @@ export async function runTests(
 				coverage,
 				executionCwd,
 				bail,
-				targets,
+				effectiveTargets,
 				resolvedNativeTarget,
 			)) ??
 			buildTestCommand(
@@ -2439,7 +2733,7 @@ export async function runTests(
 				coverage,
 				executionCwd,
 				bail,
-				targets,
+				effectiveTargets,
 				resolvedNativeTarget,
 			))
 		: buildTestCommand(
@@ -2449,7 +2743,7 @@ export async function runTests(
 				coverage,
 				executionCwd,
 				bail,
-				targets,
+				effectiveTargets,
 				resolvedNativeTarget,
 			);
 
@@ -2514,6 +2808,13 @@ export async function runTests(
 			cwd: executionCwd,
 			timeout: timeout_ms,
 			killProcessTree: true,
+			// A constrained cmd.exe launcher (the Maven wrapper on win32) carries a
+			// pre-quoted `call "<abs>" "<arg>"` tail; keep the spawner from
+			// re-quoting it into a command line cmd.exe cannot parse. Same pattern
+			// as lint.ts / pkg-audit.ts.
+			...(isWindowsCommandInterpreterLaunch(command)
+				? { windowsVerbatimArguments: true }
+				: {}),
 		});
 
 		// Race with timeout — but read streams CONCURRENTLY with waiting for exit.
@@ -2592,14 +2893,19 @@ export async function runTests(
 			totals.total = parsedTestCases.length;
 		}
 
-		// Determine success based on exit code and failures
+		// Determine success based on exit code and failures. A spawn-creation
+		// failure (`proc.spawnError`, the bunSpawn value contract — the process
+		// never started) is classified ahead of everything else as a launch
+		// failure, never a test regression (issue #3039).
 		const isTimeout = timedOutByDeadline;
+		const spawnFailure = proc.spawnError;
 		const nativeTargetObserved = resolvedNativeTarget
 			? didExecuteNativeTarget(resolvedNativeTarget, output)
 			: true;
 		const testPassed =
 			exitCode === 0 &&
 			!isTimeout &&
+			!spawnFailure &&
 			totals.failed === 0 &&
 			nativeTargetObserved;
 
@@ -2634,17 +2940,21 @@ export async function runTests(
 				duration_ms,
 				totals,
 				rawOutput: output,
-				error: isTimeout
-					? `Tests timed out after ${timeout_ms}ms`
-					: !nativeTargetObserved
-						? `Native target "${resolvedNativeTarget?.name}" did not execute`
-						: `Tests failed with ${totals.failed} failures`,
-				message: isTimeout
-					? `${framework} tests timed out after ${timeout_ms}ms`
-					: !nativeTargetObserved
-						? `${framework} did not report the exact requested native target; refusing a false-green 0/0 result`
-						: `${framework} tests failed (${totals.failed}/${totals.total} failed)`,
-				outcome: isTimeout ? 'error' : 'regression',
+				error: spawnFailure
+					? `Test command failed to launch: ${spawnFailure.message}`
+					: isTimeout
+						? `Tests timed out after ${timeout_ms}ms`
+						: !nativeTargetObserved
+							? `Native target "${resolvedNativeTarget?.name}" did not execute`
+							: `Tests failed with ${totals.failed} failures`,
+				message: spawnFailure
+					? `${framework} test process could not be started: ${spawnFailure.message} — a launch failure (for example a missing executable or unusable working directory), not a test regression. Check the command, PATH, and cwd instead of the tests.`
+					: isTimeout
+						? `${framework} tests timed out after ${timeout_ms}ms`
+						: !nativeTargetObserved
+							? `${framework} did not report the exact requested native target; refusing a false-green 0/0 result`
+							: `${framework} tests failed (${totals.failed}/${totals.total} failed)`,
+				outcome: spawnFailure || isTimeout ? 'error' : 'regression',
 				testCases: parsedTestCases,
 			};
 
@@ -2994,7 +3304,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			.array(z.string())
 			.optional()
 			.describe(
-				"Framework-native test names or patterns to filter which tests run. Supported by cargo, go-test, maven, gradle, dotnet-test, ctest, and swift-test. Each entry is passed as-is to the framework's native filter flag.",
+				"Framework-native test names or patterns to filter which tests run. Supported by cargo, go-test, maven, gradle, dotnet-test, ctest, and swift-test. Each entry is passed as-is to the framework's native filter flag. Targets only filter a files-driven selection — provide a non-empty files array for the convention, graph, and impact scopes; targets alone cannot drive discovery.",
 			),
 		coverage: z
 			.boolean()
@@ -3153,20 +3463,28 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			// Allow through — env opt-in confirmed
 		}
 
-		// Hard guard: convention, graph, and impact scopes require explicit files (or targets) to prevent unsafe full-project discovery
+		// Hard guard: convention, graph, and impact scopes require a non-empty
+		// files array to prevent unsafe full-project discovery (issue #3041).
+		// `targets` alone cannot substitute: the schema documents targets as a
+		// filter over a files-driven selection, and command builders for
+		// file-based frameworks (bun, jest, vitest, mocha, pytest, ...) ignore
+		// targets entirely, so a targets-only call there would silently run the
+		// FULL suite — the exact hazard this guard exists to prevent.
+		// Targets-only calls always errored downstream before (with a
+		// misleading files-centric message), so rejecting them up front is not
+		// a regression.
 		if (
 			(scope === 'convention' || scope === 'graph' || scope === 'impact') &&
-			(!args.files || args.files.length === 0) &&
-			(!args.targets || args.targets.length === 0)
+			(!args.files || args.files.length === 0)
 		) {
 			const errorResult: TestErrorResult = {
 				success: false,
 				framework: 'none',
 				scope,
 				error:
-					'scope "convention", "graph", and "impact" require explicit files or targets array - omitting both causes unsafe full-project discovery',
+					'scope "convention", "graph", and "impact" require a non-empty files array - targets only filter which tests run and cannot substitute for files (omitting files causes unsafe full-project discovery)',
 				message:
-					'When using scope "convention", "graph", or "impact", you must provide a non-empty "files" array (or "targets" for framework-native test names). Example: { scope: "convention", files: ["tests/test_calc.py"] }',
+					'When using scope "convention", "graph", or "impact", provide at least one source or direct-test file in "files"; "targets" only filter which tests run within that selection and cannot drive discovery on their own. Example: { scope: "convention", files: ["tests/test_calc.py"] }',
 				outcome: 'error',
 				resolution: makeResolution(scope, scope, [], [], 'skip', workingDir),
 			};
@@ -3209,10 +3527,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 		} else if (useDispatch) {
 			framework = await detectTestFrameworkViaDispatch(workingDir);
 			if (framework === 'none') {
-				framework = await detectTestFramework(workingDir);
+				framework = await detectTestFramework(workingDir, _files);
 			}
 		} else {
-			framework = await detectTestFramework(workingDir);
+			framework = await detectTestFramework(workingDir, _files);
 		}
 
 		if (framework === 'none') {
@@ -3246,6 +3564,35 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			return JSON.stringify(result, null, 2);
 		}
 
+		// For projects with a nested module layout, run the command from the
+		// module directory that owns the build manifest. This applies only when
+		// the project root itself has no manifest (resolveNested{Maven,Gradle}
+		// ModuleDir — the same gates detectTestFramework's nested fallbacks use)
+		// and the scope is not 'target': scope:'target' native execution remains
+		// rooted at the project root because runTests resolves native targets
+		// against the cwd argument. When the root already contains a pom.xml
+		// (aggregator reactor) or a Gradle build file, execution stays at the
+		// root.
+		// Convention-scope note: when Java test files are resolved but no
+		// targets are provided, runTests derives -Dtest/<Class> selectors from
+		// the resolved test files (#3072 R1) — explicit targets keep precedence,
+		// and a selection containing non-class files still returns the
+		// class-based structured error. A file-less run needs scope:'all'
+		// (convention/graph/impact without files are rejected by the guard
+		// above — targets cannot substitute); scope:'all' with no files uses the
+		// one-level nested module probe to pick the module dir.
+		if (scope !== 'target' && framework === 'maven') {
+			const mavenModuleDir = resolveNestedMavenModuleDir(workingDir, _files);
+			if (mavenModuleDir) {
+				nativeExecutionDirectory = mavenModuleDir;
+			}
+		} else if (scope !== 'target' && framework === 'gradle') {
+			const gradleModuleDir = resolveNestedGradleModuleDir(workingDir, _files);
+			if (gradleModuleDir) {
+				nativeExecutionDirectory = gradleModuleDir;
+			}
+		}
+
 		// Handle different scopes: 'convention' accepts direct test files or source-file discovery;
 		// 'graph' and 'impact' accept source files only; 'all' skips discovery entirely.
 		let testFiles: string[] = [];
@@ -3264,15 +3611,15 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			// effectiveScope is already 'all', testFiles stays empty
 			// Fall through to runTests which handles empty files for scope 'all'
 		} else if (scope === 'convention') {
-			const directTestFiles = args.files!.filter((file) =>
+			const directTestFiles = _files.filter((file) =>
 				isConventionTestFilePath(file),
 			);
-			const sourceFiles = args.files!.filter((file) => {
+			const sourceFiles = _files.filter((file) => {
 				if (directTestFiles.includes(file)) return false;
 				const ext = path.extname(file).toLowerCase();
 				return SOURCE_EXTENSIONS.has(ext);
 			});
-			const invalidFiles = args.files!.filter(
+			const invalidFiles = _files.filter(
 				(file) =>
 					!directTestFiles.includes(file) && !sourceFiles.includes(file),
 			);
@@ -3304,7 +3651,7 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				return JSON.stringify(errorResult, null, 2);
 			}
 
-			selectionSourceFiles = normalizeSelectionFiles(args.files!, workingDir);
+			selectionSourceFiles = normalizeSelectionFiles(_files, workingDir);
 
 			// Guard: Reject when too many source files would cause fan-out to many test files.
 			// Direct test files are exempt — they are explicitly named and don't fan out.
@@ -3333,10 +3680,12 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				...getTestFilesFromConvention(sourceFiles, workingDir),
 			].filter((file, index, items) => items.indexOf(file) === index);
 		} else if (scope === 'graph') {
-			// Try to find related tests via import analysis
-			// args.files is guaranteed non-empty by the guard above
+			// Try to find related tests via import analysis. Files are always
+			// present here (the guard above rejects an empty files array before
+			// discovery), so the defaulted `_files` array is never empty on
+			// this path.
 			const sourceFiles = normalizeSelectionFiles(
-				args.files!.filter((f) => {
+				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {
 						return false;
 					}
@@ -3347,7 +3696,10 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 			);
 			selectionSourceFiles = sourceFiles;
 
-			// Guard: If args.files was provided but all entries are non-source files, reject
+			// Guard: reject when none of the provided files is a recognized
+			// source file. Files are always present here (the guard above
+			// rejects an empty files array before discovery), so this only
+			// fires when every entry was non-source.
 			if (sourceFiles.length === 0) {
 				const errorResult: TestErrorResult = {
 					success: false,
@@ -3409,10 +3761,11 @@ export const test_runner: ReturnType<typeof tool> = createSwarmTool({
 				);
 			}
 		} else if (scope === 'impact') {
-			// Impact scope: use test-impact analyzer to find tests covering changed files
-			// args.files is guaranteed non-empty by the guard above
+			// Impact scope: use test-impact analyzer to find tests covering changed files.
+			// Files are always present here (the guard above rejects an empty
+			// files array before discovery).
 			const sourceFiles = normalizeSelectionFiles(
-				args.files!.filter((f) => {
+				_files.filter((f) => {
 					if (isConventionTestFilePath(f)) {
 						return false;
 					}
@@ -3713,6 +4066,7 @@ export const _internals: {
 	existsSync: typeof fs.existsSync;
 	readdirSync: typeof fs.readdirSync;
 	readFileSync: typeof fs.readFileSync;
+	realpathSync: typeof fs.realpathSync;
 	resolveLocalNodeTool: typeof resolveLocalNodeTool;
 	bunSpawn: typeof bunSpawn;
 	buildNativeTargetCommand: typeof buildNativeTargetCommand;
@@ -3728,6 +4082,7 @@ export const _internals: {
 	existsSync: fs.existsSync,
 	readdirSync: fs.readdirSync,
 	readFileSync: fs.readFileSync,
+	realpathSync: fs.realpathSync,
 	resolveLocalNodeTool,
 	bunSpawn,
 	buildNativeTargetCommand,
