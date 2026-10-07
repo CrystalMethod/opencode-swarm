@@ -367,6 +367,13 @@ export const SecretscanEvidenceSchema = BaseEvidenceSchema.extend({
 	 */
 	policy_skipped_files: z.number().int().min(0).optional(),
 	requested_files: z.number().int().min(0).optional(),
+	/**
+	 * #3107 feedback: files suppressed by .secretscanignore patterns on the
+	 * explicit-files path (audit/diagnosability counter; never part of the
+	 * vacuous-coverage predicate). Legacy evidence without it decodes
+	 * unchanged.
+	 */
+	ignored_files: z.number().int().min(0).optional(),
 	incomplete_files: z.number().int().min(0),
 	incomplete_paths: z.array(
 		z.object({
