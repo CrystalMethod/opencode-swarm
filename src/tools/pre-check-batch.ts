@@ -1251,21 +1251,24 @@ export async function getChangedLineAmbiguousFiles(
 	if (!mergeBase) return null;
 
 	// #3092 review (PRR-002): a merge-base equal to HEAD means the committed
-	// hop is empty and NON-AUTHORITATIVE — either HEAD sits on the default
-	// branch itself or every candidate ref was planted/shadowed at the tip.
-	// Treating the empty hop as proof that nothing was committed recently let
-	// a freshly committed secret classify PRE-EXISTING. Fail closed: the
-	// ambiguity source is untrustworthy, so nothing gets the discount.
-	// Residual trust boundary: a local ref planted at an INTERMEDIATE commit
-	// can still shrink the committed hop — the same git-state trust the SAST
-	// classification inherits; full mitigation requires fetch-verified refs.
+	// hop is empty and NON-AUTHORITATIVE — HEAD sits on the default branch
+	// itself, the branch carries no commits past its base yet, or every
+	// candidate ref was planted/shadowed at the tip. Treating the empty hop
+	// as proof that nothing was committed recently let a freshly committed
+	// secret classify PRE-EXISTING. Fail closed: the ambiguity source is
+	// untrustworthy, so nothing gets the discount. Cost: worktree-only
+	// (uncommitted) brownfield edits before the first branch commit also
+	// lose the discount. Residual trust boundary: a local ref planted at an
+	// INTERMEDIATE commit can still shrink the committed hop — the same
+	// git-state trust the SAST classification inherits; full mitigation
+	// requires fetch-verified refs.
 	const headSha = (
 		await runGit(['rev-parse', 'HEAD'], directory, abortSignal)
 	)?.trim();
 	if (
-		headSha !== null &&
-		/^[0-9a-f]{40,64}$/i.test(headSha ?? '') &&
-		headSha?.toLowerCase() === mergeBase.toLowerCase()
+		typeof headSha === 'string' &&
+		/^[0-9a-f]{40,64}$/i.test(headSha) &&
+		headSha.toLowerCase() === mergeBase.toLowerCase()
 	) {
 		return null;
 	}

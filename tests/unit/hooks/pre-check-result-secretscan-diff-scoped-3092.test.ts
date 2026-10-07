@@ -119,8 +119,12 @@ describe('decodePreCheckResult secretscan diff-scope proof (#3092)', () => {
 	});
 
 	test('a malformed proof entry (line below 1) never disarms the findings (PRR-021)', () => {
+		// The FINDINGS side carries the malformed line too: if the key guard
+		// were deleted, proof and findings would share the line-0 key, the
+		// proof would cover, and this payload would decode as pass — so this
+		// test goes red exactly when the guard is removed.
 		const payload = batchJson(
-			{},
+			{ findings: [secretFinding('C:/x/legacy.txt', 0)], count: 1 },
 			{
 				secretscan_preexisting_findings: [secretFinding('C:/x/legacy.txt', 0)],
 			},
@@ -130,7 +134,7 @@ describe('decodePreCheckResult secretscan diff-scope proof (#3092)', () => {
 
 	test('a malformed proof entry (empty path) never disarms the findings (PRR-021)', () => {
 		const payload = batchJson(
-			{},
+			{ findings: [secretFinding('', 1)], count: 1 },
 			{ secretscan_preexisting_findings: [secretFinding('', 1)] },
 		);
 		expect(decodePreCheckResult(payload).kind).not.toBe('pass');

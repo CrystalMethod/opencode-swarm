@@ -101,9 +101,11 @@ describe('hasGreenPostSettlementPreCheck diff-scoped green basis (#3092)', () =>
 		expect(result).not.toEqual({ green: true });
 	});
 
-	test('a non-integer counter forged into the persisted bundle falls back to the total (not green)', async () => {
+	test('a non-integer counter forged into the persisted bundle stays not green', async () => {
 		// The Zod evidence schema rejects a malformed counter at write time,
-		// so the only realistic carrier is hand-forged evidence on disk.
+		// so the only realistic carrier is hand-forged evidence on disk; on
+		// read the bundle fails schema validation and the entry is skipped —
+		// not green either way.
 		await writeSecretscan({
 			new_findings_count: 0,
 			preexisting_findings_count: 1,

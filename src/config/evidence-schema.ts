@@ -384,9 +384,11 @@ export const SecretscanEvidenceSchema = BaseEvidenceSchema.extend({
 	new_findings_count: z.number().int().min(0).optional(),
 	preexisting_findings_count: z.number().int().min(0).optional(),
 	/**
-	 * #3092: a non-null changed-line map existed at classification time.
-	 * `false` (git unavailable, or classification skipped on a zero-finding
-	 * scan) means nothing received the pre-existing discount.
+	 * #3092: a non-null changed-line map existed at classification time AND
+	 * the classification itself ran. `false` (git unavailable, a degenerate
+	 * or unresolvable merge base, the ambiguity source unavailable, or
+	 * classification skipped on a zero-finding scan) means nothing received
+	 * the pre-existing discount.
 	 */
 	diff_scoped: z.boolean().optional(),
 	incomplete_files: z.number().int().min(0),

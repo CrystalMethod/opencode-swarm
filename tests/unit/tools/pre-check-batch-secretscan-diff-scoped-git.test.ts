@@ -319,7 +319,10 @@ describe('review round 3 fixtures (#3092 feedback)', () => {
 			git(repo, 'add', '.');
 			git(repo, 'commit', '-m', 'edit tail only');
 			// Local-writable ref tried FIRST in the merge-base candidate list;
-			// planting it at the feature tip makes merge-base === HEAD.
+			// planting it at the feature tip makes merge-base === HEAD. This
+			// pins the end-to-end fail-closed requirement jointly with the
+			// classifier (the clean worktree's empty map also forces NEW);
+			// the direct-commit-on-main fixture carries the guard pin itself.
 			git(repo, 'update-ref', 'refs/remotes/zaxbyhub/main', 'HEAD');
 			const result = await runPreCheckBatch({
 				files: [path.join(repo, 'legacy.txt')],

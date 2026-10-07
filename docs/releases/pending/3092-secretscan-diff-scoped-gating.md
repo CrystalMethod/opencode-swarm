@@ -36,13 +36,14 @@ on every run forever, blocking tasks at Stage A with no path forward except
   gets the pre-existing discount.
 - A degenerate merge base never buys the discount (PR review round 3): when
   `git merge-base` resolves to HEAD itself — HEAD sitting on the default
-  branch, or a local-writable candidate ref planted at the tip — the
-  committed hop is empty and non-authoritative, so the ambiguity source is
-  treated as untrustworthy and every finding is NEW. A freshly committed
-  secret on the working branch therefore fails the gate instead of proving
-  itself pre-existing against itself. Documented residual trust boundary: a
-  ref planted at an INTERMEDIATE commit can still shrink the committed hop
-  (the same Git-state trust the SAST classification inherits).
+  branch, the branch carrying no commits past its base yet, or a
+  local-writable candidate ref planted at the tip — the committed hop is
+  empty and non-authoritative, so the ambiguity source is treated as
+  untrustworthy and every finding is NEW. A freshly committed secret on the
+  working branch therefore fails the gate instead of proving itself
+  pre-existing against itself. Documented residual trust boundary: a ref
+  planted at an INTERMEDIATE commit can still shrink the committed hop (the
+  same Git-state trust the SAST classification inherits).
 - File names are matched literally: coder-supplied paths go to Git as
   `:(literal)` pathspecs (glob metacharacters in real filenames like
   `[id].tsx` no longer under-match and silently empty the evidence sets),
@@ -74,6 +75,12 @@ on every run forever, blocking tasks at Stage A with no path forward except
 - The gate summary states the meaning of green: pass summaries where
   classification ran end with `secretscan green = zero new secrets on changed
   lines`; zero-finding summaries are byte-identical to the previous format.
+  Blocked statuses name the actual reason: `check_gate_status` reports the
+  new-findings basis in its `BLOCKED — secrets detected` literal
+  (`N new on changed lines`, with the pre-existing remainder disclosed), zero
+  coverage gets a distinct `BLOCKED — zero coverage` reason, and a failed
+  verdict with complete coverage and a zero-new basis names `possible
+  truncation or tampering` instead of claiming zero coverage.
 - Preflight's repo-wide secrets advisory (`preflight-service`) intentionally
   stays on total findings — it has no coder diff context and exists to
   surface pre-existing secrets.
