@@ -33,8 +33,16 @@ import type { QualityBudgetResult } from './quality-budget';
 import { qualityBudget } from './quality-budget';
 import type { SastScanFinding, SastScanResult } from './sast-scan';
 import { sastScan } from './sast-scan';
-import type { SecretscanErrorResult, SecretscanResult } from './secretscan';
-import { runSecretscan, runSecretscanOnFiles } from './secretscan';
+import type {
+	SecretFinding,
+	SecretscanErrorResult,
+	SecretscanResult,
+} from './secretscan';
+import {
+	runSecretscan,
+	runSecretscanOnFiles,
+	SECRETSCAN_MAX_FINDINGS,
+} from './secretscan';
 
 // ============ Constants ============
 const TOOL_TIMEOUT_MS = 60_000;
@@ -135,7 +143,21 @@ interface SecretscanGateDecision {
 	passed: boolean;
 	summary: string;
 	result?: SecretscanResult;
+	/** TOTAL findings (Math.max(count, findings.length)) — evidence-visible. */
 	findingsCount: number;
+	/** #3092: findings on coder-changed lines (drives the gate). */
+	newFindingsCount?: number;
+	/** #3092: findings on unchanged lines (visible, non-gating). */
+	preexistingFindingsCount?: number;
+	/** #3092: a non-null changed-line map existed at classification time. */
+	diffScoped?: boolean;
+}
+
+/** #3092: diff-scoped classification input for evaluateSecretscanGate. */
+export interface SecretscanClassification {
+	newFindings: SecretFinding[];
+	preexistingFindings: SecretFinding[];
+	diffScoped: boolean;
 }
 
 function formatIncompletePaths(
@@ -155,6 +177,12 @@ function formatIncompletePaths(
 function evaluateSecretscanGate(
 	toolResult: ToolResult<SecretscanResult | SecretscanErrorResult>,
 	requestedFiles: number,
+	/**
+	 * #3092: diff-scoped classification of the scan's findings. When omitted
+	 * (legacy callers / zero-finding scans needing no classification), any
+	 * finding fails the gate — the pre-#3092 behavior.
+	 */
+	classification?: SecretscanClassification,
 ): SecretscanGateDecision {
 	if (toolResult.error) {
 		return {
@@ -211,7 +239,18 @@ function evaluateSecretscanGate(
 		result.findings.length === 0 &&
 		result.incomplete_files === 0 &&
 		result.incomplete_paths.length === 0;
-	if (findingsCount > 0) failures.push(`${findingsCount} secret finding(s)`);
+	// #3092: only findings on coder-changed lines gate. Without a
+	// classification (legacy shape, or a producer that found findings but
+	// never classified them), every finding counts as new — fail-closed.
+	const newFindingsCount = classification
+		? classification.newFindings.length
+		: findingsCount;
+	if (newFindingsCount > 0) {
+		failures.push(`${newFindingsCount} new secret finding(s) on changed lines`);
+	}
+	if (result.truncated === true) {
+		failures.push(`results truncated at ${SECRETSCAN_MAX_FINDINGS} findings`);
+	}
 	if (result.incomplete_files > 0 || result.incomplete_paths.length > 0) {
 		const incompletePaths =
 			result.incomplete_paths.length > 0
@@ -237,18 +276,33 @@ function evaluateSecretscanGate(
 		);
 	}
 
+	// Statistics prefix is a pinned surface (substring pins in
+	// pre-check-batch-secretscan-evidence.test.ts): keep it byte-stable and
+	// append the #3092 clauses only where classification ran (findings > 0),
+	// so zero-finding summaries stay byte-identical to the pre-#3092 shape.
 	let statistics = `Secretscan: ${findingsCount} finding(s), ${result.files_scanned} files scanned, ${result.skipped_files} skipped`;
+	if (classification) {
+		statistics += `, ${classification.newFindings.length} new secret finding(s) on changed lines (${classification.preexistingFindings.length} pre-existing)`;
+	}
 	if (vacuousCoverage) {
 		statistics += `, all ${result.requested_files} requested file(s) skipped by secretscan scan policy (vacuous coverage)`;
 	}
+	const passedSummary = classification?.diffScoped
+		? `${statistics}; secretscan green = zero new secrets on changed lines`
+		: statistics;
 	return {
 		passed: failures.length === 0,
 		summary:
 			failures.length > 0
 				? `${statistics}; failed: ${failures.join('; ')}`
-				: statistics,
+				: passedSummary,
 		result,
 		findingsCount,
+		...(classification && {
+			newFindingsCount: classification.newFindings.length,
+			preexistingFindingsCount: classification.preexistingFindings.length,
+			diffScoped: classification.diffScoped,
+		}),
 	};
 }
 
@@ -269,6 +323,12 @@ export interface PreCheckBatchResult {
 	total_duration_ms: number;
 	/** Pre-existing SAST findings on unchanged lines, requiring reviewer triage */
 	sast_preexisting_findings?: SastScanFinding[];
+	/**
+	 * #3092: pre-existing secret findings on unchanged lines — visible in the
+	 * scan result and persisted evidence, never gating; reviewer triage input
+	 * and the hook decoder's diff-scope proof.
+	 */
+	secretscan_preexisting_findings?: SecretFinding[];
 	/** Optional Semgrep exited nonzero with no findings; SAST coverage is incomplete. */
 	sast_degraded?: boolean;
 	/** SAST was intentionally disabled by the effective QA profile. */
@@ -1318,7 +1378,91 @@ export function classifySastFindings(
 	return { newFindings, preexistingFindings };
 }
 
-// ============ Main Function ============
+/**
+ * Classify secret findings as "new" (on coder-changed lines) or "pre-existing"
+ * (unchanged lines) for the diff-scoped secretscan gate (#3092).
+ *
+ * Strictly fail-closed — unlike `classifySastFindings`, whose missing-key and
+ * empty-set arms deliberately read as pre-existing (pinned by
+ * tests/unit/tools/pre-check-batch-sast-preexisting.test.ts), a secret
+ * finding is PRE-EXISTING only when EVERY condition holds:
+ *
+ *   - the changed-line map is non-null,
+ *   - the finding's normalized repo-relative key is present in the map,
+ *   - the file's changed-line set is non-empty,
+ *   - the set does not carry the ALL_LINES_CHANGED sentinel (a fully-changed
+ *     file makes every finding new), and
+ *   - the finding's line is a safe positive integer and NOT a member of the
+ *     changed set — the secret sits on a line the coder did not touch.
+ *
+ * Everything else is NEW: null map, missing key, empty set, ALL-set, a line
+ * that IS a changed line, unresolvable / zero / negative / non-integer lines,
+ * malformed or root-escaping paths, and any resolution error. Never throws —
+ * a failure to resolve classifies the finding as NEW.
+ */
+export function classifySecretFindings(
+	findings: SecretFinding[],
+	changedLineRanges: Map<string, Set<number>> | null,
+	directory: string,
+): { newFindings: SecretFinding[]; preexistingFindings: SecretFinding[] } {
+	// Fail-closed: if we can't determine changed lines, treat all as new
+	if (!changedLineRanges) {
+		return { newFindings: findings, preexistingFindings: [] };
+	}
+
+	const newFindings: SecretFinding[] = [];
+	const preexistingFindings: SecretFinding[] = [];
+	const platform = _internals.platform();
+	const pathApi = platform === 'win32' ? path.win32 : path.posix;
+	const resolvedDirectory = pathApi.resolve(directory);
+
+	for (const finding of findings) {
+		const filePath = finding.path;
+		const line = finding.line;
+		if (
+			typeof filePath !== 'string' ||
+			filePath.length === 0 ||
+			filePath.includes('\0') ||
+			typeof line !== 'number' ||
+			!Number.isSafeInteger(line) ||
+			line < 1
+		) {
+			newFindings.push(finding);
+			continue;
+		}
+		let changedLines: Set<number> | undefined;
+		try {
+			const resolvedFinding = pathApi.isAbsolute(filePath)
+				? pathApi.resolve(filePath)
+				: pathApi.resolve(resolvedDirectory, filePath);
+			const relative = pathApi.relative(resolvedDirectory, resolvedFinding);
+			if (
+				pathApi.isAbsolute(relative) ||
+				relative === '..' ||
+				relative.startsWith(`..${pathApi.sep}`)
+			) {
+				newFindings.push(finding);
+				continue;
+			}
+			changedLines = changedLineRanges.get(normalizeRepoPathKey(relative));
+		} catch {
+			newFindings.push(finding);
+			continue;
+		}
+		if (
+			changedLines !== undefined &&
+			changedLines.size > 0 &&
+			!changedLines.has(ALL_LINES_CHANGED) &&
+			!changedLines.has(line)
+		) {
+			preexistingFindings.push(finding);
+		} else {
+			newFindings.push(finding);
+		}
+	}
+
+	return { newFindings, preexistingFindings };
+}
 
 /**
  * Run all 4 pre-check tools in parallel with concurrency limit
@@ -1548,9 +1692,59 @@ export async function runPreCheckBatch(
 	// Check secretscan (hard gate - MUST pass)
 	// #2918: request basis is the raw declared count (pre-drop), matching the
 	// scan result's requested_files — not the post-drop changedFiles.length.
+	//
+	// #3092: the gate is diff-scoped — findings classify as new (coder-changed
+	// lines) vs pre-existing (unchanged lines) against the SAME changed-line
+	// map producer the SAST legacy arm consumes. The map is computed lazily
+	// ONCE per batch through the `_internals.getChangedLineRanges` seam (so
+	// test overrides keep controlling both arms), and only when a consumer
+	// needs it (secretscan found something, or SAST legacy-mode gate findings
+	// exist).
+	let changedLineRangesMemo: Map<string, Set<number>> | null | undefined;
+	const getChangedLineRangesMemoized = async (): Promise<Map<
+		string,
+		Set<number>
+	> | null> => {
+		if (changedLineRangesMemo === undefined) {
+			changedLineRangesMemo = await _internals.getChangedLineRanges(
+				directory,
+				abortSignal,
+				changedFiles,
+			);
+		}
+		return changedLineRangesMemo;
+	};
+	let secretscanClassification: SecretscanClassification | undefined;
+	let secretscanPreexistingFindings: SecretFinding[] | undefined;
+	const secretscanScanFindings =
+		secretscanResult.ran &&
+		secretscanResult.result &&
+		!('error' in secretscanResult.result)
+			? secretscanResult.result.findings
+			: [];
+	if (secretscanScanFindings.length > 0) {
+		const changedLineRanges = await getChangedLineRangesMemoized();
+		const { newFindings, preexistingFindings } = classifySecretFindings(
+			secretscanScanFindings,
+			changedLineRanges,
+			directory,
+		);
+		secretscanClassification = {
+			newFindings,
+			preexistingFindings,
+			diffScoped: changedLineRanges !== null,
+		};
+		if (preexistingFindings.length > 0) {
+			secretscanPreexistingFindings = preexistingFindings;
+			warn(
+				`pre_check_batch: Secretscan found ${preexistingFindings.length} pre-existing secret finding(s) on unchanged lines - visible, non-gating, passed to reviewer for triage`,
+			);
+		}
+	}
 	const secretscanDecision = evaluateSecretscanGate(
 		secretscanResult,
 		rawDeclaredCount,
+		secretscanClassification,
 	);
 	if (!secretscanDecision.passed) {
 		gatesPassed = false;
@@ -1580,6 +1774,14 @@ export async function runPreCheckBatch(
 				// Missing on legacy evidence ⇒ non-vacuous ⇒ previous behavior.
 				policy_skipped_files: scanResult?.policy_skipped_files ?? 0,
 				requested_files: scanResult?.requested_files ?? rawDeclaredCount,
+				// #3092: diff-scoped classification counters, emitted on EVERY
+				// evidence write that has a scan result (0 when classification
+				// did not run) so downstream fallbacks never degrade a
+				// zero-new pass back onto the pre-fix total-findings wedge.
+				new_findings_count: secretscanDecision.newFindingsCount ?? 0,
+				preexisting_findings_count:
+					secretscanDecision.preexistingFindingsCount ?? 0,
+				diff_scoped: secretscanDecision.diffScoped ?? false,
 				incomplete_files: scanResult?.incomplete_files ?? changedFiles.length,
 				incomplete_paths: scanResult?.incomplete_paths ?? [
 					{ path: '.', reason: 'missing_coverage_metadata' },
@@ -1666,11 +1868,10 @@ export async function runPreCheckBatch(
 			);
 
 			if (gateFindings.length > 0) {
-				const changedLineRanges = await _internals.getChangedLineRanges(
-					directory,
-					abortSignal,
-					changedFiles,
-				);
+				// #3092: reads through the batch-lazy memo (same seam as the
+				// secretscan arm) so the map is computed at most once and
+				// `_internals.getChangedLineRanges` overrides steer both arms.
+				const changedLineRanges = await getChangedLineRangesMemoized();
 				const { newFindings, preexistingFindings } = classifySastFindings(
 					gateFindings,
 					changedLineRanges,
@@ -1740,6 +1941,12 @@ export async function runPreCheckBatch(
 		...(sastPreexistingFindings &&
 			sastPreexistingFindings.length > 0 && {
 				sast_preexisting_findings: sastPreexistingFindings,
+			}),
+		// #3092: pre-existing secret findings (visible, non-gating) — reviewer
+		// triage input and the decoder's diff-scope proof.
+		...(secretscanPreexistingFindings &&
+			secretscanPreexistingFindings.length > 0 && {
+				secretscan_preexisting_findings: secretscanPreexistingFindings,
 			}),
 	};
 

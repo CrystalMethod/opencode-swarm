@@ -374,6 +374,21 @@ export const SecretscanEvidenceSchema = BaseEvidenceSchema.extend({
 	 * unchanged.
 	 */
 	ignored_files: z.number().int().min(0).optional(),
+	/**
+	 * #3092 diff-scoped classification counters (optional and additive):
+	 * findings on coder-changed lines (the gating signal — 0 on a pass) and
+	 * findings on unchanged lines (visible debt, never gating). Consumers
+	 * treat a MISSING new_findings_count as findings_count (legacy
+	 * total-findings behavior); the batch writer emits both on every scan.
+	 */
+	new_findings_count: z.number().int().min(0).optional(),
+	preexisting_findings_count: z.number().int().min(0).optional(),
+	/**
+	 * #3092: a non-null changed-line map existed at classification time.
+	 * `false` (git unavailable, or classification skipped on a zero-finding
+	 * scan) means nothing received the pre-existing discount.
+	 */
+	diff_scoped: z.boolean().optional(),
 	incomplete_files: z.number().int().min(0),
 	incomplete_paths: z.array(
 		z.object({

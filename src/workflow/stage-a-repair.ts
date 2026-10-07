@@ -170,7 +170,21 @@ export async function hasGreenPostSettlementPreCheck(
 				if (
 					(last.incomplete_files ?? 0) === 0 &&
 					((last.files_scanned ?? 0) > 0 || vacuousCoverage) &&
-					(last.findings_count ?? 0) === 0
+					// #3092: green means zero NEW secrets on changed lines. The
+					// new-findings counter preserves 0 explicitly (no truthiness
+					// fallback — that would collapse the zero-new pass onto the
+					// total and re-wedge the repair loop); legacy evidence without
+					// the counter falls back to the TOTAL (previous behavior).
+					(() => {
+						const newFindingsRaw: unknown = last.new_findings_count;
+						return (
+							(typeof newFindingsRaw === 'number' &&
+							Number.isSafeInteger(newFindingsRaw) &&
+							newFindingsRaw >= 0
+								? newFindingsRaw
+								: (last.findings_count ?? 0)) === 0
+						);
+					})()
 				) {
 					sawSecretscanGreen = true;
 					continue;

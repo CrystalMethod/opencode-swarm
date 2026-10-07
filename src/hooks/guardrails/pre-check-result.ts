@@ -100,6 +100,58 @@ function isIntentionalSastSkip(
 	);
 }
 
+/**
+ * #3092: secretscan diff-scope proof. The batch result carries the exact
+ * pre-existing findings (`secretscan_preexisting_findings`); the decoder only
+ * disarms its findings-count conditions when that proof multiset-covers the
+ * ENTIRE total set (`count === findings.length` and every visible finding is
+ * claimed). A forged `passed` without the proof still blocks.
+ */
+function everySecretFindingIsPreexisting(
+	result: Record<string, unknown>,
+	batchResult: Record<string, unknown>,
+): boolean {
+	if (
+		!Array.isArray(result.findings) ||
+		!Array.isArray(batchResult.secretscan_preexisting_findings)
+	) {
+		return false;
+	}
+	const count = result.count;
+	if (
+		typeof count !== 'number' ||
+		!Number.isSafeInteger(count) ||
+		count !== result.findings.length
+	) {
+		// A total-set mismatch can never be proven pre-existing.
+		return false;
+	}
+	const secretFindingKey = (finding: unknown): string | null => {
+		if (!isRecord(finding)) return null;
+		const { path, line, type } = finding;
+		if (
+			typeof path !== 'string' ||
+			typeof line !== 'number' ||
+			!Number.isSafeInteger(line) ||
+			typeof type !== 'string'
+		) {
+			return null;
+		}
+		return JSON.stringify([path, line, type]);
+	};
+	const remainingPreexisting =
+		batchResult.secretscan_preexisting_findings.map(secretFindingKey);
+	if (remainingPreexisting.some((key) => key === null)) return false;
+	for (const finding of result.findings) {
+		const key = secretFindingKey(finding);
+		if (key === null) return false;
+		const index = remainingPreexisting.indexOf(key);
+		if (index < 0) return false;
+		remainingPreexisting.splice(index, 1);
+	}
+	return true;
+}
+
 function isExpectedSastDegradation(
 	toolResult: Record<string, unknown>,
 	batchResult: Record<string, unknown>,
@@ -206,9 +258,21 @@ function hardGateExplicitlyFailed(
 			result.findings.length === 0 &&
 			result.incomplete_files === 0 &&
 			result.incomplete_paths.length === 0;
+		// #3092 diff-scope parity with the tool-side gate. The batch-carried
+		// pre-existing proof disarms ONLY the findings-count conditions:
+		// truncation, a total-set mismatch, incomplete coverage, and
+		// zero-coverage-without-vacuous-proof keep blocking regardless of the
+		// proof — the decoder is the contradiction boundary for a forged
+		// `passed`.
+		const preexistingProof = everySecretFindingIsPreexisting(
+			result,
+			batchResult,
+		);
 		return (
-			result.count > 0 ||
-			result.findings.length > 0 ||
+			(result.count > 0 && !preexistingProof) ||
+			(result.findings.length > 0 && !preexistingProof) ||
+			result.truncated === true ||
+			result.count !== result.findings.length ||
 			result.incomplete_files > 0 ||
 			result.incomplete_paths.length > 0 ||
 			(result.files_scanned === 0 && !vacuousCoverage)
