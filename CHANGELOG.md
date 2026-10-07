@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.191.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.1...v7.191.2) (2026-10-07)
+
+
+### Bug Fixes
+
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#2826](https://github.com/ZaxbyHub/opencode-swarm/issues/2826)) ([d531c67](https://github.com/ZaxbyHub/opencode-swarm/commit/d531c675d739236c8840e3111823c173fd425c90))
+
 ## [7.191.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.0...v7.191.1) (2026-10-07)
 
 
