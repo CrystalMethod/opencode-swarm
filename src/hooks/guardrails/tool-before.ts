@@ -1538,14 +1538,17 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 		try {
 			readonlyWorkspaceRoot = fs.realpathSync(workspaceRoot);
 		} catch {
-			// Unresolvable: keep the logical path. This branch is defensive and
-			// unreachable while the session workspace exists (scope resolution
-			// rejects a missing one first), so it is reasoned rather than
-			// exercised: wrapCommand only builds a string, so a bwrap that cannot
-			// bind the path fails at runtime as an ordinary command failure —
-			// not a wrap-time throw, and not counted by the sandbox circuit,
-			// which arms only when wrapCommand itself throws. Nothing runs
-			// unsandboxed either way.
+			// The workspace could not be canonicalized; keep the logical path.
+			// Reachable when an in-memory `declaredCoderScope` outlives a
+			// deleted or moved workspace — `resolveDeclaredScope` returns that
+			// scope with no disk check once `currentTaskId` is null (task-evidence
+			// invalidation nulls it without clearing the scope), and the scope
+			// resolver treats an unresolvable path as a warning rather than a
+			// rejection. The fallback is safe: wrapCommand only builds a string,
+			// so bwrap fails at runtime with `Can't find source path` and the
+			// command does not run. It is neither a wrap-time error nor counted by
+			// the sandbox circuit, which arms only when wrapCommand itself throws,
+			// and nothing runs unsandboxed.
 		}
 
 		try {
