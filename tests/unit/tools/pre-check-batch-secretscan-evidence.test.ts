@@ -84,9 +84,13 @@ const mockSaveEvidence = mock(
 	},
 );
 
-mock.module('../../../src/evidence/manager', () => ({
-	saveEvidence: mockSaveEvidence,
-}));
+// #3092 review round 3: the previous module-level mock.module replacement
+// of evidence/manager leaked across test files in Bun's shared test-runner
+// process (AGENTS.md invariant 7) — it stripped loadEvidence and hijacked
+// saveEvidence for any co-run suite relying on the real manager. The
+// process-local `_internals.saveEvidence` DI swap below (restored in
+// afterEach) is the sanctioned seam and covers every assertion in this
+// suite, so no module mock is needed.
 const originalSaveEvidence = _internals.saveEvidence;
 
 // Helper to create temp test directories
