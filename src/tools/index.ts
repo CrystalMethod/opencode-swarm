@@ -226,6 +226,10 @@ export { lean_turbo_status } from './lean-turbo-status';
 export { lint_spec } from './lint-spec';
 export { mutation_test } from './mutation-test';
 export {
+	executePrReviewSubmission,
+	pr_review_submission,
+} from './pr-review-submission';
+export {
 	executePreparePrWorkflowCheckout,
 	prepare_pr_workflow_checkout,
 } from './prepare-pr-workflow-checkout';

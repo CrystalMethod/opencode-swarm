@@ -97,6 +97,7 @@ import { phase_complete } from './phase-complete';
 import { pkg_audit } from './pkg-audit';
 import { placeholder_scan } from './placeholder-scan';
 import { plan_conflict_check } from './plan-conflict-check';
+import { pr_review_submission } from './pr-review-submission';
 import { pr_workflow_status } from './pr-workflow-status';
 import { pre_check_batch } from './pre-check-batch';
 import { prepare_pr_feedback_scope } from './prepare-pr-feedback-scope';
@@ -227,6 +228,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	plan_conflict_check: () => plan_conflict_check,
 	prepare_pr_feedback_scope: () => prepare_pr_feedback_scope,
 	write_pr_review_artifact: () => write_pr_review_artifact,
+	pr_review_submission: () => pr_review_submission,
 	write_pr_review_trigger_eval: () => write_pr_review_trigger_eval,
 	test_runner: () => test_runner,
 	test_impact: () => test_impact,
