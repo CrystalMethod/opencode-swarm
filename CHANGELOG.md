@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.191.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.0...v7.191.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **sandbox:** correct the realpath-fallback comment's reachability claim ([#3059](https://github.com/ZaxbyHub/opencode-swarm/issues/3059) review) ([b615d32](https://github.com/ZaxbyHub/opencode-swarm/commit/b615d32f1e6de3860ab89b85f30d41548fa96bfd))
+* **sandbox:** mount the workspace read-only in the Linux sandbox and refuse a nested bwrap ([75930e6](https://github.com/ZaxbyHub/opencode-swarm/commit/75930e62d95841353d4534d245b819b5a9c8e22e))
+
 ## [7.191.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.190.1...v7.191.0) (2026-10-07)
 
 
