@@ -227,7 +227,14 @@ function evaluateSecretscanGate(
 		);
 	}
 	if (requestedFiles > 0 && result.files_scanned === 0 && !vacuousCoverage) {
-		failures.push('zero requested files scanned');
+		// #3107 feedback: name the ignore file when it caused the zero
+		// coverage, so a clean all-ignored batch is diagnosable instead of a
+		// bare "zero requested files scanned".
+		failures.push(
+			typeof result.ignored_files === 'number' && result.ignored_files > 0
+				? `${result.ignored_files} requested file(s) suppressed by .secretscanignore; no file scanned`
+				: 'zero requested files scanned',
+		);
 	}
 
 	let statistics = `Secretscan: ${findingsCount} finding(s), ${result.files_scanned} files scanned, ${result.skipped_files} skipped`;
@@ -1565,6 +1572,9 @@ export async function runPreCheckBatch(
 				scan_directory: scanResult?.scan_dir ?? directory,
 				files_scanned: scanResult?.files_scanned ?? 0,
 				skipped_files: scanResult?.skipped_files ?? 0,
+				// #3107 feedback: audit signal for ignore-file suppressions
+				// (diagnosability only — never part of the vacuous predicate).
+				ignored_files: scanResult?.ignored_files ?? 0,
 				// #2918: vacuous-coverage predicate inputs for downstream
 				// consumers (decoder parity, check_gate_status, stage-a-repair).
 				// Missing on legacy evidence ⇒ non-vacuous ⇒ previous behavior.
