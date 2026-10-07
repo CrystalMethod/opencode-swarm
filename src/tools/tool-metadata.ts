@@ -380,6 +380,11 @@ export const TOOL_METADATA = {
 			'persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run',
 		agents: ['architect'],
 	},
+	pr_review_submission: {
+		description:
+			'submit a settled, head-bound PR review to GitHub through the gh PR Review API after the PR_REVIEW gate clears; architect-only, refuses while a gate is active or the run was aborted after settlement',
+		agents: ['architect'],
+	},
 	prepare_pr_feedback_scope: {
 		description:
 			'prepare an exact file scope for one PR-feedback coder Task after immutable feedback verification settles',
