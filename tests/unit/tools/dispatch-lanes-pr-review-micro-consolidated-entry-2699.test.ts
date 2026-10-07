@@ -327,7 +327,7 @@ describe('PR-review discovery dispatch — regression: owned marker ordering (#2
 		);
 
 		const diagnostic =
-			'Lane "micro-operator-marker" operator prompt contains [CANDIDATE]; PR-review discovery prompts carry content only and the controller injects the authoritative output contract';
+			'Lane "micro-operator-marker" operator prompt contains [CANDIDATE]; PR-review discovery prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry — the controller appends the authoritative contract automatically.';
 		expect(result.failure_class).toBe('invalid_args');
 		expect(result.message).toBe(
 			'Invalid mandatory PR workflow explorer output contract',
@@ -368,7 +368,7 @@ describe('PR-review discovery dispatch — regression: owned marker ordering (#2
 				{ sessionID: SESSION_ID },
 			);
 
-			const diagnostic = `Lane "${laneId}" operator prompt contains ${marker}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract`;
+			const diagnostic = `Lane "${laneId}" operator prompt contains ${marker}; PR-review discovery prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry — the controller appends the authoritative contract automatically.`;
 			expect(result.failure_class).toBe('invalid_args');
 			expect(result.message).toBe(
 				'Invalid mandatory PR workflow explorer output contract',

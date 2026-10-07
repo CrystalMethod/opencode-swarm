@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.187.0",
+  "tagCommit": "13cf2176dbc8fe9e8b5221ffd7692bfc2b345a68",
+  "targetCommitish": "13cf2176dbc8fe9e8b5221ffd7692bfc2b345a68",
+  "releaseBodySha256": "655456e8821174eecfae8044781b3ec42bd7a1483d718e76dd2846c3b933e72b",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/2666-fragment-contract-consumption-aware.md",
+      "sha256": "d399abe2140ce64bbc46f2672122d285327862488a24f9e357b9098a21538339"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/2901-turbo-mode-wiring.md",
+      "sha256": "356eff7bfa357965d48ec1010f1596370c9eaee0f5b6e84534c643e5138747e8"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2946-rollback-destructive-restore-gate.md",
+      "sha256": "8d2079e3bf9f1a8a3cb2934940ad6a7e30dedead6d4f889391b66855401b7efd"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/java-first-class-backend-symbols.md",
+      "sha256": "d07fd7f50c4e498abd40bbdf3cbf1a96c6e459b2f77df3b6beeffb88711c0b59"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/java-maven-detection-fix.md",
+      "sha256": "b7b419c3ccda830257a384b86193e27c4f20c5294c5640efefd296f16c29a5d2"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/preflight-tests-check-framework-detection.md",
+      "sha256": "7de2e5b92dc2fe507e31794bba91b5400887e40a3bff759b6a8ee39d0e0f2bf1"
+    }
+  ]
+}

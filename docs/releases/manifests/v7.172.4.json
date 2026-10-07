@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.172.4",
+  "tagCommit": "751ada9c3cf796ee5d906dd2e209b1fcfe287369",
+  "targetCommitish": "751ada9c3cf796ee5d906dd2e209b1fcfe287369",
+  "releaseBodySha256": "4ab4d9262186ba4a1468b390a3611411e6fb258dc3f1d99651b086c2ae22c45c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2633-ci-runtime-hardening.md",
+      "sha256": "7f3c25e5c31462b54f6d97212f4cbfa089384f257afa88d96241fe2027c067b3"
+    }
+  ]
+}

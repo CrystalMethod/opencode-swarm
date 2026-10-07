@@ -7,8 +7,11 @@
   - `tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts`
     (windows-latest unit-shard 3 passed-on-retry-2 flake; also detected
     on windows-latest unit-shard 5 passed-on-retry-1 per issue #2810)
-- The Windows-ledger `STATUS:` header is bumped from 6 to 7 active
-  entries, and the entry list in that header is extended.
+- The Windows-ledger `STATUS:` header now reads 1 active entry. The
+  9-entry cohort that held counts 6→7 when this PR was opened was
+  retired on 2026-09-27 (issue #2973) and the ledger rewritten to 0, so
+  the 2026-10-07 rebase re-applied this entry as the rewritten ledger's
+  first active entry rather than bumping 6→7.
 - The entry carries the structured `# OWNER:` / `# EXPIRY:` metadata
   block required by `scripts/check-invariants.ts` Check 7 (issue
   #2477), so it hard-fails the gate if the EXPIRY lapses beyond the

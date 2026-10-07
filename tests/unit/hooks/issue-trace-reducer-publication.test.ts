@@ -70,22 +70,35 @@ function call(
 	});
 }
 
-// ── Row (g): plan exists but critic not approved → no-op ────────
+// ── Row (g): plan exists but critic not approved (one-shot directive, #2600) ────────
 
 describe('Row (g): plan exists but critic not approved', () => {
-	test('criticApproved false returns no-op', () => {
-		const t = makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' });
-		expect(isNoop(call(makeRef(), t, { planExists: true }), t)).toBe(true);
+	test('criticApproved false emits a ONE-SHOT critic-gate directive naming the recovery', () => {
+		const r = call(
+			makeRef(),
+			makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' }),
+			{
+				planExists: true,
+			},
+		);
+		expect(r.nextMode).toBe('CRITIC-GATE');
+		expect(r.nextLastTransition).toBe('CRITIC_GATE');
+		expect(r.directive).toContain('approve_plan_critic');
+		expect(r.directive).toContain('#2012');
+
+		// Second drive: already nudged once → silent noop (waits for approval).
+		const t2 = makeTrace({ lastTransition: 'CRITIC_GATE' });
+		expect(isNoop(call(makeRef(), t2, { planExists: true }), t2)).toBe(true);
 	});
 
-	test('criticApproved false with allPhasesComplete true still no-op', () => {
-		const t = makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' });
-		expect(
-			isNoop(
-				call(makeRef(), t, { planExists: true, allPhasesComplete: true }),
-				t,
-			),
-		).toBe(true);
+	test('criticApproved false with allPhasesComplete true still parks at the critic gate', () => {
+		const r = call(
+			makeRef(),
+			makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' }),
+			{ planExists: true, allPhasesComplete: true },
+		);
+		expect(r.nextLastTransition).toBe('CRITIC_GATE');
+		expect(r.nextMode).not.toBe('EXECUTE');
 	});
 });
 
@@ -268,9 +281,18 @@ describe('full lifecycle', () => {
 		expect(r1.nextMode).toBe('PLAN');
 		expect(r1.nextLastTransition).toBe('ISSUE_INGEST_TO_PLAN');
 
-		// Step 2: plan created, critic pending → no-op (row g)
-		const t2 = makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' });
-		expect(isNoop(call(ref, t2, { planExists: true }), t2)).toBe(true);
+		// Step 2: plan created, critic pending → one-shot CRITIC_GATE directive
+		// (row g, issue #2600), then quiet once the sentinel has fired.
+		const r2 = call(
+			ref,
+			makeTrace({ lastTransition: 'ISSUE_INGEST_TO_PLAN' }),
+			{
+				planExists: true,
+			},
+		);
+		expect(r2.nextLastTransition).toBe('CRITIC_GATE');
+		const t2q = makeTrace({ lastTransition: 'CRITIC_GATE' });
+		expect(isNoop(call(ref, t2q, { planExists: true }), t2q)).toBe(true);
 
 		// Step 3: critic approved → EXECUTE
 		const r3 = call(

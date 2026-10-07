@@ -1259,7 +1259,14 @@ export async function getDiagnoseData(
 		// class over plan tasks, both bounded by their 200-entry scan caps.
 		const wedgeScan = await scanWedgedStageA(directory);
 		const wedgeStatuses = wedgeScan.results.filter(
-			(status) => status.category === 'live_wedge',
+			// live_wedge: #2665 coder_delegated without proof; settlement_wedge:
+			// #2828 idle/blocked with a COMMITTED accepted settlement still
+			// justifying Stage A. Both are actionable repair classes; every
+			// other scan category is informational (healthy) or surfaced via
+			// the settlement-WAL classifications above.
+			(status) =>
+				status.category === 'live_wedge' ||
+				status.category === 'settlement_wedge',
 		);
 		const knownTaskIds = new Set([
 			...settlementStates.map((entry) => entry.taskId),
@@ -1282,8 +1289,13 @@ export async function getDiagnoseData(
 		const missingLines = missingStatuses
 			.map(renderTaskRecoveryLine)
 			.filter(Boolean);
+		// A wedged task's settlement WAL is terminal ("healthy" from the WAL
+		// classifier's single-store view) while the wedge scan reports the
+		// same task as repairable — count it as wedged, never as healthy
+		// (issue #2828 review: the detail line must not contradict itself).
+		const wedgeTaskIds = new Set(wedgeStatuses.map((s) => s.taskId));
 		const healthyCount = settlementStatuses.filter(
-			(s) => s.category === 'healthy',
+			(s) => s.category === 'healthy' && !wedgeTaskIds.has(s.taskId),
 		).length;
 
 		if (nonHealthy.length === 0 && !truncated) {
@@ -1318,7 +1330,7 @@ export async function getDiagnoseData(
 				status: '⚠️',
 				detail: `${lines.join('; ')}${
 					healthyCount > 0 ? `; ${healthyCount} healthy settlement(s)` : ''
-				}. Categories: missing/stale/ambiguous/corrupt/live_wedge — stale settlements block dispatches with CODER_DISPATCH_IN_PROGRESS. ${renderRecoveryInvocationQuickForms()}${truncationNote}`,
+				}. Categories: missing/stale/ambiguous/corrupt/live_wedge/settlement_wedge — stale settlements block dispatches with CODER_DISPATCH_IN_PROGRESS. ${renderRecoveryInvocationQuickForms()}${truncationNote}`,
 			});
 		}
 	} catch (error) {

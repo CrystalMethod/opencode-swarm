@@ -17,7 +17,7 @@ import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import { ORCHESTRATOR_NAME } from './config/constants';
-import { loadPluginConfig } from './config/loader';
+import { loadPluginConfig, loadPluginConfigWithMeta } from './config/loader';
 import { type Plan, PlanSchema, type TaskStatus } from './config/plan-schema';
 import { stripKnownSwarmPrefix } from './config/schema';
 import { computeCouncilReviewIdentity } from './council/council-review-identity';
@@ -32,6 +32,7 @@ import {
 	detectEnvironmentProfile,
 	type EnvironmentProfile,
 } from './environment/profile.js';
+import { epicSentinelExists, isEpicOpenForProject } from './epic/lifecycle.js';
 import {
 	clearAllActionCircuits,
 	clearInvocationActionCircuits,
@@ -90,6 +91,7 @@ import { maybeSuggestWorktreeLink } from './session/worktree-link-suggestion.js'
 import { AgentRunContext } from './state/agent-run-context.js';
 import { telemetry } from './telemetry.js';
 import * as logger from './utils/logger';
+import { canonicalAttributionPath } from './utils/path';
 
 // Kept as a read-only diagnostic seam for restart/cache reconciliation tests.
 export { getRehydrationCache };
@@ -651,11 +653,6 @@ export interface AgentSessionState {
 	 *  When set, overrides the plan's execution_profile.max_concurrent_tasks
 	 *  for delegation-gate guidance. Cleared on session reset. */
 	maxConcurrencyOverride?: number;
-	/** Whether Epic Mode (additive overlay above Lean Turbo) is active for
-	 *  this session. Durable mirror lives in `.swarm/epic-state.json`; this
-	 *  in-memory flag matches what `src/turbo/epic/state.ts` persists and is
-	 *  what `hasActiveEpicMode(sessionID)` reads on the hot path. */
-	epicModeActive?: boolean;
 
 	// Auto-proceed session overrides (Phase 1)
 	/** Session-scoped override for execution_profile.auto_proceed.
@@ -1139,6 +1136,30 @@ export const swarmState = {
 		{ tokens?: number; modelID?: string; providerID?: string }
 	>(),
 
+	/**
+	 * Issue #3036: dispatch lineage — child session id → the session id of the
+	 * architect whose Task call dispatched that child. Populated authoritatively
+	 * by the delegation gate's taskMetadata hook (host-observed pair; the parent
+	 * id always comes from `part.sessionID`, never from tool-controlled
+	 * metadata) and best-effort by injection-time pending adoption at child
+	 * registration. Read by the knowledge_receipt tool to authorize a child's
+	 * filing against its dispatching architect's receipt-membership stamps.
+	 * Bounded via {@link MAX_TRACKED_DISPATCH_PARENTS} (AGENTS.md invariant 8);
+	 * cleared with the other session-keyed maps on reset and end-of-session.
+	 */
+	dispatchParentByChildSession: new Map<string, string>(),
+
+	/**
+	 * Issue #3036: injection-time dispatch facts awaiting child registration.
+	 * Recorded when the architect-side delegate-directive injection commits a
+	 * membership (parent session + delegated target role), consumed when a
+	 * child session with a matching role is created before its taskMetadata
+	 * event arrives. Entries expire via
+	 * {@link PENDING_DISPATCH_AUTHORIZATION_TTL_MS} and the queue is capped by
+	 * {@link MAX_TRACKED_DISPATCH_PARENTS}.
+	 */
+	pendingDispatchAuthorizations: [] as PendingDispatchAuthorization[],
+
 	/** Per-session guardrail state — keyed by sessionID */
 	agentSessions: defaultRunContext.agentSessions,
 
@@ -1187,6 +1208,10 @@ export function resetSwarmState(): void {
 	swarmState.knowledgeAckDedup.clear();
 	swarmState.gateDenialCounts.clear();
 	swarmState.generatedAgentNames = [];
+	// Issue #3036: dispatch lineage is session-scoped state — clear it with the
+	// other session-keyed maps (the re-dispatch repopulates before any child files).
+	swarmState.dispatchParentByChildSession.clear();
+	swarmState.pendingDispatchAuthorizations = [];
 	// Issue #2667: per-project hydration ownership/generation/cache registries.
 	clearHydrationOwnershipState();
 	// Full Auto Mode (Phase 4)
@@ -1273,6 +1298,161 @@ export const MAX_REVIEWER_SCOPE_GENERATIONS = 256;
 export const MAX_REVIEWER_SCOPE_OWNERSHIP_HISTORY = 256;
 /** Generation expiry never exceeds the parent session's normal idle TTL. */
 export const REVIEWER_SCOPE_GENERATION_TTL_MS = STALE_SESSION_TTL_MS;
+
+/**
+ * Issue #3036: dispatch-lineage bounds (AGENTS.md invariant 8). Both the
+ * child→parent map and the pending-authorization queue are capped and
+ * FIFO-evicted at the same limit; pendings additionally expire so an
+ * unconsumed dispatch fact cannot be adopted much later.
+ */
+export const MAX_TRACKED_DISPATCH_PARENTS = 200;
+export const PENDING_DISPATCH_AUTHORIZATION_TTL_MS = 600_000;
+
+/** Issue #3036: an injection-time dispatch fact awaiting child registration. */
+export interface PendingDispatchAuthorization {
+	parentSessionId: string;
+	agentName: string;
+	recordedAt: number;
+}
+
+function pruneExpiredPendingDispatchAuthorizations(now: number): void {
+	const pendings = swarmState.pendingDispatchAuthorizations;
+	if (pendings.length === 0) return;
+	const alive = pendings.filter(
+		(pending) =>
+			now - pending.recordedAt <= PENDING_DISPATCH_AUTHORIZATION_TTL_MS,
+	);
+	if (alive.length !== pendings.length) {
+		swarmState.pendingDispatchAuthorizations = alive;
+	}
+}
+
+/**
+ * Issue #3036: record an injection-time dispatch fact (parent session +
+ * delegated target role) so the child session created for that dispatch can
+ * adopt its dispatch parent at registration time if its taskMetadata event
+ * has not landed yet. Bounded FIFO; never throws.
+ */
+export function recordPendingDispatchAuthorization(
+	parentSessionId: string,
+	agentName: string,
+): void {
+	if (!parentSessionId || !agentName) return;
+	const now = Date.now();
+	pruneExpiredPendingDispatchAuthorizations(now);
+	swarmState.pendingDispatchAuthorizations.push({
+		parentSessionId,
+		agentName: stripKnownSwarmPrefix(agentName).toLowerCase(),
+		recordedAt: now,
+	});
+	if (
+		swarmState.pendingDispatchAuthorizations.length >
+		MAX_TRACKED_DISPATCH_PARENTS
+	) {
+		swarmState.pendingDispatchAuthorizations.splice(
+			0,
+			swarmState.pendingDispatchAuthorizations.length -
+				MAX_TRACKED_DISPATCH_PARENTS,
+		);
+	}
+}
+
+/**
+ * Issue #3036: authoritative dispatch-lineage write (host-observed pair — the
+ * delegation gate's taskMetadata path). Overwrites any earlier best-effort
+ * adoption for the same child and consumes the matching pending fact so it
+ * cannot be adopted by a later same-role registration.
+ */
+function setDispatchParentEntry(
+	childSessionId: string,
+	parentSessionId: string,
+): void {
+	if (!childSessionId || !parentSessionId) return;
+	// Delete-then-set refreshes insertion order so re-confirmed pairs are
+	// evicted last (FIFO by last write, not by first insert).
+	swarmState.dispatchParentByChildSession.delete(childSessionId);
+	swarmState.dispatchParentByChildSession.set(childSessionId, parentSessionId);
+	if (
+		swarmState.dispatchParentByChildSession.size > MAX_TRACKED_DISPATCH_PARENTS
+	) {
+		const oldestKey = swarmState.dispatchParentByChildSession
+			.keys()
+			.next().value;
+		if (oldestKey !== undefined) {
+			swarmState.dispatchParentByChildSession.delete(oldestKey);
+		}
+	}
+}
+
+export function setDispatchParent(
+	childSessionId: string,
+	parentSessionId: string,
+): void {
+	if (!childSessionId || !parentSessionId) return;
+	setDispatchParentEntry(childSessionId, parentSessionId);
+	const now = Date.now();
+	pruneExpiredPendingDispatchAuthorizations(now);
+	const normalizedParent = parentSessionId;
+	const pendings = swarmState.pendingDispatchAuthorizations;
+	// Role is unknown here; consume the oldest pending for this parent if one
+	// exists (the host-observed pair supersedes any queued fact for it).
+	const matchIndex = pendings.findIndex(
+		(pending) => pending.parentSessionId === normalizedParent,
+	);
+	if (matchIndex >= 0) pendings.splice(matchIndex, 1);
+}
+
+/** Issue #3036: resolve a child session's registered dispatch parent, if any. */
+export function resolveDispatchParent(
+	childSessionId: string,
+): string | undefined {
+	return swarmState.dispatchParentByChildSession.get(childSessionId);
+}
+
+/**
+ * Issue #3036: best-effort adoption for a freshly created child session whose
+ * taskMetadata event has not landed yet. Only fires when the child has no
+ * lineage entry (the taskMetadata write is authoritative and can never be
+ * clobbered) and consumes the OLDEST non-expired pending whose role matches
+ * the create-time agent name. Fence note: pending roles are always delegated
+ * targets (isDelegatedAgent gate at injection time) while transitive filer
+ * registrations (cohort-cache) create under 'architect' — structurally
+ * non-colliding; pinned by tests/unit/state/dispatch-parent-lineage-3036.test.ts.
+ */
+function adoptPendingDispatchAuthorization(
+	newSessionId: string,
+	agentName: string,
+): void {
+	if (swarmState.dispatchParentByChildSession.has(newSessionId)) return;
+	const normalizedRole = stripKnownSwarmPrefix(agentName).toLowerCase();
+	if (!normalizedRole) return;
+	const now = Date.now();
+	pruneExpiredPendingDispatchAuthorizations(now);
+	const pendings = swarmState.pendingDispatchAuthorizations;
+	const matchIndex = pendings.findIndex(
+		(pending) => pending.agentName === normalizedRole,
+	);
+	if (matchIndex < 0) return;
+	const [adopted] = pendings.splice(matchIndex, 1);
+	if (!adopted) return;
+	setDispatchParentEntry(newSessionId, adopted.parentSessionId);
+}
+
+/** Issue #3036: clear dispatch lineage for a session (child-keyed and parent-valued). */
+export function clearDispatchLineageForSession(sessionId: string): void {
+	swarmState.dispatchParentByChildSession.delete(sessionId);
+	for (const [child, parent] of swarmState.dispatchParentByChildSession) {
+		if (parent === sessionId) {
+			swarmState.dispatchParentByChildSession.delete(child);
+		}
+	}
+	// The queued dispatch facts of the ended parent are equally dead — drop them
+	// so a later same-role child cannot adopt lineage to a dead session.
+	swarmState.pendingDispatchAuthorizations =
+		swarmState.pendingDispatchAuthorizations.filter(
+			(pending) => pending.parentSessionId !== sessionId,
+		);
+}
 
 function isBoundedGenerationValue(value: string, maxLength: number): boolean {
 	return (
@@ -2109,6 +2289,9 @@ export function sweepStaleSessions(
 		// delegationChains is keyed by sessionID; the evicted session's chain is
 		// now unreachable, so drop it in the same pass to reclaim its memory.
 		swarmState.delegationChains.delete(id);
+		// Issue #3036: swept sessions must drop their dispatch lineage too —
+		// otherwise ghost child→parent entries outlive the session they key.
+		clearDispatchLineageForSession(id);
 		// activeAgent is keyed by sessionID too. Without this, evicted sessions
 		// leave permanent ghost entries that the snapshot writer re-serializes
 		// on every tool.execute.after, growing state.json without bound and
@@ -2173,6 +2356,42 @@ export function maybeSweepStaleSessions(
  * @param staleDurationMs - Age threshold for stale session eviction (default: 120 min)
  * @param directory - Optional project directory for rehydrating workflow state from disk
  */
+/**
+ * Config-seeded initial value for `AgentSessionState.turboMode` (issue #2901):
+ * `turbo_mode: true` in the project config starts new sessions with turbo
+ * mode on. Resolved once per NEW session (ensureAgentSession early-returns
+ * for live ones), scoped to the session's own directory; directory-less
+ * constructions (e.g. the recovery session) and any config-read failure
+ * default to false. `/swarm turbo` remains the per-session authority after
+ * construction.
+ *
+ * Epic seam: while an epic is open for the project's current plan
+ * (`isEpicOpenForProject` — config-gated and identity-checked) config
+ * cannot seed Turbo on, because Turbo waives per-task QA that Epic never
+ * waives. The sentinel is probed only when config would otherwise seed
+ * `true`, so the common path does no extra I/O and a project without an
+ * open epic gets the identical result.
+ */
+export function resolveInitialTurboMode(directory?: string): boolean {
+	if (!directory) return false;
+	try {
+		return (
+			_internals.loadPluginConfigWithMeta(directory).config.turbo_mode ===
+				true &&
+			// Sentinel fast path first (no I/O beyond one existsSync when no
+			// epic was ever opened); only then the full config-gated,
+			// identity-checked probe, so a leftover sentinel (config off, or
+			// an orphaned epic) does not suppress seeding.
+			!(epicSentinelExists(directory) && isEpicOpenForProject(directory))
+		);
+	} catch {
+		// Session construction must never fail because a config read
+		// hiccupped; the loader itself is fail-open for malformed configs,
+		// so this guards only unexpected boundary failures.
+		return false;
+	}
+}
+
 export function startAgentSession(
 	sessionId: string,
 	agentName: string,
@@ -2204,6 +2423,12 @@ export function startAgentSession(
 	// sessions). Reuses the shared eviction loop (also used by the opportunistic
 	// idle sweep) so the logic stays single-sourced.
 	sweepStaleSessions(staleDurationMs, now, directory);
+
+	// Config-seeded turbo default (issue #2901): resolve BEFORE the literal so
+	// the ownership → stamps → sweep → literal sequence above stays untouched
+	// and the config read stays visible outside the literal. One bounded read
+	// per NEW session only (ensureAgentSession early-returns for live ones).
+	const initialTurboMode = resolveInitialTurboMode(directory);
 
 	// Create new session state
 	const sessionState: AgentSessionState = {
@@ -2257,15 +2482,13 @@ export function startAgentSession(
 		reviewerScopeIncarnation: randomUUID(),
 		reviewerScopeLatestGenerationByTask: new Map(),
 		reviewerScopeOwnershipHistory: new Map(),
-		// Turbo Mode (v6.26)
-		turboMode: false,
+		// Turbo Mode (v6.26); seeded from config at construction (issue #2901)
+		turboMode: initialTurboMode,
 		// Lean Turbo Mode (Phase 2)
 		turboStrategy: undefined,
 		leanTurboActive: false,
 		leanTurboCurrentPhase: undefined,
 		maxConcurrencyOverride: undefined,
-		// Epic Mode (additive overlay above Lean Turbo)
-		epicModeActive: false,
 		// QA Gate Profile session overrides
 		qaGateSessionOverrides: {},
 		// Full Auto Mode (Phase 2)
@@ -2435,6 +2658,9 @@ export function endAgentSession(sessionId: string, directory?: string): void {
 	// persist in memory and in every state.json snapshot until process exit.
 	swarmState.activeAgent.delete(sessionId);
 	swarmState.delegationChains.delete(sessionId);
+	// Issue #3036: dispatch lineage is a session-keyed satellite too — clear
+	// this session's child entry and any children keyed to it as parent.
+	clearDispatchLineageForSession(sessionId);
 	clearRealtimeLearningNudgeSession(sessionId);
 	// #1821: the same-session learning loop keeps per-session module state (the
 	// candidate queue and the PRM pattern-support/cooldown ledger). Both are
@@ -2643,7 +2869,9 @@ export function ensureAgentSession(
 		if (session.scopeViolationDetected === undefined) {
 			session.scopeViolationDetected = false;
 		}
-		// Turbo Mode migration safety (v6.26)
+		// Turbo Mode migration safety (v6.26). Deliberately conservative: the
+		// config seed applies only at session construction (issue #2901), so a
+		// legacy session missing this field never flips turbo on mid-life.
 		if (session.turboMode === undefined) {
 			session.turboMode = false;
 		}
@@ -2656,10 +2884,6 @@ export function ensureAgentSession(
 		}
 		if (session.leanTurboCurrentPhase === undefined) {
 			session.leanTurboCurrentPhase = undefined;
-		}
-		// Epic Mode migration safety
-		if (session.epicModeActive === undefined) {
-			session.epicModeActive = false;
 		}
 		// QA Gate Profile session overrides migration safety
 		if (session.qaGateSessionOverrides === undefined) {
@@ -2747,6 +2971,15 @@ export function ensureAgentSession(
 	if (!session) {
 		// This should never happen, but TypeScript needs it
 		throw new Error(`Failed to create guardrail session for ${sessionId}`);
+	}
+	// Issue #3036: a freshly created child session whose dispatch already
+	// happened (architect-side injection ran first) adopts its pending
+	// dispatch parent best-effort; the taskMetadata event later overwrites
+	// with the authoritative host-observed pair. Only real agent names adopt —
+	// 'unknown' and the cohort-cache 'architect' fallback never match a
+	// delegated-target pending (fence-preserving; see adoptPending... docs).
+	if (agentName && agentName !== 'unknown') {
+		adoptPendingDispatchAuthorization(sessionId, agentName);
 	}
 	return session;
 }
@@ -2877,7 +3110,13 @@ export function beginInvocation(
 	const lastId = session.lastInvocationIdByAgent[stripped] || 0;
 	if (lastId > 0) {
 		clearInvocationActionCircuits(sessionId, lastId);
-		clearPendingTaskModelRoutesForSession(sessionId);
+		// Issue #2989: 'invocation' mode preserves the primary session's
+		// sticky fallback selection (empty-invocationID scope) — a provider
+		// quota does not heal between turns, so resetting it here would send
+		// every other turn back to the dead primary. The session-end clear
+		// (index.ts terminal-session path) still uses the default 'session'
+		// mode and removes it.
+		clearPendingTaskModelRoutesForSession(sessionId, 'invocation');
 	}
 	const newId = lastId + 1;
 	session.lastInvocationIdByAgent[stripped] = newId;
@@ -3049,6 +3288,17 @@ function ensureModifiedFileTaskSlot(
 /**
  * Atomically replace one task's attributed file list.
  *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (issue #2925 review, PRR-014).
+ *
+ * Issue #2925: entries are canonicalized at this write boundary to the
+ * portable form (repo-relative against `workspaceDirectory` when provided,
+ * forward-slashed, win32-case-folded via `normalizePath`); entries that
+ * cannot be proven canonical — absolutes without a base, `..`-escapes —
+ * drop silently (entries are advisory). Legacy snapshot entries bypass this
+ * boundary by design (deserializeModifiedFilesByTask builds the map
+ * directly) and stay readable via read-side canonicalization.
+ *
  * Returns false without mutation when the task id is invalid or the bounded
  * map has no reclaimable workflow-complete slot.
  */
@@ -3056,11 +3306,14 @@ export function recordModifiedFilesForTask(
 	session: AgentSessionState,
 	taskId: string,
 	files: readonly string[],
+	workspaceDirectory?: string,
 ): boolean {
 	if (!ensureModifiedFileTaskSlot(session, taskId)) return false;
 	const normalized = [
 		...new Set(
-			files.filter((file) => typeof file === 'string' && file.length > 0),
+			files
+				.map((file) => canonicalAttributionPath(file, workspaceDirectory))
+				.filter((file): file is string => file !== null),
 		),
 	];
 	session.modifiedFilesByTask.set(taskId, normalized);
@@ -3072,16 +3325,52 @@ export function recordModifiedFilesForTask(
 
 /**
  * Add one file to a task's attribution without disturbing its existing files.
+ *
+ * Callers MUST pass `workspaceDirectory`: omitting it silently drops
+ * absolute entries (they cannot be proven in-workspace), with no other
+ * signal (issue #2925 review, PRR-014).
+ *
+ * Issue #2925: the INCOMING entry is canonicalized against
+ * `workspaceDirectory` (same rules as the plural setter); a
+ * non-canonicalizable incoming entry drops silently with a `true` return
+ * (advisory no-op — pre-existing invalid-input/invalid-taskId paths still
+ * return false). Stored legacy raw entries are deliberately NOT
+ * re-canonicalized by an append; they persist verbatim until the task's list
+ * is atomically replaced by a producer.
  */
 export function recordModifiedFileForTask(
 	session: AgentSessionState,
 	taskId: string,
 	file: string,
+	workspaceDirectory?: string,
 ): boolean {
-	if (typeof file !== 'string' || file.length === 0) return false;
-	const existing = getModifiedFilesForTask(session, taskId);
-	if (existing.includes(file)) return true;
-	return recordModifiedFilesForTask(session, taskId, [...existing, file]);
+	if (typeof file !== 'string' || file.trim().length === 0) return false;
+	if (!ensureModifiedFileTaskSlot(session, taskId)) return false;
+	const canonical = canonicalAttributionPath(file, workspaceDirectory);
+	if (canonical === null) return true;
+	const entries = ensureModifiedFilesByTask(session);
+	const current = entries.get(taskId) ?? [];
+	if (current.includes(canonical)) return true;
+	entries.set(taskId, [...current, canonical]);
+	if (session.currentTaskId === taskId) {
+		projectModifiedFilesForActiveTask(session);
+	}
+	return true;
+}
+
+/**
+ * Whether a per-task attribution slot EXISTS for the task (present-but-empty
+ * counts as present). Distinguishes "no record" from "record with zero files"
+ * for callers that must not conflate the two (issue #2926 follow-up).
+ */
+export function hasModifiedFilesForTask(
+	session: AgentSessionState | undefined,
+	taskId: string,
+): boolean {
+	if (!session) return false;
+	if (!isValidTaskId(taskId)) return false;
+	if (!(session.modifiedFilesByTask instanceof Map)) return false;
+	return session.modifiedFilesByTask.has(taskId);
 }
 
 /**
@@ -3121,14 +3410,19 @@ export function resetModifiedFilesForTask(
 /**
  * Apply task-completion retention rules.
  *
- * Non-Epic sessions release attribution at the workflow-complete boundary.
- * Epic sessions retain it until `epic_record_divergence` consumes the entry.
+ * Attribution is released at the workflow-complete boundary, except while an
+ * epic is open for the session's project: then it is retained until its
+ * wave closes (`epic_next_wave` → `wave-close.ts` reads it for divergence
+ * and releases it). The project comes from the session's owning project key
+ * (a canonical root path); an unowned session is treated as non-Epic. With
+ * no epic the probe costs one `existsSync`.
  */
 export function completeModifiedFilesForTask(
 	session: AgentSessionState,
 	taskId: string,
 ): void {
-	if (!session.epicModeActive) {
+	const projectRoot = session.owningProjectKey;
+	if (projectRoot === undefined || !isEpicOpenForProject(projectRoot)) {
 		resetModifiedFilesForTask(session, taskId, { remove: true });
 	}
 }
@@ -4095,28 +4389,6 @@ export function hasActiveLeanTurbo(sessionID?: string): boolean {
 }
 
 /**
- * Check if Epic Mode is active for a specific session or ANY session.
- * Mirrors `hasActiveLeanTurbo` but reads `session.epicModeActive`. The flag
- * is set by `enableEpicMode` (and by `/swarm turbo epic on`) and cleared by
- * `disableEpicMode` (and `/swarm turbo epic off`). The durable mirror is
- * `.swarm/epic-state.json` — see `src/turbo/epic/state.ts`. Epic Mode does
- * NOT require `turboStrategy === 'lean'`; it composes Lean Turbo internally
- * inside `epic_run_phase`.
- */
-export function hasActiveEpicMode(sessionID?: string): boolean {
-	if (sessionID) {
-		const session = swarmState.agentSessions.get(sessionID);
-		return session?.epicModeActive === true;
-	}
-	for (const [_sessionId, session] of swarmState.agentSessions) {
-		if (session.epicModeActive === true) {
-			return true;
-		}
-	}
-	return false;
-}
-
-/**
  * Resolves the effective auto_proceed value for a session.
  * Session override (autoProceedOverride) takes precedence over the plan default.
  * Accepts `boolean | undefined` for the plan default so callers can pass
@@ -4589,6 +4861,8 @@ export const _internals: {
 	resetSwarmState: typeof resetSwarmState;
 	ensureAgentSession: typeof ensureAgentSession;
 	startAgentSession: typeof startAgentSession;
+	loadPluginConfigWithMeta: typeof loadPluginConfigWithMeta;
+	resolveInitialTurboMode: typeof resolveInitialTurboMode;
 	getAgentSession: typeof getAgentSession;
 	beginInvocation: typeof beginInvocation;
 	getActiveWindow: typeof getActiveWindow;
@@ -4597,7 +4871,6 @@ export const _internals: {
 	hasActiveFullAuto: typeof hasActiveFullAuto;
 	hasActiveTurboMode: typeof hasActiveTurboMode;
 	hasActiveLeanTurbo: typeof hasActiveLeanTurbo;
-	hasActiveEpicMode: typeof hasActiveEpicMode;
 	buildRehydrationCache: typeof buildRehydrationCache;
 	applyRehydrationCache: typeof applyRehydrationCache;
 	rehydrateSessionFromDisk: typeof rehydrateSessionFromDisk;
@@ -4609,6 +4882,8 @@ export const _internals: {
 	resetSwarmState,
 	ensureAgentSession,
 	startAgentSession,
+	loadPluginConfigWithMeta,
+	resolveInitialTurboMode,
 	getAgentSession,
 	beginInvocation,
 	getActiveWindow,
@@ -4617,7 +4892,6 @@ export const _internals: {
 	hasActiveFullAuto,
 	hasActiveTurboMode,
 	hasActiveLeanTurbo,
-	hasActiveEpicMode,
 	buildRehydrationCache,
 	applyRehydrationCache,
 	rehydrateSessionFromDisk,

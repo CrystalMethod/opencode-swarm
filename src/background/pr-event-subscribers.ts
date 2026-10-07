@@ -29,6 +29,10 @@ import {
 	type PrWorkflowGateState,
 	readPrWorkflowGateState,
 } from '../hooks/pr-workflow-gate';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
 import { getAgentSession } from '../state';
 import { log } from '../utils';
 import { pushAdvisory } from '../utils/advisory-queue';
@@ -214,7 +218,7 @@ async function handlePrEvent(
 			// Older event producers may omit prUrl; the subscription's canonical
 			// repo+PR identity is the safe fallback. When a payload URL is present,
 			// it must resolve to that same canonical PR or the event is foreign.
-			(!payload.prUrl || sameGitHubPr(sub.prUrl, payload.prUrl)),
+			(!payload.prUrl || sameGitHubPr(sub.prUrl, payload.prUrl, sub.forge)),
 	);
 
 	if (matching.length === 0) return;
@@ -267,7 +271,7 @@ async function handlePrEvent(
 			(activeGate?.mode === 'PR_FEEDBACK' &&
 				(Boolean(activeGate.prFeedbackInventory) ||
 					!feedbackTarget ||
-					!sameGitHubPr(feedbackTarget, prUrl)));
+					!sameGitHubPr(feedbackTarget, prUrl, sub.forge)));
 		let queueAccepted = false;
 		let cancellationBlocked = false;
 		if (queueForLater || autoFeedbackEventAuthorized) {
@@ -312,6 +316,7 @@ async function handlePrEvent(
 						...(payload.headRefOid ? { headRefOid: payload.headRefOid } : {}),
 						queuedAt: new Date().toISOString(),
 					},
+					sub.forge,
 				);
 				queueAccepted = admitted !== false;
 				if (!queueAccepted) cancellationBlocked = true;
@@ -482,29 +487,28 @@ const CONTENT_EVENT_TYPES = new Set([
 	'pr.review.comment',
 ]);
 
-function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!match
-		) {
-			return null;
-		}
-		const number = Number(match[3]);
-		if (!Number.isSafeInteger(number) || number <= 0) return null;
-		return `github.com/${match[1].toLowerCase()}/${match[2].toLowerCase()}/pull/${number}`;
-	} catch {
-		return null;
-	}
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body. #2882 AC5: the optional configured context
+	// (the subscription record's persisted forge declaration) additionally
+	// authorizes declared generic self-hosted GitLab MR URLs for event
+	// identity/dedup; absent context keeps the fail-closed behavior.
+	return canonicalForgePrUrl(value, configured);
 }
 
-function sameGitHubPr(left: string, right: string): boolean {
-	const leftCanonical = canonicalGitHubPrUrl(left);
+function sameGitHubPr(
+	left: string,
+	right: string,
+	configured?: ForgeContext,
+): boolean {
+	const leftCanonical = canonicalGitHubPrUrl(left, configured);
 	return (
-		leftCanonical !== null && leftCanonical === canonicalGitHubPrUrl(right)
+		leftCanonical !== null &&
+		leftCanonical === canonicalGitHubPrUrl(right, configured)
 	);
 }
 

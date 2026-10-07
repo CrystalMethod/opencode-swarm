@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { tool } from '@opencode-ai/plugin';
+import type { ToolContext, tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
 import { estimateCyclomaticComplexity } from '../quality/metrics';
 import { bunSpawn } from '../utils/bun-compat';
@@ -170,6 +170,7 @@ const GIT_CHURN_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
 async function getGitChurn(
 	days: number,
 	directory: string,
+	abortSignal?: AbortSignal,
 ): Promise<Map<string, number>> {
 	const churnMap = new Map<string, number>();
 
@@ -205,24 +206,54 @@ async function getGitChurn(
 	// signalCode. The signalCode check below stays as a second detector for
 	// kills the runtime does report; the finally block's tree kill reaps any
 	// descendant still holding the pipe.
+	//
+	// #2705: the race also honors the host cancellation signal
+	// (`ctx.abort`, forwarded through execute/analyzeHotspots) as a third
+	// arm, so a host-side abort surfaces the same structured error promptly
+	// instead of riding the full deadline.
 	let churnTimeout: ReturnType<typeof setTimeout> | undefined;
-	try {
-		const [stdout, outcome] = await Promise.race([
-			Promise.all([proc.stdout.text(), proc.exited]).then(
-				(churnOutput): [string, number | 'timeout'] => churnOutput,
-			),
-			new Promise<[null, 'timeout']>((resolve) => {
-				churnTimeout = setTimeout(
-					() => resolve([null, 'timeout']),
-					GIT_CHURN_TIMEOUT_MS,
-				);
+	let churnAbortCleanup: (() => void) | undefined;
+	type ChurnOutcome = [string | null, number | 'timeout' | 'aborted'];
+	const racers: Array<Promise<ChurnOutcome>> = [
+		Promise.all([proc.stdout.text(), proc.exited]).then(
+			(churnOutput): ChurnOutcome => churnOutput,
+		),
+		new Promise<ChurnOutcome>((resolve) => {
+			churnTimeout = setTimeout(
+				() => resolve([null, 'timeout']),
+				GIT_CHURN_TIMEOUT_MS,
+			);
+		}),
+	];
+	if (abortSignal !== undefined) {
+		racers.push(
+			new Promise<ChurnOutcome>((resolve) => {
+				const settle = (): void => resolve([null, 'aborted']);
+				if (abortSignal.aborted) {
+					settle();
+					return;
+				}
+				const onAbort = (): void => settle();
+				abortSignal.addEventListener('abort', onAbort, { once: true });
+				churnAbortCleanup = () => {
+					abortSignal.removeEventListener('abort', onAbort);
+				};
 			}),
-		]);
+		);
+	}
+	try {
+		const [stdout, outcome] = await Promise.race(racers);
 		if (typeof churnTimeout !== 'undefined') clearTimeout(churnTimeout);
 
 		if (outcome === 'timeout') {
 			throw new Error(
 				`git churn analysis failed: git log did not finish within ${GIT_CHURN_TIMEOUT_MS} ms (bounded; child tree killed)`,
+			);
+		}
+
+		if (outcome === 'aborted') {
+			throw new Error(
+				`git churn analysis failed: aborted by host cancellation (ctx.abort fired before the ${GIT_CHURN_TIMEOUT_MS} ms deadline; child tree killed)`,
 			);
 		}
 
@@ -253,7 +284,7 @@ async function getGitChurn(
 		// controller's rejection loses the race with a clean child exit and the
 		// captured text resolves instead — the retained prefix is capped at
 		// exactly the bound, so the size check is version-independent.
-		if (Buffer.byteLength(stdout) >= GIT_CHURN_MAX_BUFFER_BYTES) {
+		if (Buffer.byteLength(stdout as string) >= GIT_CHURN_MAX_BUFFER_BYTES) {
 			throw new Error(
 				`git churn analysis failed: git log output reached the ${GIT_CHURN_MAX_BUFFER_BYTES}-byte buffer limit`,
 			);
@@ -297,6 +328,7 @@ async function getGitChurn(
 		// lets the awaiter proceed without aborting the child. killProcessTree
 		// is set, so this reaps descendants still holding the pipes too.
 		if (typeof churnTimeout !== 'undefined') clearTimeout(churnTimeout);
+		churnAbortCleanup?.();
 		try {
 			proc.kill();
 		} catch {
@@ -329,9 +361,10 @@ async function analyzeHotspots(
 	topN: number,
 	extensions: string[],
 	directory: string,
+	abortSignal?: AbortSignal,
 ): Promise<ComplexityHotspotsResult> {
 	// Get git churn data
-	const churnMap = await getGitChurn(days, directory);
+	const churnMap = await getGitChurn(days, directory, abortSignal);
 
 	// Build extension set for filtering
 	const extSet = new Set(
@@ -442,7 +475,11 @@ export const complexity_hotspots: ReturnType<typeof tool> = createSwarmTool({
 				'Comma-separated extensions to include (default: "ts,tsx,js,jsx,py,rs,ps1")',
 			),
 	},
-	async execute(args: unknown, directory: string): Promise<string> {
+	async execute(
+		args: unknown,
+		directory: string,
+		ctx?: ToolContext,
+	): Promise<string> {
 		if (
 			!directory ||
 			typeof directory !== 'string' ||
@@ -541,7 +578,16 @@ export const complexity_hotspots: ReturnType<typeof tool> = createSwarmTool({
 			.map((e) => e.trim());
 
 		try {
-			const result = await analyzeHotspots(days, topN, extensions, directory);
+			// #2705: thread the host cancellation signal (ctx.abort is the
+			// plugin ToolContext field — see src/tools/lint.ts) into the churn
+			// race so a host-side abort surfaces the structured error promptly.
+			const result = await analyzeHotspots(
+				days,
+				topN,
+				extensions,
+				directory,
+				ctx?.abort,
+			);
 			return JSON.stringify(result, null, 2);
 		} catch (e) {
 			const errorResult: ComplexityHotspotsError = {

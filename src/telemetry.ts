@@ -198,7 +198,16 @@ export type TelemetryEvent =
 	// and withdrawal aggregates for the consented training-content vault.
 	// Payload is a pseudonymous project ref, a reason enum, and a count —
 	// never vault content or raw paths.
-	| 'training_vault_health';
+	| 'training_vault_health'
+	// Issue #2794 — plan-recovery supersession counts (F-004 follow-up on
+	// #2777/#2668): emitted exactly once per snapshot-coordination
+	// initialization attempt that settles superseded, at the settlement
+	// chokepoint in src/session/snapshot-coordination-init.ts. Payload is a
+	// within-process cumulative count and a closed two-value trigger
+	// vocabulary ('plan_recovery' = typed PlanRecoverySupersededError path;
+	// 'coordination_fence' = any generation-fence outcome) — counts only, no
+	// paths, no session or project identity.
+	| 'plan_recovery_superseded';
 
 /** Stable classification for how a reviewer-gate decision was established. */
 export type ReviewerGateEvidenceKind =
@@ -480,8 +489,9 @@ export function emit(
 		// `toLegacyTelemetryLine` takes `timestamp` from `canonical.observedAt`
 		// (stamped with the same `new Date().toISOString()`) and spreads the
 		// caller's original `data` object last. Proven by
-		// `tests/unit/telemetry/emit-line-parity.test.ts` against a corpus captured
-		// from the unmodified tree at e50386b9.
+		// `tests/unit/telemetry/emit-line-parity.test.ts` against a corpus
+		// deliberately regenerated at `0aa722596` (issue #2789; originally
+		// captured from the unmodified tree at e50386b9).
 		//
 		// `JSON.stringify` still throws here for circular/BigInt payloads, before
 		// the listener fan-out below — preserving the ordering asserted by
@@ -692,12 +702,17 @@ export const telemetry = {
 			agentName,
 			taskId,
 			result,
-			tokens_input: costFields?.tokens_input ?? 0,
-			tokens_output: costFields?.tokens_output ?? 0,
-			tokens_reasoning: costFields?.tokens_reasoning ?? 0,
-			tokens_cache: costFields?.tokens_cache ?? 0,
-			cost_usd: costFields?.cost_usd ?? null,
 			...costFields,
+			// #2789: null-preserving unknown semantics — an axis the producer did
+			// not hold is emitted as null (like cost_usd below), never fabricated
+			// as 0. Placing these defaults AFTER the spread also means a caller
+			// passing an explicitly-undefined axis still normalizes to null
+			// instead of leaking an absent key onto the wire.
+			tokens_input: costFields?.tokens_input ?? null,
+			tokens_output: costFields?.tokens_output ?? null,
+			tokens_reasoning: costFields?.tokens_reasoning ?? null,
+			tokens_cache: costFields?.tokens_cache ?? null,
+			cost_usd: costFields?.cost_usd ?? null,
 			cost_source: costFields?.cost_source ?? 'unavailable',
 			model: costFields?.model,
 			gate: costFields?.gate,
@@ -1394,6 +1409,23 @@ export const telemetry = {
 		},
 	): void {
 		_internals.emit('retrieval_routed', { sessionId, ...data });
+	},
+
+	/**
+	 * Issue #2794 — plan-recovery supersession count, emitted exactly once per
+	 * snapshot-coordination initialization attempt that settles superseded
+	 * (settlement chokepoint in src/session/snapshot-coordination-init.ts).
+	 * Counts ONLY — a within-process cumulative `count` and the closed
+	 * two-value `trigger` vocabulary (`plan_recovery` = the typed
+	 * PlanRecoverySupersededError path; `coordination_fence` = any
+	 * generation-fence outcome) — no paths, no session or project identity,
+	 * matching the observability contract's no-content-in-metrics rule.
+	 */
+	planRecoverySuperseded(data: {
+		count: number;
+		trigger: 'plan_recovery' | 'coordination_fence';
+	}): void {
+		_internals.emit('plan_recovery_superseded', data);
 	},
 };
 

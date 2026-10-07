@@ -24,6 +24,10 @@ import {
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
 import {
+	_internals as cancelInternals,
+	executeCancelLaneBatch,
+} from '../../../src/tools/cancel-lane-batch.js';
+import {
 	_internals,
 	executeCollectLaneResults,
 	executeDispatchLanesAsync,
@@ -154,27 +158,63 @@ describe('dispatch-lanes terminal claims (issue #2045)', () => {
 		);
 	});
 
-	it('cancel_pending claims a cancelled terminal with a bounded reason', async () => {
-		_internals.getSessionOps = () => completedHost('sess-tc-3');
-		await executeDispatchLanesAsync(
-			{
-				batch_id: 'batch-tc-3',
-				lanes: [{ id: 'runtime', agent: 'explorer', prompt: 'inspect' }],
-			},
-			dir,
-		);
+	it('cancel_pending is guidance-only; a CONFIRMED cancel claims the cancelled terminal with a bounded reason (issue #2971)', async () => {
+		await recordPendingDelegation(dir, {
+			correlationId: 'sess-tc-3',
+			jobId: null,
+			subagentSessionId: 'sess-tc-3',
+			parentSessionId: 'parent-3',
+			callID: 'batch-tc-3',
+			normalizedAgent: 'sme',
+			swarmPrefixedAgent: 'mega_sme',
+			planTaskId: null,
+			evidenceTaskId: null,
+			batchId: 'batch-tc-3',
+			laneId: 'lane-3',
+		});
+		// The ordinary collector request can no longer cancel anything: the
+		// lane stays open and the response carries typed refusal guidance.
+		// (messages overridden to empty so this observation pass does not
+		// harvest a completed transcript out from under the cancel leg.)
+		_internals.getSessionOps = () =>
+			({
+				...completedHost('sess-tc-3'),
+				messages: async () => ({ data: [], error: undefined }),
+			}) as SessionOps;
 		const result = await executeCollectLaneResults(
 			{ batch_id: 'batch-tc-3', wait: false, cancel_pending: true },
 			dir,
 		);
-		expect(result.cancelled).toBe(1);
-		const record = findByBatchId(dir, 'batch-tc-3')[0];
+		expect(result.cancelled).toBe(0);
+		let record = findByBatchId(dir, 'batch-tc-3')[0];
+		expect(record.status).not.toBe('cancelled');
+		// The authorized surface claims the terminal (exactly-once) with the
+		// distinct operator_cancelled class and a bounded cancel reason.
+		const realCancelOps = cancelInternals.getSessionOps;
+		cancelInternals.getSessionOps = () => completedHost('sess-tc-3');
+		try {
+			const cancel = await executeCancelLaneBatch(
+				{
+					batch_id: 'batch-tc-3',
+					reason: 'terminal-claim probe',
+					confirm: true,
+				},
+				dir,
+			);
+			expect(cancel.cancelled).toBe(1);
+		} finally {
+			cancelInternals.getSessionOps = realCancelOps;
+		}
+		record = findByBatchId(dir, 'batch-tc-3')[0];
 		expect(record.status).toBe('cancelled');
 		expect(record.terminalResult?.status).toBe('cancelled');
 		expect(record.terminalResult?.result.digest).toBe(
 			createHash('sha256').update('').digest('hex'),
 		);
 		expect(record.terminalResult?.result.error).toMatch(/cancel/i);
+		expect(record.terminalResult?.result.workflowLaneFailureClass).toBe(
+			'operator_cancelled',
+		);
 	});
 
 	it('a classified terminal error settles through the claim with its typed class', async () => {

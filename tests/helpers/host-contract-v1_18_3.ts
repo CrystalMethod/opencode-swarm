@@ -28,7 +28,11 @@
  * `tests/unit/hooks/host-message-role-contract-2526.test.ts` pins the
  * installed package versions to `PINNED_HOST_PACKAGE_VERSION` so a lockfile
  * bump fails loudly and forces re-verification of this fixture against the
- * new host source.
+ * new host source. Host releases are covered independently of the lockfile:
+ * the weekly `host-contract-check.yml` scheduled check
+ * (`scripts/check-host-contract.ts`) compares the converter loop's structural
+ * digest against the host source at npm-latest and is the re-verification
+ * trigger on a host release.
  */
 
 export const PINNED_HOST_PACKAGE_VERSION = '1.18.3';

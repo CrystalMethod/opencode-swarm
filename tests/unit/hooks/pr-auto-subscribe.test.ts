@@ -99,6 +99,32 @@ describe('extractPrUrl', () => {
 		).toBeNull();
 	});
 
+	test('(#2733) extracts and canonicalizes a gitlab.com MR URL', () => {
+		const info = extractPrUrl(
+			'https://gitlab.com/acme/app/-/merge_requests/155',
+		);
+		expect(info).toEqual({
+			repoFullName: 'acme/app',
+			prNumber: 155,
+			prUrl: 'https://gitlab.com/acme/app/-/merge_requests/155',
+		});
+	});
+
+	test('(#2733) extracts a self-hosted nested-namespace MR URL', () => {
+		const info = extractPrUrl(
+			'https://gitlab.acme.test/ops/infra/platform/-/merge_requests/7',
+		);
+		expect(info).toEqual({
+			repoFullName: 'ops/infra/platform',
+			prNumber: 7,
+			prUrl: 'https://gitlab.acme.test/ops/infra/platform/-/merge_requests/7',
+		});
+	});
+
+	test('(#2733) a gitlab ISSUES URL is not a PR URL', () => {
+		expect(extractPrUrl('https://gitlab.com/acme/app/-/issues/12')).toBeNull();
+	});
+
 	test('ignores a URL beyond the 64KB scan bound', () => {
 		const padded = `${'x'.repeat(65 * 1024)}\nhttps://github.com/owner/repo/pull/9`;
 		expect(extractPrUrl(padded)).toBeNull();

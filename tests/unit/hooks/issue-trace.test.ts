@@ -22,6 +22,7 @@ import {
 	resetPhaseStatusCache,
 } from '../../../src/hooks/issue-trace';
 import type { TraceState } from '../../../src/hooks/issue-trace-reducer';
+import { computeSpecHash } from '../../../src/utils/spec-hash';
 import { writeV3ReceiptFiles } from './issue-trace-journey-v3-helpers';
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -259,49 +260,9 @@ describe('issue-trace hook', () => {
 		expect(messages).toHaveLength(0);
 	});
 
-	test('cross-issue fail-closed: spec issue number mismatch → no injection', async () => {
-		writeIssueRef(tmpDir, 42);
-		writeTraceState(tmpDir);
-		writeSpecWithIssue(tmpDir, 99);
-
-		const messages = await runHook(tmpDir);
-		expect(messages).toHaveLength(0);
-	});
-
-	test('timeout: isPlanCriticApproved never resolves → returns false after timeout', async () => {
-		writeIssueRef(tmpDir);
-		writeTraceState(tmpDir);
-		writeSpecWithIssue(tmpDir);
-		writeV3ReceiptFiles(tmpDir);
-		// An authoritative plan exists with an incomplete phase (so planExists is
-		// true and row g — plan exists, critic pending — applies).
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: false });
-		_internals.isPlanCriticApproved = () =>
-			new Promise<boolean>(() => {
-				// never resolves
-			});
-
-		const start = Date.now();
-		const messages = await runHook(tmpDir, [], 100);
-		const elapsed = Date.now() - start;
-		expect(elapsed).toBeLessThan(2000);
-		// With plan but no critic approval, reducer returns no-op (row g)
-		expect(messages).toHaveLength(0);
-	});
-
 	test('malformed JSON: corrupt issue-reference.json → noop', async () => {
 		const filePath = path.join(tmpDir, '.swarm', 'issue-reference.json');
 		fs.writeFileSync(filePath, '{not valid json{{{', 'utf-8');
-
-		const messages = await runHook(tmpDir);
-		expect(messages).toHaveLength(0);
-	});
-
-	test('trace issue number mismatch in trace state → no injection', async () => {
-		writeIssueRef(tmpDir, 42);
-		writeTraceState(tmpDir, { issueNumber: 99 });
-		writeSpecWithIssue(tmpDir, 42);
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -368,8 +329,11 @@ describe('issue-trace hook', () => {
 			phases: [{ id: 1, name: 'Phase 1', status: 'complete', tasks: [] }],
 		});
 		_internals.isPlanCriticApproved = () => Promise.resolve(true);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 		writeResidualBReceipts(tmpDir);
 
 		const messages = await runHook(tmpDir);

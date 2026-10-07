@@ -160,7 +160,7 @@ export const TOOL_METADATA = {
 	},
 	symbols: {
 		description:
-			'extract exported symbols (functions, classes, interfaces, types) from source files; supports TypeScript, JavaScript, and Python',
+			'extract exported symbols (functions, classes, interfaces, types) from source files; supports TypeScript, JavaScript, Python, Rust, Go, Dart, Ruby, PHP, and Java',
 		agents: [
 			'architect',
 			'sme',
@@ -205,8 +205,9 @@ export const TOOL_METADATA = {
 		},
 	},
 	todo_extract: {
-		description: 'structured TODO/FIXME extraction',
-		agents: ['architect', 'researcher', 'docs', 'explorer'],
+		description:
+			'structured TODO/FIXME extraction; with task_id, records the high-priority count as todo_scan gate evidence',
+		agents: ['architect', 'researcher', 'docs', 'explorer', 'coder'],
 		prWorkflow: {
 			modes: ['PR_REVIEW', 'PR_FEEDBACK'],
 			capability: 'observe',
@@ -258,6 +259,11 @@ export const TOOL_METADATA = {
 	recover_rework_task: {
 		description:
 			'recover a task wedged at rework_required when the reviewer/test_engineer verdict did not require a code change: write a supervised stage_a_passed so those gates can be re-dispatched without re-running the coder (issue #2755)',
+		agents: ['architect'],
+	},
+	recover_stage_a_task: {
+		description:
+			'recover a task wedged in the settlement-backed Stage A deadlock — workflow at idle/blocked while a COMMITTED accepted coder settlement and green post-settlement pre-check proof justify Stage A: write a settlement-backed stage_a_passed so reviewer/test_engineer can be dispatched, without re-running the coder (issue #2828)',
 		agents: ['architect'],
 	},
 	prepare_pr_workflow_checkout: {
@@ -336,7 +342,7 @@ export const TOOL_METADATA = {
 	},
 	checkpoint: {
 		description:
-			'create named git checkpoints for save, restore, and delete — use before risky operations to enable rollback',
+			'create named git checkpoints for save, restore, and delete — use before risky operations to enable rollback; a destructive restore previews first and requires the confirm_token issued in the preview (#2946)',
 		agents: ['architect'],
 	},
 	pkg_audit: {
@@ -372,6 +378,11 @@ export const TOOL_METADATA = {
 	write_pr_review_artifact: {
 		description:
 			'persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run',
+		agents: ['architect'],
+	},
+	pr_review_submission: {
+		description:
+			'submit a settled, head-bound PR review to GitHub through the gh PR Review API after the PR_REVIEW gate clears; architect-only, refuses while a gate is active or the run was aborted after settlement',
 		agents: ['architect'],
 	},
 	prepare_pr_feedback_scope: {
@@ -518,7 +529,7 @@ export const TOOL_METADATA = {
 	},
 	repair_knowledge_receipt_ledger: {
 		description:
-			'validate or repair authoritative knowledge receipts, preserve corrupt authority in bounded quarantine, and require scoped re-evaluation',
+			'validate or repair authoritative knowledge receipts, preserve corrupt authority in bounded quarantine, require scoped re-evaluation, and backfill stable phase ids across the whole ledger (operation backfill_phase_id; phase/session_id do not scope the backfill)',
 		agents: ['architect'],
 	},
 	record_directive_override: {
@@ -930,7 +941,12 @@ export const TOOL_METADATA = {
 	},
 	collect_lane_results: {
 		description:
-			'collect/poll a dispatch_lanes_async batch; a presumed-stale sweep runs on every call, settling lanes past the horizon: idle host to stale, unobservable host to a typed liveness error; cancel_pending cancels pending lanes; otherwise observe-only. Non-blocking poll (wait omitted or false) and blocking join (wait: true) supported. The wait budget bounds the observer call only — expiry never kills a lane nor proves it died; poll again or cancel explicitly, never abort. Unsettled lanes are reported in pending_lanes (batch_id, lane_id, status, output_ref) regardless of include_pending; busy/retry lanes never go stale for running long. Does not advance workflow gates. Settled-lane inline output is delivered once: later polls set output_omitted_repeat: true and omit output but keep output_ref for retrieval via retrieve_lane_output.',
+			'collect/poll a dispatch_lanes_async batch — OBSERVATION ONLY; it can never cancel or abort a lane. A presumed-stale sweep runs on every call, settling lanes past the horizon: idle host to stale, unobservable host to a typed liveness error. The wait budget (timeout_ms) bounds this observer call only — its expiry, a missing messages client, or a degraded liveness probe never kills a lane, never proves it died, and never settles anything. If a collection returns pending lanes, poll again first; busy/retry host status is live evidence, not failure. Cancellation is a distinct, explicit, authorized, potentially destructive action: use cancel_lane_batch (confirm: true + reason), never this tool. An explicit operator cancellation settles as the distinct operator_cancelled class — not liveness. Unsettled lanes are reported in pending_lanes (batch_id, lane_id, status, output_ref) regardless of include_pending. Does not advance workflow gates. Settled-lane inline output is delivered once: later polls set output_omitted_repeat: true and omit output but keep output_ref for retrieval via retrieve_lane_output.',
+		agents: ['architect'],
+	},
+	cancel_lane_batch: {
+		description:
+			'cancel ACTIVE lanes of a dispatch_lanes_async batch — the only cancellation surface (collect_lane_results cannot cancel). Destructive and authorization-gated: requires confirm: true + a bounded reason, recorded on cancelled terminals as the distinct operator_cancelled class (never liveness; not auto-retryable, never consumes retry budget — re-dispatch explicitly). Race-safe per lane: busy/retry refused (live work is never destroyed — human force path: /swarm abort-pr-workflow); degraded/absent status probe refuses the whole batch fail-closed; idle or host-unknown sessions may be cancelled; a child completing in the race window is preserved; an abort timeout never claims cancellation.',
 		agents: ['architect'],
 	},
 	summarize_work: {
@@ -1027,26 +1043,15 @@ export const TOOL_METADATA = {
 			'Revoke a previously promoted external skill. Returns a disabled message when external_skills.curation_enabled is false.',
 		agents: [],
 	},
-	epic_decide_phase: {
+	epic_next_wave: {
 		description:
-			'Compute the Epic Mode verdict for a phase WITHOUT dispatching coders. Runs preflight + calibration + the three gates (p-threshold, hot-module, greenfield), persists the decision, and returns the verdict so the architect can dispatch waves via the visible Task tool (promote) or fall back to per-task serial (demote). Pair with `epic_plan_waves` to get the wave plan when promoted. Use when /swarm epic is on for the session.',
-		agents: ['architect'],
+			'Epic Mode: the single, idempotent way forward while an epic is open. Closes the active wave once every task is resolved (recording per-task outcomes and declared-vs-actual divergence, which Epic learning uses to plan later waves), keeps phases in order, and issues the next wave of disjoint tasks with dispatch instructions. Returns a status: dispatch | declare-scopes | in-progress | blocked | phase-ready-for-review | epic-complete | refused. Requires `epic.mode.enabled: true` and an epic opened by `/swarm epic start`.',
+		agents: [],
 	},
-	epic_plan_waves: {
+	epic_phase_review: {
 		description:
-			"Partition a phase's pending tasks into ordered concurrent waves for Epic Mode dispatch. " +
-			'A wave is a set of tasks with mutually disjoint declared scopes and all dependencies satisfied by prior waves. ' +
-			'Returns `{ waves: [{ waveId, taskIds, files }, ...], serializedTasks, degradedTasks }`. ' +
-			'For each wave in order, the architect dispatches one `Task(subagent_type="coder", ...)` per `taskId` — all in one assistant message — so the wave runs concurrently and each coder appears as a visible subagent. ' +
-			'Wait for the wave to finish before dispatching the next. ' +
-			'Pair with `epic_decide_phase` (called first; this tool is only relevant on a `promote` verdict). ' +
-			'Preflight reject reasons: `no-plan`, `no-phase`, `phase-empty`, `phase-already-complete`, `scopes-missing` (call `declare_scope` for `missingScopes`), `git-failed` (transient — retry), `planner-error`.',
-		agents: ['architect'],
-	},
-	epic_record_divergence: {
-		description:
-			"After every `update_task_status(completed)`, record the task's declared-vs-actual divergence to .swarm/epic/divergence.jsonl. Feeds Epic Mode's self-calibration loop (Capability D). Best-effort: never blocks.",
-		agents: ['architect'],
+			'Epic Mode phase readiness: dispatch a read-only phase reviewer, then (only if it APPROVES) a read-only phase critic over the completed phase; parse both verdicts from the agents and record them to .swarm/evidence/{phase}/epic-phase-review.json. Required by phase_complete while an epic is open for the current plan; re-run after any fix (evidence is bound to the plan and phase task evidence).',
+		agents: [],
 	},
 } satisfies Record<string, ToolMeta>;
 

@@ -188,3 +188,84 @@ describe('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', (
 		expect(parsed.error).toContain('spawn git ENOENT');
 	}, 20_000);
 });
+
+describe('churn host-abort arm via _internals.bunSpawn DI (#2705)', () => {
+	const originalBunSpawn = _internals.bunSpawn;
+	const originalResolveGitExecutable = _internals.resolveGitExecutable;
+	let killCount = 0;
+
+	afterEach(() => {
+		_internals.bunSpawn = originalBunSpawn;
+		_internals.resolveGitExecutable = originalResolveGitExecutable;
+	});
+
+	function stubNeverResolving() {
+		_internals.resolveGitExecutable = () => 'git';
+		_internals.bunSpawn = (() => ({
+			stdout: { text: () => new Promise<string>(() => {}) },
+			stderr: { text: () => new Promise<string>(() => {}) },
+			exited: new Promise<number>(() => {}),
+			exitCode: null,
+			signalCode: null,
+			spawnError: null,
+			kill() {
+				killCount++;
+			},
+		})) as typeof _internals.bunSpawn;
+	}
+
+	test('pre-aborted ctx.abort cancels promptly with a cancellation-specific error', async () => {
+		killCount = 0;
+		stubNeverResolving();
+		const started = performance.now();
+		// ctx carries ONLY the canonical `abort` field (@opencode-ai/plugin
+		// tool.d.ts) — a wrong-field implementation (ctx?.abortSignal) never
+		// fires and fails this test.
+		const raw = await complexity_hotspots.execute({ days: 7, top_n: 3 }, {
+			directory: '.',
+			abort: AbortSignal.abort(),
+		} as any);
+		const elapsed = performance.now() - started;
+
+		const parsed = JSON.parse(raw) as { error?: string };
+		const text = (parsed.error ?? '').toLowerCase();
+		expect(
+			text.includes('abort') || text.includes('cancel'),
+			`pre-aborted host signal must surface a cancellation-specific error (got: ${parsed.error ?? '(none)'})`,
+		).toBe(true);
+		expect(killCount).toBeGreaterThanOrEqual(1);
+		expect(
+			elapsed,
+			`cancellation must not wait for the 10 s deadline (elapsed ${elapsed} ms)`,
+		).toBeLessThan(CHURN_BOUND_MS - 1000);
+	}, 20_000);
+
+	test('mid-run abort (~100 ms in) cancels before the deadline', async () => {
+		killCount = 0;
+		stubNeverResolving();
+		const controller = new AbortController();
+		const started = performance.now();
+		const abortSoon = setTimeout(() => controller.abort(), 100);
+		try {
+			const raw = await complexity_hotspots.execute({ days: 7, top_n: 3 }, {
+				directory: '.',
+				abort: controller.signal,
+			} as any);
+			const elapsed = performance.now() - started;
+
+			const parsed = JSON.parse(raw) as { error?: string };
+			const text = (parsed.error ?? '').toLowerCase();
+			expect(
+				text.includes('abort') || text.includes('cancel'),
+				`mid-run abort must surface a cancellation-specific error (got: ${parsed.error ?? '(none)'})`,
+			).toBe(true);
+			expect(killCount).toBeGreaterThanOrEqual(1);
+			expect(
+				elapsed,
+				`mid-run cancellation must beat the deadline (elapsed ${elapsed} ms)`,
+			).toBeLessThan(CHURN_BOUND_MS - 1000);
+		} finally {
+			clearTimeout(abortSoon);
+		}
+	}, 20_000);
+});

@@ -100,7 +100,7 @@ describe('ADVERSARIAL: Architect whitelist check_gate_status', () => {
 			expect(AGENT_TOOL_MAP['explorer']).toEqual(expected);
 		});
 
-		it('coder should retain expected 17 tools', () => {
+		it('coder should retain expected 18 tools', () => {
 			const expected = [
 				'diff',
 				'syntax_check',
@@ -108,6 +108,7 @@ describe('ADVERSARIAL: Architect whitelist check_gate_status', () => {
 				'lint',
 				'build_check',
 				'symbols',
+				'todo_extract',
 				'retrieve_summary',
 				'extract_code_blocks',
 				'knowledge_add',

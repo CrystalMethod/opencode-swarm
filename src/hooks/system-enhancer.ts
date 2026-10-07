@@ -30,6 +30,7 @@ import {
 	RepoGraphConfigSchema,
 	stripKnownSwarmPrefix,
 } from '../config/schema';
+import { isEpicOpenForProject } from '../epic/lifecycle';
 import { listEvidenceTaskIds, loadEvidence } from '../evidence/manager';
 import { getProfileForFile } from '../lang/detector';
 import { loadPlan } from '../plan/manager';
@@ -40,7 +41,6 @@ import {
 import {
 	getAgentSession,
 	getResolvedAutoProceed,
-	hasActiveEpicMode,
 	hasActiveFullAuto,
 	hasActiveLeanTurbo,
 	hasActiveTurboMode,
@@ -300,6 +300,7 @@ import {
 	extractCurrentTaskFromPlan,
 	extractDecisions,
 	extractPlanCursor,
+	resolvePlanCursorControls,
 } from './extractors';
 import { isSessionBoundArchitect } from './host-boundary';
 import { isLinked, readLinkPointer } from './knowledge-link';
@@ -1484,8 +1485,25 @@ export function createSystemEnhancerHook(
 						}
 
 						// Priority 1: Plan cursor (compressed plan summary)
-						if (mode !== 'DISCOVER' && planContent) {
-							const planCursor = extractPlanCursor(planContent);
+						// Issue #2580: the plan_cursor config controls (enabled /
+						// max_tokens / lookahead_tasks) are honored here and on the
+						// scoring path below through one shared resolver. Defaults
+						// equal extractPlanCursor's own, so absent config keeps the
+						// pre-#2580 output byte-identical (FR-006 policy-control
+						// exception: an explicit user config is allowed to change
+						// this injection).
+						const planCursorControls = resolvePlanCursorControls(
+							config.plan_cursor,
+						);
+						if (
+							planCursorControls.enabled &&
+							mode !== 'DISCOVER' &&
+							planContent
+						) {
+							const planCursor = extractPlanCursor(planContent, {
+								maxTokens: planCursorControls.maxTokens,
+								lookaheadTasks: planCursorControls.lookaheadTasks,
+							});
 							tryInject(planCursor);
 						}
 
@@ -1950,11 +1968,14 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 						if (isArchitect) {
 							// v6.x: Turbo/Full-Auto/Lean-Turbo banner injection for architect
 							const sessionIdBanner = _input.sessionID;
+							// Epic v2: the banner follows the project's open epic
+							// (sentinel-first probe — one existsSync when off).
+							const epicOpenBanner = isEpicOpenForProject(directory);
 							if (
 								hasActiveTurboMode(sessionIdBanner) ||
 								hasActiveFullAuto(sessionIdBanner) ||
 								hasActiveLeanTurbo(sessionIdBanner) ||
-								hasActiveEpicMode(sessionIdBanner)
+								epicOpenBanner
 							) {
 								if (hasActiveTurboMode(sessionIdBanner)) {
 									tryInject(TURBO_MODE_BANNER);
@@ -1968,13 +1989,10 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 								// both banners gives the architect contradictory
 								// instructions. The Epic banner restates what's
 								// relevant about Lean Turbo at dispatch time.
-								if (
-									hasActiveLeanTurbo(sessionIdBanner) &&
-									!hasActiveEpicMode(sessionIdBanner)
-								) {
+								if (hasActiveLeanTurbo(sessionIdBanner) && !epicOpenBanner) {
 									tryInject(LEAN_TURBO_BANNER);
 								}
-								if (hasActiveEpicMode(sessionIdBanner)) {
+								if (epicOpenBanner) {
 									tryInject(EPIC_MODE_BANNER);
 								}
 							}
@@ -2182,6 +2200,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 									directory,
 									assembledSystemPrompt,
 									contextBudgetConfig,
+									config.plan_cursor,
 								);
 								// Paired write, keyed by session. The pct and the denominator
 								// it was computed against must stay together, and a bare global
@@ -2370,6 +2389,26 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 							currentTask = extractCurrentTask(planContentForCursor);
 						}
 					}
+					// Issue #2580: with a structured plan the branch above never
+					// loads plan.md, yet Path A always injects the cursor from
+					// plan.md — and `loadPlan` migrates a markdown-only plan.md
+					// into a structured Plan (src/plan/manager.ts), so the
+					// else-branch read alone left the scoring path with NO
+					// cursor candidate for any real workspace shape. Read
+					// plan.md in both branches (planReadCache dedupes the I/O)
+					// so the candidate can never be silently dropped. The
+					// enabled gate is resolved FIRST (#2838 review F6) so a
+					// disabled cursor never triggers the read at all.
+					const planCursorControls_b = resolvePlanCursorControls(
+						config.plan_cursor,
+					);
+					if (planCursorControls_b.enabled && !planContentForCursor) {
+						planContentForCursor = await readSwarmFileAsync(
+							directory,
+							'plan.md',
+							planReadCache,
+						);
+					}
 
 					if (currentPhase) {
 						const text = `[SWARM CONTEXT] Current phase: ${currentPhase}`;
@@ -2399,9 +2438,21 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 						});
 					}
 
-					// Plan cursor for scoring path
-					if (planContentForCursor) {
-						const planCursor = extractPlanCursor(planContentForCursor);
+					// Plan cursor for scoring path — issue #2580: same shared
+					// plan_cursor controls as Path A (enabled gate, DISCOVER
+					// gate, maxTokens/lookaheadTasks pass-through), so
+					// disabled/default/enabled behave identically on both
+					// context paths. planCursorControls_b is resolved above,
+					// before the plan.md read (#2838 review F6).
+					if (
+						planCursorControls_b.enabled &&
+						mode_b !== 'DISCOVER' &&
+						planContentForCursor
+					) {
+						const planCursor = extractPlanCursor(planContentForCursor, {
+							maxTokens: planCursorControls_b.maxTokens,
+							lookaheadTasks: planCursorControls_b.lookaheadTasks,
+						});
 						candidates.push({
 							id: `candidate-${idCounter++}`,
 							kind: 'phase',
@@ -2686,11 +2737,13 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 					if (isArchitect_b) {
 						// v6.x: Turbo/Full-Auto/Lean-Turbo banner injection for architect (Path B)
 						const sessionIdBanner_b = _input.sessionID;
+						// Epic v2: project-scoped open-epic probe (see Path A).
+						const epicOpenBanner_b = isEpicOpenForProject(directory);
 						if (
 							hasActiveTurboMode(sessionIdBanner_b) ||
 							hasActiveFullAuto(sessionIdBanner_b) ||
 							hasActiveLeanTurbo(sessionIdBanner_b) ||
-							hasActiveEpicMode(sessionIdBanner_b)
+							epicOpenBanner_b
 						) {
 							if (hasActiveTurboMode(sessionIdBanner_b)) {
 								candidates.push({
@@ -2714,10 +2767,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 							}
 							// Suppress the Lean Turbo banner when Epic Mode is
 							// active (see same rationale at Path A above).
-							if (
-								hasActiveLeanTurbo(sessionIdBanner_b) &&
-								!hasActiveEpicMode(sessionIdBanner_b)
-							) {
+							if (hasActiveLeanTurbo(sessionIdBanner_b) && !epicOpenBanner_b) {
 								candidates.push({
 									id: `candidate-${idCounter++}`,
 									kind: 'agent_context' as ContextCandidate['kind'],
@@ -2727,7 +2777,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 									metadata: { contentType: 'prose' as ContentType },
 								});
 							}
-							if (hasActiveEpicMode(sessionIdBanner_b)) {
+							if (epicOpenBanner_b) {
 								candidates.push({
 									id: `candidate-${idCounter++}`,
 									kind: 'agent_context' as ContextCandidate['kind'],
@@ -3124,6 +3174,7 @@ ${sanitizeContextText(scopedHandoff.body)}`;
 								directory,
 								assembledSystemPrompt_b,
 								contextBudgetConfig_b,
+								config.plan_cursor,
 							);
 							// Paired, session-keyed write — see the Path A note.
 							setSessionBudget(

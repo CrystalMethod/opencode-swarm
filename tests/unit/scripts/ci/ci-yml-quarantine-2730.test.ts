@@ -185,17 +185,26 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 		});
 	});
 
-	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 5, hard fail) — already quarantined by issue #2740 / PR #2769', () => {
-		test('is an active entry in the macOS ledger exactly once', () => {
-			// The flake originated on macos-latest unit-shard 5
-			// (CI run 34670762927, 2026-09-12T03:57:26Z, Attempt 1 failed,
-			// Attempt 2 failed → ::error file=...::FAILED). The owning
-			// entry is issue #2740's; this PR must not add a second block
-			// for the same path.
+	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 5, hard fail) — retired per #2973', () => {
+		test('is retired from the macOS ledger (#2973)', () => {
+			// #2973 retirement (2026-09-27): the #2740 probe-timeout flake's
+			// named remedy landed (PROBE_TIMEOUT_MS raised to 30s by the
+			// retiring PR; also reproduced under load on a Windows host).
+			// Absence guard: no silent re-add without fresh merge-group
+			// macos-latest failure evidence.
 			expect(existsSync(MACOS_LEDGER_PATH)).toBe(true);
-			const entries = activeEntries(MACOS_LEDGER_PATH);
-			expect(entries).toContain(BUN_COMPAT_EXIT_FIRST);
-			expect(entries.filter((e) => e === BUN_COMPAT_EXIT_FIRST).length).toBe(1);
+			expect(activeEntries(MACOS_LEDGER_PATH)).not.toContain(
+				BUN_COMPAT_EXIT_FIRST,
+			);
+		});
+
+		test('leaves no stale entry line or OWNER/EXPIRY block in the macOS ledger (#2973)', () => {
+			const raw = readFileSync(MACOS_LEDGER_PATH, 'utf8').replace(
+				/\r\n/g,
+				'\n',
+			);
+			const lines = raw.split('\n');
+			expect(lines.some((l) => l.trim() === BUN_COMPAT_EXIT_FIRST)).toBe(false);
 		});
 
 		test('is scoped to the macOS ledger only (not general, not windows, not integration)', () => {
@@ -210,10 +219,6 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 					BUN_COMPAT_EXIT_FIRST,
 				);
 			}
-		});
-
-		test('its owning entry carries OWNER + EXPIRY metadata (issue #2477 Check 7)', () => {
-			expectCarriesOwnerExpiry(MACOS_LEDGER_PATH, BUN_COMPAT_EXIT_FIRST);
 		});
 
 		test('the quarantined path exists and is discovered by the ci.yml find chain', () => {

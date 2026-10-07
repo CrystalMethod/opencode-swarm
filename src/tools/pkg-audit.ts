@@ -321,6 +321,9 @@ async function runNpmAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = _internals.bunSpawn(command, {
+			// #2705: never-closed stdin pipes can block child exit under Bun
+			// on Windows (v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -477,6 +480,9 @@ async function runPipAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -687,6 +693,9 @@ async function runCargoAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = _internals.bunSpawn(command, {
+			// #2705: never-closed stdin pipes can block child exit under Bun
+			// on Windows (v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -858,6 +867,9 @@ async function runGoAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -1024,6 +1036,9 @@ async function runDotnetAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -1197,6 +1212,9 @@ async function runBundleAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -1395,6 +1413,9 @@ async function runDartAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,
@@ -1532,6 +1553,9 @@ async function runComposerAudit(directory: string): Promise<AuditResult> {
 
 	try {
 		const proc = bunSpawn(command, {
+			// #2705: a piped stdin the parent never closes can block child
+			// exit under Bun on Windows (the v7.3.3 class).
+			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
 			cwd: directory,

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.176.1",
+  "tagCommit": "35a2b41b8d5ebd6820f2a9a3a3e73e2a62fd05e6",
+  "targetCommitish": "35a2b41b8d5ebd6820f2a9a3a3e73e2a62fd05e6",
+  "releaseBodySha256": "b0edf98b5ddb4a33d08d598f7996722f49ea82eced94d31cc501f603c4896acb",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2670-startup-latency-contract.md",
+      "sha256": "e4973dc1ede659134c57dd5010f1eefb043d4ab6de94ce72f538dd53165b670f"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2674-subprocess-lifetime-gaps.md",
+      "sha256": "86e1c92549812168b92c11d6d91c012775131f7c3e5c1cbcd99870d37c1408ab"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.171.1",
+  "tagCommit": "55a1ec49356addac370acc4c08e0bc5f601a671c",
+  "targetCommitish": "55a1ec49356addac370acc4c08e0bc5f601a671c",
+  "releaseBodySha256": "57485156b7e2514209cc2e6e2f719404ae72d88ee033606e72b73c4aa9440db9",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2512-pr-workflow-transition-authority.md",
+      "sha256": "4f0860058e9b2f02867f0eb07329df2afd104a8376b29289997f38c306a2bfdc"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/issue-2487-observability-parity-legacy-retirement.md",
+      "sha256": "750741eb98937185f606e35941ebf46385f1f77b5ac20775e078caf228bc23ab"
+    }
+  ]
+}

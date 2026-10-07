@@ -28,6 +28,7 @@ import {
 	isGuidanceCarrier,
 	messageTextOf,
 } from '../../../src/hooks/system-guidance-carrier';
+import { computeSpecHash } from '../../../src/utils/spec-hash';
 
 // ── Helpers ────────────────────────────────────────────────────────
 
@@ -215,8 +216,11 @@ describe('issue-trace e2e — full chain', () => {
 		writeIssueRef(tmpDir, 42);
 		writeTraceState(tmpDir, { lastTransition: 'ISSUE_INGEST_TO_PLAN' });
 		writeSpec(tmpDir, 42);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: false });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: false,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 
 		const messages = await runHook(tmpDir);
 		expectIssueTraceCarrier(messages, '[MODE: EXECUTE]');
@@ -230,8 +234,11 @@ describe('issue-trace e2e — full chain', () => {
 		writeIssueRef(tmpDir, 42);
 		writeTraceState(tmpDir, { lastTransition: 'PLAN_TO_EXECUTE' });
 		writeSpec(tmpDir, 42);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: false });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: false,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -241,8 +248,11 @@ describe('issue-trace e2e — full chain', () => {
 		writeIssueRef(tmpDir, 42);
 		writeTraceState(tmpDir, { lastTransition: 'PLAN_TO_EXECUTE' });
 		writeSpec(tmpDir, 42);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 		writeResidualBReceipts(tmpDir);
 		writeV3Receipts(tmpDir);
 
@@ -291,8 +301,11 @@ describe('issue-trace e2e — full chain', () => {
 			status: 'publication_handoff',
 		});
 		writeSpec(tmpDir, 42);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 
 		const messages = await runHook(tmpDir);
 		expect(messages).toHaveLength(0);
@@ -307,8 +320,11 @@ describe('issue-trace e2e — restart idempotency', () => {
 	beforeEach(() => {
 		tmpDir = makeTempDir();
 		_internals.isPlanCriticApproved = () => Promise.resolve(true);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: true });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: true,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 	});
 
 	test('publication_handoff trace survives hook re-invocation without side effects', async () => {
@@ -336,27 +352,32 @@ describe('issue-trace e2e — cross-issue fail-closed', () => {
 	beforeEach(() => {
 		tmpDir = makeTempDir();
 		_internals.isPlanCriticApproved = () => Promise.resolve(true);
-		_internals.readPlanPhaseStatus = () =>
-			Promise.resolve({ planExists: true, allComplete: false });
+		_internals.readPlanPhaseStatus = async () => ({
+			planExists: true,
+			allComplete: false,
+			planSpecHash: (await computeSpecHash(tmpDir)) ?? undefined,
+		});
 	});
 
-	test('issue-reference #99 with spec #42 → no injection', async () => {
+	test('issue-reference #99 with spec #42 → ONE-SHOT spec-mismatch directive (issue #2600)', async () => {
 		writeIssueRef(tmpDir, 99);
 		writeTraceState(tmpDir, { issueNumber: 99 });
 		writeSpec(tmpDir, 42);
 
 		const messages = await runHook(tmpDir);
-		expect(messages).toHaveLength(0);
+		expect(messages).toHaveLength(2);
 		const state = readSwarmJson<TraceState>(tmpDir, 'issue-trace-state.json');
-		expect(state!.lastTransition).toBeNull();
+		expect(state!.lastTransition).toBe('SPEC_MISMATCH_GATE');
 	});
 
-	test('trace-state issueNumber mismatch → no injection', async () => {
+	test('trace-state issueNumber mismatch → ONE-SHOT spec-mismatch directive (issue #2600)', async () => {
 		writeIssueRef(tmpDir, 42);
 		writeTraceState(tmpDir, { issueNumber: 99 });
 		writeSpec(tmpDir, 42);
 
 		const messages = await runHook(tmpDir);
-		expect(messages).toHaveLength(0);
+		expect(messages).toHaveLength(2);
+		const state = readSwarmJson<TraceState>(tmpDir, 'issue-trace-state.json');
+		expect(state!.lastTransition).toBe('SPEC_MISMATCH_GATE');
 	});
 });

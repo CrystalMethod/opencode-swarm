@@ -3,6 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
+swarm-contract-digest: c3e787acb35f
 ---
 
 # /swarm-pr-review
@@ -70,7 +71,7 @@ This protocol runs on any agent harness. Before Phase 0, detect which profile
 this session is in by checking the actual tool list — never assume from the
 harness name, and never guess:
 
-- **Profile A — structured PR-workflow controller.** The swarm plugin's controller tools are available in this session: `dispatch_lanes_async`, `collect_lane_results`, `retrieve_lane_output`, `parse_lane_candidates`, `write_pr_review_artifact`, `write_pr_review_trigger_eval`, `complete_pr_workflow`. The child-bound `submit_pr_review_result` overlay is available only to dispatched base/micro lanes. Typical host: OpenCode with the swarm plugin. The controller mechanically enforces this skill's accounting: it computes the
+- **Profile A — structured PR-workflow controller.** The swarm plugin's controller tools are available in this session: `dispatch_lanes_async`, `collect_lane_results`, `retrieve_lane_output`, `parse_lane_candidates`, `write_pr_review_artifact`, `write_pr_review_trigger_eval`, `complete_pr_workflow`, `pr_review_submission`. The child-bound `submit_pr_review_result` overlay is available only to dispatched base/micro lanes. Typical host: OpenCode with the swarm plugin. The controller mechanically enforces this skill's accounting: it computes the
   depth tier itself from the bound merge-base diff (never from caller
   claims), enforces the tier's lane floors and full dimension/family
   partitions for consolidated dispatch, and gates structured reviewer/critic
@@ -595,19 +596,8 @@ For each new commit on the remote (identified by comparing `headRefOid` /
 
 ### Example: parallel swarm superseded local fix work
 
-```
-PARALLEL WORK CHECK (pre-fix):
-- Branch: copilot/fix-legacy-hive-data-migration
-- Local HEAD: 3c04997c fix: resolve PR #1238 review findings
-- Remote HEAD: 79d7ec64 fix(knowledge-migrator): harden legacy migration loop
-- Diverged: yes (remote is 2 commits ahead with more comprehensive fix)
-- New commits on remote: 2
-- Parallel swarm work detected: yes (different author)
-- Decision: abandon-use-remote
-- Rationale: Remote added 17 unit tests + try/catch error handling that
-  surpassed my planned batch-rewrite. Verified by re-running the test suite:
-  remote has 25/25 passing, my local plan would have produced 9/9.
-```
+See `references/parallel-work-example.md` for the worked PARALLEL WORK CHECK
+transcript (remote supersession, abandon-use-remote decision).
 
 ---
 
@@ -968,7 +958,7 @@ sequential candidate-generation passes with the same per-lane ledger records.
 The join barrier is universal: all base lanes settle before Phase 4 completes
 or synthesis begins, whichever layer enforces it.
 
-**Incremental collection (Profile A):** While base lanes are running, poll with `collect_lane_results` (without `wait` (or `wait: false`)) to check progress and process settled lanes as they complete — call `retrieve_lane_output` for full text when `output_ref` is present, then extract candidates via `parse_lane_candidates`, update the candidate ledger, validate output quality — while continuing independent architect work (obligation refinement, micro-lane trigger checks, local reads) between polls. Only use `wait: true` if lanes are still pending and no more independent work remains. While polling, a `pending_liveness` entry on a still-pending lane is a DIAGNOSTIC only (issue #2280): `stalledSuspect: true` means the lane has been pending for minutes and the host does not report its session live — note the lane id, `pendingMs`, and `hostStatus` and investigate, but never auto-cancel, retry, or replace the lane on this signal; read `degradedReason` precisely (issue #2815): `probe-skipped-no-budget` means the observer's own probe budget was already exhausted and NO host probe ran — it carries no information about the lane's session — while `probe-timeout` means a probe ran and hit its deadline; either way the ~30-minute presumed-stale sweep remains the only terminal backstop. Under Profile B, harvest each subagent report as it completes and update the ledger between arrivals; block on stragglers only when no independent work remains. **`collect_lane_results` is an OBSERVER (issue #2381).** Its wait budget (`timeout_ms`) bounds THAT CALL ONLY. An expired wait budget does not cancel, kill, or fail a lane, and it is not evidence that a lane died; `timeout_ms: 0` is a valid immediate, non-destructive snapshot, and an unavailable host messages client likewise reports stored lane state without terminalizing anything. Whenever lanes remain unsettled the result carries `pending_lanes` (batch id, lane id, stored status, and `output_ref` when one exists) regardless of `include_pending`, so outstanding work is never silently omitted. When a collection returns pending lanes you have exactly three legitimate moves: poll again, cancel explicitly with `cancel_pending`, or let the ~30-minute presumed-stale sweep settle genuinely dead lanes. Do NOT abort the PR workflow, re-dispatch the lane, or report a lane as failed merely because an observer call expired or the host client was briefly unavailable.
+**Incremental collection (Profile A):** While base lanes are running, poll with `collect_lane_results` (without `wait` (or `wait: false`)) to check progress and process settled lanes as they complete — call `retrieve_lane_output` for full text when `output_ref` is present, then extract candidates via `parse_lane_candidates`, update the candidate ledger, validate output quality — while continuing independent architect work (obligation refinement, micro-lane trigger checks, local reads) between polls. Only use `wait: true` if lanes are still pending and no more independent work remains. While polling, a `pending_liveness` entry on a still-pending lane is a DIAGNOSTIC only (issue #2280): `stalledSuspect: true` means the lane has been pending for minutes and the host does not report its session live — note the lane id, `pendingMs`, and `hostStatus` and investigate, but never auto-cancel, retry, or replace the lane on this signal; read `degradedReason` precisely (issue #2815): `probe-skipped-no-budget` means the observer's own probe budget was already exhausted and NO host probe ran — it carries no information about the lane's session — while `probe-timeout` means a probe ran and hit its deadline; either way the ~30-minute presumed-stale sweep remains the only terminal backstop. Under Profile B, harvest each subagent report as it completes and update the ledger between arrivals; block on stragglers only when no independent work remains. **`collect_lane_results` is an OBSERVER (issue #2381).** Its wait budget (`timeout_ms`) bounds THAT CALL ONLY. An expired wait budget does not cancel, kill, or fail a lane, and it is not evidence that a lane died; `timeout_ms: 0` is a valid immediate, non-destructive snapshot, and an unavailable host messages client likewise reports stored lane state without terminalizing anything. Whenever lanes remain unsettled the result carries `pending_lanes` (batch id, lane id, stored status, and `output_ref` when one exists) regardless of `include_pending`, so outstanding work is never silently omitted. When a collection returns pending lanes you have exactly two observer moves: poll again, or let the ~30-minute presumed-stale sweep settle genuinely dead lanes. Explicit cancellation is a separate authorized action (`cancel_lane_batch` with `confirm: true` plus a reason); the collector itself never cancels, and busy/retry lanes are live evidence, not failure. Do NOT abort the PR workflow, re-dispatch the lane, or report a lane as failed merely because an observer call expired or the host client was briefly unavailable.
 
 Inline `output` is delivered on the first poll that observes a lane settled; subsequent polls carry `output_omitted_repeat: true` with metadata and `output_ref`, and full text is retrieved via `retrieve_lane_output`.
 
@@ -981,11 +971,26 @@ Before Phase 4 or synthesis, all base lanes must be settled. `dispatch_lanes_asy
 - **Mode B (invalid structured output):** Under Profile A, collection reports `status: failed` with a named contract predicate while retaining the non-empty preview, digest, and `output_ref`; the artifact has zero valid `[CANDIDATE]` rows and no parseable `[CLEAN] | lane | coverage_scope | evidence` attestation. Under Profiles B/C, treat the equivalent non-empty report as failed when parsing yields zero candidates and no valid clean attestation. The non-empty transcript is diagnostic evidence, never coverage proof.
 
 For ANY lane that failed (either mode):
-1. **Retry** (max 2 attempts after the initial attempt) with materially different parameters — different session or prompt decomposition, while preserving the required structured async mode and exact head provenance.
+1. **Retry** (initial dispatch plus 2 retries — PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET; each micro-family dispatch acknowledgment records one counted attempt in gate state) with materially different parameters — different session or prompt decomposition, while preserving the required structured async mode and exact head provenance.
 2. If a base lane fails under Profile A, retry only the unresolved `workflow_lane` identifiers with `dispatch_lanes_async`, `mode: "swarm-pr-review:base"`, the same exact `pr_head_sha`, explorer agents, and the staged-resilience fields when that policy is enabled: a singleton `pr_review_wave_stage: "canary"` first, then a matching `"fanout"` batch only for the remaining unresolved obligations. The durable gate joins successful provenance across the initial wave and retry batches, carries unresolved obligations forward attempt by attempt, and rejects typed `retry_exhausted` or `circuit_open` outcomes before any new lane is launched. While that controller is active, blocking `dispatch_lanes` and direct Task dispatch are not equivalent because they cannot satisfy the structured provenance gate. Under Profiles B/C, retry only the failed `workflow_lane` identifiers with a fresh subagent or pass, the same exact `pr_head_sha`, and a materially different prompt decomposition.
 3. If no equivalent alternative can be verified AND every launched lane is terminal or explicitly cancelled, **settle N-of-6 truthfully (issue #2383)** instead of discarding validated work: admit the terminal settlement with `write_pr_review_artifact` (`kind: "findings"`, `boundary: "post_explorer"`, the sentinel `CLEAN-REVIEW` record when no candidates exist, and `partial_base_coverage: { unresolved_dimensions: [<exactly the dimensions that are not covered>] }`), run the remaining phases over the covered dimensions' findings, and complete with `complete_pr_workflow` carrying the verdict the settlement allows. NEVER fabricate coverage, NEVER present an unresolved dimension as reviewed, and NEVER let a partial report approve.
-4. **Terminal report kinds (issue #2383):** all six dimensions covered → `COMPLETE` (verdict may be APPROVE, REQUEST_CHANGES, or INCOMPLETE); at least one covered → `PARTIAL` (verdict must be REQUEST_CHANGES or INCOMPLETE; validated findings from covered dimensions remain publishable); zero covered → `NO_COVERAGE` (skip the findings ladder entirely, call `complete_pr_workflow` with `report_verdict: "INCOMPLETE"` directly — the completion returns a truthful operational report with per-dimension reasons and never claims a code-quality review). A still-live lane blocks settlement: poll, cancel explicitly with `cancel_pending`, or let the presumed-stale sweep settle it first.
+4. **Terminal report kinds (issue #2383):** all six dimensions covered → `COMPLETE` (verdict may be APPROVE, REQUEST_CHANGES, or INCOMPLETE); at least one covered → `PARTIAL` (verdict must be REQUEST_CHANGES or INCOMPLETE; validated findings from covered dimensions remain publishable); zero covered → `NO_COVERAGE` (skip the findings ladder entirely, call `complete_pr_workflow` with `report_verdict: "INCOMPLETE"` directly — the completion returns a truthful operational report with per-dimension reasons and never claims a code-quality review). A still-live lane blocks settlement: poll again, authorize an explicit `cancel_lane_batch` (`confirm: true` + reason; busy/retry lanes are refused), or let the presumed-stale sweep settle it first.
 5. Under Profile A, when the bind/checkout path itself is genuinely unreachable or the workflow is publication-armed and exact publication cannot proceed, use the bounded recovery exits: `abort_pr_workflow` with `mode: "PR_REVIEW"`, `kind: "recovery"`, and a non-empty one-line `reason` for an unrecoverable unbound/bound gate, or `kind: "armed_recovery"` (issue #2383) for a publication-armed wedge — then `prepare_pr_workflow_checkout` with `operation: "restore"`. Abort remains a recovery tool for the genuinely unrecoverable, never a shortcut past a settleable coverage obligation.
+
+### PARTIAL-settlement recovery (all lanes terminal)
+
+Base settlement requires every launched lane to be TERMINAL — settled, failed,
+or explicitly cancelled — NOT full coverage. With partial coverage (at least one
+dimension covered), the review proceeds instead of aborting: dispatch the FIRST
+`swarm-pr-review:micro` batch with the complete 11-row `trigger_evaluation`
+parameter inline on `dispatch_lanes_async` (that dispatch freezes the canonical
+ledger), persist it with `write_pr_review_trigger_eval`, run the validation
+lanes, then finish with `complete_pr_workflow` carrying the verdict PARTIAL
+coverage allows (REQUEST_CHANGES or INCOMPLETE — never APPROVE). The
+NO_COVERAGE short-circuit applies only at zero coverage. A
+`write_pr_review_trigger_eval` rejection saying the canonical ledger is missing
+means the first micro dispatch has not frozen it yet — supply the inline
+parameter; it is not a deadlock.
 
 ### Contract-failure diagnosis and recovery
 
@@ -1003,14 +1008,9 @@ three independent input layers: the header schema, data-row values, and tool
 argument shape. A correct header does not repair an invalid severity or lane
 value, and correct row data does not repair malformed dispatch JSON. Benign shape defects (evidence pipes, marker rows, verdict-row pipes, a header re-emitted as a data row) are auto-repaired and recorded as salvage — never a retry reason alone; the `parse_lane_candidates` receipt discloses them as `repair_kinds`, and a `[CLEAN]` attestation discredited beside a same-lane `[CANDIDATE]` row as `clean_attestation_salvaged` + `clean_attestation_salvage_reason` (the parse SUCCEEDS and the attestation still supplies no coverage) (contract and fidelity boundaries: `references/lane-output-recoverability.md`).
 
-Classify the incident from actual user-visible harm and the first failed
-predicate, not from the number of retries or the eventual result. A successful
-post-hoc fallback is recovery evidence; it does not justify the protocol
-deviation or erase the original failure. Conversely, the candidate tool and
-the coverage gate use a shared row parser, while the gate separately verifies
-durable provenance such as batch, session, lane, role, head, digest, and
-artifact identity. Parser success therefore proves row structure only; it does
-not settle the durable coverage obligation.
+Classify incidents from actual user-visible harm and the first failed predicate; the shared
+row parser proves row structure only, a post-hoc fallback is recovery evidence, and the
+gate separately verifies durable provenance (see `references/lane-output-recoverability.md`).
 
 If a controller denial omits the failed predicate, expected contract, or lane
 identity, record that as an opacity defect and escalate it with the preserved
@@ -1186,7 +1186,7 @@ batch may omit `trigger_evaluation` and reuse the frozen ledger; when it
 explicitly supplies a copy, the copy must remain exactly identical. The
 runtime rejects unrelated or duplicate micro-lanes within a batch, and final
 ledger persistence rejects any row whose completed owning-lane provenance is
-absent.
+absent. One bounded exception (issue #2835): a sweep-settled liveness-terminal lane may back a `MATCHED` row as a disclosed dead family (never APPROVEable; cancellations never qualify) — conditions in `references/lane-output-recoverability.md`.
 Poll incrementally, then settle every launched lane. Persist
 the complete ledger with `write_pr_review_trigger_eval`; its rows use the stable
 trigger IDs below. Every `MATCHED` row includes its returned `source_batch_id`
@@ -1338,7 +1338,7 @@ Verifier output is advisory until incorporated by the independent reviewer or cr
 
 **Reviewer-dispatch join barrier:** reviewer dispatch MUST NOT begin until the
 exact eleven-row micro-lane ledger is complete and persisted, every launched
-`MATCHED` micro lane is settled with its owned families attested, every
+`MATCHED` micro lane is settled with its owned families attested or disclosed as a dead family on the trigger receipt (#2835), every
 `NOT_TRIGGERED` row has concrete absence evidence and no provenance, and every
 accepted micro result has parser-derived provenance (Profile A) or a valid
 CLEAN attestation.
@@ -1746,7 +1746,7 @@ Council findings are supplementary, not authoritative overrides. Do not adopt co
 11. Obligation precedence is deterministic. Do not skip higher-precedence sources to fill gaps with LLM synthesis.
 12. Do not leak secrets from logs, evidence bundles, config files, URLs, or scanner output.
 13. Do not recommend destructive git or filesystem actions as fixes unless they are clearly scoped, safe, and necessary.
-14. If subagents fail, timeout, or return malformed output, retry with corrected parameters (max 2 attempts) through the dispatch mechanism of the active profile — Profile A: the same structured `dispatch_lanes_async` workflow mode and exact `pr_head_sha`, where blocking or direct-Task dispatch cannot preserve the durable provenance contract and is not an equivalent fallback; Profiles B/C: a fresh subagent or pass bound to the same exact `pr_head_sha`. If retries fail, the affected coverage dimension is BLOCKED and must be surfaced to the user before synthesis. Do not fabricate validation results, do not present partial findings as complete or beyond the truthful N-of-6 settlement (issue #2383), and do not silently mark candidates UNVERIFIED to proceed past the gap.
+14. If subagents fail, timeout, or return malformed output, retry with corrected parameters (the initial attempt plus up to 2 retries — aborting after only the first retry is one bounded retry early) through the dispatch mechanism of the active profile — Profile A: the same structured `dispatch_lanes_async` workflow mode and exact `pr_head_sha`, where blocking or direct-Task dispatch cannot preserve the durable provenance contract and is not an equivalent fallback; Profiles B/C: a fresh subagent or pass bound to the same exact `pr_head_sha`. If retries fail, the affected coverage dimension is BLOCKED and must be surfaced to the user before synthesis — except that a micro family whose every lane is liveness-terminal with no retained artifact settles through the disclosed dead-family path on the trigger receipt (issue #2835; the micro-family dispatch ledger enforces the retry budget mechanically — three recorded dispatch attempts before the admission stops failing closed) instead of BLOCKED, and abort is legitimate only after that settlement path has been exhausted or is unavailable. Do not fabricate validation results, do not present partial findings as complete or beyond the truthful N-of-6 settlement (issue #2383), and do not silently mark candidates UNVERIFIED to proceed past the gap.
 
 15. If context pack, repo graph, deterministic signals, or Swarm artifacts are unavailable, retry with alternative access paths. If a source that should exist on the active profile is still unavailable after retry, the affected coverage dimension is BLOCKED and must be surfaced to the user. A source that cannot exist on the active profile (for example `.swarm/` artifacts outside Profile A) is marked N/A in the validation provenance instead — N/A is disclosure, never a waiver of the dimensions and families that must still be covered. Do not proceed to synthesis with unclosed coverage gaps under a "best available evidence" rationale — the architect is not authorized to produce a degraded review that hides a coverage gap; the disclosed N-of-6 PARTIAL/NO_COVERAGE settlement (issue #2383) is the only sanctioned partial exit.
 

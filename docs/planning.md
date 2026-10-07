@@ -55,6 +55,8 @@ Every task handed to the Architect should provide these `save_plan` fields. The 
 
 > **Task paths have runtime significance beyond documentation.** Author each coding task through `save_plan` with `files_touched: ["path/from/project/root"]`. Coder preflight resolves scope in the exact order active `declare_scope` binding > plan `files_touched` > complete `FILE:` lines; every lower-precedence source that is present must be a subset of the authoritative source. Missing scope fails with `SCOPE_NOT_DECLARED`, and disagreement fails with `SCOPE_CONFLICT`, before the coder starts. Bindings are specific to the workspace, plan generation, task, parent session, and Task call; worktree lanes derive fresh child-root authority.
 
+> With Epic Mode enabled (`epic.mode.enabled: true`), declared scopes also decide whether a plan is epic-sized (`epic.sizing.min_scope_coverage`, default 80% of pending tasks with a scope) and which tasks share a wave; `save_plan` then returns `epic_shaping` suggestions (declare-scope, narrow-scope, extract-prerequisite, isolate-hot-file, split-task, merge-tasks), each as a concrete `save_plan` patch. Precise, narrow `files_touched` lists yield wider waves.
+
 `files_touched` accepts normalized project-relative files or directories. Include generated outputs and lockfiles that the task will write. On a plan revision, omission preserves the existing task scope, while an explicit empty array clears it. `save_plan` rejects absolute paths, parent-traversal components, empty entries, control characters, entries over 4,096 UTF-8 bytes, and aggregate scope text over 1 MiB. The ledger remains authoritative; `.swarm/plan.md` only displays a safely quoted, deterministic projection of the saved list.
 
 When scope preflight fails:
@@ -86,7 +88,7 @@ Each task in the swarm follows a per-task state machine. The Architect advances 
 |---|---|---|
 | `idle` | Task not yet started | Default state |
 | `coder_delegated` | An accepted coder mutation created fresh verification debt | A coder settlement proves an in-scope mutation and rotates the workflow generation |
-| `pre_check_passed` | Automated gates passed | `pre_check_batch` returns `gates_passed: true` |
+| `pre_check_passed` | Automated gates passed | `pre_check_batch` returns `gates_passed: true`. Recovery entry modes (audited, marked in the evidence): `recover_rework_task` writes a supervised `stage_a_passed` from `rework_required` (#2755), and `/swarm recover` or the `recover_stage_a_task` tool write a settlement-backed `stage_a_passed` from `idle`/`blocked` when a COMMITTED accepted settlement plus green post-settlement pre-check proof still justify Stage A (#2828) |
 | `reviewer_run` | Human-style review complete | Reviewer delegation returns APPROVED |
 | `tests_run` | Verification tests passed | Test engineer delegation returns PASS |
 | `rework_required` | Current-generation verification failed and same-task repair is required | Stage A fails, or reviewer/test engineer returns a negative or malformed verdict. A TESTED `SKIPPED` verdict (tests not run) is the exception: it stays Stage B eligible for test-gate re-dispatch instead of entering `rework_required` (#2756) |

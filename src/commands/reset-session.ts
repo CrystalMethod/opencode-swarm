@@ -1,5 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import {
+	STAGE_B_BINDINGS_DIR,
+	stageBSessionDirName,
+} from '../background/stage-b-dispatch-binding-store';
 import { resolveWorktreeRepoOwnership } from '../config/lane-context';
 import { closeProjectDb } from '../db/project-db';
 import { clearAllSessionOverrides } from '../db/qa-gate-session-override.js';
@@ -168,10 +172,20 @@ async function releaseKnowledgeGateObligations(
 			releasedPairs.push(`${traceId}/${item.entry_id}`);
 		}
 		if (committed.rejected.length > 0) {
+			const reasons = committed.rejected.map((item) => item.reason).join('; ');
+			// Issue #3036: append the remedy after the existing reasons (the
+			// shipped message prefix stays byte-identical). Defensive branch: the
+			// live query above filters to this session's stamps, so wrong_session
+			// here can only fire on a drifted store — session names would be
+			// self-referential, so name the remedy only.
+			const hasWrongSession = committed.rejected.some(
+				(item) => item.reason === 'wrong_session',
+			);
 			results.push(
-				`⚠️ Partially released trace ${sanitizeDiagnosticText(traceId, 64)}: ${committed.rejected
-					.map((item) => item.reason)
-					.join('; ')}`,
+				`⚠️ Partially released trace ${sanitizeDiagnosticText(traceId, 64)}: ${reasons}` +
+					(hasWrongSession
+						? ` — a re-dispatched child session is an authorized filer for its dispatch's stamps, or surface fresh knowledge via knowledge_recall for a new trace`
+						: ''),
 			);
 		}
 	}
@@ -381,6 +395,10 @@ export async function handleResetSessionCommand(
 		clearTrajectoryStep(sessionId);
 	}
 	swarmState.agentSessions.clear();
+	// Issue #3036: dispatch lineage is session-scoped state — clear it with the
+	// other in-memory maps (the re-dispatch repopulates before any child files).
+	swarmState.dispatchParentByChildSession.clear();
+	swarmState.pendingDispatchAuthorizations = [];
 	clearSnapshotSessionOwnerships();
 	results.push(`✅ Cleared ${sessionCount} in-memory agent session(s)`);
 
@@ -459,6 +477,31 @@ export async function handleResetSessionCommand(
 		results.push(
 			'⚠️ Knowledge gate obligations not released: no session context on this invocation',
 		);
+	}
+
+	// Issue #2829: evict this session's durable Stage B dispatch-generation
+	// bindings (the store keys records by sha256(sessionID); only the invoking
+	// session's subtree is removed — other sessions' pending settlements keep
+	// their reconstruction path). Skipped when no session context exists.
+	if (sessionID) {
+		try {
+			const { existsSync, rmSync } = await import('node:fs');
+			// Single-sourced from the store module (PR review finding): the
+			// hash derivation and directory name must never drift from what the
+			// store itself writes, or this purge silently deletes nothing.
+			const sessionBindingDir = validateSwarmPath(
+				directory,
+				`${STAGE_B_BINDINGS_DIR}/${stageBSessionDirName(sessionID)}`,
+			);
+			if (existsSync(sessionBindingDir)) {
+				rmSync(sessionBindingDir, { recursive: true, force: true });
+				results.push('✅ Deleted stage-b-dispatch-bindings for this session');
+			}
+		} catch {
+			results.push(
+				'⚠️ Stage B durable bindings not cleared (best-effort; TTL prune collects them)',
+			);
+		}
 	}
 	swarmState.gateDenialCounts.clear();
 	swarmState.currentCriticalShownIds.clear();

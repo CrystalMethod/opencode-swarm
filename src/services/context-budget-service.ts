@@ -8,6 +8,10 @@
 
 import { DEFAULT_MODEL_CONTEXT_TOKENS } from '../config/schema';
 import { getCoreEventLifetimeCount } from '../events/core-events.js';
+import {
+	extractPlanCursor,
+	resolvePlanCursorControls,
+} from '../hooks/extractors';
 import { resolveSwarmKnowledgePath } from '../hooks/knowledge-store';
 import {
 	estimateTokens as canonicalEstimateTokens,
@@ -254,39 +258,48 @@ async function countEvents(directory: string): Promise<number> {
 }
 
 /**
- * Extract plan cursor content from plan.md
+ * Schema shape of the `plan_cursor` config block (see PlanCursorConfigSchema
+ * in src/config/schema.ts). Named — not inline — so guarded signatures stay
+ * brace-free for the trusted-root validator's body matcher.
+ */
+interface PlanCursorConfigShape {
+	enabled?: boolean;
+	max_tokens?: number;
+	lookahead_tasks?: number;
+}
+
+/**
+ * Extract plan cursor content from plan.md.
+ *
+ * Issue #2580: routes through the canonical `extractPlanCursor` with the
+ * resolved `plan_cursor` controls instead of a bespoke marker-window slice,
+ * so the report's `planCursorTokens` accounts for the text that is actually
+ * injected on both context paths (0 when the cursor is disabled). Previously
+ * this built a 30-line window around 'in_progress'/'**Current**' markers
+ * (falling back to the first 1000 chars) — a string no code path ever
+ * injects, which silently diverged from the real cursor.
  *
  * @param directory - The swarm workspace directory
+ * @param planCursor - Optional `plan_cursor` config block (schema shape)
  * @returns Plan cursor content or empty string
  */
-async function getPlanCursorContent(directory: string): Promise<string> {
+async function getPlanCursorContent(
+	directory: string,
+	planCursor?: PlanCursorConfigShape,
+): Promise<string> {
+	const controls = resolvePlanCursorControls(planCursor);
+	if (!controls.enabled) {
+		return '';
+	}
 	const planContent = await readSwarmFileAsync(directory, 'plan.md');
 	if (!planContent) {
 		return '';
 	}
 
-	// Extract relevant section - typically the cursor shows current phase and upcoming tasks
-	// For simplicity, we'll use a portion of the plan as the cursor representation
-	const lines = planContent.split('\n');
-	const cursorLines: string[] = [];
-	let inCurrentSection = false;
-
-	for (const line of lines) {
-		// Look for current phase marker or in-progress section
-		if (line.includes('in_progress') || line.includes('**Current**')) {
-			inCurrentSection = true;
-		}
-
-		if (inCurrentSection) {
-			cursorLines.push(line);
-			// Stop after a reasonable number of lines
-			if (cursorLines.length > 30) {
-				break;
-			}
-		}
-	}
-
-	return cursorLines.join('\n') || planContent.substring(0, 1000);
+	return extractPlanCursor(planContent, {
+		maxTokens: controls.maxTokens,
+		lookaheadTasks: controls.lookaheadTasks,
+	});
 }
 
 /**
@@ -301,6 +314,7 @@ export async function getContextBudgetReport(
 	directory: string,
 	assembledSystemPrompt: string,
 	config: ContextBudgetConfig,
+	planCursor?: PlanCursorConfigShape,
 ): Promise<ContextBudgetReport> {
 	// `directory` is the plugin-injected project root (system-enhancer passes
 	// its `directory`), so it is TRUSTED and always ABSOLUTE. It must therefore
@@ -315,7 +329,7 @@ export async function getContextBudgetReport(
 	const systemPromptTokens = estimateTokens(assembledSystemPrompt);
 
 	// Read plan cursor
-	const planCursorContent = await getPlanCursorContent(directory);
+	const planCursorContent = await getPlanCursorContent(directory, planCursor);
 	const planCursorTokens = estimateTokens(planCursorContent);
 
 	// Read knowledge content (link-aware: reflects the shared store when linked).

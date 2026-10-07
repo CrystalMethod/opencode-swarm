@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.178.0",
+  "tagCommit": "1fc19f485e0ed4bcc31f83463199bf3283deaebd",
+  "targetCommitish": "1fc19f485e0ed4bcc31f83463199bf3283deaebd",
+  "releaseBodySha256": "9852ec69156d94aeb6fb414f426e015a620acbda070345cb354ef44d1e4cb684",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2500-authorized-mcp-writes.md",
+      "sha256": "53c493ef22180ca17e3c1d350c2587f1335454ffdff0dab4b1bc69fdc42e70ad"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2509-swarm-dashboard-mission-control.md",
+      "sha256": "3b64d89ece6b8fb5f86a7a721b3ca52223503b0b984c7f10206d4ca035b6c5a5"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2576-summary-identity-restarts.md",
+      "sha256": "1297bc5488348eae6ebc920d0c7137fa4dca8979188a70ca5a5d88d21f0b2ca1"
+    }
+  ]
+}

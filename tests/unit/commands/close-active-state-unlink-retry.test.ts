@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { _internals } from '../../../src/commands/close.js';
 import { closeProjectDb, getProjectDb } from '../../../src/db/project-db.js';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 const realUnlink = _internals.unlink;
@@ -90,7 +91,7 @@ describe('active-state unlink retry', () => {
 			expect(existsSync(databasePath)).toBe(false);
 		} finally {
 			closeProjectDb(directory);
-			rmSync(directory, { recursive: true, force: true });
+			safeRmRecursive(directory);
 		}
 	});
 });

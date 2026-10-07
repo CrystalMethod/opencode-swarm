@@ -17,6 +17,11 @@ import type {
 } from '../background/pending-delegations.js';
 import { buildBackgroundCoderReservationId } from '../background/pending-delegations.js';
 import {
+	deleteStageBDispatchBindings,
+	readStageBDispatchBindings,
+	recordStageBDispatchBindings,
+} from '../background/stage-b-dispatch-binding-store.js';
+import {
 	captureWorkspaceSnapshotAsync,
 	changedFilesSinceSnapshotAsync,
 } from '../background/workspace-snapshot.js';
@@ -29,7 +34,6 @@ import {
 import { ALL_AGENT_NAMES } from '../config/agent-names.js';
 import { DEFAULT_MODELS } from '../config/constants';
 import {
-	type Phase,
 	type Plan,
 	resolveActivePhaseId,
 	type Task,
@@ -42,6 +46,13 @@ import {
 	type QaGates,
 } from '../db/qa-gate-profile.js';
 import {
+	resolveEpicDispatchPolicy,
+	resolveEpicPrFeedbackConflict,
+} from '../epic/gate-policy.js';
+import { epicSentinelExists, isEpicOpenForProject } from '../epic/lifecycle.js';
+import { commitEpicResidueAfterDelegation } from '../epic/residue-commit.js';
+import { epicIsolationDegradedMessage } from '../epic/task-landing.js';
+import {
 	appendCoreEventSync,
 	CORE_EVENT_LOCKED,
 	type CoderRetryEscalationAction,
@@ -52,6 +63,7 @@ import {
 	readTaskGateRequirementsReceiptsSync,
 } from '../evidence/task-gate-requirements.js';
 import { isReadOnlyTool } from '../full-auto/policy';
+import { compareTaskWorkflowStateRank } from '../gate-evidence';
 import { isMarkdownOnlyTaskChange } from '../gate-evidence-classification.js';
 import {
 	routeReviewForChanges,
@@ -98,7 +110,7 @@ import {
 	resolveScopeBindingFromDisk,
 } from '../scope/scope-persistence';
 import { formatScopeResolutionDiagnostic } from '../scope/scope-resolution-diagnostic';
-import type { AgentSessionState } from '../state';
+import type { AgentSessionState, TaskWorkflowState } from '../state';
 import {
 	advanceTaskState,
 	ensureAgentSession,
@@ -113,6 +125,7 @@ import {
 	markStageBRouteRequired,
 	recordStageBCompletion,
 	reserveStageBRouteEvidence,
+	setDispatchParent,
 	swarmState,
 	updateTaskWorkflowCache,
 } from '../state';
@@ -2958,6 +2971,11 @@ async function buildParallelExecutionGuidance(
 
 	if (!enabled || effectiveMaxConcurrent <= 1) return null;
 
+	// Epic v2: while an epic is open its banner + epic_next_wave own the
+	// dispatch guidance; the whole-phase SERIAL/Lean advisory below would
+	// contradict them. Sentinel-first probe: one existsSync when off.
+	if (_internals.isEpicOpenForProject(directory)) return null;
+
 	if (hasActiveLeanTurbo(sessionID)) {
 		return '[NEXT] Lean Turbo is active; use lean_turbo_run_phase and Lean Turbo lane guidance instead of standard execution-profile slot filling.';
 	}
@@ -3393,6 +3411,17 @@ const maintainBackgroundDelegationsForDispatch: typeof import('../background/pen
  * that test mutations on this object propagate to the extracted module.
  */
 export const _internals = {
+	isEpicOpenForProject,
+	/** Epic v2 C4: wave-only coder admission + the wave's parallel/isolation policy. */
+	resolveEpicDispatchPolicy,
+	resolveEpicPrFeedbackConflict,
+	/** Epic v2 C3 (X1): commit a non-coder writer's residue for an epic task. */
+	commitEpicResidueAfterDelegation,
+	/** Epic sentinel probe (one existsSync) gating the residue seam. */
+	epicSentinelExists,
+	recordStageBDispatchBindings,
+	readStageBDispatchBindings,
+	deleteStageBDispatchBindings,
 	resolveEvidenceTaskId,
 	resolveDelegatedPlanTaskId,
 	describeCoderScopeFailure,
@@ -3485,6 +3514,47 @@ const STAGE_B_SETTLEMENT_DROP_REASONS: Record<
 };
 
 /**
+ * Issue #3032: a Stage B settlement admits tasks by the session's in-memory
+ * workflow view while the dispatch side reads the durable evidence, so a
+ * durable-only writer can wedge every later verdict silently. The COVERED
+ * writers: recover_rework_task (rework_required views) and the idle-start
+ * recoveries — recover_stage_a_task / stage-a-repair from idle, or a
+ * mechanical Stage A write landing on another session's map — whose views
+ * are absent, rework_required, or rank below the durable eligible state.
+ * Recovery from a BLOCKED in-memory view (recover_stage_a_task /
+ * stage-a-repair also accept blocked starts) is covered WRITER-SIDE by issue
+ * #3043: both writers refresh the recovering/invoking session's view in
+ * the same call (see workflow/session-view.ts; the /swarm recover
+ * skip-outcome branch verifies durable via one bounded re-read), so this
+ * consumer-side guard
+ * keeps refusing to overwrite it — an at-or-above view in a session that did
+ * NOT run the recovery (cross-session divergence) is still never repaired
+ * here and needs a fresh session or a re-run of the recovery in that
+ * session. A stale view is repairable when it is absent, rework_required
+ * (WORKFLOW_STATE_RANK is a plan-vs-evidence PRECEDENCE order, not a
+ * workflow progress order — rework_required ranks ABOVE the Stage B
+ * eligible states even though rework_required -> pre_check_passed is
+ * forward progress), or ranks below the durable eligible state (idle /
+ * coder_delegated always, and pre_check_passed when the durable state is
+ * reviewer_run). An at-or-above view (tests_run / blocked / closed /
+ * complete) is never overwritten: completion permissively admits only
+ * tests_run / complete (blocked and closed are terminal), a tests_run-ahead
+ * view needs its missing non-Stage B gate rather than a reviewer/
+ * test_engineer re-run, and a blocked view over eligible durable evidence
+ * without a writer-side refresh is the cross-session residual above.
+ */
+function isRepairableStageBView(
+	existingView: TaskWorkflowState | undefined,
+	durableEligibleState: 'pre_check_passed' | 'reviewer_run',
+): boolean {
+	return (
+		existingView === undefined ||
+		existingView === 'rework_required' ||
+		compareTaskWorkflowStateRank(durableEligibleState, existingView) > 0
+	);
+}
+
+/**
  * Queue the session-visible advisory for one dropped Stage B settlement and
  * record the task on the per-invocation collector so the host-log warning can
  * be aggregated (one stderr line per drop class per settlement invocation —
@@ -3506,7 +3576,7 @@ function warnStageBSettlementDropped(
 	const { taskId, agent, reasonClass, drops } = params;
 	const restartNote =
 		reasonClass === 'unbound'
-			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; it cannot be reconstructed after a restart.'
+			? ' The dispatch-generation binding is process-local and was lost — a plugin reload or host restart between dispatch and settlement is the usual cause; no durable binding was found for this dispatch, so it cannot be reconstructed.'
 			: '';
 	// The dedupe token leads the message by advisory-queue convention (#1976):
 	// pushAdvisory's keyed dedupe matches on key-presence in queued messages.
@@ -3589,7 +3659,10 @@ export function createDelegationGateHook(
 	}) => Promise<void>;
 	sessionEnded: (sessionID: string, includeOwnedChildren?: boolean) => void;
 	backgroundCompletionClaimed: (record: BackgroundDelegationRecord) => void;
-	abortDeniedSettlementForCall: (callID: string) => Promise<void>;
+	abortDeniedSettlementForCall: (
+		callID: string,
+		sessionID?: string,
+	) => Promise<void>;
 } {
 	// Initialize durable worktree merge-back status before any coders dispatch
 	initDurableStatusPath(directory);
@@ -3821,6 +3894,13 @@ export function createDelegationGateHook(
 		parentSessionID: string;
 		childSessionID: string;
 	}): Promise<void> => {
+		// Issue #3036: record the host-observed dispatch pair BEFORE any early
+		// return below — reviewer/test-engineer children return at the
+		// SCOPE_NOT_DECLARED guard and never reach ensureAgentSession, yet their
+		// knowledge_receipt filings still need the lineage to authorize against
+		// the architect-stamped membership. The parent id here is the host's
+		// `part.sessionID`, never tool-controlled metadata.
+		setDispatchParent(input.childSessionID, input.parentSessionID);
 		const bindRouteChildSession = (): void => {
 			const routeBindings = stageBRouteSlotByCallID.get(input.callID);
 			if (!routeBindings) return;
@@ -3931,6 +4011,7 @@ export function createDelegationGateHook(
 	};
 	const rememberStageBDispatchGenerations = (
 		callID: string,
+		sessionID: string | undefined,
 		generations: Map<string, number>,
 	): void => {
 		if (
@@ -3943,6 +4024,40 @@ export function createDelegationGateHook(
 			);
 		}
 		stageBDispatchGenerationsByCallID.set(callID, generations);
+		// Issue #2829: durable twin of the in-memory binding. NON-FATAL by
+		// design — the in-memory map remains the primary fence; the durable
+		// record only ADDS post-restart reconstruction (which still feeds the
+		// existing expectedGeneration fence, invariant 9). A transient fs
+		// failure degrades to today's behavior (drop-on-restart) rather than
+		// failing a working dispatch. Cost: one small JSON write + rename + a
+		// one-directory prune; a ~50 ms elapsed-time TELEMETRY threshold logs
+		// (debug-gated) when exceeded — it observes latency, it does not bound
+		// it (AGENTS #1/#3/#10).
+		const durableStart = Date.now();
+		const persisted = _internals.recordStageBDispatchBindings(directory, {
+			sessionID: sessionID ?? '',
+			callID,
+			bindings: [...generations.entries()].map(([taskId, generation]) => ({
+				taskId,
+				generation,
+			})),
+		});
+		const durableElapsed = Date.now() - durableStart;
+		// PR #2883 review finding: a lost durable twin silently degrades this
+		// dispatch to drop-on-restart — an operator-visible loss, so the
+		// FAILURE uses the always-emitted channel (logger.warn/log are
+		// debug-gated; #2817 set the visibility precedent for Stage B state
+		// loss). The elapsed-time telemetry stays debug-gated (it observes
+		// latency, it does not bound it).
+		if (!persisted) {
+			logger.criticalWarn(
+				`[delegation-gate] Stage B durable binding write FAILED for call ${callID} — restart recovery for this dispatch is unavailable until re-dispatch (non-fatal; in-memory fencing remains active)`,
+			);
+		} else if (durableElapsed > 50) {
+			logger.log(
+				`[delegation-gate] Stage B durable binding write for call ${callID}: persisted=true elapsedMs=${durableElapsed}`,
+			);
+		}
 	};
 	const releasePrelaunchBackgroundCoderReservation = async (
 		callID: string,
@@ -4054,6 +4169,7 @@ export function createDelegationGateHook(
 		clearCoderTaskChangeContext(callID);
 		begunCoderSettlementsByCallID.delete(callID);
 		stageBDispatchGenerationsByCallID.delete(callID);
+		deleteStageBDispatchBindings(directory, record.parentSessionId, callID);
 		stageBRouteSlotByCallID.delete(callID);
 		gateDispatchPrimaryTaskByCallID.delete(callID);
 		stageBDispatchContextByCallID.delete(callID);
@@ -4769,7 +4885,11 @@ export function createDelegationGateHook(
 					},
 				);
 				if (consumed) {
-					rememberStageBDispatchGenerations(input.callID, generations);
+					rememberStageBDispatchGenerations(
+						input.callID,
+						input.sessionID,
+						generations,
+					);
 					gateDispatchPrimaryTaskByCallID.set(input.callID, null);
 					stageBDispatchContextByCallID.set(input.callID, {
 						taskIds: new Set(generations.keys()),
@@ -4821,6 +4941,22 @@ export function createDelegationGateHook(
 						workflow.state === 'reviewer_run')
 				) {
 					generations.set(taskId, workflow.generation);
+					// Issue #3032: this dispatch is admitted from the DURABLE
+					// workflow, but the settlement loop filters on the session's
+					// in-memory view. Repair a lagging view here so a durable-only
+					// Stage A writer (recovery tool, or a mechanical write landing
+					// on another session's map) can never wedge this dispatch's
+					// settlement. Never overwrite an at-or-above view — see
+					// isRepairableStageBView.
+					if (
+						isRepairableStageBView(
+							stageBSession.taskWorkflowStates.get(taskId),
+							workflow.state,
+						)
+					) {
+						stageBSession.taskWorkflowStates.set(taskId, workflow.state);
+						updateTaskWorkflowCache(stageBSession, taskId, workflow);
+					}
 					continue;
 				}
 				if (taskId === resolvedTaskId) {
@@ -4849,7 +4985,11 @@ export function createDelegationGateHook(
 						},
 					);
 					if (consumed) {
-						rememberStageBDispatchGenerations(input.callID, generations);
+						rememberStageBDispatchGenerations(
+							input.callID,
+							input.sessionID,
+							generations,
+						);
 						gateDispatchPrimaryTaskByCallID.set(input.callID, resolvedTaskId);
 						stageBDispatchContextByCallID.set(input.callID, {
 							taskIds: new Set(generations.keys()),
@@ -4885,7 +5025,11 @@ export function createDelegationGateHook(
 					);
 				}
 			}
-			rememberStageBDispatchGenerations(input.callID, generations);
+			rememberStageBDispatchGenerations(
+				input.callID,
+				input.sessionID,
+				generations,
+			);
 			gateDispatchPrimaryTaskByCallID.set(input.callID, resolvedTaskId);
 			stageBDispatchContextByCallID.set(input.callID, {
 				taskIds: new Set(generations.keys()),
@@ -5131,6 +5275,16 @@ export function createDelegationGateHook(
 			backgroundCoderReservationByCallID.set(input.callID, claim.reservation);
 		};
 		if (preparedScope.kind === 'pr_feedback') {
+			// Review F-007: outside the wave gate, so check it does not write
+			// files a running Epic wave owns. Sentinel-first: no I/O beyond one
+			// existsSync when Epic is off.
+			if (_internals.epicSentinelExists(directory)) {
+				const conflict = _internals.resolveEpicPrFeedbackConflict(
+					directory,
+					preparedScope.declaredFiles,
+				);
+				if (conflict) throw new Error(`${conflict.code}: ${conflict.message}`);
+			}
 			await reserveBackgroundCoderIfNeeded(1);
 			try {
 				if (
@@ -5165,29 +5319,60 @@ export function createDelegationGateHook(
 			return;
 		}
 		const plan = preparedScope.plan;
+		// Epic v2 C4: while an epic is open for this plan, its ACTIVE WAVE is
+		// the dispatch authority — a coder is admitted only for a wave task
+		// whose declared scope stays inside the scope frozen at issue, and the
+		// wave (not the execution profile) decides parallelism, isolation and
+		// the slot cap. PR-feedback coders returned above (bypass by
+		// construction). Gated synchronously: with no open epic this is one
+		// existsSync and `null`, and every expression below is the original.
+		const epicPolicy = _internals.epicSentinelExists(directory)
+			? _internals.resolveEpicDispatchPolicy(
+					directory,
+					plan,
+					incomingCoderTaskId,
+					preparedScope.declaredFiles,
+				)
+			: null;
+		if (epicPolicy?.kind === 'reject') {
+			throw new Error(`${epicPolicy.code}: ${epicPolicy.message}`);
+		}
+		const epicWave = epicPolicy?.kind === 'allow' ? epicPolicy : null;
 		const profile = plan.execution_profile;
 		const parallelEnabled = profile?.parallelization_enabled === true;
 		const maxConcurrent = profile?.max_concurrent_tasks ?? 10;
-		const effectiveMaxConcurrent =
-			session.maxConcurrencyOverride ?? maxConcurrent;
+		const effectiveMaxConcurrent = epicWave
+			? epicWave.maxConcurrent
+			: (session.maxConcurrencyOverride ?? maxConcurrent);
 		// #1674 v8 AUTOMATIC FALLBACK (acceptance criterion 4): parallel mode
 		// additionally requires the active phase's pending tasks to be PROVABLY
 		// file-disjoint. The gate computes the verdict inline via the same pure
 		// helper the architect's `plan_conflict_check` tool uses; conflicts or
 		// unknown scopes → serial by default, with no architect discretion.
-		const scopeAllowsParallel = scopeVerdictAllowsParallel(directory, plan);
+		// (An epic wave carries its own verdict from its frozen scopes.)
+		const scopeAllowsParallel =
+			epicWave === null && scopeVerdictAllowsParallel(directory, plan);
 		// Standard worktree isolation remains active even when the concurrency
 		// verdict falls back to serial. F-014: coupling isolation to
 		// `scopeAllowsParallel` made overlapping/unknown scopes run in the project
 		// root, defeating the safety boundary that serial fallback is meant to keep.
-		const standardWorktreeIsolationActive =
+		const parallelWorktreeIsolationActive =
+			epicWave === null &&
 			parallelEnabled &&
 			effectiveMaxConcurrent > 1 &&
 			!hasActiveLeanTurbo(input.sessionID);
+		// Epic v2 C3 (M-b): a coder of an open git epic is always isolated in a
+		// worktree (degradation refused below), whatever the profile says.
+		const epicIsolationRequired = epicWave?.isolate === true;
+		const standardWorktreeIsolationActive = epicWave
+			? epicWave.isolate
+			: parallelWorktreeIsolationActive;
 		// Parallel gate exemptions and slot accounting additionally require the
-		// pending tasks to be provably disjoint.
-		const parallelModeActive =
-			standardWorktreeIsolationActive && scopeAllowsParallel;
+		// pending tasks (an epic: the wave's unresolved tasks) to be provably
+		// disjoint.
+		const parallelModeActive = epicWave
+			? epicWave.parallel
+			: parallelWorktreeIsolationActive && scopeAllowsParallel;
 		const criticPolicy = resolvePlanCriticPolicyForExecution(
 			directory,
 			plan,
@@ -5382,7 +5567,8 @@ export function createDelegationGateHook(
 			// or prior declare_scope) so provisionWorktree can materialize it into the
 			// lane's .swarm/scopes/ for durability across plugin restart.
 			const laneScope = correlatedBinding.files;
-			await precreateStandardWorktreeSession({
+			const precreate = precreateStandardWorktreeSession({
+				...(epicIsolationRequired ? { isolationRequired: true } : {}),
 				config,
 				directory,
 				parentSessionID: input.sessionID,
@@ -5405,6 +5591,19 @@ export function createDelegationGateHook(
 						? { taskId: resolvedTaskId, files: laneScope }
 						: undefined,
 			});
+			// Epic v2 C3: an epic coder's isolation failure is refused as
+			// EPIC_ISOLATION_DEGRADED (carrying the original error); without an
+			// open epic the promise is awaited exactly as before.
+			await (epicIsolationRequired
+				? precreate.catch((error: unknown) => {
+						throw new Error(
+							epicIsolationDegradedMessage(
+								incomingCoderTaskId ?? 'unknown',
+								error instanceof Error ? error.message : String(error),
+							),
+						);
+					})
+				: precreate);
 			const standardDispatch = standardWorktreeByCallID.get(input.callID);
 			if (standardDispatch) {
 				if (resolvedTaskId) {
@@ -5465,6 +5664,15 @@ export function createDelegationGateHook(
 					);
 				}
 			} else {
+				if (epicIsolationRequired) {
+					throw new Error(
+						epicIsolationDegradedMessage(
+							incomingCoderTaskId ?? 'unknown',
+							getStandardWorktreeDegradationReason(input.sessionID)?.reason ??
+								'no isolated worktree was provisioned (worktree.policy is "disabled", or the session was released from serialized mode)',
+						),
+					);
+				}
 				// Isolation may degrade to the project root; capture only after the
 				// provisioning attempt and before the upstream coder begins execution.
 				if (
@@ -6014,6 +6222,11 @@ export function createDelegationGateHook(
 				if (backgroundRecordDurable) {
 					clearCoderTaskChangeContext(input.callID);
 					stageBDispatchGenerationsByCallID.delete(input.callID);
+					deleteStageBDispatchBindings(
+						directory,
+						input.sessionID ?? '',
+						input.callID,
+					);
 					gateDispatchPrimaryTaskByCallID.delete(input.callID);
 					stageBDispatchContextByCallID.delete(input.callID);
 					if (storedArgs !== undefined) deleteStoredInputArgs(input.callID);
@@ -6391,17 +6604,95 @@ export function createDelegationGateHook(
 										transitionTaskWorkflowEvidence,
 									} = await import('../gate-evidence');
 									for (const [taskId, state] of session.taskWorkflowStates) {
+										if (!attributionResult.verdicts.has(taskId)) continue;
+										let effectiveState = state;
 										if (
 											!(stageBEligibleStates as readonly string[]).includes(
 												state,
 											)
-										)
-											continue;
-										if (!attributionResult.verdicts.has(taskId)) continue;
-										const eligibleState = state as EligibleState;
-										const launchGeneration = stageBDispatchGenerationsByCallID
+										) {
+											// Issue #3032: the in-memory view may lag the durable
+											// evidence when a durable-only writer (recovery tool,
+											// or a mechanical Stage A write landing on another
+											// session's map) advanced the task between dispatch
+											// and settlement. Re-read durable for THIS
+											// verdict-carrying, in-context task only; a genuinely
+											// ineligible durable state still skips (fail-closed),
+											// and an at-or-above in-memory view is never
+											// downgraded (isRepairableStageBView).
+											const dispatchCtxTasks =
+												stageBDispatchContextByCallID.get(
+													input.callID,
+												)?.taskIds;
+											if (dispatchCtxTasks?.has(taskId)) {
+												const durableSnapshot = getTaskWorkflowSnapshot(
+													await readTaskEvidence(directory, taskId),
+												);
+												if (
+													durableSnapshot.authoritative &&
+													(stageBEligibleStates as readonly string[]).includes(
+														durableSnapshot.state,
+													) &&
+													isRepairableStageBView(
+														state,
+														durableSnapshot.state as EligibleState,
+													)
+												) {
+													session.taskWorkflowStates.set(
+														taskId,
+														durableSnapshot.state,
+													);
+													updateTaskWorkflowCache(
+														session,
+														taskId,
+														durableSnapshot,
+													);
+													effectiveState = durableSnapshot.state;
+													logger.log(
+														`[delegation-gate] resynced Stage B settlement view for ${taskId} from durable evidence (in-memory said ${state})`,
+													);
+												}
+											}
+											if (
+												!(stageBEligibleStates as readonly string[]).includes(
+													effectiveState,
+												)
+											)
+												continue;
+										}
+										const eligibleState = effectiveState as EligibleState;
+										let launchGeneration = stageBDispatchGenerationsByCallID
 											.get(input.callID)
 											?.get(taskId);
+										if (launchGeneration === undefined) {
+											// Issue #2829: the in-memory binding is missing (the
+											// usual cause is a plugin reload or host restart between
+											// dispatch and settlement — it is process-local).
+											// Reconstruct from the durable twin BEFORE dropping:
+											// the reconstructed generation feeds the SAME
+											// expectedGeneration fence below, so a stale binding
+											// still dies on TASK_WORKFLOW_GENERATION_MISMATCH
+											// (invariant 9 — never the reverse); a missing/invalid
+											// durable record keeps today's fail-closed drop.
+											const durable = _internals.readStageBDispatchBindings(
+												directory,
+												input.sessionID,
+												input.callID,
+											);
+											const reconstructed = durable?.bindings.find(
+												(b) => b.taskId === taskId,
+											)?.generation;
+											if (
+												reconstructed !== undefined &&
+												Number.isInteger(reconstructed) &&
+												reconstructed >= 0
+											) {
+												launchGeneration = reconstructed;
+												logger.log(
+													`[delegation-gate] reconstructed Stage B binding for ${taskId} from durable store (call ${input.callID}, generation ${reconstructed}) — fencing proceeds as in-process`,
+												);
+											}
+										}
 										if (launchGeneration === undefined) {
 											logger.warn(
 												`[delegation-gate] ignoring unbound Stage B settlement for ${taskId} from call ${input.callID}`,
@@ -6430,7 +6721,7 @@ export function createDelegationGateHook(
 											verdictEntry?.verdict === 'SKIPPED'
 										) {
 											logger.warn(
-												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${state} for test-gate re-dispatch; reviewer proof preserved`,
+												`[delegation-gate] Stage B test gate SKIPPED (tests not run) for task ${taskId} from call ${input.callID} — leaving state ${effectiveState} for test-gate re-dispatch; reviewer proof preserved`,
 											);
 											continue;
 										}
@@ -6757,9 +7048,45 @@ export function createDelegationGateHook(
 									const { recordGateEvidence } = await import(
 										'../gate-evidence'
 									);
-									const gateLaunchGeneration = stageBDispatchGenerationsByCallID
+									let gateLaunchGeneration = stageBDispatchGenerationsByCallID
 										.get(input.callID)
 										?.get(evidenceTaskId);
+									if (
+										TASK_GATE_AGENTS.has(targetAgentForEvidence) &&
+										gateLaunchGeneration === undefined
+									) {
+										// PR #2883 review finding: the durable twin serves
+										// every generation-fenced settlement — this evidence
+										// path's fenced members (docs/designer/critic/
+										// critic_sounding_board/explorer/sme), not only the
+										// reviewer/test_engineer Stage B loop. (The three
+										// specialized verifier critics settle via the
+										// pre-existing recordAgentDispatch path, which does
+										// not consume this fence.) Same contract as the
+										// settlement path: the reconstructed generation feeds
+										// the SAME expectedGeneration fence below (a stale
+										// binding dies on
+										// TASK_WORKFLOW_GENERATION_MISMATCH, invariant 9);
+										// a missing/invalid durable record keeps the throw.
+										const durable = _internals.readStageBDispatchBindings(
+											directory,
+											input.sessionID,
+											input.callID,
+										);
+										const reconstructed = durable?.bindings.find(
+											(b) => b.taskId === evidenceTaskId,
+										)?.generation;
+										if (
+											reconstructed !== undefined &&
+											Number.isInteger(reconstructed) &&
+											reconstructed >= 0
+										) {
+											gateLaunchGeneration = reconstructed;
+											logger.log(
+												`[delegation-gate] reconstructed Stage B gate binding for ${evidenceTaskId} from durable store (call ${input.callID}, generation ${reconstructed}) — fencing proceeds as in-process`,
+											);
+										}
+									}
 									if (
 										TASK_GATE_AGENTS.has(targetAgentForEvidence) &&
 										gateLaunchGeneration === undefined
@@ -6957,6 +7284,11 @@ export function createDelegationGateHook(
 							// with the success-path deletes below.
 							if (!coderSettlementCommitted) {
 								stageBDispatchGenerationsByCallID.delete(input.callID);
+								deleteStageBDispatchBindings(
+									directory,
+									input.sessionID ?? '',
+									input.callID,
+								);
 								gateDispatchPrimaryTaskByCallID.delete(input.callID);
 								deleteStoredInputArgs(input.callID);
 							}
@@ -7013,7 +7345,54 @@ export function createDelegationGateHook(
 					}
 				}
 
+				// Epic v2 C3 (X1) seam: a non-coder writer (test_engineer, docs, …)
+				// that returned for a task of the open epic has its attributed
+				// main-tree writes committed on the epic branch, so a rework
+				// coder's worktree (cut from HEAD) starts from them. Never throws.
+				// Gated synchronously: with no open epic it is one existsSync and
+				// no extra await.
+				if (
+					typeof subagentType === 'string' &&
+					_internals.epicSentinelExists(directory)
+				) {
+					const routeBindings = stageBRouteSlotByCallID.get(input.callID);
+					await _internals.commitEpicResidueAfterDelegation({
+						directory,
+						agent: subagentType,
+						sessionID: input.sessionID,
+						resolveTaskIds: async () => {
+							const ids = [...(routeBindings?.keys() ?? [])];
+							if (ids.length > 0) return ids;
+							const resolved = await resolveEvidenceTaskId(
+								{ ...(storedArgs ?? {}), ...(directArgs ?? {}) },
+								session,
+								directory,
+								evidenceTaskResolutionOptions(
+									stripKnownSwarmPrefix(subagentType),
+								),
+							);
+							return resolved ? [resolved] : [];
+						},
+						childSessionIds: async () => {
+							const { extractDispatchIds } = await import(
+								'../background/task-envelope.js'
+							);
+							return [
+								...[...(routeBindings?.values() ?? [])].map(
+									(binding) => binding.childSessionId,
+								),
+								extractDispatchIds(_output).subagentSessionId,
+							];
+						},
+					});
+				}
+
 				stageBDispatchGenerationsByCallID.delete(input.callID);
+				deleteStageBDispatchBindings(
+					directory,
+					input.sessionID ?? '',
+					input.callID,
+				);
 				stageBRouteSlotByCallID.delete(input.callID);
 				gateDispatchPrimaryTaskByCallID.delete(input.callID);
 				stageBDispatchContextByCallID.delete(input.callID);
@@ -7478,13 +7857,35 @@ ${warningLines.join('\n')}`;
 		 * callID bookkeeping — an abort that throws must not leave a louder
 		 * in-process CODER_DISPATCH_IN_PROGRESS wedge behind.
 		 */
-		abortDeniedSettlementForCall: async (callID: string): Promise<void> => {
+		abortDeniedSettlementForCall: async (
+			callID: string,
+			sessionID?: string,
+		): Promise<void> => {
 			// Reviewer/test-engineer reservations do not create a coder settlement,
 			// so the early return below must still drain their call-scoped route
 			// bindings. Otherwise a denied dispatch can strand the only slot and make
 			// the retry fail closed as unbound (issue #2491, F-001).
 			stageBRouteSlotByCallID.delete(callID);
 			stageBDispatchContextByCallID.delete(callID);
+			// PR #2883 review finding (CRITICAL): the in-memory
+			// dispatch-generation binding is call-scoped state of exactly the
+			// same kind and must drain here too. The map's cap
+			// (MAX_PENDING_CODER_CHANGE_CONTEXTS, in rememberStageBDispatchGenerations)
+			// hard-rejects NEW dispatches with STAGE_B_CONTEXT_CAPACITY rather
+			// than evicting, so an entry leaked past the early return below
+			// would permanently consume an admission slot for the process
+			// lifetime. reviewer/test-engineer denies never begin a coder
+			// settlement, so this is their only drain; the idempotent delete in
+			// the finally below covers the begun path.
+			stageBDispatchGenerationsByCallID.delete(callID);
+			// Issue #2829: the durable dispatch-generation twin is another
+			// call-scoped reservation of exactly this kind — drain it BEFORE
+			// the coder-settlement early return so a denied reviewer/
+			// test-engineer dispatch (which never begins a coder settlement)
+			// still evicts its durable binding.
+			if (sessionID) {
+				deleteStageBDispatchBindings(directory, sessionID, callID);
+			}
 			const begun = begunCoderSettlementsByCallID.get(callID);
 			if (!begun?.taskId) return;
 			try {

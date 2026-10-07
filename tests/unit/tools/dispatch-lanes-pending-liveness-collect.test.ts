@@ -264,16 +264,13 @@ describe('collect_lane_results surfaces the advisory (issue #2280 Part B)', () =
 		// guard before the call it bounds (issue #2815 added no host calls).
 		expect(dispatchStatusCalls).toBe(0);
 		expect(dispatchMessagesCalls).toBe(0);
-		// AC5: the status-side budget skip is surfaced symmetrically with the
-		// messages side — both (0ms) diagnostics coexist in one response.
+		// Issue #2815 AC5 pinned per-lane symmetric (0ms) diagnostics. Issue
+		// #2971 replaced the per-lane status round-trip with ONE batched probe
+		// per pass, which is skipped silently at a zero remaining budget (no
+		// host call, no diagnostic — readiness reads 'unknown', the #2381
+		// fail-open path). The messages-side per-lane (0ms) diagnostic is
+		// unchanged.
 		const errors = result.errors ?? [];
-		expect(
-			errors.some(
-				(entry) =>
-					entry.startsWith('session.status for lane session') &&
-					entry.endsWith('(0ms)'),
-			),
-		).toBe(true);
 		expect(
 			errors.some(
 				(entry) =>
@@ -281,6 +278,9 @@ describe('collect_lane_results surfaces the advisory (issue #2280 Part B)', () =
 					entry.endsWith('(0ms)'),
 			),
 		).toBe(true);
+		expect(errors.some((entry) => entry.startsWith('session.status'))).toBe(
+			false,
+		);
 		// Alert-only: the lane is untouched on disk.
 		expect(laneStatusOnDisk(directory, 'c-zbudget-both')).toBe('pending');
 	});

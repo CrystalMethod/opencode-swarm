@@ -13,6 +13,7 @@ import { bundledProjectSkillFileReference } from '../config/bundled-skills.js';
 import {
 	AGENT_TOOL_MAP,
 	COUNCIL_AGENT_TOOL_MAP,
+	EPIC_AGENT_TOOL_MAP,
 	EXTERNAL_SKILL_AGENT_TOOL_MAP,
 	GENERAL_COUNCIL_AGENT_TOOL_MAP,
 	MEMORY_AGENT_TOOL_MAP,
@@ -112,7 +113,13 @@ export const ARCHITECT_MEMORY_OUTCOME_GUIDANCE = `After using recalled memory or
 // meaningfully-described new architect tool could not have fit. The growth is
 // conscious and documented (terse 180-char metadata description + this 1000-char
 // allowance), keeping the F#1649 ratchet intact for unreviewed growth.
-export const ARCHITECT_PROMPT_BUDGET_CHARS = 161_000;
+// 161000 -> 161500 (#2971): cancel_lane_batch joins the controller tool set;
+// its prefixed-render cell measured 161277, so the allowance grows by the
+// same deliberate 500-char step (docs/configuration.md states the ceiling).
+// 161500 -> 163000 (#2946): rollback/checkpoint command details now carry
+// the destructive-restore preview/token/backup contract; the prefixed
+// feature-heavy cell measured 162200.
+export const ARCHITECT_PROMPT_BUDGET_CHARS = 163_000;
 
 /**
  * Per-tool description cap for the architect prompt's AVAILABLE TOOLS line
@@ -1169,7 +1176,7 @@ ACTION: Load skill ${bundledProjectSkillFileReference('swarm-ci-monitor')} immed
 
 HARD CONSTRAINTS (apply regardless of skill load success):
 - Do NOT invoke this mode's merge path without the user having named the PR explicitly — no auto-discovery.
-- Verify \`reviewDecision: APPROVED\` before entering the fix loop; abort with "human review not complete" if not.
+- Verify \`reviewDecision: APPROVED\` before entering the fix loop; abort with "human review not complete" if not. (GitHub-only; GitLab: \`glab api\`, never fabricate.)
 - Verify \`mergeable: MERGEABLE\` and an acceptable \`mergeStateStatus\` before entering the fix loop; do not bypass these gates even under time pressure.
 - Never use \`--admin\`, a forced merge strategy, or \`--delete-branch\` — let branch protection determine the merge method.
 - Re-verify review approval and mergeable state immediately before every merge attempt (Step 3 of the loaded skill) — a check that was green earlier is not sufficient.
@@ -1626,6 +1633,7 @@ function buildYourToolsList(
 	externalSkillsEnabled = false,
 	turboEnabled = false,
 	skillsEnabled = false,
+	epicEnabled = false,
 ): string {
 	const qaCouncilEnabled = council?.enabled === true;
 	const generalCouncilEnabled = council?.general?.enabled === true;
@@ -1641,6 +1649,7 @@ function buildYourToolsList(
 			: []),
 		...(turboEnabled ? (TURBO_AGENT_TOOL_MAP.architect ?? []) : []),
 		...(skillsEnabled ? (SKILL_AGENT_TOOL_MAP.architect ?? []) : []),
+		...(epicEnabled ? (EPIC_AGENT_TOOL_MAP.architect ?? []) : []),
 	];
 	const sorted = [...tools].sort();
 	return `Task (delegation), ${sorted.join(', ')}.`;
@@ -1785,6 +1794,7 @@ function buildAvailableToolsList(
 	externalSkillsEnabled = false,
 	turboEnabled = false,
 	skillsEnabled = false,
+	epicEnabled = false,
 ): string {
 	const qaCouncilEnabled = council?.enabled === true;
 	const generalCouncilEnabled = council?.general?.enabled === true;
@@ -1800,6 +1810,7 @@ function buildAvailableToolsList(
 			: []),
 		...(turboEnabled ? (TURBO_AGENT_TOOL_MAP.architect ?? []) : []),
 		...(skillsEnabled ? (SKILL_AGENT_TOOL_MAP.architect ?? []) : []),
+		...(epicEnabled ? (EPIC_AGENT_TOOL_MAP.architect ?? []) : []),
 	];
 	const sorted = [...tools].sort();
 	return sorted
@@ -2005,6 +2016,7 @@ export function createArchitectAgent(
 		directory: '',
 		config: { execution_mode: 'strict' },
 	}),
+	epicEnabled = false,
 ): AgentDefinition {
 	let prompt = ARCHITECT_PROMPT;
 
@@ -2039,6 +2051,7 @@ export function createArchitectAgent(
 				externalSkillsEnabled,
 				turboEnabled,
 				skillsEnabled,
+				epicEnabled,
 			),
 		)
 		?.replace(
@@ -2049,6 +2062,7 @@ export function createArchitectAgent(
 				externalSkillsEnabled,
 				turboEnabled,
 				skillsEnabled,
+				epicEnabled,
 			),
 		)
 		?.replace('{{SLASH_COMMANDS}}', buildSlashCommandsList());

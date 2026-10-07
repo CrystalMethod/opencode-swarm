@@ -72,6 +72,10 @@ export function deriveProjectHash(directory: string): string {
 				encoding: 'utf-8',
 				stdio: ['ignore', 'pipe', 'ignore'],
 				timeout: 1500,
+				// #2705: explicit bound matching the canonical getGitRemoteUrl
+				// contract below (remote URLs are tiny; 64 KiB), instead of the
+				// implicit 1 MiB execFileSync default.
+				maxBuffer: GIT_REMOTE_URL_MAX_BUFFER_BYTES,
 			})
 			.trim();
 		hashInput = remoteUrl.length > 0 ? remoteUrl : absolutePath;

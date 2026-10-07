@@ -1842,7 +1842,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 			// Empty array matches Zod default → suppressed
 			expect(deprecatedFindings).toHaveLength(0);
 		});
-		it('warns that baseline worktree isolation is already active for standard parallel coders (#1552)', () => {
+		it('warns that baseline worktree isolation is already active (plan-profile keyed; #1552/#2901)', () => {
 			const config = createTestConfigObj({
 				parallelization: {
 					enabled: true,
@@ -1858,7 +1858,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 				},
 			});
 
-			const result = runConfigDoctor(config, tempDir);
+			const result = runConfigDoctor(config, tempDir, true);
 
 			const finding = result.findings.find(
 				(f) => f.id === 'worktree-isolation-baseline-active',
@@ -1871,7 +1871,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 			expect(finding!.description).toContain('not requirements');
 		});
 
-		it('does not warn when baseline worktree isolation is disabled (#1552)', () => {
+		it('does not warn when worktree isolation is disabled despite a parallel plan (#1552/#2901)', () => {
 			const config = createTestConfigObj({
 				parallelization: {
 					enabled: true,
@@ -1887,7 +1887,7 @@ describe('Schema introspection: every top-level key has validation', () => {
 				},
 			});
 
-			const result = runConfigDoctor(config, tempDir);
+			const result = runConfigDoctor(config, tempDir, true);
 
 			expect(
 				result.findings.some(
@@ -2845,7 +2845,7 @@ describe('Range-bounded test inventory (AC-3 SC-003) — self-updating', () => {
 		// bounds checks are still covered by the schema-level tests above.
 		// Record-derived keys (<record_value>) are included — they are
 		// concretized with a sample key in the schema-level tests above.
-		it('every schema-only range-bounded key is at least schema-validated (zero gaps in inventory)', () => {
+		it('every schema-only range-bounded key is at least schema-validated (gap count is informational)', () => {
 			const schemaOnlyKeys = RANGE_BOUNDED_KEYS.filter(
 				(k) => !k.hasDoctorBoundsCheck,
 			);
@@ -2866,7 +2866,7 @@ describe('Range-bounded test inventory (AC-3 SC-003) — self-updating', () => {
 						)
 						.join('\n'),
 			);
-			expect(schemaOnlyKeys.length).toBeGreaterThanOrEqual(0);
+			expect(schemaOnlyKeys.length).toBeGreaterThanOrEqual(0); // vacuous-ok: documents the schema-only-bounds gap count; non-failing by design
 		});
 	});
 });

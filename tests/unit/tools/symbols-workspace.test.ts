@@ -670,16 +670,16 @@ export interface Config {
 	// ============ Error handling in workspace mode ============
 	describe('workspace mode error handling', () => {
 		it('should handle file with unsupported extension gracefully', async () => {
-			createTestFile(tempDir, 'java File.java', `public class Main {}`);
+			createTestFile(tempDir, 'file.xyz', `public class Main {}`);
 			createTestFile(tempDir, 'good.ts', `export const x = 1;`);
 
 			const result = await symbols.execute({ workspace: true }, {} as any);
 			const parsed = parseResult(result);
 
-			// Should still find good.ts, skip the java file
+			// Should still find good.ts, skip the unsupported file
 			const fileNames = parsed.files.map((f: any) => f.file);
 			expect(fileNames).toContain('good.ts');
-			expect(fileNames).not.toContain('java File.java');
+			expect(fileNames).not.toContain('file.xyz');
 		});
 
 		it('should handle file read errors gracefully', async () => {

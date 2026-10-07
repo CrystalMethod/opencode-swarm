@@ -219,3 +219,86 @@ describe('static recovery invocation guidance (issue #2665 AC3)', () => {
 		expect(source).not.toMatch(/process\.platform/);
 	});
 });
+
+describe('classifyEvidenceRecoveryTask settlement_wedge (issue #2828)', () => {
+	const wedgedAt = (state: 'idle' | 'blocked'): TaskEvidence => ({
+		taskId: '4.1',
+		required_gates: ['reviewer', 'test_engineer'],
+		gates: {},
+		workflow: {
+			schema: 'exact-task-v1',
+			generation: 2,
+			state,
+			retryCount: 0,
+			retryHistory: [],
+			retryEpoch: 0,
+			lastOutcome: 'repair_idle',
+			lastTransitionId: 'repair:setup-4.1',
+			updatedAt: '2026-09-18T00:00:00.000Z',
+		},
+	});
+
+	test('idle/blocked with a COMMITTED accepted settlement classifies as settlement_wedge', () => {
+		for (const state of ['idle', 'blocked'] as const) {
+			const status = classifyEvidenceRecoveryTask(
+				'4.1',
+				wedgedAt(state),
+				true,
+				{ settlementCommittedAccepted: true },
+			);
+			expect(status.category).toBe('settlement_wedge');
+			expect(status.repairAllowed).toBe(true);
+			expect(status.suggestedNextCommand).toBe('/swarm recover 4.1');
+			expect(status.explanation).toContain(
+				`workflow at ${state} while a COMMITTED accepted coder settlement`,
+			);
+		}
+	});
+
+	test('settlement_wedge without green proof is not deterministically repairable', () => {
+		const status = classifyEvidenceRecoveryTask(
+			'4.1',
+			wedgedAt('idle'),
+			false,
+			{
+				settlementCommittedAccepted: true,
+			},
+		);
+		expect(status.category).toBe('settlement_wedge');
+		expect(status.repairAllowed).toBe(false);
+		expect(status.explanation).toContain('run pre_check_batch first');
+	});
+
+	test('idle/blocked WITHOUT the settlement context stays healthy (no fabricated wedge)', () => {
+		for (const state of ['idle', 'blocked'] as const) {
+			const status = classifyEvidenceRecoveryTask('4.1', wedgedAt(state), true);
+			expect(status.category).toBe('healthy');
+			expect(status.repairAllowed).toBe(false);
+		}
+	});
+
+	test('the settlement context never leaks into other states', () => {
+		const coderDelegated = classifyEvidenceRecoveryTask(
+			'4.1',
+			{
+				taskId: '4.1',
+				required_gates: [],
+				gates: {},
+				workflow: {
+					schema: 'exact-task-v1',
+					generation: 1,
+					state: 'coder_delegated',
+					retryCount: 0,
+					retryHistory: [],
+					retryEpoch: 0,
+					lastOutcome: 'accepted_mutation',
+					lastTransitionId: 'coder:setup-4.1',
+					updatedAt: '2026-09-18T00:00:00.000Z',
+				},
+			},
+			true,
+			{ settlementCommittedAccepted: true },
+		);
+		expect(coderDelegated.category).toBe('live_wedge');
+	});
+});

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.169.0",
+  "tagCommit": "eb8f255c39a8e2a7e7cc93b47e5f29ec8238bd4a",
+  "targetCommitish": "eb8f255c39a8e2a7e7cc93b47e5f29ec8238bd4a",
+  "releaseBodySha256": "2d96c24e8f49dab260641eaa48701f8fdfc93b9eeaa7bab9e7f6406af8136a6c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2526-verification-closure.md",
+      "sha256": "d67cdf4886ad2020a5c2edf9d76d8da414aa98b132108aac9767d30944a15f24"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2527-worktree-reclamation-safety.md",
+      "sha256": "2ca21c1558a65efcac312d9bf0fa60c5863a56cb95d8a04147e4a3a2427c20d6"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2584-expose-cancel-publication.md",
+      "sha256": "e8fb90fd7c88ac6e45eee50a7dde1233a4570710a4598610ff7327a4152c84da"
+    },
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/ci-stage-a-decision-2552.md",
+      "sha256": "98dc57531ec978630e7834883fbdf7330f2545c51d9d63aa65f76c225063dbdc"
+    },
+    {
+      "prNumber": null,
+      "order": 6,
+      "path": "docs/releases/pending/gitattributes-lf-checkout-2554.md",
+      "sha256": "4fb4ee0ea4e0142f58a8cfbdb18747b06b120c861b94deb3766a221e6a7eb148"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/issue-2485-otlp-export.md",
+      "sha256": "3ca80114df5c6cadc22bcb363374a8200e0e4fd9077f95391da48b653653587a"
+    },
+    {
+      "prNumber": null,
+      "order": 7,
+      "path": "docs/releases/pending/issue-2489-2490-retrieval-quality.md",
+      "sha256": "c146b4bf98907ed0ddd1c4932f60368a29d0eb825d0ce226df32e71cc01f5e18"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/issue-2530-subprocess-output.md",
+      "sha256": "b43cc216e695a39bb74ae5981d20bd4ea3793e60b4d30f5f394a97eb752e5d8b"
+    }
+  ]
+}

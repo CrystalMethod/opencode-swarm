@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.7",
+  "tagCommit": "eddf6e1fb6320bf3f39d71d8879524e2da433a78",
+  "targetCommitish": "eddf6e1fb6320bf3f39d71d8879524e2da433a78",
+  "releaseBodySha256": "88f1b2cd35de08b0074c7b9cd532c523f95200d1c2d40669d7e3f461cc4cc0b3",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2788-receipt-tool-write-hardening.md",
+      "sha256": "2bf1d63cafe789bc637685ee02fc6c3a6a85f059b7f95e629db2fa643084aa20"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2817-foreground-settlement-drop-advisory.md",
+      "sha256": "61e6610c8b79f900396972031bce4f0eb3411a86cdcc9d53575e8d352a14e33f"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2828-settlement-backed-stage-a-recovery.md",
+      "sha256": "2697de36a6ca42f0a6c58adbbb8e17edc00812d9789944db8af5ea14c819bd27"
+    }
+  ]
+}

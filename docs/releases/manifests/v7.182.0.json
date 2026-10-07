@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.182.0",
+  "tagCommit": "3862f078b38ea62d5ddc28b5ced7fbd4deaa1b89",
+  "targetCommitish": "3862f078b38ea62d5ddc28b5ced7fbd4deaa1b89",
+  "releaseBodySha256": "15d44e7bc304042a91cf997999112479c14d5946bea8f11103da3e39a2ea3ba8",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2564-tracer-v3-receipts.md",
+      "sha256": "a9b2694d077955741a5d13f07869bf3c6fb43ba87dbdca529895466bb3779181"
+    }
+  ]
+}

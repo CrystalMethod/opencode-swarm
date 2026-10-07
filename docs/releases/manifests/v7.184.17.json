@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.17",
+  "tagCommit": "82fab3002811abec2983227babc3f30e71e3dc40",
+  "targetCommitish": "82fab3002811abec2983227babc3f30e71e3dc40",
+  "releaseBodySha256": "2ddd05d7f6a7755b2c270b194bc120bbee67102271502a06cd2c5e4a9c91e337",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2601-stale-installed-skill-copies.md",
+      "sha256": "8cb72f32c72b9507fc0cb3467c860a1ee4e23fbeb55573ddee8b3ebef3c0976e"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2866-flaky-ebusy-pr-workflow-gate-teardown.md",
+      "sha256": "bdfdf14908a22a47f0412470cdbf196517500115cd4e8252bda6c8b24cd2062a"
+    }
+  ]
+}

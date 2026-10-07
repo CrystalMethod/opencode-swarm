@@ -56,7 +56,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 ```json
 {
   "agents": {
-    "coder": { "model": "opencode/minimax-m2.5-free" },
+    "coder": { "model": "opencode/nemotron-3-ultra-free" },
     "reviewer": { "model": "opencode/big-pickle" }
   }
 }
@@ -72,99 +72,105 @@ You only need to define the agents you want to override.
 
 Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit inside the markers. Regenerate with `bun run scripts/generate-config-schema.ts`. See also the topic sections below and the shipped JSON Schema (`opencode-swarm.schema.json`, referenced via `$schema` for editor validation).
 
-| Key | Type | Default | Description |
-| --- | ---- | ------- | ----------- |
-| `$schema` | string | — | JSON Schema URL for editor validation/autocomplete of this file (issue #1663). Ignored at runtime; malformed values are ignored too. |
-| `config_format_version` | integer | 1 | Config format version for the migration table. Increment when fields are deprecated. Distinct from knowledge.schema_version. |
-| `preset` | enum(default \| conservative) | — | Defaults profile: "default" applies the governed v8 defaults; "conservative" restores the pre-flip (v7) defaults for every flipped surface (#2504). |
-| `agents` | record<string, object> | — | Per-agent overrides keyed by agent name for the default swarm (e.g. "architect", "coder"). Multi-swarm setups configure agents under swarms.<id>.agents instead. |
-| `default_agent` | string | — | Agent set as the primary mode. Omitted: every generated *_architect is primary. Exact generated name (e.g. "local_architect"): only that agent. Base role name (e.g. "coder"): every generated agent with that base role. Unknown strings warn once and fall back to architect primaries. |
-| `auto_select_architect` | boolean \| string | — | Auto-select the swarm architect for new sessions instead of OpenCode built-ins. Omitted or false: manual selection (omitted behaves as false). true: enable auto-select and disable built-in build/plan agents. "<architect_name>" (e.g. "mega_architect"): enable targeting one architect in multi-swarm setups. |
-| `swarms` | record<string, object> | — | Multiple swarms keyed by swarm ID (no underscores allowed). The first swarm, or one named "default", provides the primary architect. |
-| `max_iterations` | number | 5 | Maximum pipeline iterations per task (1-10). |
-| `pipeline` | object | — | Pipeline stage/model settings. |
-| `phase_complete` | object | — | Phase-completion gate settings. |
-| `qa_retry_limit` | number | 3 | Maximum QA retry rounds per task (1-10). |
-| `execution_mode` | enum(strict \| balanced \| fast) | "balanced" | Performance mode controlling optional hook execution overhead: "strict", "balanced", or "fast". |
-| `inject_phase_reminders` | boolean | true | Inject phase reminder directives during execution. |
-| `hooks` | object | — | Hook subsystem toggles and settings. |
-| `pr_review_resilience` | object (strict) | — | PR review base-wave staged canary/fanout resilience settings. |
-| `review_routing` | object (strict) | — | Semantic review routing receipt enforcement for Stage B (default on; set enforce_receipts=false only as a one-release rollback). |
-| `lane_liveness_watchdog` | object (strict) | — | Lane liveness watchdog: execution deadline and stall escalation for PR workflow lanes. |
-| `dispatch_protection` | object (strict) | — | Dispatch protection: action-local spawn-failure circuit breaker and token-bucket rate limiting for native task delegations. |
-| `pr_review_legacy_transcript_compatibility` | boolean | — | Deprecated migration-only opt-in for transcript-row PR-review base and micro discovery lanes. |
-| `gates` | object | — | Quality gate configuration (v6.9 anti-slop features). |
-| `context_budget` | object | — | Context budget thresholds. |
-| `pricing` | object | — | Token/cost estimation fallback table. Provider-reported cost wins when present; entries only estimate from usage tokens when reports omit cost. |
-| `guardrails` | object | — | Loop containment and safety guardrails: tool-call caps, denial tracking, destructive-command blocking, shell audit. |
-| `watchdog` | object | — | Scope-guard and delegation-ledger watchdog settings. |
-| `self_review` | object | — | Advisory self-review after coder delegation. |
-| `auto_review` | object | — | Opt-in execution-diff review by the reviewer model in a fresh ephemeral session at task/phase boundaries. |
-| `tool_filter` | object | — | Controls which plugin tools each agent is allowed to use; enforced through host-side per-agent permission denies (issue #2528). enabled: false lifts the plugin-tool allow-list but keeps each role's read-only write-family floor. |
-| `authority` | object | — | Per-agent file write authority rules. |
-| `plan_cursor` | object | — | Compressed plan summary injection settings. |
-| `context_map` | object | — | Context Map (issue #1104, FR-006) — opt-in. |
-| `repo_graph` | object | {} | Repository dependency-graph settings (builder excludes, incremental refresh). Nested defaults materialize when the whole section is omitted. |
-| `evidence` | object | — | Evidence retention and storage settings. |
-| `summaries` | object | — | Summary generation settings. |
-| `retention` | object | {} | Retention sweep settings (issue #2483). |
-| `review_passes` | object | — | Dual-pass security review settings. |
-| `adversarial_detection` | object | — | Same-model adversarial checker detection settings. |
-| `adversarial_testing` | object | { … } | Cross-model adversarial testing settings. |
-| `integration_analysis` | object | — | Integration analysis settings. |
-| `docs` | object | — | Documentation synthesizer (docs agent) settings. |
-| `design_docs` | object | — | Structured design-doc generation (issue #1080, docs_design agent) — opt-in. |
-| `speckit_checkoff` | object | — | Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default. |
-| `git` | object | — | Git executable resolution override (issue #2236 hardening). |
-| `ui_review` | object | — | UI/UX review (designer agent) settings. |
-| `compaction_advisory` | object | — | Compaction advisory settings. |
-| `lint` | object | — | Lint gate settings. |
-| `secretscan` | object | — | Secret scanning settings. |
-| `checkpoint` | object (strict) | — | Checkpoint settings. |
-| `apply_patch` | object (strict) | — | Apply-patch opt-in fuzzy matching fallback (issue #1718). |
-| `automation` | object | — | Background automation mode and per-feature toggles (v6.7 background-first rollout). |
-| `knowledge` | object | — | Two-tier cross-project knowledge base (v6.17). |
-| `memory` | object | — | Swarm memory substrate — disabled by default so existing flows are unchanged. |
-| `observability` | object | — | Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485). |
-| `learning` | object | — | Learning subsystem: real-time admission, PRM persistence, dedup sweep (issue #1821). |
-| `consensus` | object | — | Consensus mining over completed run evidence (issue #1821). |
-| `curator` | object | — | Phase context consolidation and drift detection. |
-| `architectural_supervision` | object | — | Hierarchical summary review (issue #893). |
-| `knowledge_application` | object | — | Knowledge-application contract (v2): warn or enforce modes, ack tracking. |
-| `skillPropagation` | object | — | Skill propagation gate/injection settings. |
-| `skill_improver` | object | — | Low-frequency, expensive-model skill improvement loop (issue #629, v2). |
-| `harness_evolution` | object (strict) | — | Declarative, non-executing HarnessOpt mutation policy (issue #1825). |
-| `harness_opt` | object (strict) | — | Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm. |
-| `spec_writer` | object | — | Spec writer agent (v2) — independent model for .swarm/spec.md authorship. |
-| `tool_output` | object | — | Tool output truncation settings (enable/disable, max lines, per-tool overrides). |
-| `slop_detector` | object | — | Slop detector settings (v6.29). |
-| `todo_gate` | object | — | TODO gate (v6.32): warn or block on new high-priority TODOs (FIXME/HACK/XXX). |
-| `incremental_verify` | object | — | Incremental verification settings (v6.29). |
-| `compaction_service` | object | — | Compaction service settings (v6.29). |
-| `prm` | object | — | PRM (Process Remediation Manager) settings. |
-| `council` | object (strict) | — | Work Complete Council — parallel four-member verification gate, off by default. |
-| `parallelization` | object | — | Parallelization (PR 1 dark foundation) — disabled by default; no production code path branches on enabled=true yet. |
-| `worktree` | object | — | Worktree isolation policy for parallel coder dispatch lanes (general surface; Lean Turbo keeps its legacy per-mode fields). |
-| `turbo` | object | — | Turbo execution strategy block (Phase 1). Absent means current behavior unchanged. |
-| `turbo_mode` | boolean | false | Bypass reviewer/test gates for rapid iteration (v6.40). |
-| `quiet` | boolean | true | Suppress non-critical startup warnings (default true keeps the TUI clean). Set false to restore verbose warnings for debugging. |
-| `version_check` | boolean | true | Background staleness check against npm, throttled to once per 24h (issue #675). Set false to fully disable the network call. |
-| `full_auto` | object | { … } | Full-auto autonomous orchestration with critic oversight: permission policy, denial accounting, oversight cadence triggers (v2 preserves v1 fields so existing configs load unchanged). |
-| `pr_feedback_loop` | object | — | Autonomous PR babysitting settling loop (issue #2502) — triple opt-in with pr_monitor.enabled + pr_monitor.auto_pr_feedback; off by default; publication profile is none-only. |
-| `pr_monitor` | object (strict) | — | GitHub PR subscription and polling (FR-001) — disabled by default; opt-in for real-time PR status updates. |
-| `external_skills` | object | — | External skills: candidate model, discovery, and quarantine store (FR-001) — all subsystems opt-in. |
-| `skills` | object | — | Opt-in gate for the 7 skill_* management tools (FR-004). Default false: the tools are host-denied for every agent except skill_improver (genuinely unreachable, not merely unlisted — issue #2528). |
-| `skill_opt` | object (strict) | — | Governed skill optimizer (issue #1822). Disabled by default; /swarm skill-opt run requires enabled: true. All other subcommands are proposal-only/read-only by default. |
-| `dashboard` | object (strict) | — | Opt-in local mission-control dashboard over durable swarm state (issue #2509). Disabled by default; set port > 0 to enable the loopback-only read-only view. |
+| Key | Type | Default | Description | Consumed by |
+| --- | ---- | ------- | ----------- | ----------- |
+| `$schema` | string | — | JSON Schema URL for editor validation/autocomplete of this file (issue #1663). Ignored at runtime; malformed values are ignored too. | src/services/config-doctor.ts:validateConfigKey |
+| `config_format_version` | integer | 1 | Config format version for the migration table. Increment when fields are deprecated. Distinct from knowledge.schema_version. | src/services/config-doctor.ts:validateConfigKey (+1) |
+| `preset` | enum(default \| conservative) | — | Defaults profile: "default" applies the governed v8 defaults; "conservative" restores the pre-flip (v7) defaults for every flipped surface (#2504). | src/commands/council.ts:parseArgs (+3) |
+| `agents` | record<string, object> | — | Per-agent overrides keyed by agent name for the default swarm (e.g. "architect", "coder"). Multi-swarm setups configure agents under swarms.<id>.agents instead. | src/agents/index.ts:_swarmAgentsMap (+1) |
+| `default_agent` | string | — | Agent set as the primary mode. Omitted: every generated *_architect is primary. Exact generated name (e.g. "local_architect"): only that agent. Base role name (e.g. "coder"): every generated agent with that base role. Unknown strings warn once and fall back to architect primaries. | src/agents/index.ts:getAgentConfigs (+2) |
+| `auto_select_architect` | boolean \| string | — | Auto-select the swarm architect for new sessions instead of OpenCode built-ins. Omitted or false: manual selection (omitted behaves as false). true: enable auto-select and disable built-in build/plan agents. "<architect_name>" (e.g. "mega_architect"): enable targeting one architect in multi-swarm setups. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `swarms` | record<string, object> | — | Multiple swarms keyed by swarm ID (no underscores allowed). The first swarm, or one named "default", provides the primary architect. | src/agents/index.ts:createAgents (+3) |
+| `max_iterations` | number | 5 | Maximum pipeline iterations per task (1-10). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `pipeline` | object | — | Pipeline stage/model settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+3) |
+| `phase_complete` | object | — | Phase-completion gate settings. | src/index.ts:initializeOpenCodeSwarm (+3) |
+| `qa_retry_limit` | number | 3 | Maximum QA retry rounds per task (1-10). | src/agents/index.ts:createSwarmAgents (+1) |
+| `execution_mode` | enum(strict \| balanced \| fast) | "balanced" | Performance mode controlling optional hook execution overhead: "strict", "balanced", or "fast". | src/agents/architect.ts:createArchitectAgent (+3) |
+| `inject_phase_reminders` | boolean | true | Inject phase reminder directives during execution. | src/hooks/pipeline-tracker.ts:createPipelineTrackerHook (+1) |
+| `hooks` | object | — | Hook subsystem toggles and settings. | src/commands/registry.ts:handlePrFeedbackCommandWithTransition (+3) |
+| `pr_review_resilience` | object (strict) | — | PR review base-wave staged canary/fanout resilience settings. | src/tools/dispatch-lanes.ts:executeDispatchLanesAsync (+1) |
+| `review_routing` | object (strict) | — | Semantic review routing receipt enforcement for Stage B (default on; set enforce_receipts=false only as a one-release rollback). | src/background/stage-b-gates.ts:ingestBackgroundStageBCompletion (+3) |
+| `lane_liveness_watchdog` | object (strict) | — | Lane liveness watchdog: execution deadline and stall escalation for PR workflow lanes. | src/commands/registry.ts:handlePrFeedbackCommandWithTransition (+3) |
+| `dispatch_protection` | object (strict) | — | Dispatch protection: action-local spawn-failure circuit breaker and token-bucket rate limiting for native task delegations. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `pr_review_legacy_transcript_compatibility` | boolean | — | Deprecated migration-only opt-in for transcript-row PR-review base and micro discovery lanes. | src/tools/dispatch-lanes.ts:launchAsyncLane (+1) |
+| `gates` | object | — | Quality gate configuration (v6.9 anti-slop features). | src/config/loader.ts:sanitizeGatesConfig (+2) |
+| `context_budget` | object | — | Context budget thresholds. | src/hooks/context-budget.ts:createContextBudgetHandler (+3) |
+| `pricing` | object | — | Token/cost estimation fallback table. Provider-reported cost wins when present; entries only estimate from usage tokens when reports omit cost. | src/background/delegation-lifecycle.ts:emitDelegationCostObservation (+3) |
+| `guardrails` | object | — | Loop containment and safety guardrails: tool-call caps, denial tracking, destructive-command blocking, shell audit. | src/config/loader.ts:buildConfigWithMeta (+3) |
+| `watchdog` | object | — | Scope-guard and delegation-ledger watchdog settings. | src/hooks/pr-workflow-gate.ts:evaluateLaneLivenessWatchdogEscalation (+2) |
+| `self_review` | object | — | Advisory self-review after coder delegation. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `auto_review` | object | — | Opt-in execution-diff review by the reviewer model in a fresh ephemeral session at task/phase boundaries. | src/agents/index.ts:createSwarmAgents (+3) |
+| `tool_filter` | object | — | Controls which plugin tools each agent is allowed to use; enforced through host-side per-agent permission denies (issue #2528). enabled: false lifts the plugin-tool allow-list but keeps each role's read-only write-family floor. | src/agents/index.ts:getAgentConfigs (+2) |
+| `authority` | object | — | Per-agent file write authority rules. | src/hooks/delegation-gate/worktree-isolation.ts:maybeSelectRecoverableAuthority (+3) |
+| `plan_cursor` | object | — | Compressed plan summary injection settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `context_map` | object | — | Context Map (issue #1104, FR-006) — opt-in. | src/hooks/context-capsule-inject.ts:createContextCapsuleInjectHook (+2) |
+| `repo_graph` | object | {} | Repository dependency-graph settings (builder excludes, incremental refresh). Nested defaults materialize when the whole section is omitted. | src/evaluation/retrieval-quality.ts:materializeDisposableWorkspace (+3) |
+| `evidence` | object | — | Evidence retention and storage settings. | src/background/candidate-parser.ts:parseText (+3) |
+| `summaries` | object | — | Summary generation settings. | src/commands/close/orchestrator.ts:handleCloseCommand (+2) |
+| `retention` | object | {} | Retention sweep settings (issue #2483). | src/commands/close/orchestrator.ts:handleCloseCommand (+3) |
+| `review_passes` | object | — | Dual-pass security review settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `adversarial_detection` | object | — | Same-model adversarial checker detection settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `adversarial_testing` | object | { … } | Cross-model adversarial testing settings. | src/agents/index.ts:createSwarmAgents (+1) |
+| `integration_analysis` | object | — | Integration analysis settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `docs` | object | — | Documentation synthesizer (docs agent) settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `design_docs` | object | — | Structured design-doc generation (issue #1080, docs_design agent) — opt-in. | src/agents/index.ts:createSwarmAgents (+3) |
+| `speckit_checkoff` | object | — | Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default. | src/sdd/speckit-checkoff.ts:maybePropagateSpeckitCheckoff (+1) |
+| `git` | object | — | Git executable resolution override (issue #2236 hardening). | src/config/loader.ts:exposedGitBinary |
+| `ui_review` | object | — | UI/UX review (designer agent) settings. | src/agents/index.ts:createSwarmAgents (+3) |
+| `compaction_advisory` | object | — | Compaction advisory settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
+| `lint` | object | — | Lint gate settings. | src/agents/project-context.ts:selectLintCommand (+3) |
+| `secretscan` | object | — | Secret scanning settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+2) |
+| `checkpoint` | object (strict) | — | Checkpoint settings. | src/background/delegation-health.ts:writeDelegationHealthArtifact (+3) |
+| `apply_patch` | object (strict) | — | Apply-patch opt-in fuzzy matching fallback (issue #1718). | src/tools/apply-patch.ts:isUnsupportedPatchFormat (+1) |
+| `automation` | object | — | Background automation mode and per-feature toggles (v6.7 background-first rollout). | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+3) |
+| `knowledge` | object | — | Two-tier cross-project knowledge base (v6.17). | src/commands/close/orchestrator.ts:handleCloseCommand (+3) |
+| `memory` | object | — | Swarm memory substrate — disabled by default so existing flows are unchanged. | src/agents/index.ts:createSwarmAgents (+3) |
+| `forge` | object | — | Forge provider (GitHub/GitLab) selection for PR/issue workflows (issue #2733). Ambiguous git remotes (mixed providers, unrecognized self-hosted hosts, or no remote) fail closed and require an explicit selection; forge.base_url passes through the same HTTPS-only / non-private / ASCII-host guards as every forge URL and is never a trust whitelist; combining base_url with provider "github" is rejected as a configuration conflict. | src/providers/forge-provider.ts:resolveForgeContextFromPluginConfig |
+| `observability` | object | — | Observability options — remote OTLP/OpenInference export is opt-in and disabled by default (issue #2485). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `learning` | object | — | Learning subsystem: real-time admission, PRM persistence, dedup sweep (issue #1821). | src/hooks/knowledge-dedup-sweep.ts:sweepActiveNearDuplicates (+3) |
+| `consensus` | object | — | Consensus mining over completed run evidence (issue #1821). | src/tools/consensus-mine.ts:consensus_mine (+1) |
+| `curator` | object | — | Phase context consolidation and drift detection. | src/hooks/phase-monitor.ts:createPhaseMonitorHook (+1) |
+| `architectural_supervision` | object | — | Hierarchical summary review (issue #893). | src/agents/index.ts:createSwarmAgents (+3) |
+| `knowledge_application` | object | — | Knowledge-application contract (v2): warn or enforce modes, ack tracking. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `skillPropagation` | object | — | Skill propagation gate/injection settings. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `skill_improver` | object | — | Low-frequency, expensive-model skill improvement loop (issue #629, v2). | src/commands/close/finalize-stage.ts:runFinalizeStage (+3) |
+| `harness_evolution` | object (strict) | — | Declarative, non-executing HarnessOpt mutation policy (issue #1825). | src/commands/harness.ts:getHarnessConfig (+1) |
+| `harness_opt` | object (strict) | — | Governed HarnessOpt optimization capstone (issue #2503). Disabled by default; /swarm harness-opt run requires enabled: true plus --confirm. | src/commands/harness-opt.ts:readHarnessOptConfigFromProject (+1) |
+| `spec_writer` | object | — | Spec writer agent (v2) — independent model for .swarm/spec.md authorship. | src/tools/spec-write.ts:MAX_SPEC_BYTES |
+| `tool_output` | object | — | Tool output truncation settings (enable/disable, max lines, per-tool overrides). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `slop_detector` | object | — | Slop detector settings (v6.29). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `todo_gate` | object | — | TODO gate (v6.32): warn or block on new high-priority TODOs (FIXME/HACK/XXX). | src/tools/check-gate-status.ts:readEvidenceFile (+2) |
+| `incremental_verify` | object | — | Incremental verification settings (v6.29). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `compaction_service` | object | — | Compaction service settings (v6.29). | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `prm` | object | — | PRM (Process Remediation Manager) settings. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `council` | object (strict) | — | Work Complete Council — parallel four-member verification gate, off by default. | src/agents/index.ts:createSwarmAgents (+3) |
+| `parallelization` | object | — | Parallelization (PR 1 dark foundation) — disabled by default; no production code path branches on enabled=true yet. | (inert) |
+| `worktree` | object | — | Worktree isolation policy for parallel coder dispatch lanes (general surface; Lean Turbo keeps its legacy per-mode fields). | src/background/completion-observer.ts:createBackgroundCompletionObserver (+3) |
+| `turbo` | object | — | Turbo execution strategy block (Phase 1). Absent means current behavior unchanged. | src/agents/index.ts:createSwarmAgents (+4) |
+| `epic` | object (strict) | — | Epic Mode block: one plan = one epic delivered in conflict-free parallel waves. Opt in with `mode.enabled: true`, then `/swarm epic start`. Needs no `turbo` block (legacy `turbo.epic` is still accepted and migrated here). | src/epic/config.ts:resolveEpicConfig (+1) |
+| `turbo_mode` | boolean | false | Bypass reviewer/test gates for rapid iteration (v6.40). When true, new sessions start with turbo mode on (session default); /swarm turbo still toggles per session. Directory-less constructions default off. | src/state.ts:resolveInitialTurboMode (+1) |
+| `quiet` | boolean | true | Suppress non-critical startup warnings (default true keeps the TUI clean). Set false to restore verbose warnings for debugging. | src/agents/index.ts:createSwarmAgents (+3) |
+| `version_check` | boolean | true | Background staleness check against npm, throttled to once per 24h (issue #675). Set false to fully disable the network call. | src/index.ts:initializeOpenCodeSwarm (+1) |
+| `full_auto` | object | { … } | Full-auto autonomous orchestration with critic oversight: permission policy, denial accounting, oversight cadence triggers (v2 preserves v1 fields so existing configs load unchanged). | src/commands/full-auto.ts:handleFullAutoCommand (+3) |
+| `pr_feedback_loop` | object | — | Autonomous PR babysitting settling loop (issue #2502) — triple opt-in with pr_monitor.enabled + pr_monitor.auto_pr_feedback; off by default; publication profile is none-only. | src/background/pr-feedback-loop-runtime.ts:isPrFeedbackLoopEnabled (+2) |
+| `pr_monitor` | object (strict) | — | GitHub PR subscription and polling (FR-001) — disabled by default; opt-in for real-time PR status updates. | src/background/pr-feedback-loop-runtime.ts:isPrFeedbackLoopEnabled (+3) |
+| `external_skills` | object | — | External skills: candidate model, discovery, and quarantine store (FR-001) — all subsystems opt-in. | src/agents/index.ts:createSwarmAgents (+1) |
+| `skills` | object | — | Opt-in gate for the 7 skill_* management tools (FR-004). Default false: the tools are host-denied for every agent except skill_improver (genuinely unreachable, not merely unlisted — issue #2528). | src/agents/index.ts:createSwarmAgents (+3) |
+| `skill_opt` | object (strict) | — | Governed skill optimizer (issue #1822). Disabled by default; /swarm skill-opt run requires enabled: true. All other subcommands are proposal-only/read-only by default. | src/commands/skill-opt.ts:readSkillOptConfigFromProject (+1) |
+| `dashboard` | object (strict) | — | Opt-in local mission-control dashboard over durable swarm state (issue #2509). Disabled by default; set port > 0 to enable the loopback-only read-only view. | src/index.ts:initializeOpenCodeSwarm (+1) |
 
 Sections marked `(strict)` reject unknown nested keys at config load time - a typo there makes the loader fall back to safe defaults with a startup warning. All other sections silently ignore unknown nested keys.
 
 <!-- opencode-swarm: end generated top-level-config-keys -->
 
+## Inert config-key advisory
+
+`/swarm config doctor` warns (`inert-config-key`, severity warn) when a config file you wrote sets a top-level key that no runtime consumer reads. The advisory is driven by the raw config files — it fires only for keys explicitly present in your user plugin config (`$XDG_CONFIG_HOME/opencode/opencode-swarm.json`, defaulting to `~/.config/opencode/opencode-swarm.json`) or the project's `.opencode/opencode-swarm.json`, never for schema defaults, and it names the key and the declared reason the key does nothing — a declaration folds a replacement path into that reason where one applies. Which keys are inert is declared in `src/config/consumers.ts` (`CONFIG_CONSUMERS`), the same declaration the config-consumption ratchet enforces (issue #2904). Today the one declared-inert key is `parallelization` (a dark foundation: no production path branches on it yet — for live parallel dispatch use the plan `execution_profile`, set per-plan by the architect; see `/swarm concurrency`). The `harness_opt` and `skill_opt` blocks are consumed since the harness-opt/skill-opt config wiring (issue #2949), so setting them in the plugin config takes effect and produces no advisory.
+
 ## Architect prompt budget (characters and model tokens)
 
 The architect's built-in prompt composition is bounded by a published
-character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,000 chars in
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,500 chars in
 `src/agents/architect.ts`). Every supported feature combination — the default
 render, the work-complete council on or off, the advisory General Council
 (`council.general.enabled`) composed together with every documented opt-in
@@ -460,13 +466,30 @@ Where the preflight acts:
   30 seconds (`CATALOG_CACHE_TTL_MS`); a dispatch denial invalidates the
   cache so a fixed config takes effect on the next attempt.
 
-`fallback_models` serve **transient** runtime failures (429/503/timeout) via
-the guardrails failover path. A permanent unresolved primary model is not
-covered by a fallback — configure a resolvable primary model for the affected
-role. The four curator roles (`curator_init`, `curator_phase`,
-`curator_postmortem`, `curator_consolidation`) inherit `explorer`'s fallback
-chain at runtime; the preflight validates only explicitly configured entries
-(`explorer`'s own), it does not synthesize the inherited chain.
+`fallback_models` serve **transient** runtime failures (429/503/timeout,
+including provider quota exhaustion such as GitHub Copilot's
+`429 quota exceeded` monthly limit) via the guardrails failover path. A
+permanent unresolved primary model is not covered by a fallback — configure a
+resolvable primary model for the affected role. The four curator roles
+(`curator_init`, `curator_phase`, `curator_postmortem`,
+`curator_consolidation`) inherit `explorer`'s fallback chain at runtime; the
+preflight validates only explicitly configured entries (`explorer`'s own), it
+does not synthesize the inherited chain.
+
+Primary (`host-controlled`) agents also fail over at runtime even though
+preflight never applies their registered model (issue #2989): when a primary
+session surfaces a fallback-eligible provider error, the plugin advances that
+session's role-scoped `fallback_models` chain and applies the fallback to the
+session's next message (sticky for the session; bounded `MODEL FALLBACK:`
+advisory + `model_fallback` telemetry; recovery via session end, 30 minutes
+without a message on the session, or a chain-config change — after which the
+stale selection reads as absent and the primary is retried. Switching the
+session's agent away from the fallback-scoped role suppresses the override
+while the other agent is active, but the prior role's selection persists
+until the idle window expires). A one-shot `opencode run` turn that already
+failed is not re-driven mid-turn — the host owns the request loop; interactive
+sessions pick up the fallback on their next message, while a failed one-shot
+invocation simply ends.
 
 ## How to verify the resolved config
 
@@ -771,6 +794,19 @@ environment variable:
 Like `OPENCODE_SWARM_GIT_BINARY`, this is a user/machine-level escape hatch; no
 repository-supplied value can ever name a gh candidate. See
 `describeGhResolution()` for a diagnostic of the most recent probe cycle.
+
+### GitLab CLI (`glab`)
+
+Issue #2733: the glab executable for GitLab-backed features is resolved by
+`src/utils/glab-executable.ts` with the same candidate discipline as gh
+(platform absolute locations first, then every `glab` match on `PATH` gated by
+a `glab version <major>.<minor>…` version probe, then the bare `glab` name as
+a terminal fallback). There is deliberately **no `glab.binary` config key** —
+the only override is the environment variable:
+
+| Env var | Description |
+|---------|-------------|
+| `OPENCODE_SWARM_GLAB_BINARY` | Absolute path to the glab executable to try first. An unusable value (relative, missing, or failing the version probe) is skipped with a warning and the resolver falls through its built-in candidate list — it never breaks glab availability. See `describeGlabResolution()` for a diagnostic of the most recent probe cycle. |
 
 ### Memory
 
@@ -1170,15 +1206,21 @@ closed. Neither outcome preserves an active structured review.
 
 ### todo_gate
 
-Controls the TODO gate that warns about new high-priority TODO/FIXME/HACK comments introduced during a phase.
+Controls the TODO gate that warns about or blocks high-priority TODO/FIXME/HACK/XXX comments recorded as task gate evidence.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable the TODO gate |
-| `max_high_priority` | number | `0` | Maximum allowed new high-priority TODOs (FIXME/HACK/XXX) before warning. `0` means warn on any occurrence. Set to `-1` to disable the threshold check. |
+| `enabled` | boolean | `true` | Enable/disable the TODO gate (producer recording and both consumers) |
+| `max_high_priority` | number | `0` | Maximum allowed high-priority TODOs (FIXME/HACK/XXX) before warning. `0` means warn on any occurrence. Set to `-1` to disable the threshold check. |
 | `block_on_threshold` | boolean | `false` | If `true`, block phase completion when the threshold is exceeded. If `false`, the gate is advisory only (warns but does not block). |
 
-The TODO gate scans for new `TODO`, `FIXME`, and `HACK` comments introduced in the current phase and compares the count against `max_high_priority`. The count is included in the `todo_scan` field returned by the `check_gate_status` tool.
+**How it works:**
+
+- **Producer:** `todo_extract` accepts an optional `task_id` (N.M format). When provided and `todo_gate.enabled` is not `false`, the scan records its high-priority (FIXME/HACK/XXX) count as a `todo_scan` field in `.swarm/evidence/{task_id}.json` (priority, count, per-entry `file:line` details capped at 50, and a `recorded_at` timestamp). The evidence is a point-in-time snapshot of the scanned paths — re-run `todo_extract` with the same `task_id` after resolving comments to refresh it.
+- **Consumer `check_gate_status`:** the recorded count is returned in the `todo_scan` field and compared against `max_high_priority`. When the count exceeds the threshold, the tool appends an advisory line to `message` (default), or with `block_on_threshold: true` marks the task `incomplete` with a `todo_gate (BLOCKED — N high-priority TODOs exceed max M)` missing-gate entry. A malformed config file is recovered by the config loader to schema defaults, so the TODO gate is evaluated with DEFAULT settings (advisory, `max_high_priority: 0`) rather than skipped — only an unexpected loader error skips evaluation (debug-logged). This differs from `phase_complete`, which fails closed on config parse errors.
+- **Producer tag scoping:** `todo_extract` only records `todo_scan` evidence when the invocation's tag set covers the full high-priority class (`FIXME,HACK,XXX`). A custom `tags` filter that omits any of them skips recording (debug-logged) — a filtered scan cannot certify the task-level high-priority count the gate enforces. The default tag set always qualifies.
+- **Consumer `phase_complete`:** the `todo_gate` preflight gate evaluates the recorded `todo_scan` evidence of every task in the phase. With the threshold exceeded it warns (advisory) or blocks (with `block_on_threshold: true`) phase completion, listing the recorded `file:line` evidence and a repair step (resolve or remove the listed comments, or adjust the `todo_gate` config, then re-run `todo_extract` with the `task_id` to refresh the evidence). The gate is bypassed under an active Turbo policy like the other standard gates.
+- **No producer, no gate:** when no task carries `todo_scan` evidence, neither consumer warns or blocks — a gate cannot act without an available producer. `enabled: false` disables recording and both consumers entirely.
 
 ### skillPropagation
 
@@ -2148,7 +2190,9 @@ architecture.
 Disabled by default. `/swarm skill-opt run` requires `enabled: true` AND
 `--confirm`; `approve`/`activate`/`reject`/`rollback` are human-only. The
 config is consulted only inside command handlers — never on the plugin init
-path.
+path. The block reaches the `plan`/`run` handlers via plugin config from
+`opencode-swarm.json` (project or user config); `opencode.json` is not a
+config surface for this family.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -2216,7 +2260,10 @@ task-cost accounting
 the held-out set exactly once, enforced by the substrate. Activation and
 rollback are NOT part of this surface — they stay on the human-only
 `/swarm approve-write` + harness store path. Consulted only inside command
-handlers, never on the plugin init path.
+handlers, never on the plugin init path. The block reaches the
+`run`/`compare` handlers via plugin config from `opencode-swarm.json`
+(project or user config); `opencode.json` is not a config surface for this
+family.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -2314,7 +2361,7 @@ When `curation_enabled: true`, the architect agent gains access to 7 tools:
 
 ## Turbo Configuration
 
-Lean Turbo is a lane-planning execution strategy that partitions phase tasks into parallel lanes based on file-scope conflicts, enabling multiple coders to work concurrently on non-conflicting tasks. It composes with all session modes (Turbo, Full-Auto, Balanced).
+Lean Turbo is a lane-planning execution strategy that partitions phase tasks into parallel lanes based on file-scope conflicts, enabling multiple coders to work concurrently on non-conflicting tasks. It composes with all session modes (Turbo, Full-Auto, Balanced) except an open epic: `/swarm epic start` refuses while a Lean run is running, and while an epic is open `/swarm turbo` refuses every enabling form. Epic plans its own waves and never dispatches through the Lean runner.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -2331,7 +2378,7 @@ Lean Turbo is a lane-planning execution strategy that partitions phase tasks int
 | `degrade_on_risk` | boolean | `true` | When `true`, Lean Turbo degrades to serial execution if risk conditions are detected (e.g., protected paths, cross-lane dependencies). |
 | `phase_reviewer` | boolean | `true` | Dispatch an additive phase-level reviewer gate at `phase_complete`. This is in addition to per-task Stage B review — it does NOT skip Stage B. |
 | `phase_critic` | boolean | `true` | Dispatch an additive phase-level critic gate at `phase_complete`. This is in addition to per-task Stage B review — it does NOT skip Stage B. |
-| `integrated_diff_required` | boolean | `true` | Require an integrated diff before accepting changes from a lane. Ensures cross-lane file changes are coherent. |
+| `integrated_diff_required` | boolean | `true` | Require an integrated diff before accepting changes from a lane. Ensures cross-lane file changes are coherent. Behavior change (#2954): the default is now `true` on every path, including projects with no `turbo` config block — set `turbo.lean.integrated_diff_required: false` to restore the previous permissive behavior. |
 | `allow_docs_only_without_reviewer` | boolean | `false` | Allow docs-only phases to complete when the reviewer agent is not available. |
 | `worktree_isolation` | boolean | `true` | Use git worktree isolation for parallel coders to enable true file-system-level parallelism. When `true`, each lane gets its own worktree. |
 | `merge_strategy` | `"merge" \| "rebase" \| "cherry-pick"` | `"merge"` | Branch merge strategy after lane worktree completion. Controls how completed lane branches are merged back into the main branch. |
@@ -2390,7 +2437,7 @@ Extended worktree isolation configuration. These settings apply to all worktree 
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `policy` | `"auto" \| "required" \| "disabled"` | `"auto"` | Worktree isolation policy. `"auto"` uses isolated worktrees for eligible parallel coders and blocks additional parallel dispatches if isolation cannot be prepared. `"required"` always requires isolation and blocks if it cannot be prepared. `"disabled"` preserves shared-tree behavior (no worktree isolation). |
+| `policy` | `"auto" \| "required" \| "disabled"` | `"auto"` | Worktree isolation policy. `"auto"` uses isolated worktrees for eligible parallel coders and blocks additional parallel dispatches if isolation cannot be prepared. `"required"` always requires isolation and blocks if it cannot be prepared. `"disabled"` preserves shared-tree behavior (no worktree isolation). Under an open git epic every coder requires an isolated worktree regardless of this policy; with `"disabled"` epic coder dispatch is refused `EPIC_ISOLATION_DEGRADED`. |
 | `merge_strategy` | `"merge" \| "rebase" \| "cherry-pick"` | `"merge"` | Branch merge strategy after lane worktree completion. |
 | `worktree_dir` | string | _(none)_ | Optional user-specified worktree directory override. When set, worktrees are created under this path instead of the default `<project>/.swarm-worktrees/<sessionId>/<laneId>` (issue #2527: the default base lives INSIDE the project; a start-time migration moves owned lanes from the legacy parent-level base). |
 | `deps_strategy` | `"skip" \| "copy" \| "link"` | `"skip"` | How to handle `node_modules` when provisioning a lane worktree. `"skip"` (default) does not copy — the lane runs without host packages. `"copy"` uses `cpSync` to duplicate `node_modules`. `"link"` creates symlinks (POSIX) or junctions (Windows). |
@@ -2530,71 +2577,66 @@ The execution profile controls plan-scoped execution preferences. MODE: PLAN dra
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `parallelization_enabled` | boolean | `false` (schema) / `true` (new plans, v8) | Enable parallel task execution within phases (composes with Lean Turbo). **v8 (#1674):** new plans created via `save_plan` default to `true`; the execution gate enforces serial automatically when the active phase's pending tasks are not provably file-disjoint. Existing plans are unchanged on upgrade. Opt out per-plan with `parallelization_enabled: false`. |
-| `max_concurrent_tasks` | number | `10` | Maximum tasks that may run concurrently when `parallelization_enabled: true` (1–64) |
+| `parallelization_enabled` | boolean | `false` (schema) / `true` (new plans, v8) | Enable parallel task execution within phases (composes with Lean Turbo). **v8 (#1674):** new plans created via `save_plan` default to `true`; the execution gate enforces serial automatically when the active phase's pending tasks are not provably file-disjoint. Existing plans are unchanged on upgrade. Opt out per-plan with `parallelization_enabled: false`. While an epic is open the active `epic_next_wave` wave decides concurrency instead (this flag is not consulted). |
+| `max_concurrent_tasks` | number | `10` | Maximum tasks that may run concurrently when `parallelization_enabled: true` (1–64). Not used while an epic is open: the wave width is `turbo.lean.max_parallel_coders` (default 4; 1 in a non-git project) |
 | `council_parallel` | boolean | `true` | Allow council review phases to run council members in parallel |
 | `auto_proceed` | boolean | `false` | Skip the "Ready for Phase N+1?" prompt and advance automatically at phase boundaries |
 | `commit_after_each_completed_task` | boolean | `false` | Create an advisory, idempotent checkpoint after a task completes and all pre-commit gates pass |
 
 **Auto-proceed:** When `true`, the swarm advances from one phase to the next without asking for confirmation. The session override (`/swarm auto-proceed on|off`) always takes precedence over the plan default. The architect sees the effective value via an injected `AUTO PROCEED STATUS` banner. The first-boundary nudge offers to enable it once per session when the plan default is `false` and no session override is set.
 
-### `turbo.epic` — Epic Mode settings
+### `epic` — Epic Mode settings
 
-Epic Mode is an optional execution mode that augments Lean Turbo with autonomous, coupling-aware lane planning. With these keys at their defaults, no Epic-mode code runs and behavior is identical to Lean Turbo alone. See [Epic Mode](modes.md#epic-mode-preview) for the design.
+Epic Mode is an optional, coupling-aware execution mode: once an epic is opened for an epic-sized plan, `epic_next_wave` issues the plan's tasks as concurrent waves (non-conflicting declared scopes, one task per densely coupled component, phases in order) that the architect dispatches as visible coder `Task` calls. Epic is off by default (`mode.enabled: false`; every other key only matters once it is on); see [Epic Mode](modes.md#epic-mode-preview) for the design.
+
+**Two independent opt-in master gates:**
+
+- `epic.mode.enabled` gates Epic Mode itself. Without it, `/swarm epic start` and `epic_next_wave` refuse with reason `epic-disabled-by-config`, the architect is not granted the Epic tools (`epic_next_wave`, `epic_phase_review`), and the project-scoped Epic behaviours of an open epic (required worktree isolation and commit-at-landing for epic coders, residue commits for non-coder writers, the epic refs, the `epic_phase_readiness` gate in `phase_complete`, the Epic banner) never run. `/swarm epic close|status|report|learning|prior` keep working. Epic itself is opened per plan with `/swarm epic start` (the former `/swarm epic on|off` toggles were removed).
+- `epic.cochange.enabled` gates only the git co-change conflict signal. Without it, `epic_next_wave` keeps wave members apart on declared-path conflicts only (with it, co-changing tasks also go to different waves), and `/swarm coupling` records `cochangeSignal: 'disabled-by-config'`.
+
+**No `turbo` block needed.** `epic` is a top-level block; Epic Mode is its own mode, not a Turbo overlay. (Epic still reads `turbo.lean.max_parallel_coders` for a git epic's wave width when a Lean block is configured — default 4.)
+
+**Legacy path `turbo.epic` (still accepted, no removal planned).** Before Epic v2 C9 this block lived under `turbo.epic`, inside a `turbo` block that had to declare a valid `strategy`. The loader now moves a `turbo.epic` block to top-level `epic` before validation, so it works with or without `turbo.strategy`. The move happens in each config file before the user and project files are merged. Within a file, top-level `epic` wins for each key it sets (a per-key deep merge), and the legacy block fills in the rest. Across files the usual precedence applies (project over user), whichever path each file used. A `turbo` block that held only `epic` is dropped after the move, and any other `turbo` keys are left as they are. The loader logs one warning (`turbo.epic is deprecated — move it to top-level epic`) whenever any file has `turbo.epic`. `/swarm config doctor` reports `legacy-epic-config-path` for each such file (report-only, with no automatic fix) and validates the file as the loader does, so a strategy-less legacy block raises no `turbo.strategy` error, and a problem inside it is reported at its `turbo.epic.*` path.
+
+**Editor validation.** The JSON schema marks `turbo.epic` as `deprecated`, but it still describes `turbo` as requiring `strategy`. An editor therefore flags a strategy-less legacy `turbo` block that the plugin itself accepts. Move the block to top-level `epic` to clear it.
+
+**Invalid values.** An invalid `epic` value (wrong type, unknown key) goes through the loader's standard validation recovery, like any other known key: the offending key or section is dropped with a warning, and the rest of the config is kept. Keys recovered from a legacy block are labelled `(from turbo.epic)` in the warning and in the recovery metadata.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal. With this off, the module is dormant and no Epic-mode code runs in any flow. |
+| `mode.enabled` | boolean | `false` | Master gate for Epic Mode (see above). |
+| `mode.activation_threshold` | number | `0.3` | **Intra-component density threshold** (Epic v2 C5 — new meaning). `epic_next_wave` splits a phase's pending tasks into conflict components (path ∪ co-change); a component whose density (conflicting pairs / all pairs inside it) exceeds this value is `serial-component` and contributes one task per wave, otherwise its non-conflicting tasks share waves. Range 0–1: lower serializes more clusters; `1` keeps tasks apart only where they conflict. See [Wave composition](modes.md#the-epic_next_wave-flow). |
+| `mode.min_commits_for_signal` | — | — | **Retired** (Epic v2 C5). Accepted and ignored — stripped before validation, read by nothing — with a precise "retired" warning from the loader (once, `/swarm diagnose`) and a `retired-config-key` finding from `/swarm config doctor`, instead of an unrecognized-key `stripped_keys` recovery. Marked `deprecated` in the JSON schema. Remove it. |
+| `cochange.enabled` | boolean | `false` | Master gate for the co-change conflict signal (see above). |
 | `cochange.threshold` | number | `0.6` | NPMI floor (range `[-1, 1]`) for a file pair to be treated as historically co-changing. Stricter than `co_change_analyzer`'s discovery default (`0.5`). |
 | `cochange.min_co_changes` | number | `5` | Minimum raw co-change count required before NPMI is considered, to suppress small-sample noise. Stricter than the analyzer's discovery default (`3`). |
+| `learning.enabled` | boolean | `true` | Master gate for Epic learning (Epic v2 C6): learned co-writes (a task that declared D but also wrote f makes later tasks declaring D conflict with tasks on f — planner analysis only, never write authorization) and the decaying hot set (files with excess incidents — undeclared writes, merge conflicts, Stage B failures, rework, reopens — over clean exposures, minus the writes its strongest learned co-writer already explains; a task declaring one runs alone). Learned per epic (posterior, updated at each wave close) and merged at close into the project prior `.swarm/epic-prior/learning.json`, which survives `/swarm close`. Off ⇒ nothing is learned, read, or written. Inert unless `mode.enabled` is true. See [Learning across waves and epics](modes.md#learning-across-waves-and-epics). |
+| `learning.decay_per_epic` | number | `0.7` | Multiplier (0–1) applied to the project prior at every epic close that learned something (an epic with no learning signal leaves the prior untouched). |
+| `learning.half_life_days` | number | `60` | Half-life (days, > 0) of learned evidence, counted in whole half-lives when it is read: full weight until a half-life has passed, then halved per half-life. |
+| `learning.hot_excess` | number | `0.25` | A file is hot when its incident rate exceeds the prior mean 0.1 by more than this (0–1), with at least one full incident. |
+| `calibration` | — | — | **Retired** (Epic v2 C6): the whole Epic v1 block (`enabled`, `floor_threshold`, `tighten_step`, `loosen_step`, `loosen_window`) is accepted and ignored with a "retired" loader warning naming `epic.learning` and a `retired-config-key` finding from `/swarm config doctor`; marked `deprecated` in the JSON schema. `calibration.enabled: false` does not disable learning — set `learning.enabled: false`. Remove it. |
+| `sizing.min_tasks` | integer | `6` | `/swarm epic start` refuses (`not-epic-sized`, reason `too-few-tasks`) a plan with fewer pending tasks. |
+| `sizing.min_scope_coverage` | number | `0.8` | Minimum share (0–1) of pending tasks with a live declared scope or `files_touched` (`insufficient-scope-coverage`). |
+| `sizing.min_effective_speedup` | number | `1.25` | Minimum Amdahl speedup S_eff = 1 / ((1 − coder_fraction) + coder_fraction / S), with S = pending tasks / serial steps of a dry run of the Epic component planner — the one `epic_next_wave` uses, with the same learned hot files and co-writes (from the project prior), co-change signal and density threshold (`insufficient-parallelism`). Must be ≥ 1. |
+| `sizing.coder_fraction` | number | `0.6` | Share (0–1) of a task's time that parallel coders overlap; QA and architect turns stay serial. |
+| `commit_policy` | `"epic-branch"` \| `"current-branch"` | `"epic-branch"` | Git projects. `epic-branch`: `/swarm epic start` checks out `swarm/epic/<epicKey>` (refusing a detached HEAD or a leftover branch of the same name), every Epic commit goes there, `epic_next_wave` blocks with `EPIC_BRANCH_MISMATCH` while HEAD is elsewhere, and `/swarm epic close` lands it onto the original branch (`--land squash` default — staged, uncommitted; `merge`; `none`). `current-branch`: commits stay on the branch current at start; close lands nothing. See [Epic branch and landing](modes.md#epic-branch-and-landing). |
+| `retain_refs` | boolean | `false` | Git projects. Keep the epic's refs `refs/swarm/epics/<epicKey>/{base,waves/<seq>,tasks/<id>}` after `/swarm epic close` (and `/swarm close` finalization). Off: close deletes them after the close report recorded their values. The refs are never pushed or cloned by default (`--mirror` copies them). See [Commits: landing, residue, refs](modes.md#commits-landing-residue-refs). |
+| `phase_review.timeout_ms` | integer | `300000` | Per-role dispatch budget for `epic_phase_review` (the phase reviewer, then the critic), 10 000 – 1 800 000 ms — the same bounds and default as `auto_review.timeout_ms`. An empty-response retry shares the budget. A timed-out role is recorded fail-closed as REJECTED and the review is re-run; raise it for slow models. |
 
-`turbo.epic` is independent of `turbo.strategy` — the keys are accepted under both `"standard"` and `"lean"` strategies. The block is purely additive; omitting it leaves Lean Turbo, Turbo, and Full-Auto behavior unchanged.
+`/swarm epic start --force` opens an epic for a plan that is not epic-sized and records it as forced (in the epic record and its [scorecard](modes.md#scorecard-and-report)). The `sizing` block is `.strict()` like the rest of `epic`: an unknown key fails validation (retired keys, listed above, are the only keys accepted and ignored).
 
-**Example** — Enable the co-change signal with conservative defaults:
+**Example** — Enable Epic Mode with the co-change signal:
 
 ```json
 {
-  "turbo": {
-    "strategy": "lean",
-    "lean": { "max_parallel_coders": 4 },
-    "epic": {
-      "cochange": {
-        "enabled": true,
-        "threshold": 0.6,
-        "min_co_changes": 5
-      }
-    }
+  "epic": {
+    "mode": { "enabled": true, "activation_threshold": 0.3 },
+    "cochange": { "enabled": true, "threshold": 0.6, "min_co_changes": 5 }
   }
 }
 ```
 
-### `turbo.epic.mode` — Epic Mode activation gate (Capability C, preview)
-
-Epic Mode auto-decides per plan whether to invoke Lean Turbo's parallel planner or fall back to serial, based on the coupling coefficient `p`. See [Epic Mode (preview)](modes.md#capability-c--activation-gate-and-the-epic-mode-itself) for the design.
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `mode.enabled` | boolean | `false` | Master gate for Epic Mode activation. When off, no Epic-mode runtime code runs. |
-| `mode.activation_threshold` | number | `0.3` | Plan-wide `p` ceiling. Plans with `p ≤ activation_threshold` are eligible for parallel promotion; plans above are forced serial. |
-| `mode.min_commits_for_signal` | number | `20` | Greenfield rule. A co-change history with fewer than this many commits is treated as too sparse — promotion is blocked regardless of `p`. |
-
-**Example** — Enable Epic Mode with a strict threshold and dense-history requirement:
-
-```json
-{
-  "turbo": {
-    "strategy": "lean",
-    "epic": {
-      "mode": {
-        "enabled": true,
-        "activation_threshold": 0.2,
-        "min_commits_for_signal": 50
-      },
-      "cochange": { "enabled": true }
-    }
-  }
-}
-```
+Then run `/swarm epic start`. For the maintainer view (module map, invariants, seams), see [`src/epic/README.md`](../src/epic/README.md).
 
 ## QA gates reference
 

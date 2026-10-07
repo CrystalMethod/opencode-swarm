@@ -254,6 +254,9 @@ describe('diagnose settlement categories (issue #2665)', () => {
 		expect(detail).toContain('no settlement WAL');
 		// Healthy task: count only — no per-task category line for 3.1.
 		expect(detail).not.toContain('task 3.1 [');
-		expect(detail).toContain('2 healthy settlement(s)');
+		// #2828 review: a wedged task is never also counted healthy — of the
+		// two terminal WALs here, task 2.1 is the live_wedge listed above, so
+		// only 3.1 counts toward the healthy total.
+		expect(detail).toContain('1 healthy settlement(s)');
 	}, 60_000);
 });

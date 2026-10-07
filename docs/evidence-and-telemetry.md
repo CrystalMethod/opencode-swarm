@@ -174,12 +174,35 @@ package root, never an absolute user path.
 
 **Parallel foundation:** `evidence_lock_acquired`, `evidence_lock_contended`, `plan_ledger_cas_retry`
 
-**PRM:** `prm_pattern_detected`, `prm_course_correction_injected`, `prm_escalation_triggered`, `prm_hard_stop`, `prm_hard_stop_delivered`
+**PRM:** `prm_pattern_detected`, `prm_course_correction_injected`, `prm_escalation_triggered`, `prm_hard_stop`, `prm_hard_stop_delivered`, `prm_hard_stop_terminal`
 
 `prm_hard_stop` records that an escalation reached the maximum (emitted by the
 escalation tracker); `prm_hard_stop_delivered` records that the denial actually
 reached the agent. A trigger with no matching delivery means the containment
-armed but never got through.
+armed but never got through. `prm_hard_stop_terminal` is a third, distinct
+record: the episode transitioned to the terminal handoff state (after one
+further detection past the hard stop) and entered its cooldown; the bounded
+episode state machine, per-ladder counting, and cooldown semantics are
+specified in `docs/configuration.md` (Hard-stop episode state machine).
+
+#### Record populations and denominators (audit-facing terms)
+
+The counters above answer different questions because they count different
+populations. A trigger row, a delivered denial, a terminal event, a host tool
+error, and a completed task are not interchangeable, and none of them is a
+causal task-failure rate without its bounded attempt denominator:
+
+| Population | Record source | What it counts | Denominator required for any rate |
+|---|---|---|---|
+| Hard-stop trigger | `prm_hard_stop` telemetry | An escalation ladder reached its maximum for one episode | Pattern detections (`prm_pattern_detected`) for that ladder, bounded by a stated time window or episode |
+| Delivered denial | `prm_hard_stop_delivered` telemetry | The denial actually reached the agent (thrown by the tool-before guardrail) | Matching triggers in the same episode window |
+| Terminal event | `prm_hard_stop_terminal` telemetry | An episode transitioned to terminal handoff and cooldown | Episodes that reached a hard stop in the window |
+| Host tool error | Tool-invocation failure records — the `max_consecutive_errors` circuit-breaker accounting in `src/hooks/guardrails/tool-before.ts` (documented in `docs/installation.md`); surfaces as `hard_limit_hit` telemetry at threshold (`gate_failed` is a separate event used by plan-ledger task gates, not the tool-error circuit) | Individual tool invocations that failed in the host | Total tool invocations in the window |
+| Completed task | Plan-ledger task status records (emitted as `task_state_changed` telemetry) | Tasks that reached completed status | All tasks attempted in the window |
+
+Two cautions when quoting these numbers: summing counters across populations
+produces a meaningless figure, and any cache manifest or coverage capture is a
+point-in-time artifact — it does not bind every historical runtime episode.
 
 **Environment:** `environment_detected`, `auto_oversight_escalation`, `heartbeat`
 
@@ -189,11 +212,12 @@ Every `delegation_end` event includes token and cost fields:
 
 | Field | Description |
 |---|---|
-| `tokens_input` | Input tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_output` | Output tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_reasoning` | Reasoning tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_cache` | Cache-read/input tokens attributed to the delegation, or `0` when unavailable |
+| `tokens_input` | Input tokens attributed to the delegation, or `null` when the producer held no value (unknown — never fabricated as 0; issue #2789) |
+| `tokens_output` | Output tokens attributed to the delegation, or `null` when unknown |
+| `tokens_reasoning` | Reasoning tokens attributed to the delegation, or `null` when unknown |
+| `tokens_cache` | Cache-read/input tokens attributed to the delegation, or `null` when unknown |
 | `cost_usd` | Reported or estimated USD cost, or `null` when unavailable |
+| `unknown_usage_delegations` | `/swarm costs --json` only: count of delegations whose four token axes were all unknown. Note this includes a `cost_source: 'reported'` line that carried no usage evidence — "reported" attests the cost basis, not the token axes |
 | `cost_source` | `reported`, `estimated`, or `unavailable` |
 | `model` | Model id used for attribution when known |
 | `gate` | Delegation gate/reason when known |
@@ -272,6 +296,12 @@ Written to `.swarm/evidence/{phase}/curator-findings.json` when the curator LLM 
 ```
 
 Written atomically (tmp+rename) only when findings are present. Verdict values: `applied`, `ignored`, `violated`, `not_applicable`.
+
+---
+
+## Epic Phase Review
+
+While an epic is open (Epic Mode, opt-in `epic.mode.enabled`), `epic_phase_review` dispatches a read-only phase reviewer and then a phase critic itself, and writes `.swarm/evidence/{phase}/epic-phase-review.json` (`src/epic/phase-readiness.ts`). It records the phase, review time, the binding (plan id, plan structure hash, phase task ids and digests, task-evidence digest), and the reviewer and critic verdicts (critic `null` when the reviewer did not approve). Verdicts are parsed from the agents' own responses, never self-reported. The `phase_complete` gate `epic_phase_readiness` requires both to be APPROVED, bound to the current plan and task evidence, and at most 24 h old. Block codes: `EPIC_PHASE_REVIEW_MISSING`, `EPIC_PHASE_REVIEW_INVALID`, `EPIC_PHASE_REVIEWER_NOT_APPROVED`, `EPIC_PHASE_CRITIC_MISSING`, `EPIC_PHASE_CRITIC_NOT_APPROVED`, `EPIC_PHASE_REVIEW_STALE`, `EPIC_PHASE_PLAN_UNREADABLE`, `EPIC_PHASE_WAVES_OPEN`. Epic Mode emits no telemetry events of its own; use `/swarm epic status` and `/swarm epic report` instead.
 
 ---
 

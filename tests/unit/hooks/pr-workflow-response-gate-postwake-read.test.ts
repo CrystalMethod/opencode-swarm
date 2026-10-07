@@ -5,6 +5,7 @@ import { _test_exports as workflowInternals } from '../../../src/hooks/pr-workfl
 import {
 	_internals,
 	createPrWorkflowResponseGate,
+	_internals as responseGateInternals,
 } from '../../../src/hooks/pr-workflow-response-gate.js';
 import {
 	idleEventFor,
@@ -102,4 +103,18 @@ describe('idle handler post-wake read — regression: read failure must not wipe
 		const budgetAfterSecondWake = gate._inspectWakeBudget('flaky-read-session');
 		expect(budgetAfterSecondWake?.totalWakes).toBe(2);
 	});
+});
+
+// Issue #2601: stub the wake-path skill-contract verifier (fs-bound) so
+// fake-timer wake assertions stay deterministic; clean-host result is [].
+const __originalSkillContractVerifier =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
+beforeEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
+});
+
+afterEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		__originalSkillContractVerifier;
 });

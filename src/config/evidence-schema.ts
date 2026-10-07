@@ -291,6 +291,12 @@ export const BuildEvidenceSchema = BaseEvidenceSchema.extend({
 				duration_ms: z.number().int(),
 				stdout_tail: z.string(),
 				stderr_tail: z.string(),
+				// Present only when the process could not be created at all
+				// (issue #3050). Declared here so a bundle re-read through
+				// EvidenceBundleSchema keeps the distinction; the runs element is
+				// a plain (strip-mode) z.object, so an undeclared key would be
+				// silently dropped on that read path.
+				spawn_error: z.string().optional(),
 			}),
 		)
 		.default([]),
@@ -352,6 +358,22 @@ export const SecretscanEvidenceSchema = BaseEvidenceSchema.extend({
 	scan_directory: z.string().optional(),
 	files_scanned: z.number().int().min(0).default(0),
 	skipped_files: z.number().int().min(0).default(0),
+	/**
+	 * #2918 vacuous-coverage predicate inputs (optional and additive):
+	 * skips attributable specifically to scan-policy extension exclusion, and
+	 * the raw declared file count backing the scan. Legacy evidence without
+	 * them decodes and validates unchanged — downstream consumers treat a
+	 * missing field as non-vacuous (previous fail-closed behavior).
+	 */
+	policy_skipped_files: z.number().int().min(0).optional(),
+	requested_files: z.number().int().min(0).optional(),
+	/**
+	 * #3107 feedback: files suppressed by .secretscanignore patterns on the
+	 * explicit-files path (audit/diagnosability counter; never part of the
+	 * vacuous-coverage predicate). Legacy evidence without it decodes
+	 * unchanged.
+	 */
+	ignored_files: z.number().int().min(0).optional(),
 	incomplete_files: z.number().int().min(0),
 	incomplete_paths: z.array(
 		z.object({

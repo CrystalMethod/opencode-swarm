@@ -55,6 +55,7 @@ await importCheckpoint()
 **Do NOT use for:**
 - Ledger corruption (use rebuild/import instead)
 - Missing plan files (use `importCheckpoint()` programmatically or restore from `.swarm/plan-export/SWARM_PLAN.json` instead)
+- Ending or repairing an open epic (Epic Mode): reset-session leaves it untouched because an epic belongs to the plan, not the session. Use `/swarm epic status` and `/swarm epic close [--abandon]` instead (see section 12).
 
 ---
 
@@ -185,15 +186,19 @@ the async pending timeout. Treat stale lanes as missing advisory evidence, then
 rerun only the affected read-only lanes under a new batch. Do not treat stale
 advisory lanes as completed gate evidence.
 
-**Cancelled batch:** if `cancel_pending: true` was used, the cancelled rows are
-terminal. Relaunch a new batch if the advisory evidence is still needed. A
-cancelled advisory batch is not a failure of any workflow gate.
+**Cancelled batch:** lanes cancelled through the authorized surface
+(`cancel_lane_batch` with `confirm: true` and a reason) are terminal with the
+distinct `operator_cancelled` class. `cancel_pending` on the collector no
+longer cancels anything (observation-only; it returns typed refusal guidance).
+Relaunch a new batch if the advisory evidence is still needed. A cancelled
+advisory batch is not a failure of any workflow gate.
 
 **Orphaned pending delegation:** if a parent session was closed or the child
 session disappeared, run `collect_lane_results` with `wait: false` to collect any
-finished lanes, then run it again with `cancel_pending: true` to mark the
-remaining orphaned rows as cancelled. Relaunch any required advisory lanes with a
-fresh `batch_id`.
+finished lanes, then cancel the remaining orphaned rows explicitly with
+`cancel_lane_batch` (`confirm: true` plus a reason; a session the host
+affirmatively does not know may be cancelled, live busy/retry lanes are
+refused). Relaunch any required advisory lanes with a fresh `batch_id`.
 
 **Cross-session mismatch:** `collect_lane_results` filters by the current parent
 session when the tool context supplies one. If a batch was launched in a
@@ -326,6 +331,30 @@ carries the launch baseline that attributes the coder's changes to the task;
 deleting it discards attribution and can strand review debt. `/swarm diagnose`
 reports every non-terminal settlement with its owner liveness and the exact
 remediation.
+
+---
+
+## 12. Epic Mode Recovery (preview, opt-in)
+
+These apply only when `epic.mode.enabled: true` and an epic is open for the current plan (`/swarm epic start`). Start every diagnosis with `/swarm epic status`: it shows the epic, its waves and phases, recorded worktree merge failures, branch mismatch, and orphaned or unreadable state, and repairs a sentinel that disagrees with the lifecycle row.
+
+**Coder refused with `EPIC_STATE_UNREADABLE`, or status reports an orphaned epic** (the plan was renamed or replaced since start): coder dispatch fails closed while the state is unreadable, and an orphaned epic no longer applies to the current plan. Run `/swarm epic close --abandon`; on unreadable state it deletes the lifecycle rows without parsing them. It never lands.
+
+**Wave will not close (`blocked: merge-failed`):** a completed task's isolated coder worktree failed to merge back, so its work is stranded outside the epic branch. `/swarm epic status` lists each failure as blocking, undated, or stale, with the remedy. Recover the lane through `/swarm lanes`. If the work is already in the main tree, or the record belongs to an earlier plan, clear it with `/swarm epic clear-merge-failure <taskId> --confirm` (without `--confirm` it only previews). Do not remove that worktree by hand before its work has landed.
+
+**Coder refused with `EPIC_ISOLATION_DEGRADED`:** in a git epic every coder must run in an isolated worktree, and isolation could not be provided (provisioning failed, the SDK client was unavailable, or `worktree.policy` is `"disabled"`). Fix the cause and retry, or end the epic with `/swarm epic close --abandon`.
+
+**`epic_next_wave` blocks `epic-branch-mismatch`:** HEAD is not the epic branch. Commit or stash, then `git checkout swarm/epic/<epicKey>`.
+
+**`epic_next_wave` blocks `landing-index-dirty` (`EPIC_LANDING_INDEX_DIRTY`):** the primary checkout has staged changes. Unstage them (`git restore --staged -- <files>`), then re-dispatch the task.
+
+**Task refs unreachable after a rebase or amend (`predecessor-missing`):** run `/swarm epic status --repair-refs`.
+
+**`/swarm epic close` landing conflict:** the landing is rolled back and the epic stays `closing`. Rerun `/swarm epic close` to resume, or land by hand (`git merge --squash swarm/epic/<epicKey>`, resolve, commit), then finish with `/swarm epic close --land none`.
+
+**Unreadable project prior (`.swarm/epic-prior/learning.json`):** epics plan without learned signals until you clear it with `/swarm epic prior reset` (it previews and prints a single-use confirm token).
+
+`/swarm reset-session` does not touch an open epic — an epic belongs to the plan, not the session. See [Epic Mode](../modes.md#epic-mode-preview).
 
 ---
 

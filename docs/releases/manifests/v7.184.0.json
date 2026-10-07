@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.0",
+  "tagCommit": "4175c61e27b3a913705958c6ce9d4867cdaf8048",
+  "targetCommitish": "4175c61e27b3a913705958c6ce9d4867cdaf8048",
+  "releaseBodySha256": "95154f358de6f3e914a282c9e62b9c93b32af56d78cc468b1e6cb4e9c6fbebdf",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2504-v8-defaults-governance.md",
+      "sha256": "1df28619327b0c6fa2a98d39ec4f6087a6323a7c26511678a00f6565c776aa00"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2759-prompt-cache-prefix.md",
+      "sha256": "4987ce9128d7524aea98cc59e5167dfaffda2a7b9a2e6ae69cef30c250914a6a"
+    }
+  ]
+}

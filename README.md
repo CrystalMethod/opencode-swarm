@@ -28,7 +28,7 @@ bunx opencode-swarm install
 
 ### Why Swarm?
 
-Most AI coding tools let one model write code and ask that same model whether the code is good. That misses too much. Swarm separates planning, implementation, review, testing, and documentation into specialized internal roles — and enforces gated execution so agents never mutate the codebase in parallel.
+Most AI coding tools let one model write code and ask that same model whether the code is good. That misses too much. Swarm separates planning, implementation, review, testing, and documentation into specialized internal roles — and enforces gated execution so agents never mutate the codebase in parallel unless their scopes are proven disjoint (v8 parallel lanes, Epic waves), and then each in its own isolated worktree.
 
 ### Key Features
 
@@ -43,8 +43,10 @@ Most AI coding tools let one model write code and ask that same model whether th
 - 🔍 **DEEP_DIVE Protocol** — High-rigor, on-demand read-only codebase audit via specialized skills
 - 🔬 **External Skill Curation Pipeline** — Opt-in discovery, quarantine, evaluation, and promotion of external skill candidates from configured sources (disabled by default; enable via `external_skills.curation_enabled: true` in config). Includes 7 tools: `external_skill_discover`, `external_skill_list`, `external_skill_inspect`, `external_skill_promote`, `external_skill_reject`, `external_skill_delete`, `external_skill_revoke`. Candidates pass through a 3-gate validation pipeline before evaluation: **prompt injection scan** (12 regex patterns), **unsafe instruction scan** (25 patterns), and **provenance integrity check** (SHA-256, timestamp, URL, publisher, and hash verification).
 - 🎯 **Governed Skill Optimizer** — Manually-activated, single-skill optimizer (`/swarm skill-opt plan|run|status|diff|approve|reject|rollback|history`) that drives one allowlisted `SKILL.md` candidate at a time through deterministic draft → smoke → evaluation-substrate validation → manual approval → atomic activation/rollback. Bounded, restartable, reversible, and unable to mutate source/harness/security surfaces. Disabled by default (`skill_opt.enabled: false`); see [docs/skill-optimizer.md](docs/skill-optimizer.md).
+- 🌊 **Epic Mode (opt-in preview)** — one plan = one epic, run phase by phase as parallel waves of tasks whose declared scopes don't conflict. The delegation gate enforces the active wave; in git projects each coder works in an isolated worktree on an epic branch that `/swarm epic close` squash-lands as staged changes. Per-task QA always runs, and a phase reviewer + critic gate (`epic_phase_review`) runs before `phase_complete`. Epic learns per-file write risk across epics, suggests plan restructurings with a predicted speedup, and reports a scorecard (`/swarm epic report`). Enable with `epic.mode.enabled: true`; see [docs/modes.md](docs/modes.md#epic-mode-preview).
 - 🔄 **Phase completion gates** — completion-verify and drift verifier gates enforced before phase completion
 - 🔁 **Resumable sessions** — all state saved to `.swarm/`; pick up any project any day
+- 🔀 **GitLab as a first-class forge** (#2733) — MR and issue URLs (`https://<gitlab-host>/owner/repo/-/merge_requests/N`, `/-/issues/N`) are accepted by `/swarm pr-review`, `pr-feedback`, `pr subscribe/unsubscribe`, `ci-monitor`, publication recording, and issue ingestion, with self-hosted instance hosts derived from the remote or `forge.base_url` (config `forge: { provider, base_url }`, default `auto`; ambiguous remotes fail closed). Every URL-security control (HTTPS-only, private/localhost rejection, IDN protection, credential stripping) applies identically to GitLab. The `glab` binary resolves through the same hardened resolver contract as `gh` (`OPENCODE_SWARM_GLAB_BINARY` env override). Honest capability reporting: GitLab does not synthesize GitHub's `statusCheckRollup`/`reviewDecision`/`mergeStateStatus` — those surface an explicit unavailable result instead of a fabricated value, and glab-backed live MR polling is tracked as follow-up issue [#2882](https://github.com/ZaxbyHub/opencode-swarm/issues/2882).
 - 🖥️ **PR Monitor** — GitHub PR subscription and background polling via `gh` CLI; delivers real-time CI, review, and merge status updates via the AutomationEventBus (FR-001, opt-in via `pr_monitor.enabled: true`). Subscribe with `/swarm pr subscribe <pr-url|owner/repo#N|N>`; unsubscribe with `/swarm pr unsubscribe <pr-url|owner/repo#N|N>`; check status with `/swarm pr status`. With `auto_pr_feedback: true`, CI failures and merge conflicts mechanically activate PR_FEEDBACK only when no other workflow owns the session; otherwise they are durably queued for a later round.
 - 🌐 **13 full language profiles** (TypeScript, JavaScript, Python, Go, Rust, Java, Kotlin, C/C++, C#, Ruby, Swift, Dart, PHP) with **tree-sitter parse validation across 20 grammars** (adds CSS, Bash, PowerShell, INI, Regex — and `.tsx` / `.c` aliases) — extending: see [docs/adding-a-language.md](docs/adding-a-language.md)
 - 🛡️ **Built-in security** — SAST, secrets scanning, dependency audit per task
@@ -123,6 +125,8 @@ Swarm then:
 * architect runs regression sweep
 * failures loop back with structured feedback
 
+   With Epic Mode on, `epic_next_wave` issues each phase as waves of conflict-free tasks (the same per-task pipeline runs inside every wave), and `epic_phase_review` runs a reviewer + critic over the whole phase before `phase_complete`.
+
 7. After each phase, docs and retrospectives are updated.
 
 All project state lives in `.swarm/` — plans, evidence, context, knowledge, and telemetry. Resumable by design. If `.swarm/` already exists, the architect goes straight into **RESUME** → **EXECUTE** instead of repeating discovery.
@@ -141,10 +145,13 @@ Swarm has two independent mode systems:
 | **Turbo** | Medium | Fast | Rapid iteration; skips Stage B gates for non-Tier-3 files |
 | **Lean Turbo** | High | Fast | Parallel lanes for non-conflicting tasks (up to `max_parallel_coders` coders) |
 | **Full-Auto** | Deterministic policy + critic oversight | Fast | Unattended multi-interaction runs |
+| **Epic** (opt-in) | High — per-task QA always runs; Turbo stays off | Fast on plans with many independent tasks | Large plans: one plan = one epic, run phase by phase as parallel waves of tasks with disjoint scopes |
 
 **Auto-proceed** — a session toggle (`/swarm auto-proceed [on|off]`) that skips the "Ready for Phase N+1?" prompt at phase boundaries. Defaults to `false`; set as a plan default via `execution_profile.auto_proceed` during QA GATE SELECTION. Session override always wins. Independent of Full-Auto.
 
 Full-Auto reduces approval friction by deterministically allowing safe operations (read-only tools, in-scope writes, safe shell) and routing every ambiguous or high-risk action (writes to plugin/build/guardrail paths, network, dependency changes, plan/phase mutations, subagent delegation) through the read-only `critic_oversight` agent before it executes. Denials are returned to the agent as structured signals so it can choose a safer path; repeated denials pause the run; phase completion requires an APPROVED oversight record. See [docs/modes.md](docs/modes.md#full-auto) for `mode`, `permission_policy`, `denials`, and `oversight` config keys, fail-closed semantics, and recovery from a paused run.
+
+Epic binds to the current plan and needs an OpenCode 1.x host for now (on OpenCode 2 the plugin has no SDK client yet, so `/swarm epic start` refuses with `host-unsupported`). `/swarm epic start` also refuses plans too small to benefit and suggests Balanced. The `epic_next_wave` tool then dispatches each phase as waves of tasks whose declared scopes don't conflict; in a git project each coder works in an isolated worktree on an epic branch, and `/swarm epic close` squash-lands the work as staged changes for you to review. Every task in a wave still runs the full per-task QA pipeline (Stage A and Stage B). Epic learns which files tasks tend to write together and uses it to plan later waves and epics. See [docs/modes.md](docs/modes.md#epic-mode-preview); maintainers start with [src/epic/README.md](src/epic/README.md).
 
 **Project mode** — persistent via `execution_mode` config key:
 
@@ -154,7 +161,7 @@ Full-Auto reduces approval friction by deterministically allowing safe operation
 | `balanced` (default) | Standard hooks |
 | `fast` | Skips compaction service — for short sessions under context pressure |
 
-Switch session modes with `/swarm turbo [on|off]` or `/swarm full-auto [on|off]`. Control phase-boundary auto-proceed with `/swarm auto-proceed [on|off]`. Set project mode in config. Lean Turbo is configured in `turbo.lean.*` in config and composes with all session modes. See [docs/modes.md](docs/modes.md).
+Switch session modes with `/swarm turbo [on|off]`, `/swarm full-auto [on|off]`, or `/swarm epic start|close` (Epic needs `"epic": {"mode": {"enabled": true}}` in config). Control phase-boundary auto-proceed with `/swarm auto-proceed [on|off]`. Set project mode in config. Lean Turbo is configured in `turbo.lean.*` in config and composes with all session modes. See [docs/modes.md](docs/modes.md).
 
 ---
 
@@ -277,6 +284,7 @@ Common subcommands at a glance:
 /swarm agents              # Registered agents and models
 /swarm diagnose            # Health check
 /swarm evidence [task]     # Test and review results
+/swarm epic status         # Open epic, current wave, landing state (Epic Mode)
 /swarm reset --confirm     # Clear swarm state
 ```
 
@@ -317,9 +325,9 @@ Swarm registers a roster of specialized core, optional, and conditional agents. 
 | **architect** | Orchestrates workflow, writes plans, enforces gates | Core |
 | **explorer** | Scans codebase, gathers context, maps facts | Core |
 | **coder** | Implements one task at a time (or concurrently in isolated worktrees for provably file-disjoint task groups — v8, #1674) | Core |
-| **reviewer** | Checks correctness and security | Core |
+| **reviewer** | Checks correctness and security (also reviews a whole phase under Epic Mode via `epic_phase_review`) | Core |
 | **test_engineer** | Writes and runs tests, adversarial testing | Core |
-| **critic** | Reviews plans before implementation begins | Core |
+| **critic** | Reviews plans before implementation begins (also challenges a whole phase under Epic Mode via `epic_phase_review`) | Core |
 | **critic_finding_validator** | Independently confirms, disproves, or leaves reviewer findings unverified | Core |
 | **critic_oversight** | Sole quality gate in full-auto autonomous mode | Core |
 | **sme** | Provides domain expertise guidance | Core |
@@ -406,6 +414,11 @@ graph TB
 | Resumable sessions | ✅ | ❌ | ❌ |
 | Built-in security scanning | ✅ | ❌ | ❌ |
 | Learns from mistakes | ✅ | ❌ | ❌ |
+| Parallel tasks refused at dispatch unless their scopes are conflict-free (Epic Mode) | ✅ | ❌ | ⚠️ overlap check only falls back to sequential |
+| Conflict prediction from git co-change history (Epic Mode) | ✅ | ❌ | ❌ |
+| Learns per-file risk of undeclared writes across runs (Epic Mode) | ✅ | ❌ | ❌ |
+| Plan-restructuring suggestions with predicted speedup (Epic Mode) | ✅ | ❌ | ❌ |
+| Per-epic scorecard: conflicts, rework, gate first-pass rates (Epic Mode) | ✅ | ❌ | ❌ |
 
 ---
 
@@ -420,7 +433,7 @@ No API key required. Excellent starting point:
 ```json
 {
   "agents": {
-    "coder": { "model": "opencode/minimax-m2.5-free" },
+    "coder": { "model": "opencode/nemotron-3-ultra-free" },
     "reviewer": { "model": "opencode/big-pickle" },
     "explorer": { "model": "opencode/big-pickle" }
   }
@@ -453,18 +466,35 @@ For production, mix providers by role:
 
 ### Model Fallback
 
-Automatic fallback to a secondary model on transient errors:
+Automatic fallback to a secondary model on transient errors (including provider quota exhaustion — e.g. GitHub Copilot's `429 quota exceeded` monthly limit):
 
 ```json
 {
   "agents": {
     "coder": {
       "model": "anthropic/claude-sonnet-4-20250514",
-      "fallback_models": ["opencode/gpt-5-nano"]
+      "fallback_models": ["opencode/mimo-v2.6-flash-free"]
     }
   }
 }
 ```
+
+Fallback applies to dispatched subagents and to primary (interactive) sessions
+alike. For a primary session, a fallback-eligible provider failure on one turn
+switches the session's next message to the configured fallback (sticky for the
+session; announced by a `MODEL FALLBACK:` advisory and a `model_fallback`
+telemetry event). Recovery boundaries: session end (or a new session), 30
+minutes without any message on the session, or a change to the configured
+model chain (the stale selection then reads as absent and the primary is
+retried). Switching the session's agent away from the fallback-scoped role
+suppresses the override while the other agent is active, but the prior role's
+selection persists until the idle window expires — switching back re-applies
+it. There is deliberately no in-session code escape (the host's
+model-selection surface cannot distinguish a user re-pick from the session
+selection). A one-shot `opencode run` turn that already failed cannot be
+re-driven mid-turn — the OpenCode host owns the request loop — so interactive
+(TUI/GUI) sessions pick up the fallback on their next message, while a failed
+one-shot invocation simply ends; re-run it after resolving the quota.
 
 See [docs/configuration.md](docs/configuration.md) for full configuration reference.
 
@@ -505,7 +535,7 @@ Configure via:
 }
 ```
 
-> **Note:** Some configuration fields (`max_trajectory_lines`, `escalation_enabled`) are defined in schema but not yet enforced at runtime.
+> **Note:** Both `max_trajectory_lines` and `escalation_enabled` are enforced at runtime. `max_trajectory_lines` is the one knob bounding the session trajectory store — the cold-session read, the append-path compaction, and denied-call recording all use it; `escalation_enabled` gates the escalation ladder (advisory → hard stop). Terminal/cooldown semantics live in `docs/configuration.md` (Hard-stop episode state machine).
 
 ### Persistent Memory
 
@@ -518,6 +548,10 @@ Configure via:
 **`.swarm/telemetry.jsonl`** — session observability events (fire-and-forget, never blocks execution)
 
 **`.swarm/curator-summary.json`** — phase-level intelligence and drift reports
+
+**`.swarm/epic/`** — Epic Mode: the open epic, its waves, and close reports with scorecards
+
+**`.swarm/epic-prior/`** — Epic Mode: the learned project prior and past epic reports (survives `/swarm close`)
 
 ### Guardrails & Circuit Breakers
 
@@ -555,6 +589,7 @@ Built-in tools verify every task before it ships:
 - **sast_scan** — 68 security rules across 8 languages (offline)
 - **sbom_generate** — Dependency tracking (CycloneDX)
 - **quality_budget** — Complexity, duplication, test ratio limits
+- **epic_phase_review** — Epic Mode only: an APPROVED phase reviewer, then an APPROVED phase critic, before `phase_complete`
 
 These quality gates run locally. No Docker is required. Config-gated features such as General Council web search can make external API calls only when you enable them and provide a Tavily or Brave Search key.
 
@@ -565,11 +600,12 @@ The Context Budget Guard monitors how full the model's context window is getting
 ### Default Behavior
 
 - **Enabled automatically** — No setup required. Swarm starts tracking context usage right away.
-- **What it measures** — The estimated total tokens across **all** messages in the conversation (every text part of every message — your prompts, the model's responses, and injected content alike), divided by the model's context window. It does **not** measure only swarm-injected content, and it does **not** read `max_injection_tokens`.
+- **What it measures** — The total tokens across **all** messages in the conversation (every text part of every message — your prompts, the model's responses, and injected content alike), divided by the model's context window. It does **not** measure only swarm-injected content, and it does **not** read `max_injection_tokens`. Token counts come from one canonical estimator, `estimateTokens` in `src/hooks/utils.ts` (flat ~0.33 tokens/char), unless provider-reported usage is available for the turn, which stays authoritative.
 - **Where the window comes from** — Your **live model**, not a constant. Resolution order: an explicit `context_budget.model_limits` entry (`"<provider>/<model>"`, then `"<model>"`, then `"default"`) → the context window the OpenCode host reports for the model you are running (`model.limit.context`, already provider-specific, so a Copilot entry and a first-party entry for the same model resolve differently) → a static fallback table → `128000` as a last resort when nothing else is known. Set a `model_limits` entry only if you want a **smaller working budget** than your model's real window.
-- **Warning threshold (0.7 ratio)** — When total conversation tokens reach 70% of the model context window (e.g. ~89,600 on a 128k model, ~700,000 on a 1M model), the architect receives a one-time advisory warning. This is informational — execution continues normally.
-- **Critical threshold (0.9 ratio)** — When total conversation tokens reach 90% of the model context window (e.g. ~115,200 on a 128k model, ~900,000 on a 1M model), the architect receives a critical alert with a recommendation to run `/swarm handoff`. This is also one-time only.
-- **Non-nagging** — Alerts fire once per session, not repeatedly. You won't be pestered every turn.
+- **Warning threshold (0.7 ratio)** — When total conversation tokens reach 70% of the model context window (e.g. ~89,600 on a 128k model, ~700,000 on a 1M model), the architect receives an advisory warning recommending a summary offload to `.swarm/context.md`. This is informational by itself — execution continues normally.
+- **Critical threshold (0.9 ratio)** — When total conversation tokens reach 90% of the model context window (e.g. ~115,200 on a 128k model, ~900,000 on a 1M model), the architect receives a critical alert recommending `/swarm handoff` — and, when `enforce` is `true` (the default), the guard also prunes the outgoing request (see the next bullet).
+- **Hard enforcement (default on)** — With `enforce: true` (default), crossing the critical threshold masks eligible completed tool outputs (those older than `recent_window` turns OR longer than `tool_output_mask_threshold` characters, in turns not protected by `preserve_last_n_turns`) and prunes lower-priority messages toward `prune_target` of the window (best-effort: pruning stops at the target or when no eligible removable message remains, whichever comes first). All of this happens **in the outgoing request only** — the current turn's message array as sent to the provider. Your **persisted history** is never rewritten: stored conversation, `.swarm/` artifacts, and tool results on disk are untouched. External data — provider-reported usage and the live model limit — is read, never written.
+- **Warnings repeat while above threshold** — The warning text is prepended to the current user message on every turn above the threshold; there is no once-per-session suppression. Pruning and masking likewise re-apply each turn while usage stays above the critical threshold.
 - **Who sees warnings** — Only the architect receives these warnings. Other agents are unaware of the budget.
 
 To disable entirely, set `context_budget.enabled: false` in your swarm config.
@@ -737,25 +773,33 @@ Every candidate passes a 3-gate pipeline before entering quarantine:
 | `context_budget.max_injection_tokens` | number | `4000` | Separate per-turn cap on system-enhancer injection. It is NOT the guard's budget — the guard measures total conversation tokens against `model_limits`, not this value |
 | `context_budget.warn_threshold` | number | `0.7` | Ratio (0.0-1.0) of the model context window at which total conversation tokens trigger a warning advisory |
 | `context_budget.critical_threshold` | number | `0.9` | Ratio (0.0-1.0) of the model context window at which total conversation tokens trigger a critical alert with handoff recommendation |
-| `context_budget.enforce` | boolean | `true` | When true, enforces budget limits and may trigger handoffs |
-| `context_budget.prune_target` | number | `0.7` | Ratio (0.0-1.0) of context to preserve when pruning occurs |
-| `context_budget.preserve_last_n_turns` | number | `4` | Number of recent turns to preserve when pruning |
-| `context_budget.recent_window` | number | `10` | Number of turns to consider as "recent" for scoring |
+| `context_budget.enforce` | boolean | `true` | When true (default), crossing the critical threshold masks large completed tool outputs and prunes lower-priority messages in the **outgoing request** toward `prune_target`. Execution is never blocked or aborted |
+| `context_budget.prune_target` | number | `0.7` | Ratio (0.0-1.0) of the context window the outgoing request is pruned toward when enforcement runs |
+| `context_budget.preserve_last_n_turns` | number | `4` | Number of recent turns protected from pruning |
+| `context_budget.recent_window` | number | `10` | Age (in turns) beyond which a completed tool output becomes eligible for masking during enforcement; the latest `preserve_last_n_turns` turns are always protected |
 | `context_budget.tracked_agents` | string[] | `['architect']` | Agents to track for context budget warnings |
 | `context_budget.enforce_on_agent_switch` | boolean | `true` | Enforce budget limits when switching agents |
 | `context_budget.model_limits` | record | `{}` | Per-model token limit **overrides**, keyed by `"<provider>/<model>"`, `"<model>"`, or `"default"`. Empty by default so the live model's own context window is used; set an entry only to impose a smaller working budget |
 | `context_budget.unified_injection_tokens` | number | `undefined` | Opt-in unified ceiling (tokens) for combined system-enhancer + knowledge-injector injection per turn. When set, both hooks share this budget with proportional split |
-| `context_budget.tool_output_mask_threshold` | number | `2000` | Threshold for masking tool outputs (chars) |
+| `context_budget.tool_output_mask_threshold` | number | `2000` | Character threshold (chars, not tokens): during enforcement, a completed tool output in a non-protected turn is masked when it is **older than `recent_window` turns OR longer than this many characters** (either condition) |
 | `skills.enabled` | boolean | `false` | Gates the 7 skill-management tools (`skill_generate`, `skill_list`, `skill_apply`, `skill_inspect`, `skill_regenerate`, `skill_retire`, `skill_improve`) behind an opt-in flag. When `false` (default), these tools are host-denied for every agent except `skill_improver` — genuinely unreachable at request time (issue #2528). |
 | `skill_opt.enabled` | boolean | `false` | Master opt-in for the governed skill optimizer (`/swarm skill-opt`). `run` also requires `--confirm`; `plan`/`status`/`diff`/`history` are always available. See `docs/skill-optimizer.md`. |
 | `skill_opt.deadband` | number | `0` | Promotion policy deadband forwarded to the evaluation substrate. |
 | `skill_opt.max_rounds` | number | `5` | Hard cap on draft/smoke retries before a validation (held-out test set is single-use). |
 | `skill_opt.max_transient_retries` | number | `5` | Max transient-infra retries before an infra failure becomes inconclusive. |
+| `epic.mode.enabled` | boolean | `false` | Master opt-in for Epic Mode (`/swarm epic`, `epic_next_wave`, `epic_phase_review`). The legacy `turbo.epic.*` path is still accepted and migrated with a warning. See [docs/modes.md](docs/modes.md#epic-mode-preview) |
+| `epic.mode.activation_threshold` | number | `0.3` | Intra-component density above which a conflict component runs one task per wave |
+| `epic.cochange.enabled` | boolean | `false` | Adds the git co-change conflict signal to Epic planning and `/swarm coupling` (otherwise declared-path conflicts only) |
+| `epic.cochange.threshold` / `min_co_changes` | number | `0.6` / `5` | NPMI floor and minimum co-change count for a file pair to count as coupled |
+| `epic.sizing.*` | object | `min_tasks: 6`, `min_scope_coverage: 0.8`, `min_effective_speedup: 1.25`, `coder_fraction: 0.6` | `/swarm epic start` refuses plans below these (`--force` overrides and is recorded) |
+| `epic.learning.*` | object | `enabled: true`, `decay_per_epic: 0.7`, `half_life_days: 60`, `hot_excess: 0.25` | Per-file risk and co-write learning across waves and epics |
+| `epic.commit_policy` | string | `epic-branch` | `epic-branch` (work on `swarm/epic/<key>`, landed at close) or `current-branch` |
+| `epic.retain_refs` | boolean | `false` | Keep `refs/swarm/epics/<key>/*` after close |
 | `context_budget.scoring.enabled` | boolean | `false` | Enable context scoring/ranking |
 | `context_budget.scoring.max_candidates` | number | `100` | Maximum items to score (10-500) |
-| `context_budget.scoring.weights` | object | `{ recency: 0.3, ... }` | Scoring weights for priority |
-| `context_budget.scoring.decision_decay` | object | `{ mode: 'exponential', half_life_hours: 24 }` | Decision relevance decay |
-| `context_budget.scoring.token_ratios` | object | `{ prose: 0.25, code: 0.4, ... }` | Token cost multipliers |
+| `context_budget.scoring.weights` | object | `{ phase: 1.0, current_task: 2.0, blocked_task: 1.5, recent_failure: 2.5, recent_success: 0.5, evidence_presence: 1.0, decision_recency: 1.5, dependency_proximity: 1.0 }` | Per-signal priority weights (each 0-5). Only these eight keys are read |
+| `context_budget.scoring.decision_decay` | object | `{ mode: 'exponential', half_life_hours: 24 }` | Decision relevance decay (`mode`: linear or exponential; `half_life_hours` 1-168) |
+| `context_budget.scoring.token_ratios` | object | `{ prose: 0.25, code: 0.4, markdown: 0.3, json: 0.35 }` | Accepted for backward compatibility only; deprecated and inert at runtime — never read. Token costs always use the canonical flat estimator (`estimateTokens`, ~0.33 tokens/char), never per-content ratios |
 
 ### Example Configurations
 
@@ -787,13 +831,13 @@ Every candidate passes a 3-gate pipeline before entering quarantine:
     "scoring": {
       "enabled": false,
       "max_candidates": 100,
-      "weights": { "recency": 0.3, "relevance": 0.4, "importance": 0.3 },
-      "decision_decay": { "mode": "exponential", "half_life_hours": 24 },
-      "token_ratios": { "prose": 0.25, "code": 0.4, "json": 0.6, "logs": 0.1 }
+      "decision_decay": { "mode": "exponential", "half_life_hours": 24 }
     }
   }
 }
 ```
+
+(Omitted keys — `weights` above — take the schema defaults listed in the table; only the eight documented weight keys are read.)
 
 **Aggressive (for long-running sessions):**
 ```json
@@ -814,21 +858,22 @@ Every candidate passes a 3-gate pipeline before entering quarantine:
     "scoring": {
       "enabled": true,
       "max_candidates": 50,
-      "weights": { "recency": 0.5, "relevance": 0.3, "importance": 0.2 },
-      "decision_decay": { "mode": "linear", "half_life_hours": 12 },
-      "token_ratios": { "prose": 0.2, "code": 0.35, "json": 0.5, "logs": 0.05 }
+      "weights": { "phase": 1.5, "current_task": 3.0, "recent_failure": 3.0, "recent_success": 0.3, "decision_recency": 2.0 },
+      "decision_decay": { "mode": "linear", "half_life_hours": 12 }
     }
   }
 }
 ```
 
+> **Note on `scoring.token_ratios`:** the key is still accepted by the config schema for backward compatibility, but it is deprecated and inert — no runtime code reads it, and per-content token ratios are deliberately not used. Token costs for both normal and scoring accounting always come from the one canonical estimator (`estimateTokens` in `src/hooks/utils.ts`, flat ~0.33 tokens/char); when the provider reports token usage, that figure stays authoritative.
+
 ### What This Does NOT Do
 
-- **Does NOT prune chat history** — Your conversation with the model is untouched
-- **Does NOT modify tool outputs** — What tools return is unchanged
-- **Does NOT block execution** — The guard is advisory only; it warns but never stops the pipeline
-- **Does NOT interact with compaction.auto** — Separate feature with separate configuration
-- **Only measures swarm's injected context** — Not the full context window, just what Swarm adds
+- **Does NOT block execution** — The guard never aborts or stops the pipeline. Enforcement trims the request, not the run.
+- **Does NOT modify persisted history** — Masking and pruning mutate only the **outgoing request** for the current turn (the message array sent to the provider). Stored conversation, `.swarm/` artifacts, and tool results on disk are untouched.
+- **Does NOT rewrite tool results** — A masked tool output is a placeholder in the current request; the tool's stored result is unchanged.
+- **Does NOT interact with compaction.auto** — Separate feature with separate configuration.
+- **Does NOT measure only swarm-injected context** — It measures the whole conversation against the model's context window, using provider-reported usage when available and the canonical flat estimator (`estimateTokens`, ~0.33 tokens/char) otherwise.
 
 </details>
 
@@ -859,6 +904,8 @@ Every candidate passes a 3-gate pipeline before entering quarantine:
 | write_pr_review_trigger_eval | Architect-only: validates the exact mandatory PR-review micro-lane ID set, requires completed provenance for all 11 repository-agnostic lanes, verifies the claimed merge base against an exact live base ref, rejects every `NO-MATCH` waiver, and atomically persists `.swarm/pr-review/<run_id>/trigger-eval.json` |
 | complete_pr_workflow | Architect-only: validates terminal PR-review or PR-feedback coverage; feedback uses a two-call arm/publish protocol and clears only after the approved content is observed on both the bound remote-tracking ref and the actual remote branch |
 | run_pr_feedback_stage_a | Architect-only: executes targeted reproduction/regression and exact `git diff --check` plus every mechanically applicable workspace/category/source build, typecheck, and lint obligation, then persists content-bound Stage A receipts before ordered feedback review gates |
+| epic_next_wave | Architect-only, Epic Mode: closes the current wave (recording outcomes and declared-vs-actual writes) and issues the next wave of conflict-free tasks; the delegation gate only admits the active wave's tasks |
+| epic_phase_review | Architect-only, Epic Mode: dispatches a read-only phase reviewer and then a phase critic, and records the evidence `phase_complete` requires while an epic is open |
 | git_blame | Per-line git blame metadata (sha, author, date, summary) via `git blame --porcelain`; supports optional line range filtering |
 | diff | Structured git diff with contract change detection; supports `summaryOnly` mode returning file list with additions/deletions counts |
 | suggest_patch | Reviewer-safe structured patch suggestion; supports `format` parameter ('json' or 'unified') where unified outputs valid unified diff with `diff --git` headers, hunks, and context |
@@ -1014,6 +1061,10 @@ Tip: add `"$schema": "https://unpkg.com/opencode-swarm/opencode-swarm.schema.jso
     "low_utility_threshold": 0.3,
     "min_retrievals_for_utility": 3,
     "schema_version": 1
+  },
+  "epic": {
+    "mode": { "enabled": false },
+    "cochange": { "enabled": false }
   }
 }
 ```
@@ -1064,10 +1115,22 @@ The `plan_cursor` config compresses the plan that is injected into the LLM conte
 ```
 
 - **enabled** – When `true` (default) Swarm injects a compact plan cursor instead of the full `plan.md`.
-- **max_tokens** – Upper bound on the number of tokens emitted for the cursor (default 1500). The cursor contains the current phase summary, the full current task, and up to `lookahead_tasks` upcoming tasks. Earlier phases are reduced to one‑line summaries.
-- **lookahead_tasks** – Number of future tasks to include in full detail (default 2). Set to `0` to show only the current task.
+- **max_tokens** – Upper bound on the number of tokens emitted for the cursor (default 1500). The cursor contains the current phase summary, the full current task, and up to `lookahead_tasks` upcoming tasks. Earlier phases are reduced to one‑line summaries.
+- **lookahead_tasks** – Number of future tasks to include in full detail (default 2). Set to `0` to show only the current task.
 
-Disabling (`"enabled": false`) falls back to the pre‑v6.13 behavior of injecting the entire plan text.
+All three controls are honored on both context‑injection paths (the default
+injection path and the opt‑in `context_budget.scoring` ranking path) and in the
+context‑budget report's token accounting (issue #2580). Disabling
+(`"enabled": false`) suppresses the cursor block; the remaining injections are
+unchanged — on the default path that is the phase header line, and on the
+scoring path the phase and current‑task context candidates. The full plan text
+is never injected in its place. When the cursor exceeds `max_tokens` and the
+compact rebuild kicks in, lookahead is reduced to one task and earlier phases
+collapse to one‑line summaries. A phase marked `[BLOCKED]` is surfaced as a
+one‑line `## Phase N [BLOCKED]` summary in both renders (issue #2841); its
+summary is reserved ahead of generic budget truncation, so it is never
+silently dropped within the configured `max_tokens` (only when even the
+summary cannot fit the bound does the bound win, as for every section).
 
 ## Tool Output Truncation (v6.13)
 
@@ -1184,6 +1247,8 @@ Control how tool outputs are summarized for LLM context.
 | `/swarm pr status` | List active PR subscriptions for current session with relative timestamps (the `bunx opencode-swarm run pr status` CLI has no session context, so it lists subscriptions across all sessions) |
 | `/swarm deep-dive <scope> [--profile <name>] [--max-explorers <n>]` | Read-only codebase audit with parallel explorers, dual reviewers, and critic challenge |
 | `/swarm design-docs <description> [--out <dir>] [--lang <name>] [--update]` | Generate or sync language-agnostic design docs (requires `design_docs.enabled`) |
+| `/swarm epic start [--force] \| close [--abandon] [--land squash\|merge\|none] \| status [--repair-refs] \| report [<key>\|last] [--format json] \| learning \| prior [show\|reset [--confirm=<token>]] \| clear-merge-failure <taskId> [--confirm]` | Open, inspect, and close a plan-scoped epic (Epic Mode preview; requires `epic.mode.enabled`) |
+| `/swarm coupling [--phase <n>] [--threshold <-1..1>] [--min-co-changes <n>] [--format markdown\|json] [--persist] [--suggest]` | Measure plan coupling and rank modules driving conflicts; `--suggest` adds Epic plan-shaping suggestions |
 | `/swarm dark-matter` | Detect hidden file couplings from co-change history |
 | `/swarm finalize [--prune-branches] [--skill-review]` | Idempotent session close-out: retrospectives, lesson curation, evidence archive, git reset --hard + clean to align with remote branch (discards uncommitted changes), optional branch pruning, optional skill-improver proposal |
 | `/swarm close [--prune-branches] [--skill-review]` | Deprecated alias for `/swarm finalize [--prune-branches] [--skill-review]` |
@@ -1235,12 +1300,14 @@ All binaries optional. Missing tools produce soft warnings, never hard-fail.
 bun test
 ```
 
+Epic Mode's planner regression harness: `bun scripts/epic-bench.ts`.
+
 ---
 
 ## Design Principles
 
 1. **Plan before code.** Critic approves the plan before a single line is written.
-2. **One task at a time.** Coder gets one task and full context. Nothing else.
+2. **One task at a time.** Coder gets one task and full context. Nothing else. Tasks run in parallel (v8 lanes, Epic waves) only when their scopes are disjoint, each in an isolated worktree.
 3. **Review everything immediately.** Correctness, security, tests, adversarial tests. Every task.
 4. **Different models catch different bugs.** Blind spots of the coder are the reviewer's strength.
 5. **Save everything to disk.** Resume any project any day from `.swarm/` state.
@@ -1256,9 +1323,10 @@ bun test
 - [Architecture Deep Dive](docs/architecture.md) — control model, pipeline, tools
 - [Design Rationale](docs/design-rationale.md) — why every major decision
 - [Commands Reference](docs/commands.md) — `/swarm` subcommands grouped by function
-- [Modes Guide](docs/modes.md) — session modes (Turbo, Full-Auto) and project modes (strict/balanced/fast)
+- [Modes Guide](docs/modes.md) — session modes (Turbo, Full-Auto, Epic) and project modes (strict/balanced/fast)
 - [Configuration](docs/configuration.md) — all config keys and examples
 - [Planning Guide](docs/planning.md) — task format, phase structure, sizing
+- [Epic Mode maintainer guide](src/epic/README.md) — module map, invariants, shared-file seams
 
 ---
 

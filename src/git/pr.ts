@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { mergeEnvForChild } from '../utils/bun-compat';
 import { resolveGhExecutable } from '../utils/gh-executable.js';
 import { resolveGitExecutable } from '../utils/git-executable.js';
+import { resolveGlabExecutable } from '../utils/glab-executable.js';
 import { warn } from '../utils/logger.js';
 import {
 	isTransientSpawnError,
@@ -228,15 +229,47 @@ export async function ghExecAsync(
 	args: string[],
 	cwd: string,
 ): Promise<string> {
+	// See ghExec() above for the resolver rationale (issue #2236 hardening,
+	// lane C1b) — same shared resolver, same bare-`'gh'` fallback.
+	return _internals.forgeExecAsync(
+		_internals.resolveGhExecutable(),
+		args,
+		cwd,
+		'gh',
+	);
+}
+
+/**
+ * Bounded async spawn shared by the gh and glab (GitLab) fetch paths
+ * (issue #2882). Same safety contract as the pre-#2882 ghExecAsync body:
+ * array-form argv, explicit cwd, stdin 'ignore', GIT_TIMEOUT_MS timeout,
+ * MAX_OUTPUT_BYTES per-stream caps, best-effort proc.kill() on settle.
+ *
+ * `label` names the CLI in error messages ('gh' / 'glab') so existing
+ * GitHub-path error text is unchanged. `opts.env` is an overlay merged onto
+ * process.env via mergeEnvForChild ONLY when defined — an absent overlay
+ * leaves the spawn options without an `env` key, preserving the inherit-
+ * process.env behavior the gh path has always had.
+ */
+async function forgeExecAsyncImpl(
+	binary: string,
+	args: string[],
+	cwd: string,
+	label: string,
+	opts?: { env?: Record<string, string> },
+): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
-		// See ghExec() above for the resolver rationale (issue #2236 hardening,
-		// lane C1b) — same shared resolver, same bare-`'gh'` fallback.
-		const ghBinary = _internals.resolveGhExecutable();
-		const proc = child_process.spawn(ghBinary, args, {
+		const spawnOptions: child_process.SpawnOptions = {
 			cwd,
 			// stdin must be 'ignore' to prevent pipe blocking on Windows (AGENTS.md v7.3.3)
 			stdio: ['ignore', 'pipe', 'pipe'],
-		});
+		};
+		if (opts?.env) {
+			spawnOptions.env = mergeEnvForChild(undefined, opts.env) as
+				| NodeJS.ProcessEnv
+				| undefined;
+		}
+		const proc = child_process.spawn(binary, args, spawnOptions);
 
 		const stdoutChunks: Buffer[] = [];
 		const stderrChunks: Buffer[] = [];
@@ -268,7 +301,7 @@ export async function ghExecAsync(
 				settle(() =>
 					reject(
 						new Error(
-							`gh ${args[0]} stdout exceeded ${MAX_OUTPUT_BYTES} bytes`,
+							`${label} ${args[0]} stdout exceeded ${MAX_OUTPUT_BYTES} bytes`,
 						),
 					),
 				);
@@ -283,7 +316,7 @@ export async function ghExecAsync(
 				settle(() =>
 					reject(
 						new Error(
-							`gh ${args[0]} stderr exceeded ${MAX_OUTPUT_BYTES} bytes`,
+							`${label} ${args[0]} stderr exceeded ${MAX_OUTPUT_BYTES} bytes`,
 						),
 					),
 				);
@@ -294,7 +327,9 @@ export async function ghExecAsync(
 
 		const timer = setTimeout(() => {
 			settle(() =>
-				reject(new Error(`gh ${args[0]} timed out after ${GIT_TIMEOUT_MS}ms`)),
+				reject(
+					new Error(`${label} ${args[0]} timed out after ${GIT_TIMEOUT_MS}ms`),
+				),
 			);
 		}, GIT_TIMEOUT_MS);
 
@@ -306,7 +341,7 @@ export async function ghExecAsync(
 			settle(() => {
 				if (code !== 0) {
 					const stderr = Buffer.concat(stderrChunks).toString('utf-8');
-					reject(new Error(stderr || `gh exited with ${code}`));
+					reject(new Error(stderr || `${label} exited with ${code}`));
 				} else {
 					const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
 					resolve(stdout);
@@ -324,21 +359,29 @@ export async function ghExecAsync(
 export const _internals: {
 	ghExec: typeof ghExec;
 	ghExecAsync: typeof ghExecAsync;
+	forgeExecAsync: typeof forgeExecAsyncImpl;
+	getMRPollSnapshot: typeof getMRPollSnapshot;
+	getMRComments: typeof getMRComments;
 	spawnSyncWithTransientRetry: typeof spawnSyncWithTransientRetry;
 	spawnSync: typeof __spawnSyncSeam.spawnSync;
 	readLaneEnvFileFromDiskSync: typeof readLaneEnvFileFromDiskSync;
 	getMergeGroupRun: typeof getMergeGroupRun;
 	resolveGhExecutable: typeof resolveGhExecutable;
 	resolveGitExecutable: typeof resolveGitExecutable;
+	resolveGlabExecutable: typeof resolveGlabExecutable;
 } = {
 	ghExec,
 	ghExecAsync,
+	forgeExecAsync: forgeExecAsyncImpl,
+	getMRPollSnapshot,
+	getMRComments,
 	spawnSyncWithTransientRetry,
 	spawnSync: __spawnSyncSeam.spawnSync,
 	readLaneEnvFileFromDiskSync,
 	getMergeGroupRun,
 	resolveGhExecutable,
 	resolveGitExecutable,
+	resolveGlabExecutable,
 };
 
 /**
@@ -718,6 +761,287 @@ export async function getPRReviewComments(
 		createdAt: String(c.created_at ?? ''),
 		isReviewComment: true,
 	}));
+}
+
+// ── GitLab MR fetch layer (issue #2882) ──────────────────────────────
+
+/**
+ * Honest-unavailable marker for the three GitHub-synthesized fields
+ * (statusCheckRollup / reviewDecision / mergeStateStatus). `getProviderCapabilities`
+ * is the source of truth: GitLab reports all three unavailable, so the glab-backed
+ * snapshot carries explicit markers instead of fabricated equivalents (#2733 AC7).
+ */
+export const MR_SYNTHESIZED_FIELD_MARKER = 'NOT_AVAILABLE';
+
+/** Input for glab-backed MR fetches. `host` is the resolved forge host. */
+export interface MRFetchInput {
+	/** Full project path (may be multi-segment: group/subgroup/repo). */
+	projectPath: string;
+	/** Merge request iid (the subscription's prNumber). */
+	iid: number;
+	cwd: string;
+	/** Forge host; when present and not gitlab.com, spawns get GITLAB_HOST. */
+	host?: string;
+}
+
+/** Check-shaped entry derived from a real GitLab pipeline (NOT a statusCheckRollup member). */
+export interface MRPipelineCheck {
+	name: string;
+	status: string;
+	conclusion: string | null;
+	detailsUrl?: string;
+}
+
+/** glab-backed MR snapshot: PRPollSnapshot-compatible core plus a pipelines channel. */
+export interface MRPollSnapshot {
+	status: PRStatusResult;
+	comments: PRCommentResult[];
+	merge: MergeStateResult;
+	review: ReviewStateResult;
+	/** Terminal pipeline verdicts for the MR head sha (empty when none terminal yet). */
+	pipelines: MRPipelineCheck[];
+	/** False when the pipelines fetch failed — caller preserves prior CI state. */
+	pipelinesFetchSucceeded: boolean;
+}
+
+/** gitlab mr view -F json object (subset actually consumed). */
+interface GlabMrView {
+	state?: unknown;
+	sha?: unknown;
+	detailed_merge_status?: unknown;
+	has_conflicts?: unknown;
+	reviewers?: unknown;
+	web_url?: unknown;
+}
+
+/** glab api merge_requests/<iid> REST detail (subset consumed). */
+interface GlabMrDetail {
+	merge_status?: unknown;
+}
+
+/** glab api merge_requests/<iid>/pipelines entry (subset consumed). */
+interface GlabMrPipeline {
+	id?: unknown;
+	sha?: unknown;
+	status?: unknown;
+	web_url?: unknown;
+}
+
+/** glab api merge_requests/<iid>/notes entry (subset consumed). */
+interface GlabMrNote {
+	id?: unknown;
+	body?: unknown;
+	system?: unknown;
+	author?: { username?: unknown } | null;
+	created_at?: unknown;
+}
+
+function glabSpawnEnv(
+	input: MRFetchInput,
+): { env: Record<string, string> } | undefined {
+	if (!input.host || input.host === 'gitlab.com') return undefined;
+	// Documented glab host-selection env (gitlab.com/gitlab-org/cli
+	// docs/source/api/_index.md + internal/glrepo): scopes `mr view -R` and
+	// `glab api` to the declared self-hosted instance for this spawn only.
+	return { env: { GITLAB_HOST: input.host } };
+}
+
+/** Map GitLab MR state to the PRStatusResult state vocabulary. */
+function mapMrState(state: unknown): 'OPEN' | 'CLOSED' | 'MERGED' {
+	if (state === 'merged') return 'MERGED';
+	if (state === 'closed') return 'CLOSED';
+	// opened + locked (discussion-locked MR is still open) and unknowns map OPEN.
+	return 'OPEN';
+}
+
+/**
+ * Map GitLab merge-state signals to the mergeable vocabulary. Only real
+ * signals map; anything unrecognized is UNKNOWN (never fabricated).
+ */
+function mapMrMergeable(
+	mr: GlabMrView,
+	detail: GlabMrDetail,
+): 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN' {
+	if (mr.has_conflicts === true) return 'CONFLICTING';
+	if (mr.detailed_merge_status === 'conflict') return 'CONFLICTING';
+	if (detail.merge_status === 'cannot_be_merged') return 'CONFLICTING';
+	if (mr.detailed_merge_status === 'mergeable') return 'MERGEABLE';
+	if (detail.merge_status === 'can_be_merged') return 'MERGEABLE';
+	return 'UNKNOWN';
+}
+
+/** Terminal pipeline statuses map to check conclusions; everything else is non-terminal (no verdict). */
+function mapPipelineConclusion(status: unknown): 'success' | 'failure' | null {
+	if (status === 'success') return 'success';
+	if (status === 'failed') return 'failure';
+	return null;
+}
+
+/**
+ * glab-backed MR snapshot (issue #2882): three bounded spawns.
+ *  1. `glab mr view <iid> -R <projectPath> -F json` — MR fields.
+ *  2. `glab api projects/<url-encoded-path>/merge_requests/<iid>` — REST
+ *     detail (deprecated-but-present merge_status; the issue prescribes this
+ *     call for merge state). Approvals on this payload are intentionally NOT
+ *     consumed: no existing event vocabulary maps to GitLab approvals without
+ *     fabricating the GitHub-synthesized reviewDecision (#2733 AC7 binding).
+ *  3. `glab api .../merge_requests/<iid>/pipelines?per_page=20` — pipelines
+ *     for the MR, filtered to the head sha, latest by id, terminal-only.
+ */
+export async function getMRPollSnapshot(
+	input: MRFetchInput,
+): Promise<MRPollSnapshot> {
+	const overlay = glabSpawnEnv(input);
+	const glabBinary = _internals.resolveGlabExecutable();
+
+	let viewStdout: string;
+	try {
+		viewStdout = await _internals.forgeExecAsync(
+			glabBinary,
+			['mr', 'view', String(input.iid), '-R', input.projectPath, '-F', 'json'],
+			input.cwd,
+			'glab',
+			overlay,
+		);
+	} catch (err) {
+		throw new Error(
+			`Failed to fetch MR view for ${input.projectPath}!${input.iid}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	const mr = JSON.parse(viewStdout) as GlabMrView;
+
+	let detailStdout: string;
+	try {
+		detailStdout = await _internals.forgeExecAsync(
+			glabBinary,
+			[
+				'api',
+				`projects/${encodeURIComponent(input.projectPath)}/merge_requests/${input.iid}`,
+			],
+			input.cwd,
+			'glab',
+			overlay,
+		);
+	} catch (err) {
+		throw new Error(
+			`Failed to fetch MR detail for ${input.projectPath}!${input.iid}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	const detail = JSON.parse(detailStdout) as GlabMrDetail;
+
+	let pipelines: MRPipelineCheck[] = [];
+	let pipelinesFetchSucceeded = false;
+	try {
+		const pipelinesStdout = await _internals.forgeExecAsync(
+			glabBinary,
+			[
+				'api',
+				`projects/${encodeURIComponent(input.projectPath)}/merge_requests/${input.iid}/pipelines?per_page=20`,
+			],
+			input.cwd,
+			'glab',
+			overlay,
+		);
+		const rawPipelines = JSON.parse(pipelinesStdout) as GlabMrPipeline[];
+		// Ordering is undocumented for this endpoint — sort by id desc and take
+		// the latest pipeline whose sha matches the MR head sha.
+		const headSha = typeof mr.sha === 'string' ? mr.sha : '';
+		const forHead = rawPipelines
+			.filter((p) => typeof p.sha === 'string' && p.sha === headSha)
+			.sort((a, b) => (Number(b.id) || 0) - (Number(a.id) || 0));
+		const latest = forHead[0];
+		const conclusion = mapPipelineConclusion(latest?.status);
+		pipelines =
+			latest && conclusion
+				? [
+						{
+							name: `pipeline #${String(latest.id ?? '')}`,
+							status: 'completed',
+							conclusion,
+							...(typeof latest.web_url === 'string'
+								? { detailsUrl: latest.web_url }
+								: {}),
+						},
+					]
+				: [];
+		pipelinesFetchSucceeded = true;
+	} catch {
+		// Pipeline fetch failure is a partial degradation, not a snapshot
+		// failure: merge-state fields stand, caller preserves prior CI state.
+		pipelines = [];
+		pipelinesFetchSucceeded = false;
+	}
+
+	const state = mapMrState(mr.state);
+	const mergeable = mapMrMergeable(mr, detail);
+	const reviewers = Array.isArray(mr.reviewers) ? mr.reviewers.length : 0;
+
+	return {
+		status: {
+			number: input.iid,
+			state,
+			mergeable,
+			mergeStateStatus: MR_SYNTHESIZED_FIELD_MARKER,
+			headRefOid: typeof mr.sha === 'string' ? mr.sha : '',
+			// Honest-unavailable marker (capability-gated): never populated from
+			// pipeline data — pipelines ride their own channel into the CI events.
+			statusCheckRollup: [],
+		},
+		comments: [],
+		merge: {
+			mergeable,
+			mergeStateStatus: MR_SYNTHESIZED_FIELD_MARKER,
+			headRefOid: typeof mr.sha === 'string' ? mr.sha : '',
+		},
+		review: {
+			// Honest-unavailable marker: '' produces no review events (same as
+			// GitHub's missing-reviewDecision mapping).
+			reviewDecision: '',
+			reviewRequestCount: reviewers,
+		},
+		pipelines,
+		pipelinesFetchSucceeded,
+	};
+}
+
+/**
+ * glab-backed MR comments (issue #2882): the MR notes endpoint, ascending by
+ * creation time, system notes excluded (automation notes are not user
+ * comments). Bounded single page (per_page=100).
+ */
+export async function getMRComments(
+	input: MRFetchInput,
+): Promise<PRCommentResult[]> {
+	let stdout: string;
+	try {
+		stdout = await _internals.forgeExecAsync(
+			_internals.resolveGlabExecutable(),
+			[
+				'api',
+				`projects/${encodeURIComponent(input.projectPath)}/merge_requests/${input.iid}/notes?per_page=100&sort=asc&order_by=created_at`,
+			],
+			input.cwd,
+			'glab',
+			glabSpawnEnv(input),
+		);
+	} catch (err) {
+		throw new Error(
+			`Failed to fetch MR comments for ${input.projectPath}!${input.iid}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+	const notes = JSON.parse(stdout) as GlabMrNote[];
+	return notes
+		.filter((note) => note.system !== true)
+		.map((note) => ({
+			id: String(note.id ?? ''),
+			author: String(note.author?.username ?? ''),
+			body: neutralizeUntrustedMarkdown(
+				String(note.body ?? ''),
+				'GitLab MR note',
+			),
+			createdAt: String(note.created_at ?? ''),
+			isReviewComment: false,
+		}));
 }
 
 /**

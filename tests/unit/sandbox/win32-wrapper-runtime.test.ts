@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
 	_internals,
 	WindowsSandboxExecutor,
 } from '../../../src/sandbox/win32/restricted-environment-executor';
+import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 
 const isWindows = process.platform === 'win32';
+// Per-test floor for the spawn-heavy transport cells (#2973 retirement of the
+// #2185 cold-spawn flake): reproduced at the bun default 5000ms cap (6560ms cell)
+// on a warm dev host; real PowerShell spawns under cold CI runners need margin.
+const WRAPPER_TEST_TIMEOUT_MS = 30_000;
 const realProbe = _internals.probeWindowsSandbox;
 const originalPath = process.env.PATH;
 const originalSystemRoot = process.env.SystemRoot;
@@ -41,7 +46,7 @@ function executeThroughOpenCodeShape(command: string, tempDir?: string) {
 			cwd: process.cwd(),
 			encoding: 'utf8',
 			stdio: ['ignore', 'pipe', 'pipe'],
-			timeout: 10_000,
+			timeout: 30_000,
 			windowsHide: true,
 		},
 	);
@@ -87,23 +92,34 @@ describe('Windows fallback wrapper transport', () => {
 			);
 			expect(wrapped).toContain(' -EncodedCommand ');
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
-	test.skipIf(!isWindows)('executes every CRLF-delimited command', () => {
-		const { result } = executeThroughOpenCodeShape('echo first\r\necho second');
-		expect(result.error).toBeUndefined();
-		expect(result.status).toBe(0);
-		expect(result.stdout).toContain('first');
-		expect(result.stdout).toContain('second');
-	});
+	test.skipIf(!isWindows)(
+		'executes every CRLF-delimited command',
+		() => {
+			const { result } = executeThroughOpenCodeShape(
+				'echo first\r\necho second',
+			);
+			expect(result.error).toBeUndefined();
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain('first');
+			expect(result.stdout).toContain('second');
+		},
+		WRAPPER_TEST_TIMEOUT_MS,
+	);
 
-	test.skipIf(!isWindows)('executes every LF-delimited command', () => {
-		const { result } = executeThroughOpenCodeShape('echo first\necho second');
-		expect(result.error).toBeUndefined();
-		expect(result.status).toBe(0);
-		expect(result.stdout).toContain('first');
-		expect(result.stdout).toContain('second');
-	});
+	test.skipIf(!isWindows)(
+		'executes every LF-delimited command',
+		() => {
+			const { result } = executeThroughOpenCodeShape('echo first\necho second');
+			expect(result.error).toBeUndefined();
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain('first');
+			expect(result.stdout).toContain('second');
+		},
+		WRAPPER_TEST_TIMEOUT_MS,
+	);
 
 	test.skipIf(!isWindows)(
 		'does not expose a percent-expanded temp path to cmd call reparsing',
@@ -126,9 +142,10 @@ describe('Windows fallback wrapper transport', () => {
 			} finally {
 				if (originalExpansion === undefined) delete process.env[expansionName];
 				else process.env[expansionName] = originalExpansion;
-				rmSync(tempDir, { recursive: true, force: true });
+				safeRmRecursive(tempDir);
 			}
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
 	test.skipIf(!isWindows)(
@@ -146,9 +163,10 @@ describe('Windows fallback wrapper transport', () => {
 				expect(result.stdout).toContain('metachar-first');
 				expect(result.stdout).toContain('metachar-second');
 			} finally {
-				rmSync(tempDir, { recursive: true, force: true });
+				safeRmRecursive(tempDir);
 			}
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
 	test.skipIf(!isWindows)(
@@ -162,6 +180,7 @@ describe('Windows fallback wrapper transport', () => {
 			expect(result.stdout).toBe('snowman ☃; hash #');
 			expect(result.stderr).toBe('');
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
 	test.skipIf(!isWindows)(
@@ -185,7 +204,7 @@ describe('Windows fallback wrapper transport', () => {
 					cwd: process.cwd(),
 					encoding: 'utf8',
 					stdio: ['ignore', 'pipe', 'pipe'],
-					timeout: 10_000,
+					timeout: 30_000,
 					windowsHide: true,
 				},
 			);
@@ -195,14 +214,19 @@ describe('Windows fallback wrapper transport', () => {
 			expect(result.status).toBe(0);
 			expect(result.stdout.trim()).toBe("O'Brien");
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
-	test.skipIf(!isWindows)('propagates the exact cmd.exe exit code', () => {
-		const { result } = executeThroughOpenCodeShape('exit /b 37');
+	test.skipIf(!isWindows)(
+		'propagates the exact cmd.exe exit code',
+		() => {
+			const { result } = executeThroughOpenCodeShape('exit /b 37');
 
-		expect(result.error).toBeUndefined();
-		expect(result.status).toBe(37);
-	});
+			expect(result.error).toBeUndefined();
+			expect(result.status).toBe(37);
+		},
+		WRAPPER_TEST_TIMEOUT_MS,
+	);
 
 	test('uses separate Base64 command transport and absolute cmd.exe', () => {
 		const executor = new WindowsSandboxExecutor();
@@ -242,6 +266,7 @@ describe('Windows fallback wrapper transport', () => {
 			expect(result.stdout).toContain('stdout-value');
 			expect(result.stderr).toContain('stderr-value');
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
 	test.skipIf(!isWindows)(
@@ -256,6 +281,7 @@ describe('Windows fallback wrapper transport', () => {
 			expect(result.stdout.trim()).toBe('2026-07-17');
 			expect(result.stderr).toBe('');
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 
 	test.skipIf(!isWindows)(
@@ -273,7 +299,7 @@ describe('Windows fallback wrapper transport', () => {
 					spawnSync('where.exe', [tool], {
 						cwd: process.cwd(),
 						stdio: 'ignore',
-						timeout: 5_000,
+						timeout: 15_000,
 						windowsHide: true,
 					}).status === 0;
 				if (!available) continue;
@@ -284,6 +310,7 @@ describe('Windows fallback wrapper transport', () => {
 
 			expect(executed).toBeGreaterThan(0);
 		},
+		WRAPPER_TEST_TIMEOUT_MS,
 	);
 });
 

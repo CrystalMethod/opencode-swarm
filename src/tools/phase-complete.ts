@@ -19,6 +19,11 @@ import {
 	SkillImproverConfigSchema,
 	stripKnownSwarmPrefix,
 } from '../config/schema';
+import { isEpicOpenForProject, markEpicPhaseComplete } from '../epic/lifecycle';
+import {
+	EPIC_PHASE_REVIEW_TOOL,
+	verifyEpicPhaseReadiness,
+} from '../epic/phase-readiness';
 import { appendCoreEventSync } from '../events/core-events.js';
 import { listEvidenceTaskIds, loadEvidence } from '../evidence/manager';
 import {
@@ -55,7 +60,6 @@ import {
 	evaluatePhaseCriticalDirectives,
 	formatDirectiveBlockMessage,
 } from '../hooks/phase-complete-directive-gate.js';
-
 import {
 	buildApprovedReceipt,
 	buildRejectedReceipt,
@@ -87,7 +91,6 @@ import {
 	swarmState,
 } from '../state';
 import { telemetry } from '../telemetry';
-import { isEpicModeActiveForProject } from '../turbo/epic/state';
 import { _internals as leanPhaseInternals } from '../turbo/lean/phase-ready';
 import { pushAdvisory } from '../utils/advisory-queue';
 import * as logger from '../utils/logger';
@@ -102,6 +105,7 @@ import {
 	runHallucinationGate,
 	runMutationGate,
 	runPhaseCouncilGate,
+	runTodoGateGate,
 } from './phase-complete/gates/index.js';
 import {
 	collectPhaseGateReport,
@@ -124,6 +128,7 @@ export const phaseCompleteReceiptInternals = {
 /** Narrow seam for guarded-plan commit tests. */
 export const phaseCompleteCommitInternals = {
 	savePlan: (...args: Parameters<typeof savePlan>) => savePlan(...args),
+	markEpicPhaseComplete,
 };
 
 /** Injectable observational gates for aggregate-preflight regression tests. */
@@ -136,6 +141,9 @@ export const phaseCompletePreflightInternals = {
 	runArchitectureSupervisorGate,
 	runFinalReviewGate,
 	runFinalCouncilGate,
+	runTodoGateGate,
+	verifyEpicPhaseReadiness,
+	isEpicOpenForProject,
 };
 
 /**
@@ -580,6 +588,7 @@ export async function executePhaseComplete(
 				'hallucination',
 				'mutation',
 				'phase_council',
+				'todo_gate',
 				'architecture_supervisor',
 				'final_review',
 				'final_council',
@@ -723,8 +732,24 @@ export async function executePhaseComplete(
 				directory: dir,
 				sessionId: sessionID,
 				phaseLabel: receiptPhaseLabel,
+				// #2947: key the evidence window on the stable numeric phase id so
+				// a legitimately advanced cursor (label skew) cannot empty the gate.
+				phaseId: phase,
 			});
 			if (!directiveGate.blocked) return passGate();
+			const skew = directiveGate.phaseLabelSkew;
+			let skewNote = '';
+			if (skew) {
+				const queried = skew.queried_label
+					.slice(0, 120)
+					.replace(/[\r\n]+/g, ' ');
+				const stored = skew.stored_label.slice(0, 120).replace(/[\r\n]+/g, ' ');
+				skewNote =
+					skew.stored_phase_id !== undefined &&
+					skew.stored_phase_id !== skew.phase_id
+						? `\nPhase identity note for phase ${skew.phase_id}: an unresolved obligation was recorded under phase id ${skew.stored_phase_id} (label "${stored}") and matched this phase via its label — base-parity matching keeps it visible here. Resolve it or record its outcome to proceed.`
+						: `\nPhase label skew detected for phase ${skew.phase_id}: gate queried "${queried}" but obligations were recorded under "${stored}". Matching used the stable phase id.`;
+			}
 			return {
 				...passGate(),
 				blocked: true,
@@ -733,7 +758,7 @@ export async function executePhaseComplete(
 					: 'UNRESOLVED_CRITICAL_DIRECTIVES',
 				message: directiveGate.failedClosed
 					? 'Critical-directive gate could not read authoritative receipt state; failing closed.'
-					: formatDirectiveBlockMessage(directiveGate.unresolved),
+					: `${formatDirectiveBlockMessage(directiveGate.unresolved)}${skewNote}`,
 				unresolved_directives: directiveGate.unresolved,
 				...('recovery' in directiveGate &&
 				directiveGate.recovery &&
@@ -866,6 +891,11 @@ export async function executePhaseComplete(
 			actor: 'architect',
 			run: () => phaseCompletePreflightInternals.runPhaseCouncilGate(gateCtx),
 		},
+		{
+			id: 'todo_gate',
+			actor: 'coder',
+			run: () => phaseCompletePreflightInternals.runTodoGateGate(gateCtx),
+		},
 	];
 	for (const spec of standardGateSpecs) {
 		preflightChecks.push({
@@ -925,7 +955,8 @@ export async function executePhaseComplete(
 					};
 		},
 	});
-	const epicActiveForProject = isEpicModeActiveForProject(dir);
+	const epicActiveForProject =
+		phaseCompletePreflightInternals.isEpicOpenForProject(dir);
 	preflightChecks.push({
 		id: 'lean_turbo_readiness',
 		responsibleActor: 'architect',
@@ -952,9 +983,55 @@ export async function executePhaseComplete(
 						blocked: true,
 						reason: 'LEAN_TURBO_PHASE_NOT_READY',
 						message: `Phase ${phase} cannot be completed: ${check.reason}`,
+						recovery: {
+							kind: 'user_action',
+							action: 'config',
+							args: {
+								option: 'turbo.lean.integrated_diff_required',
+								opt_out_value: false,
+								detail: `If the integrated-diff evidence is missing, re-run the phase (mid-phase) or provide ${dir}/.swarm/evidence/${phase}/lean-turbo/lean-turbo-phase.json with a non-empty integratedDiffSummary; to restore the pre-#2954 permissive behavior, set turbo.lean.integrated_diff_required: false in .opencode/opencode-swarm.json.`,
+							},
+						},
 					};
 		},
 	});
+	// Epic Mode phase readiness: an APPROVED phase reviewer AND phase critic,
+	// dispatched and recorded by epic_phase_review and bound to the current
+	// plan / phase task evidence. Applies whenever an epic is open for the
+	// current plan (`/swarm epic start`, which keeps Turbo off): it adds
+	// the cross-task integration review that per-task Stage B cannot provide
+	// for concurrently executed waves. Pushed ONLY when an epic is open (the
+	// sentinel-first probe costs one existsSync otherwise) so the non-Epic
+	// gate report stays byte-identical to the pre-Epic report.
+	if (epicActiveForProject)
+		preflightChecks.push({
+			id: 'epic_phase_readiness',
+			responsibleActor: 'architect',
+			applicable: true,
+			run: async () => {
+				const check =
+					await phaseCompletePreflightInternals.verifyEpicPhaseReadiness(
+						dir,
+						phase,
+						preflightNowMs,
+					);
+				return check.ok
+					? passGate({
+							evidenceRefs: [`epic-phase-review:${check.evidence.reviewed_at}`],
+						})
+					: {
+							...passGate(),
+							blocked: true,
+							reason: check.code,
+							message: `Phase ${phase} cannot be completed: ${check.reason}`,
+							recovery: {
+								kind: 'tool',
+								action: EPIC_PHASE_REVIEW_TOOL,
+								args: { phase },
+							},
+						};
+			},
+		});
 
 	preflightChecks.push({
 		id: 'required_agents',
@@ -1259,6 +1336,8 @@ export async function executePhaseComplete(
 					dir,
 					receiptPhaseLabel,
 					sessionID,
+					undefined,
+					phase,
 				);
 			if (!closeIntent.ok) {
 				return JSON.stringify({
@@ -1430,6 +1509,8 @@ export async function executePhaseComplete(
 			dir,
 			receiptPhaseLabel,
 			sessionID,
+			undefined,
+			phase,
 		);
 		if (!receiptClose.ok) {
 			return JSON.stringify({
@@ -1990,6 +2071,34 @@ export async function executePhaseComplete(
 		warnings.push(
 			`Warning: failed to write phase complete event: ${writeError instanceof Error ? writeError.message : String(writeError)}`,
 		);
+	}
+
+	// Epic v2 C2: phases are iterations — `epic_next_wave` issues no wave of
+	// the next phase until this phase is recorded complete on the open epic.
+	// Pushed only while an epic is open (the probe above), so the non-Epic
+	// result is unchanged.
+	if (epicActiveForProject) {
+		try {
+			const marked = phaseCompleteCommitInternals.markEpicPhaseComplete(
+				dir,
+				phase,
+			);
+			if (marked.outcome === 'not-current-phase') {
+				warnings.push(
+					marked.currentPhase === null
+						? `Warning: the open epic could not determine its current phase (plan unreadable), so phase ${phase} was not recorded complete on the epic; epic_next_wave will not advance past it until phase_complete is re-run.`
+						: `Warning: the open epic is on phase ${marked.currentPhase}; Epic runs phases in order, so phase ${phase} was not recorded complete on the epic. Finish phase ${marked.currentPhase} through epic_next_wave first.`,
+				);
+			} else if (marked.outcome === 'no-open-epic') {
+				warnings.push(
+					`Warning: phase ${phase} could not be recorded complete on the epic (no epic is open for this plan any more).`,
+				);
+			}
+		} catch (epicError) {
+			warnings.push(
+				`Warning: phase ${phase} could not be recorded complete on the open epic (${epicError instanceof Error ? epicError.message : String(epicError)}); re-run phase_complete so epic_next_wave can advance.`,
+			);
+		}
 	}
 
 	// Reset phase state on success

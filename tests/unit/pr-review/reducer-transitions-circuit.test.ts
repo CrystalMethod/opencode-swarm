@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import type { PrReviewResiliencePolicyRecord } from '../../../src/pr-review/circuit.js';
+import {
+	classifyPrReviewCircuitSignal,
+	type PrReviewResiliencePolicyRecord,
+} from '../../../src/pr-review/circuit.js';
 import { reducePrReviewEvent } from '../../../src/pr-review/reducer.js';
 import type {
 	PrReviewEvent,
@@ -287,5 +290,51 @@ describe('reducer: probe settlement', () => {
 			generation: 2,
 			openUntil: '2026-09-01T00:01:30.000Z',
 		});
+	});
+});
+
+describe('classifyPrReviewCircuitSignal: workflow-lane failure-class mapping (issue #2971)', () => {
+	type CircuitSignalRecord = Parameters<
+		typeof classifyPrReviewCircuitSignal
+	>[0];
+
+	function cancelledRecord(
+		workflowLaneFailureClass: 'operator_cancelled' | 'liveness',
+	): CircuitSignalRecord {
+		return {
+			status: 'cancelled',
+			terminalResult: {
+				eventId: `evt-${workflowLaneFailureClass}`,
+				status: 'cancelled',
+				recordedAt: 1_000,
+				result: { workflowLaneFailureClass },
+			},
+			batchId: 'b1',
+			laneId: 'l1',
+		};
+	}
+
+	test('operator_cancelled is ignored as operator_abandonment — never provider/liveness evidence', () => {
+		expect(
+			classifyPrReviewCircuitSignal(cancelledRecord('operator_cancelled')),
+		).toEqual({ kind: 'ignored', reason: 'operator_abandonment' });
+	});
+
+	test('the legacy liveness class reads as host_abandonment, a distinct reason', () => {
+		expect(classifyPrReviewCircuitSignal(cancelledRecord('liveness'))).toEqual({
+			kind: 'ignored',
+			reason: 'host_abandonment',
+		});
+	});
+
+	test('a non-terminal record produces no signal at all', () => {
+		expect(
+			classifyPrReviewCircuitSignal({
+				status: 'running',
+				result: { workflowLaneFailureClass: 'operator_cancelled' },
+				batchId: 'b1',
+				laneId: 'l1',
+			}),
+		).toBeNull();
 	});
 });

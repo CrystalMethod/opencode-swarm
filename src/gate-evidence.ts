@@ -114,6 +114,25 @@ export interface TaskWorkflowMetadata {
 	 */
 	supervisedRecovery?: boolean;
 	/**
+	 * True when this task's current generation entered `pre_check_passed`
+	 * through a settlement-backed Stage A recovery (issue #2828) — the
+	 * deterministic `/swarm recover` settlement-wedge repair or the audited
+	 * `recover_stage_a_task` architect tool — rather than the mechanical
+	 * pre_check_batch recorder.
+	 *
+	 * Same durability contract as `supervisedRecovery`: the reducer consumes
+	 * the event-scoped flag transiently, so without a persisted marker the
+	 * evidence file becomes byte-identical to a mechanically-earned Stage A
+	 * pass as soon as the next transition overwrites `lastTransitionId`.
+	 * Preserved across subsequent transitions in the same generation, cleared
+	 * by `repair_idle` and by `accepted_mutation`'s generation rotation (a new
+	 * generation invalidates the recovery mode). One flag serves both entry
+	 * modes because the durable predicate (COMMITTED accepted settlement +
+	 * green post-settlement pre-check) is identical; provenance between them
+	 * rides the `stage_a_repair` audit event's `via` field.
+	 */
+	settlementRecovery?: boolean;
+	/**
 	 * Exact proof that the generation-0 coder settlement declared no files and
 	 * observed no mutation. This is deliberately separate from retry history and
 	 * lastOutcome so it cannot be overwritten by a later advisory transition.
@@ -145,6 +164,22 @@ export interface TaskEvidence {
 		source_generation: number | null;
 		requirements_receipt_hash: string | null;
 	};
+	/**
+	 * Recorded TODO-gate scan for this task (issue #2581): the high-priority
+	 * (FIXME/HACK/XXX) count from the most recent `todo_extract` run that named
+	 * this task. Consumed by `check_gate_status` and the phase-complete
+	 * `todo_gate` gate against the `todo_gate` config. Absent when no producer
+	 * ran — consumers must treat absence as "no evidence", never as a failure.
+	 */
+	todo_scan?: TodoScanEvidence;
+}
+
+/** Shape of the `todo_scan` evidence field read by `check_gate_status`. */
+export interface TodoScanEvidence {
+	priority: string;
+	count: number;
+	details?: string[];
+	recorded_at?: string;
 }
 
 export interface ApplicableGateSet {
@@ -332,6 +367,15 @@ export type TaskWorkflowTransitionEvent =
 			 * fail closed with TASK_WORKFLOW_CODER_MUTATION_REQUIRED from that state.
 			 */
 			supervisedRecovery?: boolean;
+			/**
+			 * Settlement-backed recovery only (issue #2828): the settlement-wedge
+			 * repair paths (`/swarm recover`'s settlement scan and the
+			 * recover_stage_a_task tool) set this to admit stage_a_passed from
+			 * `idle`/`blocked` when a COMMITTED accepted coder settlement plus
+			 * green post-settlement pre-check proof justify re-recording Stage A.
+			 * Every other emitter leaves it unset and still fails closed.
+			 */
+			settlementRecovery?: boolean;
 			expectedGeneration: number;
 			transitionId?: string;
 	  }
@@ -401,6 +445,25 @@ export interface TaskEvidenceTransaction {
 	taskId: string;
 	read(): TaskEvidence | null;
 	transition(event: TaskWorkflowTransitionEvent): Promise<TaskEvidence>;
+	/**
+	 * Same as `transition`, plus whether the reducer treated the event as a
+	 * duplicate no-op (the durable evidence already recorded this exact
+	 * transitionId + outcome, so nothing changed). Optional for backward
+	 * compatibility with older transaction implementations; callers of the
+	 * plain `transition` cannot distinguish a fresh write from a duplicate.
+	 */
+	transitionWithStatus?(
+		event: TaskWorkflowTransitionEvent,
+	): Promise<{ evidence: TaskEvidence; duplicated: boolean }>;
+	/**
+	 * Supplementary no-event write: persists `nextEvidence` (zod-validated,
+	 * atomic) without a workflow transition. Fails closed through the same
+	 * WAL fence as transitions (`assertTaskEvidenceWriteAllowed` with no
+	 * event) so a producer cannot clobber an in-flight coder settlement or
+	 * terminal commit. Optional for backward compatibility with older
+	 * transaction implementations.
+	 */
+	save?(nextEvidence: TaskEvidence): Promise<TaskEvidence>;
 }
 
 const GateEvidenceSchema = z
@@ -423,6 +486,7 @@ const TaskWorkflowMetadataSchema = z.object({
 	updatedAt: z.string(),
 	forcedCompletion: z.boolean().optional(),
 	supervisedRecovery: z.boolean().optional(),
+	settlementRecovery: z.boolean().optional(),
 	noMutationSettlement: z
 		.object({
 			generation: z.literal(0),
@@ -451,6 +515,14 @@ const TaskEvidenceSchema = z.object({
 				.string()
 				.regex(/^[a-f0-9]{64}$/)
 				.nullable(),
+		})
+		.optional(),
+	todo_scan: z
+		.object({
+			priority: z.string(),
+			count: z.number().int().min(0),
+			details: z.array(z.string()).max(200).optional(),
+			recorded_at: z.string().optional(),
 		})
 		.optional(),
 });
@@ -758,7 +830,15 @@ export function reduceTaskWorkflowSnapshot(
 		!(
 			(current.state === 'complete' && event.type === 'task_completed') ||
 			(current.state === 'blocked' && event.type === 'task_blocked') ||
-			(current.state === 'blocked' && event.type === 'task_closed')
+			(current.state === 'blocked' && event.type === 'task_closed') ||
+			// Issue #2828: a settlement-backed Stage A recovery is the one
+			// audited transition admitted out of `blocked` — only when the
+			// caller proved the durable receipts (COMMITTED accepted
+			// settlement + green post-settlement pre-check) upstream. Every
+			// other stage_a_passed from a terminal state still fails closed.
+			(current.state === 'blocked' &&
+				event.type === 'stage_a_passed' &&
+				event.settlementRecovery === true)
 		)
 	) {
 		throw new Error(
@@ -785,6 +865,13 @@ export function reduceTaskWorkflowSnapshot(
 		// supervised stage_a_passed below, stripped when a new generation opens.
 		...(current.supervisedRecovery === true
 			? { supervisedRecovery: true }
+			: {}),
+		// Same durability contract for the settlement-backed Stage A entry mode
+		// (issue #2828): preserved across same-generation transitions, set by the
+		// settlement-recovery stage_a_passed below, stripped when a new generation
+		// opens.
+		...(current.settlementRecovery === true
+			? { settlementRecovery: true }
 			: {}),
 		...(current.noMutationSettlement
 			? { noMutationSettlement: current.noMutationSettlement }
@@ -854,6 +941,7 @@ export function reduceTaskWorkflowSnapshot(
 					retryEpoch: current.retryEpoch || current.generation + 1,
 					// New generation: any prior Stage A entry mode no longer applies.
 					supervisedRecovery: undefined,
+					settlementRecovery: undefined,
 				};
 			}
 			return {
@@ -863,6 +951,7 @@ export function reduceTaskWorkflowSnapshot(
 				// A mutation is a repair attempt, not proof that prior rejections were
 				// resolved. Preserve the task-level circuit history across generations.
 				supervisedRecovery: undefined,
+				settlementRecovery: undefined,
 			};
 		}
 		case 'stage_a_passed':
@@ -872,6 +961,10 @@ export function reduceTaskWorkflowSnapshot(
 				!(
 					current.state === 'rework_required' &&
 					event.supervisedRecovery === true
+				) &&
+				!(
+					event.settlementRecovery === true &&
+					(current.state === 'idle' || current.state === 'blocked')
 				)
 			) {
 				throw new Error(
@@ -885,6 +978,12 @@ export function reduceTaskWorkflowSnapshot(
 				// later transitions overwrite lastTransitionId (issue #2755 review).
 				...(event.supervisedRecovery === true
 					? { supervisedRecovery: true as const }
+					: {}),
+				// Persist the settlement-backed entry mode the same way (issue
+				// #2828): durable receipt of WHICH kind of recovery recorded
+				// Stage A, distinct from a mechanical pre_check_batch pass.
+				...(event.settlementRecovery === true
+					? { settlementRecovery: true as const }
 					: {}),
 				state: 'pre_check_passed',
 			};
@@ -985,6 +1084,7 @@ export function reduceTaskWorkflowSnapshot(
 			const {
 				forcedCompletion: _cleared,
 				supervisedRecovery: _clearedMarker,
+				settlementRecovery: _clearedSettlementMarker,
 				noMutationSettlement: _clearedSettlement,
 				...withoutForced
 			} = base;
@@ -1230,6 +1330,16 @@ function updateEvidenceForTransition(
 					!requiredGates.includes('test_engineer')
 				: existing?.test_engineer_exempt,
 		workflow,
+		// Supplementary fields are carried forward, not rebuilt: the reducer
+		// has no event-scoped semantics for them, and dropping them here would
+		// silently erase durable markers on every transition (issue #2581 —
+		// todo_scan; the same carry fixes the pre-existing repair_provenance /
+		// requirements_state loss).
+		requirements_state: existing?.requirements_state,
+		...(existing?.repair_provenance
+			? { repair_provenance: existing.repair_provenance }
+			: {}),
+		...(existing?.todo_scan ? { todo_scan: existing.todo_scan } : {}),
 	};
 }
 
@@ -1238,26 +1348,55 @@ export async function transitionTaskWorkflowEvidence(
 	taskId: string,
 	event: TaskWorkflowTransitionEvent,
 ): Promise<TaskEvidence> {
+	const { evidence } = await transitionTaskWorkflowEvidenceWithStatus(
+		directory,
+		taskId,
+		event,
+	);
+	return evidence;
+}
+
+/**
+ * Same as `transitionTaskWorkflowEvidence`, plus whether the reducer treated
+ * the event as a duplicate no-op (the durable evidence already recorded this
+ * exact transitionId + outcome). Duplicate detection needs the locked pre-
+ * transition state, so it is only available from inside the transaction; a
+ * transaction implementation without `transitionWithStatus` reports
+ * `duplicated: false` (unknown, not proven-fresh).
+ */
+export async function transitionTaskWorkflowEvidenceWithStatus(
+	directory: string,
+	taskId: string,
+	event: TaskWorkflowTransitionEvent,
+): Promise<{ evidence: TaskEvidence; duplicated: boolean }> {
 	assertValidTaskId(taskId);
 
 	let updatedEvidence: TaskEvidence | null = null;
+	let duplicated = false;
 	await withTaskEvidenceTransaction(
 		directory,
 		taskId,
 		event.type,
 		async (transaction) => {
+			if (transaction.transitionWithStatus) {
+				const result = await transaction.transitionWithStatus(event);
+				updatedEvidence = result.evidence;
+				duplicated = result.duplicated;
+				return;
+			}
 			updatedEvidence = await transaction.transition(event);
 		},
 	);
 
-	return (
-		updatedEvidence ?? {
+	return {
+		evidence: updatedEvidence ?? {
 			taskId,
 			required_gates: [],
 			gates: {},
 			workflow: createDefaultWorkflowMetadata(new Date().toISOString()),
-		}
-	);
+		},
+		duplicated,
+	};
 }
 
 export async function withTaskEvidenceTransaction<T>(
@@ -1301,20 +1440,45 @@ export async function withTaskEvidenceTransaction<T>(
 			return validated;
 		};
 
+		const transitionWithStatusImpl = async (
+			event: TaskWorkflowTransitionEvent,
+		): Promise<{ evidence: TaskEvidence; duplicated: boolean }> => {
+			const boundEvent = bindTrustedNoMutationSettlement(
+				directory,
+				taskId,
+				event,
+			);
+			assertTaskEvidenceWriteAllowed(directory, taskId, boundEvent);
+			const nextEvidence = updateEvidenceForTransition(current, boundEvent);
+			// updateEvidenceForTransition returns its `existing` argument
+			// unchanged on a duplicate transition — the same object as the
+			// locked current state — so identity is the duplicate signal.
+			const duplicated = nextEvidence === current;
+			nextEvidence.taskId = taskId;
+			const evidence = await persist(nextEvidence, boundEvent);
+			return { evidence, duplicated };
+		};
+
+		const saveImpl = async (nextEvidence: TaskEvidence) => {
+			// Supplementary no-event write (issue #2581 producer path). The
+			// fence fails closed with no event: while a coder settlement,
+			// terminal commit, or task repair WAL owns this task's evidence,
+			// no producer may land a write the owning transition would
+			// clobber.
+			assertTaskEvidenceWriteAllowed(directory, taskId, undefined);
+			nextEvidence.taskId = taskId;
+			return persist(nextEvidence);
+		};
+
 		return callback({
 			taskId,
 			read: () => current,
 			transition: async (event) => {
-				const boundEvent = bindTrustedNoMutationSettlement(
-					directory,
-					taskId,
-					event,
-				);
-				assertTaskEvidenceWriteAllowed(directory, taskId, boundEvent);
-				const nextEvidence = updateEvidenceForTransition(current, boundEvent);
-				nextEvidence.taskId = taskId;
-				return persist(nextEvidence, boundEvent);
+				const { evidence } = await transitionWithStatusImpl(event);
+				return evidence;
 			},
+			transitionWithStatus: transitionWithStatusImpl,
+			save: saveImpl,
 		});
 	});
 }
@@ -1398,6 +1562,43 @@ export async function recordGateEvidence(
 	);
 
 	telemetry.gatePassed(sessionId, gate, taskId);
+}
+
+/**
+ * Records a TODO-gate scan for a task (issue #2581 producer API). Merges
+ * `scan` into `.swarm/evidence/{taskId}.json` as a supplementary no-event
+ * write: existing gates, workflow state, and all other fields are preserved
+ * byte-for-byte; a missing file is created with a default workflow. Uses the
+ * same lock + atomic write discipline as every other flat-file writer and
+ * fails closed through `assertTaskEvidenceWriteAllowed` while a coder
+ * settlement, terminal commit, or task repair WAL owns the task's evidence.
+ */
+export async function recordTodoScanEvidence(
+	directory: string,
+	taskId: string,
+	scan: TodoScanEvidence,
+): Promise<void> {
+	assertValidTaskId(taskId);
+	await withTaskEvidenceTransaction(
+		directory,
+		taskId,
+		'todo_scan_recorded',
+		async (transaction) => {
+			const existing = transaction.read();
+			const base: TaskEvidence = existing ?? {
+				taskId,
+				required_gates: [],
+				gates: {},
+				workflow: createDefaultWorkflowMetadata(new Date().toISOString()),
+			};
+			if (!transaction.save) {
+				throw new Error(
+					`TASK_EVIDENCE_SAVE_UNAVAILABLE: transaction for task ${taskId} does not support supplementary writes`,
+				);
+			}
+			await transaction.save({ ...base, todo_scan: scan });
+		},
+	);
 }
 
 /**

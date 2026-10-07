@@ -111,14 +111,15 @@ describe('handleIssueCommand — durable persistence (issue.ts)', () => {
 	// =============================================================================
 	// Test 1: Happy path — both artifacts written with correct fields
 	// =============================================================================
-	test('SUCCESS: writes issue-reference.json and issue-trace-state.json', () => {
+	test('SUCCESS: --trace writes issue-reference.json and issue-trace-state.json', () => {
 		const result = handleIssueCommand(tempDir, [
 			'https://github.com/owner/repo/issues/42',
+			'--trace',
 		]);
 
 		// Signal returned
 		expect(result).toBe(
-			'[MODE: ISSUE_INGEST issue="https://github.com/owner/repo/issues/42"]',
+			'[MODE: ISSUE_INGEST issue="https://github.com/owner/repo/issues/42" plan=true trace=true]',
 		);
 
 		// Both artifacts exist
@@ -135,7 +136,7 @@ describe('handleIssueCommand — durable persistence (issue.ts)', () => {
 		expect(ref.number).toBe(42);
 		expect(typeof ref.timestamp).toBe('string');
 		expect(ref.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/); // ISO-8601
-		expect(ref.flags).toEqual({});
+		expect(ref.flags).toEqual({ plan: true, trace: true });
 
 		// issue-trace-state.json fields
 		const trace = JSON.parse(fsSync.readFileSync(tracePath, 'utf-8'));
@@ -213,6 +214,7 @@ describe('handleIssueCommand — durable persistence (issue.ts)', () => {
 
 		const result = handleIssueCommand(tempDir, [
 			'https://github.com/owner/repo/issues/99',
+			'--trace',
 		]);
 
 		expect(result).toContain('issue="https://github.com/owner/repo/issues/99"');

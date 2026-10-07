@@ -229,6 +229,10 @@ export const FIXTURES: Record<string, Record<string, unknown>> = {
 		retries: 3,
 		source: 'savePlan',
 	},
+	plan_recovery_superseded: {
+		count: 2,
+		trigger: 'coordination_fence',
+	},
 	agent_conflict_detected: {
 		type: 'agent_conflict_detected',
 		timestamp: '2020-01-02T03:04:05.678Z',

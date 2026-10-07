@@ -8,6 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { tool } from '@opencode-ai/plugin';
 import { z } from 'zod';
+import { loadPluginConfigWithMeta } from '../config/index.js';
 import { isSecretscanEvidence, loadEvidence } from '../evidence/manager.js';
 import type { TaskEvidence } from '../gate-evidence.js';
 import {
@@ -15,6 +16,9 @@ import {
 	readCurrentTaskDeclaredFiles,
 	TASK_WORKFLOW_SCHEMA_MARKER,
 } from '../gate-evidence.js';
+import type { TodoGateConfigBlock } from '../todo/todo-gate.js';
+import { evaluateTodoGate } from '../todo/todo-gate.js';
+import * as logger from '../utils/logger.js';
 import { isStrictTaskId } from '../validation/task-id';
 import { createSwarmTool } from './create-tool';
 import { resolveWorkingDirectory } from './resolve-working-directory';
@@ -167,6 +171,24 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 		}
 		directory = dirResult.directory;
 
+		// TODO-gate config (issue #2581). The config loader recovers a
+		// malformed config file to schema defaults, so a broken config
+		// evaluates the TODO gate with DEFAULT settings (advisory, max 0)
+		// rather than skipping it; only an unexpected loader throw skips
+		// evaluation (defensive — debug-logged). This read-only tool must
+		// not fabricate verdicts. (phase_complete parses the same config
+		// fail-closed — the asymmetry is intentional and documented in
+		// docs/configuration.md.)
+		let todoGateConfig: TodoGateConfigBlock | undefined;
+		try {
+			todoGateConfig = loadPluginConfigWithMeta(directory).config.todo_gate;
+		} catch (configError) {
+			logger.log(
+				'check_gate_status: todo_gate config load threw; TODO gate evaluation skipped',
+				configError,
+			);
+		}
+
 		// Validate task_id
 		if (!taskIdInput) {
 			const errorResult: GateStatusResult = {
@@ -297,7 +319,25 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 						const hasIncompleteCoverage =
 							incompleteFiles > 0 || incompletePaths.length > 0;
 						const hasFindings = findingsCount > 0;
-						const hasZeroCoverage = lastSecretscan.files_scanned === 0;
+						// #2918 vacuous coverage — same normative predicate as the
+						// pre_check gate and the decoder, evaluated over the persisted
+						// evidence fields (optional; missing ⇒ non-vacuous ⇒ strict).
+						const policySkipped: unknown = lastSecretscan.policy_skipped_files;
+						const requestedFilesCount: unknown = lastSecretscan.requested_files;
+						const vacuousCoverage =
+							lastSecretscan.files_scanned === 0 &&
+							typeof policySkipped === 'number' &&
+							Number.isSafeInteger(policySkipped) &&
+							policySkipped >= 0 &&
+							typeof requestedFilesCount === 'number' &&
+							Number.isSafeInteger(requestedFilesCount) &&
+							requestedFilesCount > 0 &&
+							policySkipped >= requestedFilesCount &&
+							findingsCount === 0 &&
+							incompleteFiles === 0 &&
+							incompletePaths.length === 0;
+						const hasZeroCoverage =
+							lastSecretscan.files_scanned === 0 && !vacuousCoverage;
 						if (
 							hasIncompleteCoverage ||
 							hasFindings ||
@@ -339,6 +379,11 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 							lastSecretscan.verdict === 'info'
 						) {
 							secretscanVerdict = 'pass';
+							if (vacuousCoverage) {
+								// Satisfied, with a note: the pass rests on provable
+								// extension-policy exclusion, not on scanned files.
+								message += ` Advisory: Secretscan coverage was vacuous (${lastSecretscan.policy_skipped_files} of ${lastSecretscan.requested_files} requested file(s) skipped by scan policy).`;
+							}
 						}
 					}
 				} else {
@@ -355,10 +400,27 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 			// Evidence loading failures should not break the tool
 		}
 
-		// Check for todo_scan field in evidence (advisory only)
+		// Apply the configured TODO gate to the recorded todo_scan evidence
+		// (issue #2581). Advisory when block_on_threshold is false; a
+		// todo_gate (BLOCKED — ...) missing-gate entry + incomplete status
+		// when true — the same shape the secretscan path above uses.
 		const todoScan = evidenceData.todo_scan as
 			| { priority: string; count: number; details?: string[] }
 			| undefined;
+		const todoVerdict = evaluateTodoGate(todoScan, todoGateConfig);
+		if (todoVerdict.status === 'exceeded') {
+			if (todoVerdict.blocked) {
+				missingGates.push(
+					`todo_gate (BLOCKED — ${todoVerdict.count} high-priority TODOs exceed max ${todoVerdict.max})`,
+				);
+				if (status === 'all_passed') {
+					status = 'incomplete';
+				}
+				message = `BLOCKED: TODO gate threshold exceeded. ${todoVerdict.message} ${message}`;
+			} else {
+				message += ` Advisory: todo_gate threshold exceeded — ${todoVerdict.count} high-priority TODOs (FIXME/HACK/XXX) exceed max_high_priority=${todoVerdict.max}.`;
+			}
+		}
 
 		// Durable workflow lifecycle diagnostics. A task whose workflow store
 		// sits at coder_delegated with no pre_check gate proof is wedged: every

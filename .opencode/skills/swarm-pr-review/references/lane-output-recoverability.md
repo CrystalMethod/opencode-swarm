@@ -319,3 +319,53 @@ What an amendment costs, and what it preserves:
   `inventory_amendments` on the completion response and `inventoryAmendments` on
   `pr_workflow_status`. The ledger is bounded at 128 entries and is never pruned;
   further amendments are refused at the cap.
+
+## Liveness-terminal dead-family settlement at trigger-eval (issue #2835)
+
+A `MATCHED` trigger row whose cited micro lane is liveness-terminal — settled
+by the presumed-stale sweep with `workflowLaneFailureClass: 'liveness'`,
+terminal status `stale` or `error`, and no retained artifact — is admitted by
+`write_pr_review_trigger_eval` as a disclosed dead family instead of
+provenance-backed. The writer verifies the exception from the durable
+delegation record itself (micro mode, family ownership, exact pr_head_sha
+identity via `workspace.prHeadSha` and `workspace.gitHead`, typed liveness
+class, no `outputRef` and no retained artifact); the receipt then carries a
+`coverage_degradations` entry naming the dead batch/lane with the terminal
+status, and the review proceeds as a disclosed PARTIAL — that family is
+UNATTESTED and can never support an APPROVE verdict. This disclosure is the
+settlement of last resort for a dead family: retry the family first (the
+initial attempt plus up to 2 retries — aborting after only the first retry is
+one bounded retry early), then disclose, and only then is `abort_pr_workflow`
+legitimate.
+
+The retry budget is mechanically enforced (issue #2878): every micro-family
+dispatch acknowledgment (`dispatch_lanes_async` with mode
+`swarm-pr-review:micro`) appends one record to the persisted per-family
+micro-family dispatch ledger in PR-workflow gate state, and the dead-family
+admission requires three recorded dispatch attempts (initial dispatch plus 2
+retries, `PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET`) for the cited family under
+the same `pr_head_sha` — with the cited batch among the counted attempts —
+before it stops failing closed with an actionable budget message that names
+the recorded count. Crash-window disposition of the ledger: each attempt is
+durably recorded at acknowledgment time, strictly before any lane session is
+created, so no dead lane can exist whose dispatch was not first counted; a
+crash between the acknowledgment and the lane launch leaves a benign orphan
+entry (batchId idempotence prevents double-counting on a retry of the same
+dispatch call, and the over-count direction is conservative because the cited
+batch must still exist as a real stale delegation record to be disclosed at
+all); the ledger is bounded at 128 records with a fail-closed BLOCKED refusal
+at the cap — never silent eviction. An operator-cancelled lane does NOT qualify — it was ended by
+`cancel_lane_batch` (or the human force abort), an explicit controller act
+recorded as the distinct `operator_cancelled` class; re-dispatch the family
+instead of disclosing it.
+
+## Incident classification and parser-vs-gate proof scope (issue #2859 relocation)
+
+Classify the incident from actual user-visible harm and the first failed
+predicate, not from the number of retries or the eventual result. A successful
+post-hoc fallback is recovery evidence; it does not justify the protocol
+deviation or erase the original failure. Conversely, the candidate tool and
+the coverage gate use a shared row parser, while the gate separately verifies
+durable provenance such as batch, session, lane, role, head, digest, and
+artifact identity. Parser success therefore proves row structure only; it does
+not settle the durable coverage obligation.

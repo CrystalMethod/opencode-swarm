@@ -17,12 +17,20 @@ import {
 
 let directory = '';
 
+// Issue #2601: the wake path now runs the (fs-bound) skill-contract
+// verifier before the prompt send; this suite drives wakes with fake timers
+// and asserts synchronously after scheduler.advance, so stub the verifier
+// to its clean-host result for determinism.
+const originalEnsurePrWorkflowSkillContractsFresh =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
 beforeEach(() => {
 	directory = makeTempDir('pr-response-gate-recovery-race-');
 	responseGateInternals.readPrWorkflowGateState =
 		originalReadPrWorkflowGateState;
 	responseGateInternals.observePrWorkflowAutoWakeEvent =
 		originalObservePrWorkflowAutoWakeEvent;
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
 	workflowInternals.resetTrackedStateCache();
 	autoWakeInternals.reset();
 });
@@ -32,6 +40,8 @@ afterEach(async () => {
 		originalReadPrWorkflowGateState;
 	responseGateInternals.observePrWorkflowAutoWakeEvent =
 		originalObservePrWorkflowAutoWakeEvent;
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		originalEnsurePrWorkflowSkillContractsFresh;
 	workflowInternals.resetTrackedStateCache();
 	autoWakeInternals.reset();
 	await fs.rm(directory, { recursive: true, force: true });

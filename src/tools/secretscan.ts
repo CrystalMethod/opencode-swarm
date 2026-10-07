@@ -64,6 +64,35 @@ export interface SecretscanResult {
 	count: number;
 	files_scanned: number;
 	skipped_files: number;
+	/**
+	 * Files suppressed by `.secretscanignore` patterns (#3107, explicit-files
+	 * path only; optional for legacy producers, treated as 0). Audit/
+	 * diagnosability counter — never part of the #2918 vacuous-coverage
+	 * predicate, which keys on policy_skipped_files. The directory path emits
+	 * literal 0 (traversal prunes at visitation and does not track
+	 * per-suppression counts — see the caution on policy_skipped_files).
+	 */
+	ignored_files?: number;
+	/**
+	 * Skips attributable specifically to scan-policy extension exclusion
+	 * (#2918). The extension-exclusion site in runSecretscanOnFiles is the
+	 * ONLY increment site: binary-content skips, missing files, invalid
+	 * entries, .secretscanignore suppressions (#3107), and every incomplete
+	 * route deliberately do NOT count, so `policy_skipped_files ===
+	 * requested_files` with zero findings and zero incomplete coverage proves
+	 * vacuous coverage (nothing the scan policy allows scanning was
+	 * requested). Ignore-file suppressions count toward skipped_files only —
+	 * a repo-writable ignore file can never satisfy the vacuous-coverage
+	 * predicate of the changed-file gate.
+	 */
+	policy_skipped_files: number;
+	/**
+	 * Raw declared file count backing the scan, captured BEFORE any caller
+	 * validation-drop (#2918). Direct callers default to `files.length`; the
+	 * pre_check batch passes its pre-drop declared count so a dropped entry
+	 * keeps requested > policy counter (non-vacuous, fail-closed).
+	 */
+	requested_files: number;
 	/** Files requested or discovered but not completely examined. */
 	incomplete_files: number;
 	incomplete_paths: IncompletePath[];
@@ -76,7 +105,9 @@ export interface IncompletePath {
 		| 'cleanup_failed'
 		| 'deadline'
 		| 'directory_limit'
+		| 'invalid_entry'
 		| 'max_files'
+		| 'missing'
 		| 'non_file'
 		| 'oversized'
 		| 'read_error'
@@ -158,6 +189,26 @@ const DEFAULT_EXCLUDE_EXTENSIONS = new Set([
 	'.lock',
 	'.log',
 	'.md',
+]) as Set<string>;
+
+/**
+ * Docs-safe allowlist for policy skips (#2918): markdown-family file types
+ * with no plausible secret-bearing content, for which a policy skip is a
+ * provable no-coverage-needed signal. The increment site also requires
+ * DEFAULT_EXCLUDE_EXTENSIONS.has(ext), so the effective docs-safe set is
+ * the intersection — today `.md` alone (.markdown/.mdx are not in the
+ * policy exclusion list and stay content-scanned; their entries here keep
+ * this allowlist correct if the policy list ever grows). Every OTHER
+ * policy exclusion (binaries, archives, secret-bearing containers like
+ * .db/.sqlite/.dat/.bin/.lock/.log) keeps skippedFiles accounting ONLY —
+ * it never counts toward policy_skipped_files, so a batch made up solely
+ * of such files still trips the zero-coverage fail-closed arm instead of
+ * passing vacuously (swarm-pr-review run 20260923-pr2940, SEC-1).
+ */
+const DOCS_SAFE_EXCLUDE_EXTENSIONS = new Set([
+	'.md',
+	'.markdown',
+	'.mdx',
 ]) as Set<string>;
 
 // ============ Secret Detection Patterns ============
@@ -413,6 +464,35 @@ function isExcluded(
 	// Glob / path pattern match against the relative path
 	for (const pattern of globPatterns) {
 		if (path.matchesGlob(relPath, pattern)) return true;
+	}
+	return false;
+}
+
+/**
+ * Exclusion match for an explicitly requested file, with directory-traversal
+ * pruning fidelity (#3107). The directory path tests every traversed entry
+ * (files AND directories) via isExcluded, and a directory hit prunes its whole
+ * subtree; an explicit file under a pruned directory must therefore match on
+ * the file itself OR on any ancestor directory prefix of its root-relative
+ * path (forward slashes, relative to the realpath-resolved scan root).
+ */
+function isIgnoredExplicitPath(
+	relPath: string,
+	ignoreExact: Set<string>,
+	ignoreGlobs: string[],
+): boolean {
+	const segments = relPath.split('/');
+	const file = segments[segments.length - 1] ?? '';
+	if (isExcluded(file, relPath, ignoreExact, ignoreGlobs)) {
+		return true;
+	}
+	let prefix = '';
+	for (let i = 0; i < segments.length - 1; i++) {
+		const segment = segments[i] ?? '';
+		prefix = prefix.length === 0 ? segment : `${prefix}/${segment}`;
+		if (isExcluded(segment, prefix, ignoreExact, ignoreGlobs)) {
+			return true;
+		}
 	}
 	return false;
 }
@@ -1362,6 +1442,19 @@ export const secretscan: ReturnType<typeof createSwarmTool> = createSwarmTool({
 				count: allFindings.length,
 				files_scanned: filesScanned,
 				skipped_files: skippedFiles + stats.fileErrors + stats.symlinkSkipped,
+				// #2918: this standalone directory scan discovers its own file set,
+				// so there is no caller-declared request basis and no per-file
+				// extension-policy skip accounting. Both counters are deliberately
+				// INERT (0/0): no enforcing site evaluates the vacuous-coverage
+				// predicate on directory-mode output (evaluateSecretscanGate is
+				// module-private with a single files-mode call site, and the only
+				// SecretscanEvidence writer is the batch). Do NOT start populating
+				// these here without also auditing every predicate site — a
+				// directory scan that finds zero scannable files in a code repo is
+				// anomalous and must stay fail-closed (see preflight-service).
+				policy_skipped_files: 0,
+				requested_files: 0,
+				ignored_files: 0,
 				incomplete_files: incompleteFiles,
 				incomplete_paths: discovery.incompletePaths,
 			};
@@ -1455,15 +1548,35 @@ export async function runSecretscan(
  * Run secretscan over an explicit, already-selected file set.
  * Used by pre_check_batch so changed-file hard gates share the same detector
  * registry and entropy logic as the standalone scanner.
+ *
+ * #3107: also reads `.secretscanignore` at the scan root with the same pattern
+ * language and precedence as the directory scan (exact names + globs; comments,
+ * blanks, and unsafe patterns skipped; ancestor directories prune like
+ * traversal). Ignore-matched files that reach the ignore check count toward
+ * `skipped_files` only — never `policy_skipped_files` — so the #2918
+ * vacuous-coverage fail-closed arm keeps biting on all-ignored batches. One
+ * deliberate carve-out: the docs-safe extension-exclusion route is evaluated
+ * FIRST (#2918, pinned by test), so an ignore-matched `.md`/`.markdown`/`.mdx`
+ * file keeps its extension accounting and the ignore file is inert for it.
  */
 export async function runSecretscanOnFiles(
 	files: string[],
 	directory: string,
+	/**
+	 * Raw declared file count from BEFORE any caller-side validation drop
+	 * (#2918). Defaults to `files.length` for direct callers; the pre_check
+	 * batch passes its pre-drop capture so a dropped entry keeps
+	 * requested_files above the policy-skip counter (non-vacuous).
+	 */
+	rawRequestedFiles?: number,
 ): Promise<SecretscanResult | SecretscanErrorResult> {
 	try {
 		const findings: SecretFinding[] = [];
 		let filesScanned = 0;
 		let skippedFiles = 0;
+		let policySkippedFiles = 0;
+		let ignoredFiles = 0;
+		const requestedFiles = Math.max(0, rawRequestedFiles ?? files.length);
 		const incompletePaths: IncompletePath[] = [];
 		const rawRoot = path.resolve(directory);
 		const canonicalRoot = (() => {
@@ -1493,6 +1606,22 @@ export async function runSecretscanOnFiles(
 		if (!rootStat.isDirectory()) {
 			throw new Error('target must be a directory');
 		}
+		// #3107: load .secretscanignore patterns from the scan root with the
+		// same merge the directory path applies (exact names + globs; this
+		// path has no tool-exclude argument, so ignore-file patterns only).
+		// NOT seeded with DEFAULT_EXCLUDE_DIRS — explicitly requested files
+		// under default-excluded directories stay scannable, as before.
+		const ignoreExact = new Set<string>();
+		const ignoreGlobs: string[] = [];
+		for (const pattern of loadSecretScanIgnore(canonicalRoot)) {
+			if (pattern.length === 0) continue;
+			if (isGlobOrPathPattern(pattern)) {
+				ignoreGlobs.push(pattern);
+			} else {
+				ignoreExact.add(pattern);
+			}
+		}
+		const hasIgnorePatterns = ignoreExact.size > 0 || ignoreGlobs.length > 0;
 		const filesToScan = files.slice(0, MAX_EXPLICIT_FILES_SCANNED);
 		let incompleteFiles = Math.max(0, files.length - filesToScan.length);
 		if (files.length > filesToScan.length) {
@@ -1535,7 +1664,17 @@ export async function runSecretscanOnFiles(
 
 			const file = filesToScan[index];
 			if (typeof file !== 'string') {
+				// #2918: a non-string entry is a coverage gap (invalid request),
+				// not a policy skip — count it incomplete so a vacuous-coverage
+				// predicate can never be satisfied over garbage input.
 				skippedFiles++;
+				incompleteFiles++;
+				recordIncompletePath(
+					incompletePaths,
+					canonicalRoot,
+					canonicalRoot,
+					'invalid_entry',
+				);
 				continue;
 			}
 
@@ -1561,7 +1700,17 @@ export async function runSecretscanOnFiles(
 			} catch (error) {
 				const err = error as NodeJS.ErrnoException;
 				if (err.code === 'ENOENT') {
+					// #2918: a requested-but-absent file is a coverage gap, not a
+					// policy skip — otherwise a batch of nonexistent paths could
+					// satisfy a vacuous-coverage predicate and pass a security gate.
 					skippedFiles++;
+					incompleteFiles++;
+					recordIncompletePath(
+						incompletePaths,
+						canonicalRoot,
+						resolvedPath,
+						'missing',
+					);
 					continue;
 				}
 				skippedFiles++;
@@ -1601,17 +1750,37 @@ export async function runSecretscanOnFiles(
 
 			const ext = path.extname(resolvedPath).toLowerCase();
 			if (DEFAULT_EXCLUDE_EXTENSIONS.has(ext)) {
+				// #2918: the ONLY policy_skipped_files increment site — and only
+				// for DOCS-SAFE extensions. Non-docs policy exclusions
+				// (.db/.log/.lock/binaries/archives) increment skippedFiles ONLY,
+				// so a batch made up solely of such files keeps
+				// policy_skipped_files < requested_files and the zero-coverage
+				// arm still fails it (SEC-1, review run 20260923-pr2940): an
+				// all-policy-skipped batch with zero findings and zero
+				// incomplete coverage is provably vacuous ONLY when every
+				// skipped file was docs-safe.
 				skippedFiles++;
+				if (DOCS_SAFE_EXCLUDE_EXTENSIONS.has(ext)) {
+					policySkippedFiles++;
+				}
 				continue;
 			}
 
 			let scanPath = resolvedPath;
 			try {
-				scanPath = fs.realpathSync(resolvedPath);
+				scanPath = _internals.realpathSync(resolvedPath);
 			} catch (error) {
 				const err = error as NodeJS.ErrnoException;
 				if (err.code === 'ENOENT') {
+					// #2918: same missing-file floor as the lstat ENOENT route above.
 					skippedFiles++;
+					incompleteFiles++;
+					recordIncompletePath(
+						incompletePaths,
+						canonicalRoot,
+						resolvedPath,
+						'missing',
+					);
 					continue;
 				}
 				skippedFiles++;
@@ -1634,6 +1803,25 @@ export async function runSecretscanOnFiles(
 					'scope_escape',
 				);
 				continue;
+			}
+
+			if (hasIgnorePatterns) {
+				const relPath = path
+					.relative(canonicalRoot, scanPath)
+					.replace(/\\/g, '/');
+				if (isIgnoredExplicitPath(relPath, ignoreExact, ignoreGlobs)) {
+					// #3107: repo-configured ignore suppression. Counts toward
+					// skipped_files ONLY — never policy_skipped_files — so an
+					// all-ignored batch keeps the #2918 zero-coverage
+					// fail-closed arm (a repo-writable ignore file can never
+					// vacuous-pass the changed-file gate). Placement after the
+					// scope check is load-bearing: an ignore match must never
+					// convert a coverage or security failure into a benign
+					// skip.
+					skippedFiles++;
+					ignoredFiles++;
+					continue;
+				}
 			}
 
 			const outcome = scanFileForSecrets(scanPath, 'explicit');
@@ -1677,6 +1865,9 @@ export async function runSecretscanOnFiles(
 			count: findings.length,
 			files_scanned: filesScanned,
 			skipped_files: skippedFiles,
+			policy_skipped_files: policySkippedFiles,
+			ignored_files: ignoredFiles,
+			requested_files: requestedFiles,
 			incomplete_files: incompleteFiles,
 			incomplete_paths: incompletePaths,
 		};
@@ -1711,6 +1902,7 @@ export const _internals: {
 	readFileChunk: typeof fs.readSync;
 	closeFile: typeof fs.closeSync;
 	lstatFile: (path: fs.PathLike) => fs.BigIntStats;
+	realpathSync: (path: fs.PathLike) => string;
 	closeDirectory: (directory: fs.Dir) => void;
 } = {
 	secretscan,
@@ -1724,5 +1916,6 @@ export const _internals: {
 	readFileChunk: fs.readSync,
 	closeFile: fs.closeSync,
 	lstatFile: (path) => fs.lstatSync(path, { bigint: true }),
+	realpathSync: (path) => fs.realpathSync(path),
 	closeDirectory: (directory) => directory.closeSync(),
 } as const;

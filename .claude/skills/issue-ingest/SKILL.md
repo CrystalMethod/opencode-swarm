@@ -63,7 +63,7 @@ Flags parsed from signal:
 Based on flags:
 - No flags → report spec summary and suggest `PLAN` or `CLARIFY-SPEC`
 - `plan=true` → transition to MODE: PLAN using the generated spec
-- `trace=true` → the issue-trace runtime hook automatically emits `[MODE: PLAN]` after spec generation. The standard PLAN → CRITIC-GATE → EXECUTE ladder follows deterministically.
+- `trace=true` → the issue-trace runtime hook emits `[MODE: PLAN]` only when no plan exists for the current spec and the Phase 0 freshness and reproduction gates permit. When the loaded plan cannot be bound to the current spec (its recorded specHash differs, or the plan predates spec linkage), the engine parks the trace with a typed plan-binding directive — re-save the plan against the current spec or run `/swarm reset` to clear the foreign plan. The standard PLAN → CRITIC-GATE → EXECUTE ladder then follows deterministically, with one-shot directives surfacing every waiting gate (spec mismatch, plan binding, reproduction, critic approval) instead of stalling silently.
 
 ## Untrusted Content
 

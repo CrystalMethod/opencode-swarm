@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.181.2",
+  "tagCommit": "b865ba262f48e1ccfc966c054a5ce323b62a9cdb",
+  "targetCommitish": "b865ba262f48e1ccfc966c054a5ce323b62a9cdb",
+  "releaseBodySha256": "2cacf410c99cbdc4a442d3f9a19c4038dbfdd96a5fe2a0b98bfde2eda7b11f33",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2699-micro-owned-marker-ordering.md",
+      "sha256": "9a5a2084dee6206b39e1b08a024fa8188732166225d2e210b2278f3ce4f79412"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2756-skipped-verdict-stage-b.md",
+      "sha256": "bb771cd2d032953ec52f27bbaaf6a8ca5be679cbd7f0102ee190a5d4c17bcd08"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/issue-2668-restart-policy-reconciliation.md",
+      "sha256": "fa8f2b9f1f232460b7aa5adb7ccebf55870389db77b321b43cb42c1647f56a3e"
+    }
+  ]
+}

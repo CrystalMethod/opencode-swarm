@@ -187,22 +187,37 @@ describe('phase_complete critical-directive gate (e2e)', () => {
 
 		const originalIntent = phaseCompleteReceiptInternals.recordPhaseCloseIntent;
 		const originalClosed = phaseCompleteReceiptInternals.commitPhaseClosed;
-		const calls: Array<{ kind: string; label: string; status: string }> = [];
+		const calls: Array<{
+			kind: string;
+			label: string;
+			status: string;
+			phaseId?: number;
+		}> = [];
 		phaseCompleteReceiptInternals.recordPhaseCloseIntent = mock(
-			async (_directory, label) => {
+			async (_directory, label, _session, _task, phaseId) => {
 				const plan = JSON.parse(
 					fs.readFileSync(path.join(dir, '.swarm', 'plan.json'), 'utf8'),
 				);
-				calls.push({ kind: 'intent', label, status: plan.phases[0].status });
+				calls.push({
+					kind: 'intent',
+					label,
+					status: plan.phases[0].status,
+					phaseId,
+				});
 				return { ok: true, event_id: 'intent-event' };
 			},
 		) as typeof originalIntent;
 		phaseCompleteReceiptInternals.commitPhaseClosed = mock(
-			async (_directory, label) => {
+			async (_directory, label, _session, _task, phaseId) => {
 				const plan = JSON.parse(
 					fs.readFileSync(path.join(dir, '.swarm', 'plan.json'), 'utf8'),
 				);
-				calls.push({ kind: 'closed', label, status: plan.phases[0].status });
+				calls.push({
+					kind: 'closed',
+					label,
+					status: plan.phases[0].status,
+					phaseId,
+				});
 				return { ok: true, event_id: 'closed-event' };
 			},
 		) as typeof originalClosed;
@@ -221,13 +236,203 @@ describe('phase_complete critical-directive gate (e2e)', () => {
 					kind: 'intent',
 					label: 'Phase 2: Canonical lifecycle [IN PROGRESS]',
 					status: 'in_progress',
+					phaseId: 2,
 				},
 				{
 					kind: 'closed',
 					label: 'Phase 2: Canonical lifecycle [IN PROGRESS]',
 					status: 'complete',
+					phaseId: 2,
 				},
 			]);
+		} finally {
+			phaseCompleteReceiptInternals.recordPhaseCloseIntent = originalIntent;
+			phaseCompleteReceiptInternals.commitPhaseClosed = originalClosed;
+		}
+	});
+
+	it('#2947: gates on the stable phase id when the cursor advances past the completing phase mid-flight', async () => {
+		fs.writeFileSync(path.join(dir, '.git'), 'gitdir: fixture');
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.opencode', 'opencode-swarm.json'),
+			createConfig(),
+		);
+		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+		// Phase 2 is terminal BY TASKS (all completed) with status still
+		// in_progress, so resolveActivePhaseId returns 3 at gate time —
+		// exactly the #2532 cursor-advance shape that used to empty the gate.
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'plan.json'),
+			JSON.stringify({
+				title: 'Skew lifecycle plan',
+				swarm: 'default',
+				schema_version: '1.0.0',
+				current_phase: 2,
+				phases: [
+					{
+						id: 2,
+						name: 'Skew lifecycle',
+						status: 'in_progress',
+						tasks: [
+							{
+								id: '2.1',
+								phase: 2,
+								status: 'completed',
+								size: 'small',
+								description: 'Completed skew work',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+					{
+						id: 3,
+						name: 'Next lifecycle',
+						status: 'pending',
+						tasks: [
+							{
+								id: '3.1',
+								phase: 3,
+								status: 'pending',
+								size: 'small',
+								description: 'Pending work',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+				],
+			}),
+		);
+		writeRetroBundle(dir, 2);
+		writeGateEvidence(dir, 2);
+		// Commit an UNRESOLVED critical under the phase-2 injection-time label.
+		const displayed = await commitDisplayedMembership(dir, {
+			trace_id: 'trace-skew',
+			session_id: 'sess-skew',
+			phase: 'Phase 2: Skew lifecycle [IN PROGRESS]',
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'c1-skew', critical: true }],
+		});
+		if (!displayed.ok) throw new Error(displayed.detail);
+
+		const originalIntent = phaseCompleteReceiptInternals.recordPhaseCloseIntent;
+		const originalClosed = phaseCompleteReceiptInternals.commitPhaseClosed;
+		phaseCompleteReceiptInternals.recordPhaseCloseIntent = (async () => ({
+			ok: true,
+			event_id: 'intent-event',
+		})) as typeof originalIntent;
+		phaseCompleteReceiptInternals.commitPhaseClosed = (async () => ({
+			ok: true,
+			event_id: 'closed-event',
+		})) as typeof originalClosed;
+
+		try {
+			const out = await executePhaseComplete(
+				{ phase: 2, sessionID: 'sess-skew', callerAgent: 'architect' },
+				dir,
+				dir,
+			);
+			const parsed = JSON.parse(out);
+			// Pre-#2947 the gate-time label recomputed to "Phase 3: ..." and the
+			// empty evidence window returned blocked:false (unresolved critical
+			// passed). The stable numeric id must keep the window populated.
+			expect(parsed.success).toBe(false);
+			expect(parsed.status).toBe('blocked');
+			expect(parsed.reason).toBe('UNRESOLVED_CRITICAL_DIRECTIVES');
+			expect(parsed.message).toContain('c1-skew');
+		} finally {
+			phaseCompleteReceiptInternals.recordPhaseCloseIntent = originalIntent;
+			phaseCompleteReceiptInternals.commitPhaseClosed = originalClosed;
+		}
+	});
+
+	it('#2984 review: the id-disagreement closing-window shape names the recorded phase id in the block message', async () => {
+		fs.writeFileSync(path.join(dir, '.git'), 'gitdir: fixture');
+		fs.mkdirSync(path.join(dir, '.opencode'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.opencode', 'opencode-swarm.json'),
+			createConfig(),
+		);
+		fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
+		fs.writeFileSync(
+			path.join(dir, '.swarm', 'plan.json'),
+			JSON.stringify({
+				title: 'Id note plan',
+				swarm: 'default',
+				schema_version: '1.0.0',
+				current_phase: 2,
+				phases: [
+					{
+						id: 2,
+						name: 'Id note phase',
+						status: 'in_progress',
+						tasks: [
+							{
+								id: '2.1',
+								phase: 2,
+								status: 'completed',
+								size: 'small',
+								description: 'done',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+					{
+						id: 3,
+						name: 'Next id note',
+						status: 'pending',
+						tasks: [
+							{
+								id: '3.1',
+								phase: 3,
+								status: 'pending',
+								size: 'small',
+								description: 'pending',
+								depends: [],
+								files_touched: [],
+							},
+						],
+					},
+				],
+			}),
+		);
+		writeRetroBundle(dir, 2);
+		writeGateEvidence(dir, 2);
+		const displayed = await commitDisplayedMembership(dir, {
+			trace_id: 'trace-idnote',
+			session_id: 'sess-idnote',
+			phase: 'Phase 3: Next id note [PENDING]',
+			phase_id: 3,
+			exposure_kind: 'delegate_directive',
+			entries: [{ entry_id: 'c1-idnote', critical: true }],
+		});
+		if (!displayed.ok) throw new Error(displayed.detail);
+		const originalIntent = phaseCompleteReceiptInternals.recordPhaseCloseIntent;
+		const originalClosed = phaseCompleteReceiptInternals.commitPhaseClosed;
+		phaseCompleteReceiptInternals.recordPhaseCloseIntent = (async () => ({
+			ok: true,
+			event_id: 'intent-event',
+		})) as typeof originalIntent;
+		phaseCompleteReceiptInternals.commitPhaseClosed = (async () => ({
+			ok: true,
+			event_id: 'closed-event',
+		})) as typeof originalClosed;
+		try {
+			const out = await executePhaseComplete(
+				{ phase: 2, sessionID: 'sess-idnote', callerAgent: 'architect' },
+				dir,
+				dir,
+			);
+			const parsed = JSON.parse(out);
+			expect(parsed.success).toBe(false);
+			expect(parsed.status).toBe('blocked');
+			// The row's labels agree with the queried label (closing window);
+			// only the ids disagree. The note must name the recorded phase id.
+			expect(parsed.message).toContain('c1-idnote');
+			expect(parsed.message).toContain('recorded under phase id 3');
 		} finally {
 			phaseCompleteReceiptInternals.recordPhaseCloseIntent = originalIntent;
 			phaseCompleteReceiptInternals.commitPhaseClosed = originalClosed;

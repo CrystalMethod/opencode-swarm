@@ -27,13 +27,26 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 describe('ci.yml integration — windows quarantine ledger entry for win32-wrapper-runtime (issue #2185)', () => {
-	test('win32-wrapper-runtime.test.ts is an active entry in the windows ledger', () => {
-		// Regression guard for issue #2185: without the quarantine entry, the
-		// windows-latest merge-group shards keep running this file and the
-		// flake-detection workflow re-files duplicate issues (rule A only drops
-		// candidates already present in a ledger).
+	test('win32-wrapper-runtime.test.ts is retired from the windows ledger (#2973)', () => {
+		// #2973 retirement (2026-09-27): the #2185 cold-spawn flake's named
+		// remedies landed (explicit per-test floor + spawnSync margins +
+		// safeRmRecursive teardown), so the entry is removed. This absence
+		// guard keeps a silent re-add without fresh merge-group
+		// windows-latest failure evidence from passing unnoticed.
 		expect(existsSync(WINDOWS_LEDGER_PATH)).toBe(true);
-		expect(activeEntries(WINDOWS_LEDGER_PATH)).toContain(QUARANTINED_PATH);
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(QUARANTINED_PATH);
+	});
+
+	test('pr-monitor-status.test.ts is retired from the windows ledger (#2973)', () => {
+		// #2973 retirement: the #1982/#2190 entry (freezeClock + EBUSY-retry
+		// landed; the planned residual timeout floor was DROPPED — see the PR's
+		// deviation disclosure — so the residual default-cap sensitivity stands
+		// disclosed, with flake-detection as the safety net). This file was
+		// pinned by no other test — it is the likeliest re-add candidate
+		// (reproduced live flake), so it gets its own guard.
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).not.toContain(
+			'tests/unit/commands/pr-monitor-status.test.ts',
+		);
 	});
 
 	test('the entry is scoped to the windows ledger only (single-OS evidence)', () => {
@@ -59,9 +72,10 @@ describe('ci.yml integration — windows quarantine ledger entry for win32-wrapp
 		// "# STATUS: N active entr(y|ies)" header line. Drift between the
 		// declared count and the actual active-entry count (e.g. an entry
 		// removed without updating the header, or a count bumped without the
-		// matching entries) makes the header lie to triage. Note: this only
-		// catches count drift; the presence test above is the cross-PR overwrite
-		// guard.
+		// matching entries) makes the header lie to triage. Post-#2973 the
+		// ledger is empty (0 active entries), the tests above are absence
+		// guards, and this test pins the header's declared 0 against the
+		// actual active-entry count.
 		const raw = readFileSync(WINDOWS_LEDGER_PATH, 'utf8').replace(
 			/\r\n/g,
 			'\n',

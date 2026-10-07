@@ -44,6 +44,7 @@ import {
 	writePrWorkflowAtomicJson,
 } from '../hooks/pr-workflow-gate';
 import { validateSwarmPath } from '../hooks/utils';
+import type { ForgeContext } from '../providers/forge-provider.js';
 import {
 	canonicalRootKeyFresh,
 	SESSION_KEY_SEPARATOR,
@@ -63,7 +64,7 @@ import {
 	evaluatePrFeedbackCurrentHead,
 	isPrFeedbackLoopEnabled,
 } from './pr-feedback-loop-runtime.js';
-import { listActive } from './pr-subscriptions';
+import { findSubscriptionRecordForPrUrl, listActive } from './pr-subscriptions';
 
 export const PR_FEEDBACK_LOOP_STATE_REL = path.join(
 	'.swarm',
@@ -323,6 +324,18 @@ export const _internals: {
 	 */
 	async performAuthorizedAction(input) {
 		try {
+			// #2882 AC5: declared generic self-hosted GitLab MR targets need the
+			// subscription record's persisted forge declaration to pass the
+			// activation canonicalization gate (fail-closed when no record).
+			const subscription = await findSubscriptionRecordForPrUrl(
+				input.directory,
+				{
+					prUrl: input.event.prUrl,
+					repoFullName: input.event.repoFullName,
+					prNumber: input.event.prNumber,
+					sessionID: input.sessionID,
+				},
+			);
 			await activatePrWorkflow(
 				input.directory,
 				input.sessionID,
@@ -330,6 +343,7 @@ export const _internals: {
 				{
 					requireCheckoutPreflight: true,
 					prUrl: input.event.prUrl,
+					forge: subscription?.forge,
 				},
 			);
 			return {
@@ -1570,6 +1584,9 @@ export async function enqueuePrFeedbackMonitorEventIfNotCancelled(
 		PrFeedbackMonitorEvent,
 		'claimedWorkflowInstanceId' | 'claimedAt' | 'claimedOwnerPid'
 	>,
+	// #2882 AC5: configured forge context from the subscription record's
+	// persisted declaration (pass-through to queue admission).
+	forge?: ForgeContext,
 ): Promise<boolean> {
 	return withLoopStateLock(directory, async () => {
 		const cancellation = await readPrFeedbackLoopCancellation(
@@ -1577,7 +1594,7 @@ export async function enqueuePrFeedbackMonitorEventIfNotCancelled(
 			sessionID,
 		);
 		if (cancellation.cancelled || cancellation.unavailable) return false;
-		await enqueuePrFeedbackMonitorEvent(directory, sessionID, event);
+		await enqueuePrFeedbackMonitorEvent(directory, sessionID, event, forge);
 		return true;
 	});
 }
@@ -1762,6 +1779,14 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 	// event_delivery mode.
 	const workflowInstanceId = randomUUID();
 	const ownerPid = process.pid;
+	// #2882 AC5: symmetric with admission — the claim canonicalizes with the
+	// subscription record's persisted forge declaration (fail-closed on miss).
+	const pendingSubscription = await findSubscriptionRecordForPrUrl(directory, {
+		prUrl: pending.prUrl,
+		repoFullName: pending.repoFullName,
+		prNumber: pending.prNumber,
+		sessionID,
+	}).catch(() => null);
 	let claimed: PrFeedbackMonitorEvent[] = [];
 	try {
 		claimed = await withLoopStateLock(directory, () =>
@@ -1772,6 +1797,7 @@ async function claimAndProcessPrFeedbackEventUnlocked(
 				pending.prUrl,
 				[pending.dedupToken],
 				ownerPid,
+				pendingSubscription?.forge,
 			),
 		);
 	} catch {

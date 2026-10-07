@@ -1,8 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { loadPluginConfigWithMeta } from '../config/index.js';
-import { KnowledgeConfigSchema } from '../config/schema.js';
+import {
+	KnowledgeConfigSchema,
+	stripKnownSwarmPrefix,
+} from '../config/schema.js';
 import { observeReceiptTransition } from '../health/learning-health';
+import { extractPhaseIdFromLabel } from './extractors.js';
 import {
 	appendFsynced,
 	atomicWriteFsynced,
@@ -149,6 +153,8 @@ export interface ReceiptMembership {
 	entry_id: string;
 	session_id: string;
 	phase?: string;
+	/** Stable numeric phase id (#2947); explicit-only at commit. Legacy rows are undefined until backfilled. */
+	phase_id?: number;
 	task_id?: string;
 	agent?: string;
 	critical: boolean;
@@ -204,6 +210,8 @@ interface EmptyTrace {
 
 interface PhaseLifecycle {
 	phase: string;
+	/** Stable numeric phase id (#2947); optional so pre-existing lifecycle rows keep parsing. */
+	phase_id?: number;
 	session_id: string;
 	task_id?: string;
 	intent_event_id?: string;
@@ -235,6 +243,7 @@ export type ReceiptTransitionKind =
 	| 'gate_release_committed'
 	| 'phase_close_intent'
 	| 'phase_closed'
+	| 'phase_id_backfilled'
 	| 'repair_uncertainty_installed'
 	| 'repair_uncertainty_cleared'
 	| 'legacy_imported'
@@ -306,6 +315,81 @@ const phaseLifecycleKey = (
 	}`;
 const repairUncertaintyKey = (phase: string, sessionId: string): string =>
 	`${sessionId.length}:${sessionId}${phase.length}:${phase}`;
+
+/**
+ * #2947 phase identity: one rule for every membership/lifecycle match.
+ * With a stable phase id available, a record matches by (1) explicit
+ * `phase_id`, or — for id-less rows — (2) the id parsed from its immutable
+ * stored label. The verbatim-label arm (3) is BASE-PARITY and unconditional:
+ * the stable id EXTENDS matching (it recovers rows whose label drifted after
+ * commit — the status and cursor skews #2947 fixes); it never NARROWS base
+ * label matching. Narrowing would re-open the closing window: an injection
+ * after phase N's last task completes is stamped with the cursor-advanced id
+ * N+1, and phase_complete(N)'s gate must still see it (base did — reviewed
+ * four ways on PR #2984). Without a queried id the match is exactly base's
+ * verbatim-label equality.
+ */
+function membershipMatchesPhaseIdentity(
+	membership: { phase?: string; phase_id?: number },
+	phase: string,
+	phaseId: number | undefined,
+): boolean {
+	if (phaseId === undefined) return membership.phase === phase;
+	if (membership.phase_id === phaseId) return true;
+	if (
+		membership.phase_id === undefined &&
+		extractPhaseIdFromLabel(membership.phase) === phaseId
+	)
+		return true;
+	return membership.phase === phase;
+}
+
+/**
+ * #2947: resolve a lifecycle entry for a phase scope. The exact label key is
+ * tried first (cheap), but only trusted when it does not CONTRADICT the
+ * caller's phase id — a lifecycle created under a cursor-skewed label can
+ * carry a different explicit phase_id than the caller's, and trusting the
+ * label hit then would misattribute closure across phases. On contradiction
+ * (or label miss), any same-session/task lifecycle whose explicit or
+ * label-parsed id matches the scope wins, so a closed phase is found
+ * regardless of the label form it was closed under.
+ */
+function findClosedLifecycleForPhase(
+	state: LedgerState,
+	scope: {
+		phase?: string;
+		phase_id?: number;
+		session_id: string;
+		task_id?: string;
+	},
+): PhaseLifecycle | undefined {
+	const labelKey = phaseLifecycleKey(
+		scope.phase ?? '',
+		scope.session_id,
+		scope.task_id,
+	);
+	const byLabel = state.phaseLifecycle.get(labelKey);
+	if (
+		byLabel !== undefined &&
+		(scope.phase_id === undefined ||
+			byLabel.phase_id === undefined ||
+			byLabel.phase_id === scope.phase_id)
+	)
+		return byLabel;
+	if (scope.phase_id === undefined) return undefined;
+	for (const lifecycle of state.phaseLifecycle.values()) {
+		if (
+			lifecycle.session_id === scope.session_id &&
+			lifecycle.task_id === scope.task_id &&
+			(lifecycle.phase_id === scope.phase_id ||
+				(lifecycle.phase_id === undefined &&
+					extractPhaseIdFromLabel(lifecycle.phase) === scope.phase_id))
+		) {
+			return lifecycle;
+		}
+	}
+	return undefined;
+}
 
 function nowIso(): string {
 	return new Date(_internals.nowMs()).toISOString();
@@ -577,6 +661,7 @@ function parseMembership(value: unknown): ReceiptMembership | null {
 			'entry_id',
 			'session_id',
 			'phase',
+			'phase_id',
 			'task_id',
 			'agent',
 			'critical',
@@ -603,6 +688,9 @@ function parseMembership(value: unknown): ReceiptMembership | null {
 		typeof value.session_id !== 'string' ||
 		!value.session_id ||
 		!isOptionalString(value.phase) ||
+		(value.phase_id !== undefined &&
+			(!Number.isSafeInteger(value.phase_id) ||
+				(value.phase_id as number) < 1)) ||
 		!isOptionalString(value.task_id) ||
 		!isOptionalString(value.agent) ||
 		typeof value.critical !== 'boolean' ||
@@ -652,6 +740,7 @@ function parseMembership(value: unknown): ReceiptMembership | null {
 		entry_id: value.entry_id,
 		session_id: value.session_id,
 		phase: value.phase,
+		phase_id: value.phase_id as number | undefined,
 		task_id: value.task_id,
 		agent: value.agent,
 		critical: value.critical,
@@ -766,6 +855,7 @@ function parsePhaseLifecycle(value: unknown): PhaseLifecycle | null {
 	if (
 		!hasOnlyKeys(value, [
 			'phase',
+			'phase_id',
 			'session_id',
 			'task_id',
 			'intent_event_id',
@@ -775,6 +865,9 @@ function parsePhaseLifecycle(value: unknown): PhaseLifecycle | null {
 		]) ||
 		typeof value.phase !== 'string' ||
 		!value.phase ||
+		(value.phase_id !== undefined &&
+			(!Number.isSafeInteger(value.phase_id) ||
+				(value.phase_id as number) < 1)) ||
 		typeof value.session_id !== 'string' ||
 		!value.session_id ||
 		!isOptionalString(value.task_id) ||
@@ -787,6 +880,7 @@ function parsePhaseLifecycle(value: unknown): PhaseLifecycle | null {
 	}
 	return {
 		phase: value.phase,
+		phase_id: value.phase_id as number | undefined,
 		session_id: value.session_id,
 		task_id: value.task_id,
 		intent_event_id: value.intent_event_id,
@@ -847,6 +941,7 @@ function parseAuditSummary(value: unknown): ReceiptAuditSummary | null {
 				'gate_release_committed',
 				'phase_close_intent',
 				'phase_closed',
+				'phase_id_backfilled',
 				'repair_uncertainty_installed',
 				'repair_uncertainty_cleared',
 				'legacy_imported',
@@ -878,6 +973,7 @@ function summarizeRecord(record: JournalRecord): ReceiptAuditSummary {
 		payload.transitions,
 		payload.markers,
 		payload.rejected,
+		payload.items,
 	]) {
 		if (!Array.isArray(collection)) continue;
 		for (const item of collection) {
@@ -1152,17 +1248,46 @@ function applyRecord(state: LedgerState, record: JournalRecord): void {
 		const phase = record.payload.phase;
 		const sessionId = record.payload.session_id;
 		const taskId = record.payload.task_id;
+		const rawPhaseId = record.payload.phase_id;
+		const phaseId =
+			Number.isSafeInteger(rawPhaseId) && (rawPhaseId as number) >= 1
+				? (rawPhaseId as number)
+				: undefined;
 		if (
 			typeof phase === 'string' &&
 			typeof sessionId === 'string' &&
 			isOptionalString(taskId)
 		) {
-			const lifecycleKey = phaseLifecycleKey(phase, sessionId, taskId);
-			const lifecycle = state.phaseLifecycle.get(lifecycleKey) ?? {
-				phase,
-				session_id: sessionId,
-				task_id: taskId,
-			};
+			let lifecycleKey = phaseLifecycleKey(phase, sessionId, taskId);
+			let lifecycle = state.phaseLifecycle.get(lifecycleKey);
+			// #2947: when the record carries the stable phase id, unify with any
+			// existing lifecycle for that id (explicit or label-parsed) so a
+			// label-skewed intent/close pair stamps ONE lifecycle.
+			if (lifecycle === undefined && phaseId !== undefined) {
+				for (const [candidateKey, candidate] of state.phaseLifecycle) {
+					if (
+						candidate.session_id === sessionId &&
+						candidate.task_id === taskId &&
+						(candidate.phase_id === phaseId ||
+							(candidate.phase_id === undefined &&
+								extractPhaseIdFromLabel(candidate.phase) === phaseId))
+					) {
+						lifecycleKey = candidateKey;
+						lifecycle = candidate;
+						break;
+					}
+				}
+			}
+			if (lifecycle === undefined) {
+				lifecycle = {
+					phase,
+					session_id: sessionId,
+					task_id: taskId,
+				};
+			}
+			if (lifecycle.phase_id === undefined && phaseId !== undefined) {
+				lifecycle.phase_id = phaseId;
+			}
 			if (record.kind === 'phase_close_intent' && !lifecycle.intent_event_id) {
 				lifecycle.intent_event_id = record.event_id;
 				lifecycle.intent_at = record.timestamp;
@@ -1173,7 +1298,7 @@ function applyRecord(state: LedgerState, record: JournalRecord): void {
 			state.phaseLifecycle.set(lifecycleKey, lifecycle);
 			for (const membership of state.memberships.values()) {
 				if (
-					membership.phase !== phase ||
+					!membershipMatchesPhaseIdentity(membership, phase, phaseId) ||
 					membership.session_id !== sessionId ||
 					membership.task_id !== taskId
 				)
@@ -1186,6 +1311,7 @@ function applyRecord(state: LedgerState, record: JournalRecord): void {
 				else if (record.kind === 'phase_closed' && !membership.phase_closed_at)
 					membership.phase_closed_at = record.timestamp;
 			}
+			// Empty traces stay label-keyed (out of scope for #2947; disclosed).
 			for (const trace of state.emptyTraces.values()) {
 				if (
 					trace.phase !== phase ||
@@ -1201,6 +1327,34 @@ function applyRecord(state: LedgerState, record: JournalRecord): void {
 				} else if (record.kind === 'phase_closed' && !trace.phase_closed_at) {
 					trace.phase_closed_at = record.timestamp;
 				}
+			}
+		}
+	} else if (record.kind === 'phase_id_backfilled') {
+		// #2947: durable phase-id backfill. Idempotent by construction — items
+		// name exact (trace_id, entry_id) keys and only rows still lacking an
+		// id are set; a re-applied record is a no-op. Absent targets (e.g.
+		// archived between backfill and replay) are skipped without state
+		// change, mirroring the tolerant posture of the neighboring arms.
+		for (const item of Array.isArray(record.payload.items)
+			? record.payload.items
+			: []) {
+			const candidate = item as {
+				trace_id?: unknown;
+				entry_id?: unknown;
+				phase_id?: unknown;
+			};
+			if (
+				typeof candidate.trace_id !== 'string' ||
+				typeof candidate.entry_id !== 'string' ||
+				!Number.isSafeInteger(candidate.phase_id) ||
+				(candidate.phase_id as number) < 1
+			)
+				continue;
+			const membership = state.memberships.get(
+				keyOf(candidate.trace_id, candidate.entry_id),
+			);
+			if (membership && membership.phase_id === undefined) {
+				membership.phase_id = candidate.phase_id as number;
 			}
 		}
 	} else if (record.kind === 'repair_uncertainty_installed') {
@@ -1410,12 +1564,32 @@ function validateRecordPayload(row: JournalRecord): boolean {
 		case 'phase_close_intent':
 		case 'phase_closed':
 			return (
-				hasOnlyKeys(payload, ['phase', 'session_id', 'task_id']) &&
+				hasOnlyKeys(payload, ['phase', 'phase_id', 'session_id', 'task_id']) &&
 				typeof payload.phase === 'string' &&
 				!!payload.phase &&
+				(payload.phase_id === undefined ||
+					(Number.isSafeInteger(payload.phase_id) &&
+						(payload.phase_id as number) >= 1)) &&
 				typeof payload.session_id === 'string' &&
 				!!payload.session_id &&
 				isOptionalString(payload.task_id)
+			);
+		case 'phase_id_backfilled':
+			return (
+				hasOnlyKeys(payload, ['items']) &&
+				Array.isArray(payload.items) &&
+				payload.items.length > 0 &&
+				payload.items.every(
+					(item) =>
+						isPlainRecord(item) &&
+						hasOnlyKeys(item, ['trace_id', 'entry_id', 'phase_id']) &&
+						typeof item.trace_id === 'string' &&
+						!!item.trace_id &&
+						typeof item.entry_id === 'string' &&
+						!!item.entry_id &&
+						Number.isSafeInteger(item.phase_id) &&
+						(item.phase_id as number) >= 1,
+				)
 			);
 		case 'repair_uncertainty_installed':
 			return (
@@ -1536,6 +1710,7 @@ function validateRecord(value: unknown, state: LedgerState): JournalRecord {
 				'gate_release_committed',
 				'phase_close_intent',
 				'phase_closed',
+				'phase_id_backfilled',
 				'repair_uncertainty_installed',
 				'repair_uncertainty_cleared',
 				'legacy_imported',
@@ -2584,6 +2759,8 @@ export interface CommitDisplayedMembershipInput {
 	trace_id: string;
 	session_id: string;
 	phase?: string;
+	/** Stable numeric phase id (#2947); explicit-only — never derived from the label here. */
+	phase_id?: number;
 	task_id?: string;
 	agent?: string;
 	entries: Array<{
@@ -2616,11 +2793,39 @@ export async function commitDisplayedMembership(
 					'store_unavailable',
 					'invalid displayed membership',
 				);
+			// #2947: reject an out-of-range phase_id at the write boundary — a
+			// row written with phase_id < 1 would fail parseMembership on the
+			// next load and brick the whole store as store_corrupt.
+			if (
+				input.phase_id !== undefined &&
+				(!Number.isSafeInteger(input.phase_id) || input.phase_id < 1)
+			)
+				throw new ReceiptStoreError(
+					'store_unavailable',
+					'invalid displayed membership: phase_id must be a safe integer >= 1',
+				);
 			const eventId = randomUUID();
 			const committedAt = nowIso();
 			const exposureKind = normalizeExposureKind(input.exposure_kind);
 			const memberships: ReceiptMembership[] = [];
 			const newMemberships: ReceiptMembership[] = [];
+			// Hoisted: the closed-lifecycle guard depends only on the input, not
+			// on the per-entry loop variable (#2947 review).
+			const closedLifecycle =
+				findClosedLifecycleForPhase(state, {
+					phase: input.phase,
+					phase_id: input.phase_id,
+					session_id: input.session_id,
+					task_id: input.task_id,
+				}) ??
+				(input.task_id !== undefined
+					? findClosedLifecycleForPhase(state, {
+							phase: input.phase,
+							phase_id: input.phase_id,
+							session_id: input.session_id,
+							task_id: undefined,
+						})
+					: undefined);
 			for (const entry of input.entries) {
 				const existing = state.memberships.get(
 					keyOf(input.trace_id, entry.entry_id),
@@ -2629,6 +2834,9 @@ export async function commitDisplayedMembership(
 					if (
 						existing.session_id !== input.session_id ||
 						existing.phase !== input.phase ||
+						(existing.phase_id !== undefined &&
+							input.phase_id !== undefined &&
+							existing.phase_id !== input.phase_id) ||
 						existing.task_id !== input.task_id ||
 						existing.critical !== entry.critical ||
 						existing.cohort_id !== input.cohort_id ||
@@ -2646,19 +2854,6 @@ export async function commitDisplayedMembership(
 					});
 					continue;
 				}
-				const closedLifecycle =
-					state.phaseLifecycle.get(
-						phaseLifecycleKey(
-							input.phase ?? '',
-							input.session_id,
-							input.task_id,
-						),
-					) ??
-					(input.task_id !== undefined
-						? state.phaseLifecycle.get(
-								phaseLifecycleKey(input.phase ?? '', input.session_id),
-							)
-						: undefined);
 				if (input.phase && closedLifecycle?.closed_event_id) {
 					throw new ReceiptStoreError(
 						'store_unavailable',
@@ -2670,6 +2865,7 @@ export async function commitDisplayedMembership(
 					entry_id: entry.entry_id,
 					session_id: input.session_id,
 					phase: input.phase,
+					phase_id: input.phase_id,
 					task_id: input.task_id,
 					agent: input.agent,
 					critical: entry.critical,
@@ -2792,6 +2988,8 @@ export interface TerminalBatchInput {
 	trace_id: string;
 	session_id: string;
 	phase?: string;
+	/** #2947: stable phase id — the wrong_phase reject matches id-first with label fallback. */
+	phase_id?: number;
 	task_id?: string;
 	agent?: string;
 	cohort_id?: string;
@@ -2815,6 +3013,16 @@ export interface TerminalBatchInput {
 		event_id?: string;
 	}>;
 	no_relevant_knowledge?: boolean;
+	/**
+	 * Issue #3036: sessions authorized to file this batch beyond the filer
+	 * itself — resolved server-side from registered dispatch lineage (the
+	 * knowledge_receipt tool passes the filer plus its dispatch parent). A
+	 * membership whose stamp is in this set is fileable even when it differs
+	 * from the filer's session (a legitimately dispatched child filing the
+	 * architect-stamped delegate_directive exposure). Unrelated to the
+	 * `authorization` terminal-override field below.
+	 */
+	authorized_filing_sessions?: string[];
 	authorization?: {
 		actor: 'manual-override' | 'reviewer-remediation' | 'phase-override';
 		reason: string;
@@ -2822,6 +3030,13 @@ export interface TerminalBatchInput {
 		expected_outcome?: ReceiptOutcome;
 	};
 }
+
+/**
+ * Issue #3036: upper bound on lineage-attested sessions accepted per terminal
+ * batch (applied after trim + dedupe). The only production caller passes at
+ * most two host-minted ids (filer + dispatch parent).
+ */
+export const MAX_AUTHORIZED_FILING_SESSIONS = 8;
 
 export async function validateAndCommitTerminalBatch(
 	directory: string,
@@ -2847,6 +3062,13 @@ export async function validateAndCommitTerminalBatch(
 		rejected: Array<{ entry_id: string; reason: string }>;
 		closes_no_relevant: boolean;
 		terminal_event_id?: string;
+		/**
+		 * Issue #3036: entry_id → the membership's recorded session id for every
+		 * wrong_session rejection in this batch. Out-of-band by design — the
+		 * per-item `rejected` shape stays byte-identical for existing consumers —
+		 * so the validator can name both sides of the mismatch and a remedy.
+		 */
+		wrong_session_membership_sessions?: Record<string, string>;
 	}>
 > {
 	return runLocked(directory, input.grace_days, async (paths, state) => {
@@ -2925,6 +3147,24 @@ export async function validateAndCommitTerminalBatch(
 		const traceExists = state.traceIds.has(input.trace_id);
 		const stagedOutcomes = new Map<string, ReceiptOutcome>();
 		const reservedEventIds = new Set<string>();
+		// Issue #3036: sanitized authorized-filer set — trimmed, non-empty,
+		// deduped, then capped (dedupe before cap so duplicates never crowd out
+		// distinct authorized sessions). The filer's own session is authorized
+		// by the equality path below; this set carries only lineage-attested
+		// additional sessions.
+		const authorizedFilingSessions = new Set(
+			[
+				...new Set(
+					(input.authorized_filing_sessions ?? []).filter(
+						(candidate): candidate is string => typeof candidate === 'string',
+					),
+				),
+			]
+				.map((candidate) => candidate.trim())
+				.filter((candidate) => candidate.length > 0)
+				.slice(0, MAX_AUTHORIZED_FILING_SESSIONS),
+		);
+		const wrongSessionStamps: Record<string, string> = {};
 		let authorized = false;
 		for (const item of items) {
 			const membership = state.memberships.get(
@@ -2942,10 +3182,31 @@ export async function validateAndCommitTerminalBatch(
 				continue;
 			}
 			if (membership.session_id !== input.session_id) {
-				rejected.push({ entry_id: item.entry_id, reason: 'wrong_session' });
-				continue;
+				// Issue #3036: a legitimately dispatched child may file its
+				// architect's stamp when the caller attests the dispatch lineage
+				// AND the filing agent role matches the exposure target. Every
+				// other session mismatch stays fail-closed wrong_session.
+				const roleMatches =
+					!membership.agent ||
+					(input.agent !== undefined &&
+						input.agent !== '' &&
+						stripKnownSwarmPrefix(membership.agent).toLowerCase() ===
+							stripKnownSwarmPrefix(input.agent).toLowerCase());
+				const sessionAuthorized =
+					authorizedFilingSessions.has(membership.session_id) && roleMatches;
+				if (!sessionAuthorized) {
+					rejected.push({
+						entry_id: item.entry_id,
+						reason: 'wrong_session',
+					});
+					wrongSessionStamps[item.entry_id] = membership.session_id;
+					continue;
+				}
 			}
-			if (input.phase !== undefined && membership.phase !== input.phase) {
+			if (
+				input.phase !== undefined &&
+				!membershipMatchesPhaseIdentity(membership, input.phase, input.phase_id)
+			) {
 				rejected.push({ entry_id: item.entry_id, reason: 'wrong_phase' });
 				continue;
 			}
@@ -3107,6 +3368,9 @@ export async function validateAndCommitTerminalBatch(
 			rejected,
 			closes_no_relevant: false,
 			terminal_event_id: undefined,
+			...(Object.keys(wrongSessionStamps).length > 0
+				? { wrong_session_membership_sessions: wrongSessionStamps }
+				: {}),
 		};
 	});
 }
@@ -3519,6 +3783,8 @@ export async function queryLiveMemberships(
 	directory: string,
 	filters: {
 		phase?: string;
+		/** #2947: stable phase id — matches id-first with label fallback for legacy rows. */
+		phase_id?: number;
 		task_id?: string;
 		session_id?: string;
 		include_terminal?: boolean;
@@ -3545,7 +3811,15 @@ export async function queryLiveMemberships(
 				memberships: [...state.memberships.values()]
 					.filter(
 						(m) =>
-							(!filters.phase || m.phase === filters.phase) &&
+							(filters.phase_id === undefined ||
+								membershipMatchesPhaseIdentity(
+									m,
+									filters.phase ?? '',
+									filters.phase_id,
+								)) &&
+							(!filters.phase ||
+								filters.phase_id !== undefined ||
+								m.phase === filters.phase) &&
 							(!filters.task_id || m.task_id === filters.task_id) &&
 							(!filters.session_id || m.session_id === filters.session_id) &&
 							(filters.include_terminal !== false || !m.terminal) &&
@@ -3627,11 +3901,16 @@ async function phaseTransition(
 	sessionId?: string,
 	taskId?: string,
 	graceDays?: number,
+	phaseId?: number,
 ): Promise<ReceiptLedgerResult<{ event_id: string }>> {
 	return runLocked(directory, graceDays, async (paths, state) => {
 		if (!phase.trim()) {
 			throw new ReceiptStoreError('store_unavailable', 'phase is required');
 		}
+		const effectivePhaseId =
+			phaseId !== undefined && Number.isSafeInteger(phaseId) && phaseId >= 1
+				? phaseId
+				: undefined;
 		const scopeKeys = new Map<
 			string,
 			{ session_id: string; task_id?: string }
@@ -3647,16 +3926,39 @@ async function phaseTransition(
 				task_id: scopeTaskId,
 			});
 		};
+		// #2947: the membership leg matches id-first (label fallback for legacy
+		// rows); the lifecycle leg resolves through the same identity so a
+		// label-skewed close stamps the ONE lifecycle for the phase id. Empty
+		// traces stay label-keyed (out of scope; disclosed).
 		for (const membership of state.memberships.values()) {
-			if (membership.phase === phase)
+			if (membershipMatchesPhaseIdentity(membership, phase, effectivePhaseId))
 				addScope(membership.session_id, membership.task_id);
 		}
 		for (const trace of state.emptyTraces.values()) {
 			if (trace.phase === phase) addScope(trace.session_id, trace.task_id);
 		}
 		for (const lifecycle of state.phaseLifecycle.values()) {
-			if (lifecycle.phase === phase)
+			if (
+				effectivePhaseId !== undefined
+					? (lifecycle.phase_id === effectivePhaseId ||
+							(lifecycle.phase_id === undefined &&
+								extractPhaseIdFromLabel(lifecycle.phase) ===
+									effectivePhaseId)) &&
+						(sessionId === undefined || lifecycle.session_id === sessionId)
+					: lifecycle.phase === phase
+			)
 				addScope(lifecycle.session_id, lifecycle.task_id);
+		}
+		if (scopeKeys.size === 0 && sessionId !== undefined) {
+			const closedLifecycle = findClosedLifecycleForPhase(state, {
+				phase,
+				phase_id: effectivePhaseId,
+				session_id: sessionId,
+				task_id: taskId,
+			});
+			if (closedLifecycle) {
+				addScope(closedLifecycle.session_id, closedLifecycle.task_id);
+			}
 		}
 		if (scopeKeys.size === 0 && sessionId !== undefined) {
 			addScope(sessionId, taskId);
@@ -3675,7 +3977,13 @@ async function phaseTransition(
 		}
 		let eventId = '';
 		for (const [key, scope] of scopeKeys) {
-			const lifecycle = state.phaseLifecycle.get(key);
+			const lifecycle =
+				findClosedLifecycleForPhase(state, {
+					phase,
+					phase_id: effectivePhaseId,
+					session_id: scope.session_id,
+					task_id: scope.task_id,
+				}) ?? state.phaseLifecycle.get(key);
 			const existingEventId =
 				kind === 'phase_close_intent'
 					? lifecycle?.intent_event_id
@@ -3684,8 +3992,41 @@ async function phaseTransition(
 				eventId ||= existingEventId;
 				continue;
 			}
-			const row = makeRecord(state, kind, { phase, ...scope });
+			const row = makeRecord(state, kind, {
+				phase,
+				...(effectivePhaseId !== undefined
+					? { phase_id: effectivePhaseId }
+					: {}),
+				...scope,
+			});
 			await appendRecord(paths, state, row);
+			if (lifecycle === undefined) {
+				state.phaseLifecycle.set(key, {
+					phase,
+					...(effectivePhaseId !== undefined
+						? { phase_id: effectivePhaseId }
+						: {}),
+					session_id: scope.session_id,
+					task_id: scope.task_id,
+					intent_event_id:
+						kind === 'phase_close_intent' ? row.event_id : undefined,
+					intent_at: kind === 'phase_close_intent' ? row.timestamp : undefined,
+					closed_event_id: kind === 'phase_closed' ? row.event_id : undefined,
+					closed_at: kind === 'phase_closed' ? row.timestamp : undefined,
+				});
+			} else {
+				// The record replays into state on the next load; mirror the
+				// stamp in-memory so same-lock callers observe it immediately.
+				if (lifecycle.phase_id === undefined && effectivePhaseId !== undefined)
+					lifecycle.phase_id = effectivePhaseId;
+				if (kind === 'phase_close_intent' && !lifecycle.intent_event_id) {
+					lifecycle.intent_event_id = row.event_id;
+					lifecycle.intent_at = row.timestamp;
+				} else if (kind === 'phase_closed' && !lifecycle.closed_event_id) {
+					lifecycle.closed_event_id = row.event_id;
+					lifecycle.closed_at = row.timestamp;
+				}
+			}
 			eventId ||= row.event_id;
 		}
 		if (kind === 'phase_closed') await compactIfNeeded(paths, state);
@@ -3698,22 +4039,49 @@ export const recordPhaseCloseIntent = (
 	phase: string,
 	sessionId?: string,
 	taskId?: string,
-) => phaseTransition(directory, phase, 'phase_close_intent', sessionId, taskId);
+	phaseId?: number,
+) =>
+	phaseTransition(
+		directory,
+		phase,
+		'phase_close_intent',
+		sessionId,
+		taskId,
+		undefined,
+		phaseId,
+	);
 export const commitPhaseClosed = (
 	directory: string,
 	phase: string,
 	sessionId?: string,
 	taskId?: string,
-) => phaseTransition(directory, phase, 'phase_closed', sessionId, taskId);
+	phaseId?: number,
+) =>
+	phaseTransition(
+		directory,
+		phase,
+		'phase_closed',
+		sessionId,
+		taskId,
+		undefined,
+		phaseId,
+	);
 export async function reconcilePhaseClose(
 	directory: string,
 	phase: string,
 	durablePlanClosed: boolean,
 	sessionId?: string,
 	taskId?: string,
+	phaseId?: number,
 ): Promise<ReceiptLedgerResult<{ reconciled: boolean }>> {
 	if (!durablePlanClosed) return { ok: true, reconciled: false };
-	const result = await commitPhaseClosed(directory, phase, sessionId, taskId);
+	const result = await commitPhaseClosed(
+		directory,
+		phase,
+		sessionId,
+		taskId,
+		phaseId,
+	);
 	return result.ok ? { ok: true, reconciled: true } : result;
 }
 
@@ -3856,6 +4224,121 @@ export async function ensureLegacyCutover(
 	return runLocked(directory, graceDays, async () => ({
 		completed: true as const,
 	}));
+}
+
+export interface ReceiptPhaseIdInspection {
+	/** Live memberships that carry no explicit phase_id. */
+	missing: number;
+	/** Subset of `missing` whose stored label parses to a phase id (backfillable). */
+	backfillable: number;
+	/** Subset of `missing` whose label carries no parsable id (needs operator attention). */
+	unparsable: Array<{ trace_id: string; entry_id: string; label?: string }>;
+}
+
+/**
+ * #2947 doctor read: report how many live memberships lack a stable phase id
+ * and how many of those a backfill could repair. Lock-taking (like every
+ * ledger read; on a legacy store the standard cutover bootstrap may append
+ * records — base-identical behavior, no phase-data mutation); the doctor
+ * treats any store error as "skipped" (fail-open, advisory).
+ */
+export async function inspectMembershipPhaseIds(
+	directory: string,
+): Promise<ReceiptLedgerResult<ReceiptPhaseIdInspection>> {
+	return runLocked(
+		directory,
+		undefined,
+		async (_paths, state) => {
+			let backfillable = 0;
+			const unparsable: ReceiptPhaseIdInspection['unparsable'] = [];
+			let missing = 0;
+			for (const membership of state.memberships.values()) {
+				if (membership.phase_id !== undefined) continue;
+				missing++;
+				if (membership.phase === undefined) {
+					unparsable.push({
+						trace_id: membership.trace_id,
+						entry_id: membership.entry_id,
+					});
+					continue;
+				}
+				if (extractPhaseIdFromLabel(membership.phase) !== undefined) {
+					backfillable++;
+				} else {
+					unparsable.push({
+						trace_id: membership.trace_id,
+						entry_id: membership.entry_id,
+						label: membership.phase,
+					});
+				}
+			}
+			return { missing, backfillable, unparsable };
+		},
+		{ compact: false, writeSnapshot: false },
+	);
+}
+
+/**
+ * #2947 backfill: durably stamp `phase_id` on live memberships that lack one,
+ * deriving the id from the `Phase N` prefix of their stored label. Journaled
+ * as ONE `phase_id_backfilled` record; labels are NEVER rewritten; rows that
+ * already carry an id are untouched; a second run appends nothing.
+ * Unparsable labels are skipped and reported.
+ */
+export async function backfillMembershipPhaseIds(directory: string): Promise<
+	ReceiptLedgerResult<{
+		backfilled: number;
+		skipped: Array<{ trace_id: string; entry_id: string; label?: string }>;
+		journal_records: number;
+	}>
+> {
+	return runLocked(directory, undefined, async (paths, state) => {
+		const items: Array<{
+			trace_id: string;
+			entry_id: string;
+			phase_id: number;
+		}> = [];
+		const skipped: Array<{
+			trace_id: string;
+			entry_id: string;
+			label?: string;
+		}> = [];
+		for (const membership of state.memberships.values()) {
+			if (membership.phase_id !== undefined) continue;
+			const phaseId = extractPhaseIdFromLabel(membership.phase);
+			if (phaseId === undefined) {
+				skipped.push({
+					trace_id: membership.trace_id,
+					entry_id: membership.entry_id,
+					label: membership.phase,
+				});
+				continue;
+			}
+			items.push({
+				trace_id: membership.trace_id,
+				entry_id: membership.entry_id,
+				phase_id: phaseId,
+			});
+		}
+		if (items.length > 0) {
+			const eventId = randomUUID();
+			const row = makeRecord(state, 'phase_id_backfilled', { items }, eventId);
+			await appendRecord(paths, state, row);
+			for (const item of items) {
+				const membership = state.memberships.get(
+					keyOf(item.trace_id, item.entry_id),
+				);
+				if (membership && membership.phase_id === undefined) {
+					membership.phase_id = item.phase_id;
+				}
+			}
+		}
+		return {
+			backfilled: items.length,
+			skipped,
+			journal_records: items.length > 0 ? 1 : 0,
+		};
+	});
 }
 
 export const _internals = {

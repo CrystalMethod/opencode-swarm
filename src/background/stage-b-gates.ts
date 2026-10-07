@@ -652,7 +652,12 @@ export async function ingestBackgroundStageBCompletion(args: {
 				);
 				if (parentSession) {
 					if (
-						!recordModifiedFilesForTask(parentSession, taskId, attributedFiles)
+						!recordModifiedFilesForTask(
+							parentSession,
+							taskId,
+							attributedFiles,
+							args.directory,
+						)
 					) {
 						logger.warn(
 							`[background] durable coder mutation for ${taskId} exceeded session file-attribution capacity`,

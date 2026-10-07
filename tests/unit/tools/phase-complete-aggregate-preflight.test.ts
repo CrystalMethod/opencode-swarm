@@ -134,6 +134,7 @@ describe('phase_complete aggregate observational preflight', () => {
 			'hallucination',
 			'mutation',
 			'phase_council',
+			'todo_gate',
 			'architecture_supervisor',
 			'final_review',
 			'final_council',

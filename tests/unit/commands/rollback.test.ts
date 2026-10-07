@@ -361,7 +361,11 @@ describe('handleRollbackCommand', () => {
 			const destPlanPath = path.join(getSwarmDir(), 'plan.md');
 			mkdirSync(destPlanPath, { recursive: true }); // plan.md is a dir in dest
 
-			const result = await handleRollbackCommand(testDir, ['1']);
+			// #2946: the pre-created live plan.md directory makes this a
+			// destructive (overwriting) scope, so the bare call now previews.
+			// --yes routes through the confirm gate and still reaches the copy
+			// loop, preserving this test's original partial-failure intent.
+			const result = await handleRollbackCommand(testDir, ['1', '--yes']);
 
 			// Either partial failure or success depending on OS behavior for dir→file copy
 			// On Windows, cpSync may fail when dest is a directory

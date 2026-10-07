@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.186.0",
+  "tagCommit": "51027e47d3309283c955f8b755bbae506332e81c",
+  "targetCommitish": "51027e47d3309283c955f8b755bbae506332e81c",
+  "releaseBodySha256": "1e2ede6d30f78fc3f591636af0a1abc9de37c02dd6b2bc9f20661dfa3214f66c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2882-glab-backed-live-mr-data.md",
+      "sha256": "ad982213d12f172e93adcf78affcc1b283826690471d0b54873f5b4c6b98dba7"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2890-sanitize-curator-llm-inputs.md",
+      "sha256": "dc69cc475be10907a9dd886f5fcc1efbcca114a4057e0228b140d793f533ea3c"
+    }
+  ]
+}

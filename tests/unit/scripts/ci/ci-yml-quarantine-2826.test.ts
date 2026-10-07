@@ -93,9 +93,7 @@ describe('ci.yml integration — quarantine ledger entry for issue #2826 merge-g
 			INTEGRATION_LEDGER_PATH,
 		];
 		for (const ledger of otherLedgers) {
-			expect(activeEntries(ledger)).not.toContain(
-				ISSUE_2826_QUARANTINED_PATH,
-			);
+			expect(activeEntries(ledger)).not.toContain(ISSUE_2826_QUARANTINED_PATH);
 		}
 	});
 
@@ -109,9 +107,7 @@ describe('ci.yml integration — quarantine ledger entry for issue #2826 merge-g
 			ISSUE_2826_QUARANTINED_PATH,
 		);
 		expect(block).toContain('# OWNER:');
-		expect(block.match(/#\s*EXPIRY:\s*\d{4}-\d{2}-\d{2}/) !== null).toBe(
-			true,
-		);
+		expect(block.match(/#\s*EXPIRY:\s*\d{4}-\d{2}-\d{2}/) !== null).toBe(true);
 	});
 
 	test('the quarantined path exists on disk and is discovered by the ci.yml find chain', () => {
@@ -120,8 +116,6 @@ describe('ci.yml integration — quarantine ledger entry for issue #2826 merge-g
 		// and the flake-detection workflow would keep re-filing. The unit
 		// discovery chain globs tests/unit/**/*.test.ts, so the on-disk file
 		// must exist at exactly the ledger path relative to the repo root.
-		expect(existsSync(join(REPO_ROOT, ISSUE_2826_QUARANTINED_PATH))).toBe(
-			true,
-		);
+		expect(existsSync(join(REPO_ROOT, ISSUE_2826_QUARANTINED_PATH))).toBe(true);
 	});
 });

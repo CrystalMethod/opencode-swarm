@@ -4,6 +4,18 @@ import * as path from 'node:path';
 import * as ts from 'typescript';
 import { fileURLToPath } from 'node:url';
 import { runGit as runGitBase } from './gate-utils';
+import {
+	DEFAULT_QUARANTINE_LEDGERS,
+	QUARANTINE_EXPIRY_GRACE_DAYS,
+	type QuarantineLedgerContent,
+	type QuarantineRenewalResult,
+	type QuarantineTrend,
+	buildQuarantineCensus,
+	checkQuarantineRenewal,
+	collectAddRetireTrend,
+	formatQuarantineCensus,
+	resolveRenewalEnforce,
+} from './ci/quarantine-census';
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(SCRIPT_PATH);
@@ -34,20 +46,20 @@ const KNOWLEDGE_DEDUP_SCOPE = [
 	'src/consensus/*.ts',
 ] as const;
 
-/** Quarantine list files that require OWNER/EXPIRY metadata on active entries (#2477). */
-export const QUARANTINE_LIST_FILES = [
-	'scripts/ci/quarantined-tests.txt',
-	'scripts/ci/quarantined-tests-windows.txt',
-	'scripts/ci/quarantined-tests-macos.txt',
-	'scripts/ci/quarantined-integration-tests.txt',
-] as const;
+/**
+ * Quarantine list files that require OWNER/EXPIRY metadata on active entries
+ * (#2477). Owned by scripts/ci/quarantine-census.ts (#2905); re-exported here
+ * under its historical name so existing importers are unchanged.
+ */
+export const QUARANTINE_LIST_FILES: readonly string[] =
+	DEFAULT_QUARANTINE_LEDGERS;
 
 /**
  * How far past EXPIRY an entry may sit before the check hard-fails. Inside the
  * grace window the entry only warns, so a legitimate "still waiting on the
  * retirement criterion" entry needs one small renewal PR, not an emergency.
+ * Owned by scripts/ci/quarantine-census.ts (#2905) and imported above.
  */
-const QUARANTINE_EXPIRY_GRACE_DAYS = 14;
 
 const BASE_BRANCH_CANDIDATES = [
 	'origin/main',
@@ -975,6 +987,290 @@ export function checkRawAdvisoryPush(repoRoot: string): CheckResult {
 }
 
 
+// --- Check 9: destructive-command registry enumeration (issue #2946) ---
+
+/**
+ * Registry keys that are destructive BY NAME and must always be enumerated,
+ * regardless of what their description/details prose says — rewording a
+ * destructive command's help text can never silently leave the set (#2946).
+ * Every key here must EXIST in COMMAND_REGISTRY; a rename or removal is
+ * itself a violation (fix the seed list in the same change, deliberately).
+ */
+const DESTRUCTIVE_SEED_KEYS = [
+	'rollback',
+	'reset',
+	'reset-session',
+	'finalize',
+	'close',
+	'knowledge hive-quarantine',
+	'dataset consent',
+	'dataset withdraw',
+	'dataset export',
+] as const;
+
+const DESTRUCTIVE_EXCEPTIONS_FILE = 'scripts/destructive-command-exceptions.txt';
+
+/**
+ * Case-insensitive, word-bounded destructive vocabulary. Deliberately broad:
+ * a false positive costs one justified exception line; a false negative costs
+ * an ungated destructive command.
+ */
+const DESTRUCTIVE_VOCABULARY =
+	/\b(?:DELETES?|DESTROYS?|DESTROYED|DESTROYING|purge[sd]?|purging|reset(?:s|ting|ted)?|rollback|rollbacks|discard(?:s|ed|ing)?)\b|\bgit reset\b/i;
+
+/**
+ * Marker names that prove a handler family sits behind a two-step confirm
+ * contract: the shared #2527/#2508 primitive, or a validated equivalent token
+ * contract (dataset/training family, knowledge hive-quarantine).
+ */
+const TWO_STEP_MARKERS = [
+	'previewDestructivePurge',
+	'issueConfirmToken',
+	'consumeConfirmToken',
+	'executeDestructivePurge',
+	'recheckBeforeDestructive',
+	'issueTrainingConfirmToken',
+	'checkTrainingConfirmToken',
+	'commitHiveQuarantine',
+];
+
+interface RegistryEntrySpan {
+	key: string;
+	text: string;
+}
+
+function parseRegistryEntries(source: string): RegistryEntrySpan[] {
+	const entries: RegistryEntrySpan[] = [];
+	const keyPattern = /^\t(?:'([^']+)'|([A-Za-z0-9_-]+)):\s*\{/gm;
+	const matches = [...source.matchAll(keyPattern)];
+	for (let i = 0; i < matches.length; i += 1) {
+		const start = matches[i].index ?? 0;
+		const end =
+			i + 1 < matches.length
+				? (matches[i + 1].index ?? source.length)
+				: source.length;
+		entries.push({
+			key: matches[i][1] ?? matches[i][2],
+			text: source.slice(start, end),
+		});
+	}
+	return entries;
+}
+
+function readTextOrEmpty(file: string): string {
+	try {
+		return fs.readFileSync(file, 'utf-8');
+	} catch {
+		return '';
+	}
+}
+
+/** Resolve the entry's handler module (following `aliasOf` to the target). */
+function resolveEntryModules(
+	entry: RegistryEntrySpan,
+	registrySource: string,
+	repoRoot: string,
+): string[] {
+	const aliasMatch = /aliasOf:\s*'([^']+)'/.exec(entry.text);
+	const targetKey = aliasMatch ? aliasMatch[1] : entry.key;
+	const target =
+		parseRegistryEntries(registrySource).find((e) => e.key === targetKey) ??
+		entry;
+	const handlerMatch = /handler:[^=]*=>\s*(?:await\s+)?(handle\w+)/.exec(
+		target.text,
+	);
+	if (!handlerMatch) return [];
+	const fn = handlerMatch[1];
+	const importPattern = new RegExp(
+		`import[^;]*\\b${fn}\\b[^;]*from\\s+'([^']+)'`,
+	);
+	const importMatch = importPattern.exec(registrySource);
+	if (!importMatch) return [];
+	const specifier = importMatch[1];
+	if (!specifier.startsWith('.')) return [];
+	const resolved = path.resolve(
+		path.join(repoRoot, 'src', 'commands'),
+		specifier.replace(/\.js$/, '.ts'),
+	);
+	return [resolved];
+}
+
+/**
+ * Bounded transitive walk over LOCAL relative imports (depth <= 3), returning
+ * the concatenated source text of the module and its local import tree.
+ */
+function collectModuleTree(entryModules: string[]): string {
+	const seen = new Set<string>();
+	let frontier = entryModules.filter((m) => fs.existsSync(m));
+	let text = '';
+	for (let depth = 0; depth < 3 && frontier.length > 0; depth += 1) {
+		const next: string[] = [];
+		for (const file of frontier) {
+			if (seen.has(file)) continue;
+			seen.add(file);
+			const source = readTextOrEmpty(file);
+			text += `\n${source}`;
+			for (const spec of source.matchAll(/from\s+'(\.[^']+)'/g)) {
+				const resolved = path.resolve(
+					path.dirname(file),
+					spec[1].replace(/\.js$/, '.ts'),
+				);
+				if (fs.existsSync(resolved)) next.push(resolved);
+			}
+		}
+		frontier = next;
+	}
+	return text;
+}
+
+export function checkDestructiveCommandRegistry(repoRoot: string): CheckResult {
+	const messages = [
+		'=== Check 9: destructive commands adopt the two-step confirm contract (issue #2946) ===',
+	];
+	let violations = 0;
+
+	const registryRel = 'src/commands/registry.ts';
+	const registrySource = readTextOrEmpty(path.join(repoRoot, registryRel));
+	if (registrySource === '') {
+		// Fixture/replica trees without the swarm command surface (e.g. the
+		// Check 5 fixtures) have nothing to enumerate — skip non-blockingly,
+		// mirroring Check 5's "no scope entry resolved" contract.
+		messages.push(
+			'Check 9 skipped: no command registry in this tree (fixture tree without the swarm command surface).',
+		);
+		return { messages, violations: 0 };
+	}
+	const entries = parseRegistryEntries(registrySource);
+	const entryKeys = new Set(entries.map((e) => e.key));
+
+	// Enumerated set = vocabulary-flagged keys UNION the name-pinned seed list.
+	const flagged = entries.filter((e) => DESTRUCTIVE_VOCABULARY.test(e.text));
+	const enumerated = new Map<string, RegistryEntrySpan>();
+	for (const e of flagged) enumerated.set(e.key, e);
+	for (const seed of DESTRUCTIVE_SEED_KEYS) {
+		if (!entryKeys.has(seed)) {
+			messages.push(
+				`ERROR: seed key '${seed}' is missing from COMMAND_REGISTRY — destructive commands cannot be renamed out of the enumeration without updating the seed list deliberately.`,
+			);
+			violations += 1;
+			continue;
+		}
+		const entry = entries.find((e) => e.key === seed);
+		if (entry) enumerated.set(seed, entry);
+	}
+
+	// Exceptions: `key | owner | reason` lines (# comments allowed).
+	const exceptionsRel = DESTRUCTIVE_EXCEPTIONS_FILE;
+	const exceptionsFile = path.join(repoRoot, ...exceptionsRel.split('/'));
+	const exceptionOwners = new Map<string, { owner: string; reason: string }>();
+	if (!fs.existsSync(exceptionsFile)) {
+		messages.push(
+			`ERROR: ${exceptionsRel} not found — the validated exception list is required.`,
+		);
+		violations += 1;
+	} else {
+		const lines = readTextOrEmpty(exceptionsFile).split(/\r?\n/);
+		for (const raw of lines) {
+			const line = raw.trim();
+			if (line === '' || line.startsWith('#')) continue;
+			const parts = line.split('|').map((p) => p.trim());
+			if (
+				parts.length !== 3 ||
+				parts[0] === '' ||
+				parts[1] === '' ||
+				parts[2] === ''
+			) {
+				messages.push(
+					`ERROR: malformed exception line (expected 'key | owner | reason'): ${JSON.stringify(line)}`,
+				);
+				violations += 1;
+				continue;
+			}
+			exceptionOwners.set(parts[0], { owner: parts[1], reason: parts[2] });
+		}
+	}
+
+	// Every enumerated key needs marker coverage or a validated exception.
+	let exceptionCount = 0;
+	const enumeratedToolKeys = new Set<string>();
+	for (const [key, entry] of enumerated) {
+		const exception = exceptionOwners.get(key);
+		if (exception) {
+			exceptionCount += 1;
+			continue;
+		}
+		const modules = resolveEntryModules(entry, registrySource, repoRoot);
+		const treeText = collectModuleTree(modules);
+		const covered = TWO_STEP_MARKERS.some((m) => treeText.includes(m));
+		if (!covered) {
+			messages.push(
+				`ERROR: '${key}' matches the destructive vocabulary but its handler tree has no two-step contract marker — adopt the shared primitive or add a justified line to ${exceptionsRel}.`,
+			);
+			violations += 1;
+		}
+	}
+
+	// Tool registry: same rule for agent-reachable tool surfaces. Trees with
+	// a registry but no tool metadata (partial fixtures) skip the tool scan.
+	const toolMetadataRel = 'src/tools/tool-metadata.ts';
+	const toolSource = readTextOrEmpty(path.join(repoRoot, toolMetadataRel));
+	if (toolSource === '') {
+		messages.push(
+			'Check 9: tool metadata not present in this tree — tool scan skipped.',
+		);
+	} else {
+		const toolEntries = [...toolSource.matchAll(/^\t(\w+):\s*\{/gm)];
+		for (let i = 0; i < toolEntries.length; i += 1) {
+			const start = toolEntries[i].index ?? 0;
+			const end =
+				i + 1 < toolEntries.length
+					? (toolEntries[i + 1].index ?? toolSource.length)
+					: toolSource.length;
+			const key = toolEntries[i][1];
+			const span = toolSource.slice(start, end);
+			if (!DESTRUCTIVE_VOCABULARY.test(span)) continue;
+			enumeratedToolKeys.add(`tool:${key}`);
+			if (exceptionOwners.has(`tool:${key}`)) {
+				exceptionCount += 1;
+				continue;
+			}
+			// TOOL_METADATA keys are underscored; multiword tool sources are
+			// hyphenated (knowledge_remove -> knowledge-remove.ts). Resolve
+			// the first existing candidate so the "adopt the primitive" arm
+			// stays reachable for multiword tools (#2946 review finding 2).
+			const toolModule = [
+				path.join(repoRoot, 'src', 'tools', `${key}.ts`),
+				path.join(repoRoot, 'src', 'tools', `${key.replace(/_/g, '-')}.ts`),
+			].find((m) => fs.existsSync(m));
+			const treeText = toolModule ? collectModuleTree([toolModule]) : '';
+			const covered = TWO_STEP_MARKERS.some((m) => treeText.includes(m));
+			if (!covered) {
+				messages.push(
+					`ERROR: tool '${key}' matches the destructive vocabulary but src/tools/${key}.ts has no two-step contract marker — adopt the shared primitive or add a justified 'tool:${key} | owner | reason' line to ${exceptionsRel}.`,
+				);
+				violations += 1;
+			}
+		}
+	}
+
+	// Stale exceptions keep the list non-growing: a line for a key that no
+	// longer needs it (or never existed) is a violation, not a warning. Runs
+	// AFTER the tool scan so tool: keys are known.
+	for (const key of exceptionOwners.keys()) {
+		if (!enumerated.has(key) && !enumeratedToolKeys.has(key)) {
+			messages.push(
+				`ERROR: stale exception for '${key}' — the key is not in the enumerated destructive set; remove the line.`,
+			);
+			violations += 1;
+		}
+	}
+
+	messages.push(
+		`Destructive registry enumeration: ${enumerated.size} command key(s), ${exceptionCount} exception line(s) in use.`,
+	);
+	return { messages, violations };
+}
+
 /**
  * Check 8 (issue #2577): the family-migration engines' DESTINATION lock
  * acquisition must fail closed. A catch that swallows the acquisition failure
@@ -1092,9 +1388,22 @@ export function checkMigrationLockAdmission(repoRoot: string): CheckResult {
  * Missing OWNER/EXPIRY is a violation. An EXPIRY in the past warns inside the
  * 14-day grace window and fails beyond it (dates compared in UTC).
  */
+export interface QuarantineCheckExtras {
+	/** Pre-computed renewal policy result (baseline vs head ledgers). */
+	renewal?: QuarantineRenewalResult;
+	/** Pre-computed 30-day add/retire trend; absent => deterministic n/a line. */
+	trend?: QuarantineTrend | null;
+}
+
+/** Escape only the characters GitHub annotations reserve (drift-check precedent). */
+function escapeCensusAnnotationText(text: string): string {
+	return text.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
+}
+
 export function checkQuarantineMetadata(
 	repoRoot: string,
 	now: Date = new Date(),
+	extras: QuarantineCheckExtras = {},
 ): CheckResult {
 	const messages = [
 		'=== Check 7: quarantine entries carry OWNER + EXPIRY metadata (issue #2477) ===',
@@ -1103,6 +1412,7 @@ export function checkQuarantineMetadata(
 	const ownerPattern = /^#\s*OWNER:\s*(\S.*)$/;
 	const expiryPattern = /^#\s*EXPIRY:\s*(\d{4})-(\d{2})-(\d{2})\b/;
 	const expiryLoosePattern = /^#\s*EXPIRY:\s*(\S.*)$/;
+	const ledgerContents: QuarantineLedgerContent[] = [];
 
 	for (const listRel of QUARANTINE_LIST_FILES) {
 		const listFile = path.join(repoRoot, listRel);
@@ -1111,9 +1421,12 @@ export function checkQuarantineMetadata(
 				`ERROR: ${listRel} not found — the quarantine list file is required.`,
 			);
 			violations += 1;
+			ledgerContents.push({ ledger: listRel, content: '' });
 			continue;
 		}
-		const lines = readText(listFile).split(/\r?\n/);
+		const content = readText(listFile);
+		ledgerContents.push({ ledger: listRel, content });
+		const lines = content.split(/\r?\n/);
 		for (let index = 0; index < lines.length; index += 1) {
 			const line = lines[index];
 			if (line.trim() === '' || line.trimStart().startsWith('#')) {
@@ -1205,13 +1518,122 @@ export function checkQuarantineMetadata(
 	if (violations === 0) {
 		messages.push('All active quarantine entries carry OWNER + EXPIRY metadata.');
 	}
+	// Quarantine census (issue #2905, Workstream I8): the aggregate view after
+	// the per-entry messages — counts, EXPIRY histogram, first hard-fail wall,
+	// owners, unlinked-OWNER entries, and the deterministic trend line.
+	const census = buildQuarantineCensus(ledgerContents, now);
+	messages.push(...formatQuarantineCensus(census, extras.trend ?? null));
+	if (
+		census.firstHardFailDate !== null &&
+		census.daysToFirstWall !== null &&
+		census.daysToFirstWall >= 0 &&
+		census.daysToFirstWall < 21
+	) {
+		const earliestDate = census.histogram[0]?.date ?? census.firstHardFailDate;
+		const wallEntries = census.entries
+			.filter((entry) => entry.expiry === earliestDate)
+			.map((entry) => entry.path);
+		messages.push(
+			`::warning::[quarantine-census] first hard-fail wall ${census.firstHardFailDate} in ${census.daysToFirstWall} day(s) (< 21); entries: ${escapeCensusAnnotationText(wallEntries.join(', '))} — renew with an OWNER issue link or retire before the wall (issue #2905).`,
+		);
+	}
+	if (extras.renewal) {
+		messages.push(...extras.renewal.messages);
+		violations += extras.renewal.violations;
+	}
 	return { messages, violations };
+}
+
+/** Count active (non-comment, non-blank) entry lines in a ledger. */
+function parseLedgerEntries(content: string): string[] {
+	return content
+		.split(/\r?\n/)
+		.filter(
+			(line) => line.trim() !== '' && !line.trimStart().startsWith('#'),
+		);
+}
+
+/**
+ * Compute the renewal-requires-issue policy against the committed baseline
+ * (issue #2905 AC3). Fails open: trees without a resolvable base ref (local
+ * fixtures, fresh checkouts) get no renewal leg at all rather than a false
+ * violation. QUARANTINE_RENEWAL_ENFORCE=0 downgrades findings to WARNING
+ * lines that do not count (resolveEnforce semantics).
+ */
+export async function computeQuarantineRenewalFromBaseline(
+	repoRoot: string,
+): Promise<QuarantineRenewalResult | undefined> {
+	// A renewal requires an active entry in both trees; with no active head
+	// entries anywhere there is nothing to compare — return before any git
+	// spawn (keeps empty-fixture gate runs fast).
+	if (
+		QUARANTINE_LIST_FILES.every((listRel) => {
+			const headFile = path.join(repoRoot, listRel);
+			return (
+				!fs.existsSync(headFile) ||
+				parseLedgerEntries(readText(headFile)).length === 0
+			);
+		})
+	) {
+		return undefined;
+	}
+	const baseRef = await resolveBaseBranch(repoRoot);
+	if (baseRef === null) return undefined;
+	const headLedgerContents: QuarantineLedgerContent[] = [];
+	const baseLedgerContents: QuarantineLedgerContent[] = [];
+	let anyBaseline = false;
+	for (const listRel of QUARANTINE_LIST_FILES) {
+		const headFile = path.join(repoRoot, listRel);
+		const headContent = fs.existsSync(headFile) ? readText(headFile) : '';
+		headLedgerContents.push({ ledger: listRel, content: headContent });
+		// The baseline is read for EVERY ledger, including ones that are empty
+		// at head: a path moved out of ledger A (emptying it) into ledger B is
+		// still a renewal, and its baseline lives in A — skipping A's read
+		// silently dropped exactly that case (PR #3067 review finding PRR-007).
+		const show = await runGit(['show', `${baseRef}:${listRel}`], repoRoot);
+		if (show.exitCode === 0) {
+			anyBaseline = true;
+			baseLedgerContents.push({ ledger: listRel, content: show.stdout });
+		} else {
+			baseLedgerContents.push({ ledger: listRel, content: '' });
+		}
+	}
+	if (!anyBaseline) return undefined;
+	return checkQuarantineRenewal({
+		headLedgerContents,
+		baseLedgerContents,
+		enforce: resolveRenewalEnforce(process.env.QUARANTINE_RENEWAL_ENFORCE),
+	});
 }
 
 export async function main(startDir: string = process.cwd()): Promise<number> {
 	const repoRoot = await resolveRepoRoot(startDir);
 	let violations = 0;
 	const advisory = checkRawAdvisoryPush(repoRoot);
+	// Quarantine census inputs (issue #2905): the renewal policy vs the
+	// committed baseline and the 30-day add/retire trend. Both fail open so a
+	// tree without a base ref or git history just prints the census block.
+	// With no active entries anywhere, both legs are skipped outright — a
+	// renewal needs an entry in both trees, and skipping the async spawn
+	// keeps fixture-path gate runs spawn-free (host-latency protection).
+	const hasActiveQuarantineEntries = QUARANTINE_LIST_FILES.some((listRel) => {
+		const headFile = path.join(repoRoot, listRel);
+		return (
+			fs.existsSync(headFile) &&
+			parseLedgerEntries(readText(headFile)).length > 0
+		);
+	});
+	const [quarantineRenewal, quarantineTrend] = await Promise.all([
+		hasActiveQuarantineEntries
+			? computeQuarantineRenewalFromBaseline(repoRoot)
+			: Promise.resolve(undefined),
+		hasActiveQuarantineEntries
+			? collectAddRetireTrend(repoRoot)
+			: Promise.resolve({
+					available: false,
+					reason: 'no active entries',
+				} satisfies QuarantineTrend),
+	]);
 	const outputs: CheckResult[] = [
 		checkSubprocessTimeout(repoRoot),
 		checkProcessCwdBan(repoRoot),
@@ -1225,8 +1647,12 @@ export async function main(startDir: string = process.cwd()): Promise<number> {
 			],
 			violations: advisory.violations,
 		},
-		checkQuarantineMetadata(repoRoot),
+		checkQuarantineMetadata(repoRoot, new Date(), {
+			renewal: quarantineRenewal,
+			trend: quarantineTrend,
+		}),
 		checkMigrationLockAdmission(repoRoot),
+		checkDestructiveCommandRegistry(repoRoot),
 	];
 
 	for (const output of outputs) {
@@ -1252,7 +1678,10 @@ export async function main(startDir: string = process.cwd()): Promise<number> {
 		'            7 (quarantine OWNER/EXPIRY metadata) |',
 	);
 	console.log(
-		'            8 (family-migration destination lock admission)',
+		'            8 (family-migration destination lock admission) |',
+	);
+	console.log(
+		'            9 (destructive-command registry enumeration, #2946)',
 	);
 	if (violations > 0) {
 		console.log(`${violations} invariant violation(s) found.`);

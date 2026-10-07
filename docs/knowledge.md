@@ -534,6 +534,19 @@ late, and reordered outcomes are idempotent or explicitly rejected. Best-effort
 legacy, counter, promotion, and observability writes occur only after the
 correctness lock is released.
 
+Each membership record carries an optional numeric `phase_id` alongside its
+display label (#2947). The label is mutable by design — the plan cursor may
+advance between injection and phase completion (#2532) and phase statuses are
+re-derived on every save — so every phase-keyed read (the phase-complete
+critical-directive gate, close/intent stamping, and terminal-batch phase
+checks) matches `phase_id` first, then falls back to the id parsed from a
+legacy record's immutable stored label, then to verbatim label equality. New
+memberships persist the id explicitly when the committing path knows it;
+older records are backfilled by `/swarm doctor --fix` (check
+`knowledge-receipt-phase-id`) or by `repair_knowledge_receipt_ledger` with
+`operation: 'backfill_phase_id'` — a journaled, idempotent migration that
+never rewrites a stored label.
+
 The journal never evicts live membership because of an event-count cap. Its
 2,000-record threshold triggers a self-contained checkpoint rewrite; it is not
 a retention limit. Resolved state remains protected until its phase is durably closed and

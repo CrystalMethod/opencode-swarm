@@ -21,7 +21,8 @@
  * client-absence / parser / stale-sweep evidence classification
  * (`classifyPrReviewCircuitSignal`), structured-receipt downgrade protection
  * (`validateExactStructuredReceiptCoverage`), operator lane cancellation
- * (`collectOnce` cancel_pending), publication arming/settlement
+ * (`cancel_lane_batch`, issue #2971; the collector's `cancel_pending` is
+ * observation-only guidance), publication arming/settlement
  * (`completePrWorkflow` + `allowedPrReviewReportVerdicts`), and reviewer
  * re-entry consumption (`reservePrReviewReentryAuthorizationAgainstBinding` —
  * a pure reducer cannot independently observe a concurrent storage mutation).
@@ -382,6 +383,23 @@ export function reducePrReviewEvent(
 						state,
 						'no_coverage_requires_incomplete',
 						`a zero-coverage review must report INCOMPLETE, not ${verdict}`,
+					);
+				}
+				// Issue #2840: a disclosed coverage degradation (dead family or
+				// coverage-quality) makes the review DEGRADED_DISCLOSED even when
+				// all six base dimensions settled COMPLETE — the micro-family axis
+				// is invisible to `kind`, so the flag is the reducer's only view
+				// of it. Such a review may request changes or declare itself
+				// incomplete; it can never approve.
+				if (
+					settlement.kind === 'COMPLETE' &&
+					event.disclosedDegradation === true &&
+					verdict === 'APPROVE'
+				) {
+					return rejected(
+						state,
+						'degraded_disclosure_cannot_approve',
+						'a disclosed coverage degradation (dead family) can never emit APPROVE; report REQUEST_CHANGES with the disclosed degradation or INCOMPLETE',
 					);
 				}
 			}

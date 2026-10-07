@@ -15,6 +15,7 @@ import {
 	removeReviewReceipt,
 } from '../hooks/review-receipt.js';
 import { parseReviewerOutput } from '../hooks/review-receipt-collector.js';
+import { sumKnownAxis } from '../services/cost-accounting.js';
 import { telemetry } from '../telemetry.js';
 import type { ModelOverride } from '../utils/model-dispatch-fallback.js';
 import { isQuotaError } from '../utils/provider-error-classification.js';
@@ -659,10 +660,24 @@ function addCost(
 			evidence.cost.evidence_status = 'inconclusive';
 			evidence.cost.evidence_reason = fields?.evidence_reason ?? 'missing_cost';
 		}
-		evidence.cost.tokens_input += fields?.tokens_input ?? 0;
-		evidence.cost.tokens_output += fields?.tokens_output ?? 0;
-		evidence.cost.tokens_reasoning += fields?.tokens_reasoning ?? 0;
-		evidence.cost.tokens_cache += fields?.tokens_cache ?? 0;
+		// #2789: accumulate KNOWN token contributions only; an all-unknown
+		// dispatch set leaves the axes null (unknown), never a fabricated 0.
+		evidence.cost.tokens_input = sumKnownAxis(
+			evidence.cost.tokens_input,
+			fields?.tokens_input ?? null,
+		);
+		evidence.cost.tokens_output = sumKnownAxis(
+			evidence.cost.tokens_output,
+			fields?.tokens_output ?? null,
+		);
+		evidence.cost.tokens_reasoning = sumKnownAxis(
+			evidence.cost.tokens_reasoning,
+			fields?.tokens_reasoning ?? null,
+		);
+		evidence.cost.tokens_cache = sumKnownAxis(
+			evidence.cost.tokens_cache,
+			fields?.tokens_cache ?? null,
+		);
 		if (typeof fields?.cost_usd === 'number') {
 			evidence.cost.cost_usd = (evidence.cost.cost_usd ?? 0) + fields.cost_usd;
 			evidence.cost.cost_source =
@@ -712,10 +727,11 @@ function baseEvidence(
 			model_calls: 0,
 			diff_bytes: diff.reviewTextBytes,
 			prompt_bytes: 0,
-			tokens_input: 0,
-			tokens_output: 0,
-			tokens_reasoning: 0,
-			tokens_cache: 0,
+			// #2789: unknown until a dispatch contributes a known value.
+			tokens_input: null,
+			tokens_output: null,
+			tokens_reasoning: null,
+			tokens_cache: null,
 			cost_usd: null,
 			cost_source: 'unavailable',
 			cost_evidence: [],

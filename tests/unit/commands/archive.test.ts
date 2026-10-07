@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
-import * as os from 'node:os';
+import { mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import {
 	_internals as archiveCommandInternals,
@@ -11,6 +10,8 @@ import {
 	_internals as evidenceInternals,
 	saveEvidence,
 } from '../../../src/evidence/manager';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const realDeleteEvidence = evidenceInternals.deleteEvidence;
 const realArchiveNow = archiveCommandInternals.now;
@@ -217,15 +218,13 @@ describe('handleArchiveCommand', () => {
 
 // Helper functions
 function mkdtemp(): string {
-	return require('node:fs').realpathSync(
-		require('node:fs').mkdtempSync(
-			path.join(os.tmpdir(), 'archive-command-test-'),
-		),
-	);
+	return canonicalMkdtemp('archive-command-test-');
 }
 
+// Retry-safe teardown (#2973 retirement of the #2812 windows flake): bounded
+// EBUSY/EPERM/ENOTEMPTY retries instead of a raw rmSync that AV handles defeat.
 function cleanup(dir: string): void {
-	rmSync(dir, { recursive: true, force: true });
+	safeRmRecursive(dir);
 }
 
 async function makeBundleOld(

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.3",
+  "tagCommit": "4a32d7744f66bc465a74ce2d2c5141fbad829dc1",
+  "targetCommitish": "4a32d7744f66bc465a74ce2d2c5141fbad829dc1",
+  "releaseBodySha256": "a9c479d4c1965cb487992ff17f13b660b26a07da0035022575a7ca429109c0d2",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2814-stage-b-scope-freshness.md",
+      "sha256": "d03af8c05ce4b2ea9ccc970c381ba2417c355da0bc56d37b5ff162eeb4353004"
+    }
+  ]
+}

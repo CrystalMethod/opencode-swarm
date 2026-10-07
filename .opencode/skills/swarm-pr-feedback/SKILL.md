@@ -12,6 +12,7 @@ description: >
   (structural pre-checks) and Stage B (reviewer + test_engineer) gates and the
   reviewer + critic closeout gate are MANDATORY for any change made as part of
   this process.
+swarm-contract-digest: 143d9443a82d
 ---
 
 # Swarm PR Feedback

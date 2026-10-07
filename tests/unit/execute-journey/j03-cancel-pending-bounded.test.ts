@@ -1,10 +1,14 @@
 /**
- * j03 — bounded cancellation controls (AC3, issue #2666). Two controls, both
- * bounded in wall-clock:
- *  (a) lane-level cancel through the REGISTERED cancellation surface —
- *      dispatch_lanes_async with a scripted client whose prompts never
- *      resolve, then collect_lane_results cancel_pending → lanes settle
- *      `cancelled` (typed terminal, session.abort recorded).
+ * j03 — bounded cancellation controls (AC3, issue #2666; revised for #2971).
+ * Two controls, both bounded in wall-clock:
+ *  (a) lane-level cancellation through the REGISTERED surfaces — a scripted
+ *      client whose prompts never resolve, then collect_lane_results with
+ *      cancel_pending (OBSERVATION ONLY since #2971: cancelled=0, lanes stay
+ *      pending/running, no session.abort, typed cancellation_refused guidance
+ *      naming cancel_lane_batch), followed by the confirmed cancellation
+ *      through the registered cancel_lane_batch host tool: idle lanes settle
+ *      cancelled with the distinct operator_cancelled class, session.abort
+ *      observed, bounded in wall-clock.
  *  (b) EXECUTE-scope bounded abandon — a coder Task dispatch admitted
  *      (settlement DISPATCHED) whose child never completes: the registered
  *      `event` hook session.deleted path clears session state BOUNDED and
@@ -57,7 +61,7 @@ describe('bounded cancellation through the registered host (#2666)', () => {
 		project = null;
 	});
 
-	test('collect_lane_results cancel_pending settles pending lanes cancelled, bounded', async () => {
+	test('cancel_pending is guidance-only; confirmed cancel_lane_batch settles idle lanes operator_cancelled, bounded', async () => {
 		project = createJourneyProject('swarm-j03a-');
 		// Scripted client whose prompts NEVER resolve: the lanes stay
 		// pending until the registered cancellation surface aborts them.
@@ -95,28 +99,78 @@ describe('bounded cancellation through the registered host (#2666)', () => {
 		);
 		expect(dispatch.success).toBe(true);
 
-		const cancelStartedAt = performance.now();
-		const cancel = parseToolResult(
+		// Phase 1 (issue #2971): an ordinary cancel_pending request is
+		// OBSERVATION-ONLY — it never aborts or settles a lane. The collector
+		// answers with typed refusal guidance naming the authorized surface.
+		const observeStartedAt = performance.now();
+		const observe = parseToolResult(
 			await booted.host.tool.collect_lane_results.execute(
 				{ batch_id: batchId, cancel_pending: true },
 				{ directory: project.directory, sessionID: driver.sessionID },
 			),
 		);
+		const observeElapsedMs = performance.now() - observeStartedAt;
+		expect(observe.cancelled).toBe(0);
+		expect(observe.pending).toBe(2);
+		expect(observe.all_settled).toBe(false);
+		const refusals = (observe.cancellation_refused ?? []) as Array<{
+			lane_id: string;
+			next_action: string;
+		}>;
+		expect(refusals).toHaveLength(2);
+		for (const refusal of refusals) {
+			expect(refusal.next_action).toContain('cancel_lane_batch');
+		}
+		expect(String(observe.message ?? '')).toContain('cancel_lane_batch');
+		// No abort was issued and the lanes are still open work.
+		expect(client.calls.some((call) => call.surface === 'session.abort')).toBe(
+			false,
+		);
+		let records = findByBatchId(project.directory, batchId);
+		expect(records.length).toBe(2);
+		for (const record of records) {
+			expect(['pending', 'running']).toContain(record.status);
+		}
+		// Bounded: the observation-only collect returns promptly — no hang.
+		expect(observeElapsedMs).toBeLessThan(CANCEL_WALL_CLOCK_BOUND_MS);
+
+		// Phase 2: the confirmed cancellation through the REGISTERED host tool.
+		// The host builds its tool map from the manifest — verify the surface
+		// is exposed, then make the scripted host report every lane session
+		// idle so the liveness preflight admits the cancellation.
+		const cancelTool = booted.host.tool.cancel_lane_batch;
+		expect(cancelTool).toBeDefined();
+		const idleStatusMap: Record<string, { type: string }> = {};
+		for (const record of records) {
+			idleStatusMap[record.subagentSessionId] = { type: 'idle' };
+		}
+		(client.session as unknown as Record<string, unknown>).status =
+			async () => ({ data: idleStatusMap, error: undefined });
+
+		const cancelStartedAt = performance.now();
+		const cancel = parseToolResult(
+			await cancelTool.execute(
+				{
+					batch_id: batchId,
+					reason: 'journey j03: bounded operator cancellation',
+					confirm: true,
+				},
+				{ directory: project.directory, sessionID: driver.sessionID },
+			),
+		);
 		const cancelElapsedMs = performance.now() - cancelStartedAt;
-		// The envelope's `success` flag means COMPLETED work; a pure-cancel
-		// result legitimately reports success=false with cancelled>0. The
-		// functional contract is: every lane settled cancelled, nothing
-		// pending, all settled — bounded in wall-clock.
+		// The functional contract: every lane settled cancelled through the
+		// distinct operator_cancelled class, bounded in wall-clock.
 		expect(cancel.cancelled).toBe(2);
-		expect(cancel.pending).toBe(0);
-		expect(cancel.all_settled).toBe(true);
-		// Bounded: the registered cancel returns promptly — no hang.
 		expect(cancelElapsedMs).toBeLessThan(CANCEL_WALL_CLOCK_BOUND_MS);
 
-		const records = findByBatchId(project.directory, batchId);
+		records = findByBatchId(project.directory, batchId);
 		expect(records.length).toBe(2);
 		for (const record of records) {
 			expect(record.status).toBe('cancelled');
+			expect(record.terminalResult?.result?.workflowLaneFailureClass).toBe(
+				'operator_cancelled',
+			);
 		}
 		// The scripted client observed the abort (bounded, typed surface).
 		expect(client.calls.some((call) => call.surface === 'session.abort')).toBe(

@@ -47,12 +47,19 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
 	collectToolRegistrationErrors,
 	type ToolRegistrationCheckOptions,
 } from './check-tool-registration';
 import { collectEventContractErrors } from './check-event-contract';
+import {
+	buildQuarantineCensus,
+	collectAddRetireTrend,
+	formatQuarantineCensus,
+	readLedgerContents,
+} from './ci/quarantine-census';
 import { collectCoreEventsUsageErrors } from './check-core-events-usage';
 import { collectShellAuditUsageErrors } from './check-shell-audit-usage';
 import { collectTrajectoryStoreUsageErrors } from './check-trajectory-store-usage';
@@ -73,6 +80,7 @@ import { ALL_AGENT_NAMES } from '../src/config/agent-names';
 import {
 	AGENT_TOOL_MAP,
 	COUNCIL_AGENT_TOOL_MAP,
+	EPIC_AGENT_TOOL_MAP,
 	EXTERNAL_SKILL_AGENT_TOOL_MAP,
 	GENERAL_COUNCIL_AGENT_TOOL_MAP,
 	MEMORY_AGENT_TOOL_MAP,
@@ -525,7 +533,10 @@ export function _checkDuplicateSlugsFromArrays(
 }
 
 /** _internals seam for test injection — see AGENTS.md invariant #7. */
-export const _internals = { _checkDuplicateSlugsFromArrays };
+export const _internals = {
+	_checkDuplicateSlugsFromArrays,
+	resolveUserGlobalHome: resolveUserGlobalHomeDefault,
+};
 
 /**
  * Detect duplicate slugs across ALL skill mirror contract arrays.
@@ -977,6 +988,7 @@ export function detectAgentDrift(): DriftFinding[] {
 		['COUNCIL_AGENT_TOOL_MAP', COUNCIL_AGENT_TOOL_MAP],
 		['GENERAL_COUNCIL_AGENT_TOOL_MAP', GENERAL_COUNCIL_AGENT_TOOL_MAP],
 		['TURBO_AGENT_TOOL_MAP', TURBO_AGENT_TOOL_MAP],
+		['EPIC_AGENT_TOOL_MAP', EPIC_AGENT_TOOL_MAP],
 	];
 	for (const [mapName, map] of optInMaps) {
 		for (const agent of Object.keys(map)) {
@@ -1485,6 +1497,169 @@ export function detectRequiredCheckContractDrift(
 }
 
 // ---------------------------------------------------------------------------
+// User-global skill staleness (issue #2859 F6)
+// ---------------------------------------------------------------------------
+
+/** PR-workflow skills whose canonical copy carries a content stamp. */
+export const STAMPED_PR_WORKFLOW_SKILLS = [
+	'swarm-pr-review',
+	'swarm-pr-feedback',
+	'swarm-pr-subscribe',
+	'swarm-ci-monitor',
+] as const;
+
+// Issue #2601: the digest primitives live in the shared src module so the
+// runtime verification (src/services/pr-workflow-skill-contract.ts) and this
+// dev-time detector can never disagree. Re-exported here for the existing
+// consumers (scripts/stamp-skill-contracts.ts and the #2859 test suites);
+// readSkillContractStamp stays file-local (no consumer needs it via this
+// module's surface).
+import {
+	readSkillContractStamp,
+	SKILL_CONTRACT_DIGEST_KEY,
+	skillContractDigest,
+	splitSkillFrontmatter,
+} from '../src/config/skill-contract-digest.js';
+export {
+	SKILL_CONTRACT_DIGEST_KEY,
+	skillContractDigest,
+	splitSkillFrontmatter,
+};
+
+/**
+ * Env-var-aware home resolution: os.homedir() ignores process.env entirely
+ * (see tests/helpers/isolated-test-env.ts), so the env vars are consulted
+ * FIRST to keep the detector testable against a temp HOME fixture. Production
+ * resolution matches os.homedir() semantics on every platform.
+ */
+function resolveUserGlobalHomeDefault(): string {
+	if (process.platform === 'win32') {
+		const userProfile = process.env.USERPROFILE?.trim();
+		if (userProfile) return userProfile;
+	} else {
+		const home = process.env.HOME?.trim();
+		if (home) return home;
+	}
+	return os.homedir();
+}
+
+/**
+ * Issue #2859 (F6): a stale user-global copy of a bundled skill can shadow
+ * the repository canonical with zero detection (a 10-week-old copy taught a
+ * dead output contract on the PR #2824 review run). READ-ONLY detection:
+ * compare the repo canonical body digest against any user-global copy of the
+ * same skill; warn when they diverge. User-global trees are NEVER written.
+ * Repo-side stamp rot is a warning (refresh with the stamp script); a stale
+ * user-global copy is a notice — advisory only, never blocks.
+ */
+export function detectUserGlobalSkillStaleness(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const category = 'user-global-skill-staleness';
+	const home = _internals.resolveUserGlobalHome();
+	for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
+		const relativePath = `.opencode/skills/${slug}/SKILL.md`;
+		let canonicalContent: string;
+		try {
+			canonicalContent = fs.readFileSync(path.join(root, relativePath), 'utf8');
+		} catch {
+			// Missing canonical skills are the bundled-skill detector's domain.
+			continue;
+		}
+		const { frontmatter, body } = splitSkillFrontmatter(canonicalContent);
+		const actualDigest = skillContractDigest(body);
+		const stampedDigest = readSkillContractStamp(frontmatter);
+		if (stampedDigest !== actualDigest) {
+			findings.push({
+				category,
+				severity: 'warning',
+				file: relativePath,
+				message: `stale ${SKILL_CONTRACT_DIGEST_KEY} stamp for skill '${slug}': frontmatter says ${stampedDigest ?? '<none>'}, body content hashes to ${actualDigest}; run 'bun run scripts/stamp-skill-contracts.ts --write'`,
+			});
+			continue;
+		}
+		for (const userRelative of [
+			`.opencode/skills/${slug}/SKILL.md`,
+			`.claude/skills/${slug}/SKILL.md`,
+		]) {
+			const userPath = path.join(home, userRelative);
+			if (!fs.existsSync(userPath)) continue;
+			let userContent: string;
+			try {
+				userContent = fs.readFileSync(userPath, 'utf8');
+			} catch {
+				continue;
+			}
+			const userDigest = skillContractDigest(
+				splitSkillFrontmatter(userContent).body,
+			);
+			if (userDigest === actualDigest) continue;
+			findings.push({
+				category,
+				severity: 'notice',
+				file: relativePath,
+				message: `user-global copy of skill '${slug}' is stale: ${userPath} (digest ${userDigest}) differs from the repository copy ${path.join(root, relativePath)} (digest ${actualDigest}); the repository copy is authoritative — delete the stale user-global copy`,
+			});
+		}
+	}
+	return findings;
+}
+
+/**
+ * Issue #2601: the `.swarm/bundled-skills/<slug>` installed copies are the
+ * surface MODE entry actually loads, but until now nothing compared their
+ * content against the shipped canonical (the bundled-skill detector above
+ * validates registry shape only). A stale installed copy is what an
+ * auto-resumed session executes. READ-ONLY detection over the worktree's
+ * local runtime tree: absent surface stays silent (CI checkouts have no
+ * `.swarm/`), a stale copy is a WARNING so `--enforce` blocks on it — the
+ * runtime activation/wake verification (src/services/pr-workflow-skill-contract.ts)
+ * heals the copy; this detector is the dev-time backstop that names it.
+ */
+export function detectBundledSkillStaleness(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const category = 'bundled-skill-staleness';
+	for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
+		const canonicalRelative = `.opencode/skills/${slug}/SKILL.md`;
+		let canonicalContent: string;
+		try {
+			canonicalContent = fs.readFileSync(
+				path.join(root, canonicalRelative),
+				'utf8',
+			);
+		} catch {
+			continue;
+		}
+		const canonicalDigest = skillContractDigest(
+			splitSkillFrontmatter(canonicalContent).body,
+		);
+		const installedRelative = `.swarm/bundled-skills/${slug}/SKILL.md`;
+		const installedPath = path.join(root, installedRelative);
+		if (!fs.existsSync(installedPath)) continue;
+		let installedContent: string;
+		try {
+			installedContent = fs.readFileSync(installedPath, 'utf8');
+		} catch {
+			continue;
+		}
+		const installedDigest = skillContractDigest(
+			splitSkillFrontmatter(installedContent).body,
+		);
+		if (installedDigest === canonicalDigest) continue;
+		findings.push({
+			category,
+			severity: 'warning',
+			file: installedRelative,
+			message: `installed bundled copy of skill '${slug}' is stale: ${installedPath} (digest ${installedDigest}) differs from the shipped canonical ${path.join(root, canonicalRelative)} (digest ${canonicalDigest}); re-run any /swarm command or restart the host to re-sync, or delete the stale .swarm/bundled-skills/${slug} directory`,
+		});
+	}
+	return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration
 // ---------------------------------------------------------------------------
 
@@ -1510,6 +1685,8 @@ export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['config-docs', detectConfigDocsKeysDrift],
 	['gates-docs', detectGatesConfigDrift],
 	['required-check-contract', detectRequiredCheckContractDrift],
+	['user-global-skill-staleness', detectUserGlobalSkillStaleness],
+	['bundled-skill-staleness', detectBundledSkillStaleness],
 ];
 
 /**
@@ -1577,7 +1754,10 @@ export function annotation(finding: DriftFinding): string {
 	return `::${level}${params}::[drift:${finding.category}] ${escapeAnnotationData(finding.message)}`;
 }
 
-export function buildReport(findings: DriftFinding[]): string {
+export function buildReport(
+	findings: DriftFinding[],
+	extras: string[] = [],
+): string {
 	const MAX_REPORT_BYTES = 64 * 1024;
 	const lines: string[] = ['# Drift check report', ''];
 	if (findings.length === 0) {
@@ -1585,6 +1765,11 @@ export function buildReport(findings: DriftFinding[]): string {
 			'✅ No drift detected across skills, tools, commands, agents, docs claims, and dependency freshness.',
 		);
 		lines.push('');
+		// Quarantine census block (issue #2905): rendered on zero-finding runs
+		// too — the aging view matters most on otherwise-green PRs.
+		if (extras.length > 0) {
+			lines.push('### Quarantine census', '', ...extras, '');
+		}
 		return lines.join('\n');
 	}
 
@@ -1610,6 +1795,9 @@ export function buildReport(findings: DriftFinding[]): string {
 			lines.push(`- ${icon} **${f.severity}**${where}: ${f.message}`);
 		}
 		lines.push('');
+	}
+	if (extras.length > 0) {
+		lines.push('### Quarantine census', '', ...extras, '');
 	}
 	const report = lines.join('\n');
 	if (Buffer.byteLength(report, 'utf8') <= MAX_REPORT_BYTES) return report;
@@ -1686,7 +1874,13 @@ async function main(): Promise<void> {
 		console.log(annotation(finding));
 	}
 
-	const report = buildReport(findings);
+	// Quarantine census block (issue #2905): always part of the report — even
+	// on zero-finding green runs, where expiry pressure matters most.
+	const censusTrend = await collectAddRetireTrend(REPO_ROOT);
+	const census = buildQuarantineCensus(readLedgerContents(REPO_ROOT), new Date());
+	const censusExtras = formatQuarantineCensus(census, censusTrend);
+
+	const report = buildReport(findings, censusExtras);
 	if (reportPath) {
 		fs.writeFileSync(path.join(REPO_ROOT, reportPath), report, 'utf-8');
 	}

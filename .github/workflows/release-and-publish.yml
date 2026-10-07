@@ -53,7 +53,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo build
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -88,7 +88,7 @@ jobs:
           '
 
       - name: Upload runner artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: sandbox-runner-win32-${{ matrix.arch }}
           path: runners/swarm-sandbox-runner/target/${{ matrix.target }}/release/swarm-sandbox-runner.exe
@@ -128,13 +128,13 @@ jobs:
         with:
           bun-version: "1.3.13"
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
       - name: Cache bun dependencies
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
@@ -199,7 +199,7 @@ jobs:
             --apply
 
       - name: Upload exact-tag fragment cleanup plan
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-fragment-cleanup-plan
           path: .release-fragment-cleanup/plan.json
@@ -233,6 +233,8 @@ jobs:
 
       - name: Validate and apply fragment cleanup
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: |
           set -euo pipefail
@@ -440,4 +442,27 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: node scripts/release-notes-fragments.mjs update-pr
+
+  # Issue #2898: publish-npm does not need cleanup-release-fragments (releases
+  # must not be blocked on the cleanup path), so a failing cleanup used to be
+  # invisible unless someone opened the run page. This summary job runs on every
+  # release regardless of the cleanup result and surfaces a non-success
+  # conclusion as an ::error:: annotation plus a run-summary line.
+  release-health-summary:
+    needs: [release-please, cleanup-release-fragments]
+    if: ${{ always() && needs.release-please.outputs.releases_created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - name: Report release job conclusions
+        run: |
+          echo "release-please: ${{ needs.release-please.result }}"
+          echo "cleanup-release-fragments: ${{ needs.cleanup-release-fragments.result }}"
+          echo "release-please=${{ needs.release-please.result }} cleanup-release-fragments=${{ needs.cleanup-release-fragments.result }}" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.cleanup-release-fragments.result }}" != "success" ] && [ "${{ needs.cleanup-release-fragments.result }}" != "skipped" ]; then
+            echo "::error::cleanup-release-fragments concluded ${{ needs.cleanup-release-fragments.result }} — fragment cleanup did not complete (docs/releases archive not materialized for this release)"
+            exit 1
+          fi
 
