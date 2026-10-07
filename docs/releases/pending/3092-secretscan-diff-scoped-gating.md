@@ -25,6 +25,13 @@ on every run forever, blocking tasks at Stage A with no path forward except
 - `classifySecretFindings` never throws; any resolution failure classifies as
   NEW. It intentionally diverges from `classifySastFindings` (whose
   missing-key/empty-set arms are pinned intentional for SAST).
+- Files whose changed-line evidence mixes more than one Git hop (committed
+  and/or staged changes plus a later staged/unstaged edit) classify ALL their
+  findings as NEW: the changed-line map unions diffs written in HEAD/index/
+  worktree coordinates while findings carry worktree line numbers, so a
+  staged-or-committed secret shifted by a later insertion above it can never
+  prove itself pre-existing. If the ambiguity source is unavailable, nothing
+  gets the pre-existing discount.
 - Truncation now gates: `runSecretscanOnFiles` discloses a cap hit in
   `message` (`Results limited to 100 findings`, directory-path parity) and
   sets `truncated: true` on both scan paths, including the final-file

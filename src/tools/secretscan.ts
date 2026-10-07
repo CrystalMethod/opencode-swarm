@@ -1906,10 +1906,7 @@ export async function runSecretscanOnFiles(
 			incomplete_paths: incompletePaths,
 			...(resultsTruncated && {
 				truncated: true,
-				message:
-					disclosureParts.length > 0
-						? `${disclosureParts.join('; ')}.`
-						: undefined,
+				message: `${disclosureParts.join('; ')}.`,
 			}),
 		};
 	} catch (e) {

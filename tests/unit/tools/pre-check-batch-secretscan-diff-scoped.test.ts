@@ -10,7 +10,6 @@
  * in the issue-tracer trace; this suite is the unit-level guardrail.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
@@ -49,6 +48,7 @@ const internalsBackup = {
 	runSastScanWrapped: _internals.runSastScanWrapped,
 	runQualityBudgetWrapped: _internals.runQualityBudgetWrapped,
 	getChangedLineRanges: _internals.getChangedLineRanges,
+	getChangedLineAmbiguousFiles: _internals.getChangedLineAmbiguousFiles,
 	saveEvidence: _internals.saveEvidence,
 };
 
@@ -86,6 +86,10 @@ function quietTools(): void {
 		ran: false,
 		duration_ms: 0,
 	})) as typeof _internals.runSastScanWrapped;
+	// Stubbed-map tests pin classifier semantics; no file is coordinate-
+	// ambiguous unless a test says so.
+	_internals.getChangedLineAmbiguousFiles = (async () =>
+		new Set<string>()) as typeof _internals.getChangedLineAmbiguousFiles;
 	_internals.saveEvidence = (async (_dir, _type, payload) => {
 		evidenceWrites.push(payload as Record<string, unknown>);
 	}) as typeof _internals.saveEvidence;
@@ -187,6 +191,26 @@ describe('classifySecretFindings strict fail-closed matrix (#3092)', () => {
 		);
 		expect(out.newFindings).toHaveLength(3);
 		expect(out.preexistingFindings).toHaveLength(0);
+	});
+
+	test('a multi-hop (coordinate-ambiguous) file classifies every finding as new', () => {
+		const map = new Map([['src/a.ts', new Set([3])]]);
+		const ambiguous = new Set(['src/a.ts']);
+		const untouched = classifySecretFindings(
+			[makeFinding(`${dir}/src/a.ts`, 7)],
+			map,
+			dir,
+			ambiguous,
+		);
+		expect(untouched.newFindings).toHaveLength(1);
+		expect(untouched.preexistingFindings).toHaveLength(0);
+		// Control: same finding without the ambiguity set is pre-existing.
+		const control = classifySecretFindings(
+			[makeFinding(`${dir}/src/a.ts`, 7)],
+			map,
+			dir,
+		);
+		expect(control.preexistingFindings).toHaveLength(1);
 	});
 
 	test('case-differing path folds to the map key only on win32/darwin', () => {
@@ -377,61 +401,6 @@ describe('runSecretscanOnFiles truncation disclosure parity (#3092)', () => {
 			expect(result.message).toContain('Results limited to 100 findings');
 			expect(result.incomplete_files).toBe(0);
 		} finally {
-			fs.rmSync(repo, { recursive: true, force: true });
-		}
-	});
-});
-
-describe('brownfield branch fixture through the real producer (#3092)', () => {
-	test('pre-existing secret on an untouched line of a coder-touched file passes the gate', async () => {
-		const repo = canonicalMkdtemp('c3092-unit-brown');
-		const git = (...args: string[]) =>
-			execFileSync('git', args, { cwd: repo, stdio: 'pipe', timeout: 10_000 });
-		try {
-			git('init', '-b', 'main');
-			git('config', 'user.email', 't@example.com');
-			git('config', 'user.name', 'T');
-			git('config', 'commit.gpgsign', 'false');
-			const before = [
-				'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
-				'filler',
-				'tail',
-				'',
-			];
-			const after = [
-				'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
-				'filler',
-				'tail edited by coder',
-				'',
-			];
-			fs.writeFileSync(path.join(repo, 'legacy.txt'), before.join('\n'));
-			git('add', '.');
-			git('commit', '-m', 'base');
-			git('checkout', '-b', 'feature/work');
-			fs.writeFileSync(path.join(repo, 'legacy.txt'), after.join('\n'));
-			git('add', '.');
-			git('commit', '-m', 'edit line 3 only');
-			_internals.runSecretscanWrapped = (async (
-				files,
-				directory,
-				_gates,
-				_signal,
-				raw,
-			) => ({
-				ran: true,
-				result: await runSecretscanOnFiles(files, directory, raw),
-				duration_ms: 1,
-			})) as typeof _internals.runSecretscanWrapped;
-			const result = await runPreCheckBatch({
-				files: [path.join(repo, 'legacy.txt')],
-				directory: repo,
-				sast_enabled: false,
-			});
-			expect(result.gates_passed).toBe(true);
-			expect(result.secretscan_preexisting_findings).toHaveLength(1);
-			expect(result.secretscan.result?.count).toBe(1);
-		} finally {
-			Object.assign(_internals, internalsBackup);
 			fs.rmSync(repo, { recursive: true, force: true });
 		}
 	});

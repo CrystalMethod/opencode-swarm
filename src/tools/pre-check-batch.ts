@@ -64,6 +64,7 @@ export const _internals: {
 	runQualityBudgetWrapped: typeof runQualityBudgetWrapped;
 	runWithTimeout: typeof runWithTimeout;
 	getChangedLineRanges: typeof getChangedLineRanges;
+	getChangedLineAmbiguousFiles: typeof getChangedLineAmbiguousFiles;
 	saveEvidence: typeof saveEvidence;
 	runExternalTool: typeof runExternalTool;
 	detectResolvedLinter: typeof detectResolvedLinter;
@@ -82,6 +83,7 @@ export const _internals: {
 	runQualityBudgetWrapped,
 	runWithTimeout,
 	getChangedLineRanges,
+	getChangedLineAmbiguousFiles,
 	saveEvidence,
 	runExternalTool,
 	detectResolvedLinter,
@@ -1206,6 +1208,132 @@ function looksLikePorcelainStatusRecord(value: string): boolean {
 }
 
 /**
+ * Files whose changed-line evidence mixes more than one Git hop (#3092).
+ *
+ * `getChangedLineRanges` unions three diffs written in different coordinate
+ * systems — `mergeBase..HEAD` in HEAD coordinates, `--cached HEAD` in index
+ * coordinates, and the worktree diff — while secretscan findings carry
+ * WORKTREE line numbers (the file on disk). A file changed in a committed or
+ * staged hop and then edited again (staged and/or unstaged) can have its
+ * committed/staged line numbers shifted in the worktree, so the union's
+ * membership test alone cannot prove a finding pre-existing: a staged secret
+ * with an unstaged insertion above it lands outside the union and would read
+ * as untouched. Every finding in such a multi-hop file classifies as NEW.
+ * The set is keyed by `normalizeRepoPathKey`, matching the changed-line map.
+ * Returns null when a Git source is unavailable — callers must then treat
+ * every finding as NEW (fail-closed).
+ */
+export async function getChangedLineAmbiguousFiles(
+	directory: string,
+	abortSignal?: AbortSignal,
+	requestedFiles: string[] = [],
+): Promise<Set<string> | null> {
+	let mergeBase: string | null = null;
+	for (const baseBranch of [
+		'zaxbyhub/main',
+		'upstream/main',
+		'origin/main',
+		'main',
+		'origin/master',
+		'master',
+	]) {
+		const output = await runGit(
+			['merge-base', baseBranch, 'HEAD'],
+			directory,
+			abortSignal,
+		);
+		const candidate = output?.trim();
+		if (candidate && /^[0-9a-f]{40,64}$/i.test(candidate)) {
+			mergeBase = candidate;
+			break;
+		}
+	}
+	if (!mergeBase) return null;
+
+	const requestedPathspecs = requestedFiles
+		.map((file) => path.relative(directory, file).replace(/\\/g, '/'))
+		.filter(
+			(file) => file.length > 0 && file !== '..' && !file.startsWith('../'),
+		);
+	const statusArgs = [
+		'-c',
+		'core.quotePath=false',
+		'status',
+		'--porcelain=v1',
+		'-z',
+		'--untracked-files=all',
+		...(requestedPathspecs.length > 0 ? ['--', ...requestedPathspecs] : []),
+	];
+	const [committedNames, status] = await Promise.all([
+		runGit(
+			[
+				'-c',
+				'core.quotePath=false',
+				'diff',
+				'--name-only',
+				'--no-ext-diff',
+				'--no-color',
+				'--no-prefix',
+				mergeBase,
+				'--',
+				...(requestedPathspecs.length > 0 ? requestedPathspecs : []),
+			],
+			directory,
+			abortSignal,
+		),
+		runGit(statusArgs, directory, abortSignal),
+	]);
+	if (committedNames === null || status === null) return null;
+
+	const committed = new Set(
+		committedNames
+			.split('\n')
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map(normalizeRepoPathKey),
+	);
+
+	// Per-file staged/unstaged dirtiness from the XY columns. Rename/copy
+	// records carry the source path as a second NUL record (parseUntrackedStatus
+	// precedent); the source path is not itself a worktree-dirty signal.
+	const staged = new Set<string>();
+	const unstaged = new Set<string>();
+	if (status.length > 0 && !status.endsWith('\0')) return null;
+	const records = status.split('\0');
+	for (let index = 0; index < records.length - 1; index++) {
+		const record = records[index];
+		if (!record || record.length < 4 || record[2] !== ' ') return null;
+		const statusCode = record.slice(0, 2);
+		const filePath = record.slice(3);
+		if (!filePath || !isKnownPorcelainStatus(statusCode)) return null;
+		if (statusCode !== '??' && statusCode !== '!!') {
+			const key = normalizeRepoPathKey(filePath);
+			if (/[MADRCU]/.test(statusCode[0])) staged.add(key);
+			if (/[MADRCU]/.test(statusCode[1])) unstaged.add(key);
+		}
+		if (/[RC]/.test(statusCode)) {
+			const sourcePath = records[++index];
+			if (!sourcePath || looksLikePorcelainStatusRecord(sourcePath)) {
+				return null;
+			}
+		}
+	}
+
+	const ambiguous = new Set<string>();
+	// committed + any index/worktree dirtiness: HEAD-coordinate lines may be
+	// shifted by the later hop(s).
+	for (const key of committed) {
+		if (staged.has(key) || unstaged.has(key)) ambiguous.add(key);
+	}
+	// staged + unstaged: index-coordinate lines may be shifted by the
+	// unstaged hop.
+	for (const key of staged) {
+		if (unstaged.has(key)) ambiguous.add(key);
+	}
+	return ambiguous;
+}
+
+/**
  * Get the union of committed, staged, unstaged, and untracked changed lines.
  * A known empty union is authoritative; null means a required Git source was
  * unavailable or malformed and callers must classify findings fail-closed.
@@ -1404,6 +1532,13 @@ export function classifySecretFindings(
 	findings: SecretFinding[],
 	changedLineRanges: Map<string, Set<number>> | null,
 	directory: string,
+	/**
+	 * #3092: files whose changed-line evidence mixes more than one Git hop
+	 * (`getChangedLineAmbiguousFiles`). Findings in these files classify as
+	 * NEW — the unioned map's line numbers for them are not in worktree
+	 * coordinates, so non-membership cannot prove a line untouched.
+	 */
+	ambiguousFiles?: Set<string>,
 ): { newFindings: SecretFinding[]; preexistingFindings: SecretFinding[] } {
 	// Fail-closed: if we can't determine changed lines, treat all as new
 	if (!changedLineRanges) {
@@ -1444,7 +1579,13 @@ export function classifySecretFindings(
 				newFindings.push(finding);
 				continue;
 			}
-			changedLines = changedLineRanges.get(normalizeRepoPathKey(relative));
+			const normalised = normalizeRepoPathKey(relative);
+			if (ambiguousFiles?.has(normalised)) {
+				// Multi-hop file: map coordinates are not scanner coordinates.
+				newFindings.push(finding);
+				continue;
+			}
+			changedLines = changedLineRanges.get(normalised);
 		} catch {
 			newFindings.push(finding);
 			continue;
@@ -1724,16 +1865,33 @@ export async function runPreCheckBatch(
 			: [];
 	if (secretscanScanFindings.length > 0) {
 		const changedLineRanges = await getChangedLineRangesMemoized();
+		// #3092 fail-closed: findings in files whose changed-line evidence
+		// mixes Git hops (coordinate mismatch vs scanner worktree lines) are
+		// NEW; if the ambiguity source is unavailable, NOTHING gets the
+		// pre-existing discount.
+		const ambiguousFiles = await _internals.getChangedLineAmbiguousFiles(
+			directory,
+			abortSignal,
+			changedFiles,
+		);
 		const { newFindings, preexistingFindings } = classifySecretFindings(
 			secretscanScanFindings,
 			changedLineRanges,
 			directory,
+			ambiguousFiles ?? undefined,
 		);
-		secretscanClassification = {
-			newFindings,
-			preexistingFindings,
-			diffScoped: changedLineRanges !== null,
-		};
+		secretscanClassification =
+			ambiguousFiles === null
+				? {
+						newFindings: secretscanScanFindings,
+						preexistingFindings: [],
+						diffScoped: changedLineRanges !== null,
+					}
+				: {
+						newFindings,
+						preexistingFindings,
+						diffScoped: changedLineRanges !== null,
+					};
 		if (preexistingFindings.length > 0) {
 			secretscanPreexistingFindings = preexistingFindings;
 			warn(
