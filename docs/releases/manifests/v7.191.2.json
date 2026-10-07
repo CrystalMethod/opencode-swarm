@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.191.2",
+  "tagCommit": "c678c63980fbba72e6c4d57c04073eed9839c6f8",
+  "targetCommitish": "c678c63980fbba72e6c4d57c04073eed9839c6f8",
+  "releaseBodySha256": "d7eecf25f57e217d6befaf092b44d09f70ef69611e1cae41c681fe73146049d7",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2826-j02-failure-rejection-quarantine.md",
+      "sha256": "1fca9690be84ef5532e8ba3da19ed3c32f0cf5b2a7f342f7e018b0e8c403f8a8"
+    }
+  ]
+}
