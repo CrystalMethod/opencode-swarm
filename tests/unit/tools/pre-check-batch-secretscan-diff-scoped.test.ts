@@ -117,13 +117,21 @@ function cleanScan(
 	};
 }
 
+let projRoot: string;
+
 beforeEach(() => {
 	evidenceWrites = [];
+	// Real (empty) project root: validateDirectory/assertProjectRoot in
+	// runPreCheckBatch fail closed on nonexistent directories, so the batch
+	// tests cannot use a synthesized absolute path (a '/proj' constant
+	// resolved CI-drive-dependent and failed all three OS shards).
+	projRoot = canonicalMkdtemp('c3092-gate');
 	quietTools();
 });
 
 afterEach(() => {
 	Object.assign(_internals, internalsBackup);
+	fs.rmSync(projRoot, { recursive: true, force: true });
 });
 
 describe('classifySecretFindings strict fail-closed matrix (#3092)', () => {
@@ -232,12 +240,12 @@ describe('classifySecretFindings strict fail-closed matrix (#3092)', () => {
 
 describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () => {
 	test('pre-existing-only scan passes, stays visible, and writes diff-scoped evidence', async () => {
-		const finding = makeFinding(path.join(PROJ, 'legacy.txt'), 1);
+		const finding = makeFinding(path.join(projRoot, 'legacy.txt'), 1);
 		stubScan(cleanScan({ findings: [finding], count: 1 }));
 		stubMap(new Map([['legacy.txt', new Set([10])]]));
 		const result = await runPreCheckBatch({
 			files: ['legacy.txt'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(true);
@@ -255,14 +263,14 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 	test('new finding on a changed line fails with the new-findings reason', async () => {
 		stubScan(
 			cleanScan({
-				findings: [makeFinding(path.join(PROJ, 'legacy.txt'), 1)],
+				findings: [makeFinding(path.join(projRoot, 'legacy.txt'), 1)],
 				count: 1,
 			}),
 		);
 		stubMap(new Map([['legacy.txt', new Set([1])]]));
 		const result = await runPreCheckBatch({
 			files: ['legacy.txt'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(false);
@@ -278,14 +286,14 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 	test('null map (git unavailable) fails closed with diff_scoped false', async () => {
 		stubScan(
 			cleanScan({
-				findings: [makeFinding(path.join(PROJ, 'legacy.txt'), 1)],
+				findings: [makeFinding(path.join(projRoot, 'legacy.txt'), 1)],
 				count: 1,
 			}),
 		);
 		stubMap(null);
 		const result = await runPreCheckBatch({
 			files: ['legacy.txt'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(false);
@@ -296,7 +304,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 
 	test('truncated result fails the gate with the truncation reason', async () => {
 		const findings = Array.from({ length: 100 }, (_, i) =>
-			makeFinding(path.join(PROJ, 'many.txt'), i + 1),
+			makeFinding(path.join(projRoot, 'many.txt'), i + 1),
 		);
 		stubScan(
 			cleanScan({
@@ -309,7 +317,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		stubMap(new Map([['many.txt', new Set([10])]]));
 		const result = await runPreCheckBatch({
 			files: ['many.txt'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(false);
@@ -321,7 +329,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		stubScan(cleanScan());
 		const result = await runPreCheckBatch({
 			files: ['clean.ts'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(true);
@@ -344,7 +352,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		);
 		const result = await runPreCheckBatch({
 			files: ['doc.md'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(true);
@@ -354,14 +362,14 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 	});
 
 	test('ambiguity-source failure classifies everything NEW and carries no pre-existing payload (review round 2)', async () => {
-		const finding = makeFinding(path.join(PROJ, 'legacy.txt'), 1);
+		const finding = makeFinding(path.join(projRoot, 'legacy.txt'), 1);
 		stubScan(cleanScan({ findings: [finding], count: 1 }));
 		stubMap(new Map([['legacy.txt', new Set([10])]]));
 		_internals.getChangedLineAmbiguousFiles = (async () =>
 			null) as typeof _internals.getChangedLineAmbiguousFiles;
 		const result = await runPreCheckBatch({
 			files: ['legacy.txt'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_enabled: false,
 		});
 		expect(result.gates_passed).toBe(false);
@@ -374,7 +382,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 	});
 
 	test('the changed-line map is read through the seam at most once with both arms consuming it', async () => {
-		const secret = makeFinding(path.join(PROJ, 'a.ts'), 5);
+		const secret = makeFinding(path.join(projRoot, 'a.ts'), 5);
 		stubScan(cleanScan({ findings: [secret], count: 1 }));
 		const map = new Map([['a.ts', new Set([1])]]);
 		const seamCalls = stubMap(map);
@@ -397,7 +405,7 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		})) as typeof _internals.runSastScanWrapped;
 		const result = await runPreCheckBatch({
 			files: ['a.ts'],
-			directory: PROJ,
+			directory: projRoot,
 			sast_threshold: 'medium',
 			sast_enabled: true,
 		});
