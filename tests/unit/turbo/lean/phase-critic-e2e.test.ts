@@ -24,6 +24,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import path from 'node:path';
+import { DEFAULT_LEAN_TURBO_CONFIG } from '../../../../src/config/constants';
 import { writePhaseEvidence } from '../../../../src/turbo/lean/evidence';
 import { _internals as criticIntegrationInternals } from '../../../../src/turbo/lean/integration';
 import {
@@ -47,10 +48,12 @@ const _originalDispatchCriticAgent =
 // version of this suite omitted the config argument and silently exercised
 // phase-ready's internal backward-compat DEFAULT_CONFIG
 // (integrated_diff_required: false) instead of what production ships.
+// Projected from the canonical constant (not re-typed literals) so this
+// suite cannot drift from the single source of truth (#2954 / PRR-010).
 const SCHEMA_DEFAULT_CONFIG = {
-	phase_reviewer: true,
-	phase_critic: true,
-	integrated_diff_required: true,
+	phase_reviewer: DEFAULT_LEAN_TURBO_CONFIG.phase_reviewer,
+	phase_critic: DEFAULT_LEAN_TURBO_CONFIG.phase_critic,
+	integrated_diff_required: DEFAULT_LEAN_TURBO_CONFIG.integrated_diff_required,
 };
 
 let dir = '';

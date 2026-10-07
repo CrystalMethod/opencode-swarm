@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import {
 	handleHarnessOptCompare,
@@ -10,11 +10,17 @@ import {
 	handleHarnessOptStop,
 } from '../../../src/commands/harness-opt.js';
 import { COMMAND_REGISTRY } from '../../../src/commands/registry.js';
+import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 let root = '';
+let cleanupEnv: { cleanup: () => void } | undefined;
 
 beforeEach(() => {
+	// Isolate XDG_CONFIG_HOME etc. so the developer machine's user-level
+	// opencode-swarm.json cannot deep-merge into the scratch project's
+	// config (issue #2949: the resolver reads the real config loader now).
+	cleanupEnv = createIsolatedTestEnv();
 	root = canonicalMkdtemp('harnessopt-commands-');
 	writeFileSync(path.join(root, 'README.md'), 'fixture\n');
 	for (const args of [
@@ -36,6 +42,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	if (root) rmSync(root, { recursive: true, force: true });
+	cleanupEnv?.cleanup();
+	cleanupEnv = undefined;
 });
 
 describe('harness-opt command registration', () => {
@@ -173,8 +181,12 @@ describe('harness-opt compare gating (separately executable comparative package)
 				},
 			]),
 		);
+		// The harness_opt block lives in .opencode/opencode-swarm.json — the
+		// documented surface the resolver reads (issue #2949 removed the
+		// undocumented opencode.json fallback this test used to pin).
+		mkdirSync(path.join(root, '.opencode'), { recursive: true });
 		writeFileSync(
-			path.join(root, 'opencode.json'),
+			path.join(root, '.opencode', 'opencode-swarm.json'),
 			JSON.stringify({ harness_opt: { run_ablation_arm: false } }),
 		);
 		// A minimal evaluation dispatcher: every invocation completes with

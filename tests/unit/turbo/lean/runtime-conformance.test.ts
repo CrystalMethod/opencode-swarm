@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { writeLeanDiffEvidence } from '../../../helpers/lean-phase-evidence';
 
 // --- Source module imports (for behavioral testing with _internals seams) ---
 
@@ -395,15 +396,7 @@ describe('Lean Turbo runtime conformance', () => {
 						completedAt: new Date().toISOString(),
 					}),
 				);
-				fs.writeFileSync(
-					path.join(dir, '.swarm', 'evidence', '1', 'lean-turbo-phase.json'),
-					JSON.stringify({
-						phase: 1,
-						status: 'completed',
-						integratedDiffSummary: 'Integrated lane diff summary.',
-						timestamp: new Date().toISOString(),
-					}),
-				);
+				writeLeanDiffEvidence(dir, 1); // check-7 default flipped true (#2954)
 
 				// Create required retro evidence
 				const retroDir = path.join(dir, '.swarm', 'evidence', 'retro-1');
@@ -976,12 +969,10 @@ describe('Lean Turbo runtime conformance', () => {
 			createStandardTurboSession(SESSION_ID);
 			expect(hasActiveLeanTurbo(SESSION_ID)).toBe(false);
 		});
-
 		test('hasActiveLeanTurbo is false for plain session', () => {
 			createPlainSession(SESSION_ID);
 			expect(hasActiveLeanTurbo(SESSION_ID)).toBe(false);
 		});
-
 		// Minimal smoke test: verifies standard turbo bypass is bundled
 		test('dist/index.js contains standard turbo bypass path', () => {
 			expect(distContains('hasActiveTurboMode()')).toBe(true);

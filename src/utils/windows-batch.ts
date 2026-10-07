@@ -2,10 +2,15 @@
  * Safe launch of a Windows batch wrapper (`.cmd` / `.bat`) through a
  * validated `cmd.exe`.
  *
- * Node and Bun cannot spawn a batch file directly (EINVAL since the
- * CVE-2024-27980 hardening), and a bare wrapper name such as `mvnw.cmd` is
- * resolved against PATH only — never against the spawn `cwd`. The supported
- * shape is `[<cmd.exe>, '/d', '/s', '/v:off', '/c', 'call "<abs>" "<arg>" ...']`
+ * Node cannot spawn a batch file directly at all: since the CVE-2024-27980
+ * hardening `child_process.spawn` rejects a `.cmd`/`.bat` target with EINVAL
+ * (measured on Node v24.16.0 for the absolute, cwd-relative and bare-name
+ * forms alike). Bun is more permissive — it routes batch files through cmd.exe
+ * itself — but that tolerance is a runtime accident rather than a contract, so
+ * a launcher must not depend on which runtime hosts the plugin. For the same
+ * reason a bare wrapper name such as `mvnw.cmd` is resolved against PATH only,
+ * never against the spawn `cwd`. The supported shape is
+ * `[<cmd.exe>, '/d', '/s', '/v:off', '/c', 'call "<abs>" "<arg>" ...']`
  * spawned with `windowsVerbatimArguments: true`, so the pre-quoted tail reaches
  * cmd.exe unmodified (the same pattern `src/tools/lint.ts` and
  * `src/tools/pkg-audit.ts` use).
