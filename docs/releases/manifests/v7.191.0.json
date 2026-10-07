@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.191.0",
+  "tagCommit": "a68047964476db0a5d04af1efc2a4c084fae4775",
+  "targetCommitish": "a68047964476db0a5d04af1efc2a4c084fae4775",
+  "releaseBodySha256": "d4ea748b3a9a798a74b7f1ea325e600868122f403c41718fa30a18e63df98bac",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3075-cache-action-v6.md",
+      "sha256": "83f467b530dbe99e7c729aa68b2664d39a4bf2cef3dafe73e3dc7bec74f35297"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3077-setup-node-v7.md",
+      "sha256": "d609e73ba3c442249d630d906ed253d0aeeaf7f4b2fc0388bd794d9c60ec0b5f"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/3096-pr-review-submission-tool.md",
+      "sha256": "d69744d358f7d4dd331b1719f5b6da18a03dab5df12cfc0a83c1a90079b43d27"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/3107-secretscanignore-explicit-files.md",
+      "sha256": "9666cf00a5a64d056b6341b196c3609e7022f7befe9e5c40551013f458dc954a"
+    }
+  ]
+}
