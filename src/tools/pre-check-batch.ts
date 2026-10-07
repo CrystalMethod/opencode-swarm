@@ -1274,7 +1274,7 @@ export async function getChangedLineAmbiguousFiles(
 				'--no-ext-diff',
 				'--no-color',
 				'--no-prefix',
-				mergeBase,
+				`${mergeBase}..HEAD`,
 				'--',
 				...(requestedPathspecs.length > 0 ? requestedPathspecs : []),
 			],
@@ -1320,8 +1320,8 @@ export async function getChangedLineAmbiguousFiles(
 	}
 
 	const ambiguous = new Set<string>();
-	// committed + any index/worktree dirtiness: HEAD-coordinate lines may be
-	// shifted by the later hop(s).
+	// committed hop (mergeBase..HEAD) + any index/worktree dirtiness:
+	// HEAD-coordinate lines may be shifted by the later hop(s).
 	for (const key of committed) {
 		if (staged.has(key) || unstaged.has(key)) ambiguous.add(key);
 	}
@@ -1868,35 +1868,37 @@ export async function runPreCheckBatch(
 		// #3092 fail-closed: findings in files whose changed-line evidence
 		// mixes Git hops (coordinate mismatch vs scanner worktree lines) are
 		// NEW; if the ambiguity source is unavailable, NOTHING gets the
-		// pre-existing discount.
+		// pre-existing discount — no classification runs at all, so no
+		// finding is carried as pre-existing or announced as non-gating.
 		const ambiguousFiles = await _internals.getChangedLineAmbiguousFiles(
 			directory,
 			abortSignal,
 			changedFiles,
 		);
-		const { newFindings, preexistingFindings } = classifySecretFindings(
-			secretscanScanFindings,
-			changedLineRanges,
-			directory,
-			ambiguousFiles ?? undefined,
-		);
-		secretscanClassification =
-			ambiguousFiles === null
-				? {
-						newFindings: secretscanScanFindings,
-						preexistingFindings: [],
-						diffScoped: changedLineRanges !== null,
-					}
-				: {
-						newFindings,
-						preexistingFindings,
-						diffScoped: changedLineRanges !== null,
-					};
-		if (preexistingFindings.length > 0) {
-			secretscanPreexistingFindings = preexistingFindings;
-			warn(
-				`pre_check_batch: Secretscan found ${preexistingFindings.length} pre-existing secret finding(s) on unchanged lines - visible, non-gating, passed to reviewer for triage`,
+		if (ambiguousFiles === null) {
+			secretscanClassification = {
+				newFindings: secretscanScanFindings,
+				preexistingFindings: [],
+				diffScoped: changedLineRanges !== null,
+			};
+		} else {
+			const { newFindings, preexistingFindings } = classifySecretFindings(
+				secretscanScanFindings,
+				changedLineRanges,
+				directory,
+				ambiguousFiles,
 			);
+			secretscanClassification = {
+				newFindings,
+				preexistingFindings,
+				diffScoped: changedLineRanges !== null,
+			};
+			if (preexistingFindings.length > 0) {
+				secretscanPreexistingFindings = preexistingFindings;
+				warn(
+					`pre_check_batch: Secretscan found ${preexistingFindings.length} pre-existing secret finding(s) on unchanged lines - visible, non-gating, passed to reviewer for triage`,
+				);
+			}
 		}
 	}
 	const secretscanDecision = evaluateSecretscanGate(

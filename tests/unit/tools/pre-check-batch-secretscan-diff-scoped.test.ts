@@ -343,6 +343,26 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		expect(evidence?.new_findings_count).toBe(0);
 	});
 
+	test('ambiguity-source failure classifies everything NEW and carries no pre-existing payload (review round 2)', async () => {
+		const finding = makeFinding('C:/proj/legacy.txt', 1);
+		stubScan(cleanScan({ findings: [finding], count: 1 }));
+		stubMap(new Map([['legacy.txt', new Set([10])]]));
+		_internals.getChangedLineAmbiguousFiles = (async () =>
+			null) as typeof _internals.getChangedLineAmbiguousFiles;
+		const result = await runPreCheckBatch({
+			files: ['legacy.txt'],
+			directory: 'C:/proj',
+			sast_enabled: false,
+		});
+		expect(result.gates_passed).toBe(false);
+		expect(result.secretscan_preexisting_findings).toBeUndefined();
+		const evidence = evidenceWrites.at(-1);
+		expect(evidence?.verdict).toBe('fail');
+		expect(evidence?.new_findings_count).toBe(1);
+		expect(evidence?.preexisting_findings_count).toBe(0);
+		expect(evidence?.diff_scoped).toBe(true);
+	});
+
 	test('the changed-line map is read through the seam at most once with both arms consuming it', async () => {
 		const secret = makeFinding('C:/proj/a.ts', 5);
 		stubScan(cleanScan({ findings: [secret], count: 1 }));

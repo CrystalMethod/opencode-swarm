@@ -108,6 +108,72 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 		}
 	});
 
+	test('pre-existing secret in an UNSTAGED-only dirty file keeps the discount (single hop, review round 2)', async () => {
+		const repo = canonicalMkdtemp('c3092-git-unstaged');
+		try {
+			initRepoOnMain(repo);
+			// Pre-existing secret committed on main; coder edits line 5 only
+			// in the worktree (never staged) — single hop, worktree coords.
+			const base = [
+				'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+				'filler',
+				'filler',
+				'filler',
+				'tail',
+				'',
+			];
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'legacy secret on main');
+			git(repo, 'checkout', '-b', 'feature/w');
+			const dirty = [...base];
+			dirty[4] = 'tail edited by coder';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
+			const result = await runPreCheckBatch({
+				files: [path.join(repo, 'legacy.txt')],
+				directory: repo,
+				sast_enabled: false,
+			});
+			expect(result.gates_passed).toBe(true);
+			expect(result.secretscan_preexisting_findings).toHaveLength(1);
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test('pre-existing secret in a STAGED-only dirty file keeps the discount (single hop, review round 2)', async () => {
+		const repo = canonicalMkdtemp('c3092-git-staged');
+		try {
+			initRepoOnMain(repo);
+			const base = [
+				'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
+				'filler',
+				'filler',
+				'filler',
+				'tail',
+				'',
+			];
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'legacy secret on main');
+			git(repo, 'checkout', '-b', 'feature/w');
+			const dirty = [...base];
+			dirty[4] = 'tail edited by coder';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
+			git(repo, 'add', 'legacy.txt');
+			// staged only; worktree == index, so index coords == worktree coords.
+			const result = await runPreCheckBatch({
+				files: [path.join(repo, 'legacy.txt')],
+				directory: repo,
+				sast_enabled: false,
+			});
+			expect(result.gates_passed).toBe(true);
+			expect(result.secretscan_preexisting_findings).toHaveLength(1);
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
 	test('staged secret shifted by an unstaged insertion above it stays NEW (multi-hop fail-open, review round 1)', async () => {
 		const repo = canonicalMkdtemp('c3092-git-mh-a');
 		try {
