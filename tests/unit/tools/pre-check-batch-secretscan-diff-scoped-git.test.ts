@@ -26,7 +26,14 @@ const internalsBackup = {
 };
 
 function git(cwd: string, ...args: string[]): void {
-	execFileSync('git', args, { cwd, stdio: 'pipe', timeout: 10_000 });
+	// stdin is explicitly ignored: a piped stdin that is never closed can
+	// block a child from exiting under some runtimes (v7.3.3 class), and git
+	// never needs stdin for these plumbing commands.
+	execFileSync('git', args, {
+		cwd,
+		stdio: ['ignore', 'pipe', 'pipe'],
+		timeout: 10_000,
+	});
 }
 
 /** Real scanner through the wrapped seam; all other tools quiet. */
@@ -56,6 +63,11 @@ function initRepoOnMain(repo: string): void {
 	git(repo, 'config', 'user.email', 't@example.com');
 	git(repo, 'config', 'user.name', 'T');
 	git(repo, 'config', 'commit.gpgsign', 'false');
+	// Isolate from host/global git state: autocrlf must not rewrite the \n
+	// fixtures (line numbers are coordinate data), and a global hooksPath
+	// must not run host hooks inside the fixture repo.
+	git(repo, 'config', 'core.autocrlf', 'false');
+	git(repo, 'config', 'core.hooksPath', '.githooks-none');
 	fs.writeFileSync(path.join(repo, 'seed.txt'), 'seed\n');
 	git(repo, 'add', '.');
 	git(repo, 'commit', '-m', 'base');
@@ -108,12 +120,14 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 		}
 	});
 
-	test('pre-existing secret in an UNSTAGED-only dirty file keeps the discount (single hop, review round 2)', async () => {
+	test('pre-existing secret in an UNSTAGED-only dirty file keeps the discount (single worktree hop, review round 2)', async () => {
 		const repo = canonicalMkdtemp('c3092-git-unstaged');
 		try {
 			initRepoOnMain(repo);
 			// Pre-existing secret committed on main; coder edits line 5 only
 			// in the worktree (never staged) — single hop, worktree coords.
+			// An unrelated feature commit keeps HEAD != merge-base, which the
+			// PRR-002 degenerate-base guard requires before any discount.
 			const base = [
 				'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE',
 				'filler',
@@ -126,6 +140,9 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 			git(repo, 'add', '.');
 			git(repo, 'commit', '-m', 'legacy secret on main');
 			git(repo, 'checkout', '-b', 'feature/w');
+			fs.writeFileSync(path.join(repo, 'other.txt'), 'x\n');
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'unrelated');
 			const dirty = [...base];
 			dirty[4] = 'tail edited by coder';
 			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
@@ -141,7 +158,7 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 		}
 	});
 
-	test('pre-existing secret in a STAGED-only dirty file keeps the discount (single hop, review round 2)', async () => {
+	test('pre-existing secret in a STAGED-only dirty file keeps the discount (single index hop, review round 2)', async () => {
 		const repo = canonicalMkdtemp('c3092-git-staged');
 		try {
 			initRepoOnMain(repo);
@@ -157,6 +174,9 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 			git(repo, 'add', '.');
 			git(repo, 'commit', '-m', 'legacy secret on main');
 			git(repo, 'checkout', '-b', 'feature/w');
+			fs.writeFileSync(path.join(repo, 'other.txt'), 'x\n');
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'unrelated');
 			const dirty = [...base];
 			dirty[4] = 'tail edited by coder';
 			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
@@ -231,6 +251,157 @@ describe('brownfield branch fixtures through the real producer (#3092)', () => {
 			});
 			expect(result.gates_passed).toBe(false);
 			expect(result.secretscan_preexisting_findings).toBeUndefined();
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('review round 3 fixtures (#3092 feedback)', () => {
+	const SECRET = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE';
+
+	/** Committed secret on line 1 with filler down to line 10. */
+	function brownfieldBase(): string[] {
+		return [
+			SECRET,
+			'filler',
+			'filler',
+			'filler',
+			'filler',
+			'filler',
+			'filler',
+			'filler',
+			'filler',
+			'tail',
+			'',
+		];
+	}
+
+	test('merge-base equal to HEAD (direct commit on main) fails closed: no pre-existing discount', async () => {
+		const repo = canonicalMkdtemp('c3092-git-degen');
+		try {
+			initRepoOnMain(repo);
+			// The secret is committed on MAIN itself and the coder's edit is a
+			// pure worktree change, so merge-base(main, HEAD) === HEAD — the
+			// committed hop is empty and must be treated as non-authoritative
+			// (PRR-002), not as proof the secret predates the work.
+			const base = brownfieldBase();
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'fresh secret on main');
+			const dirty = [...base];
+			dirty[9] = 'tail edited by coder';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
+			const result = await runPreCheckBatch({
+				files: [path.join(repo, 'legacy.txt')],
+				directory: repo,
+				sast_enabled: false,
+			});
+			expect(result.gates_passed).toBe(false);
+			expect(result.secretscan_preexisting_findings).toBeUndefined();
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test('a candidate ref planted at HEAD (zaxbyhub/main shadowed) fails closed', async () => {
+		const repo = canonicalMkdtemp('c3092-git-plant');
+		try {
+			initRepoOnMain(repo);
+			const base = brownfieldBase();
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'legacy secret on main');
+			git(repo, 'checkout', '-b', 'feature/w');
+			const dirty = [...base];
+			dirty[9] = 'tail edited by coder';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), dirty.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'edit tail only');
+			// Local-writable ref tried FIRST in the merge-base candidate list;
+			// planting it at the feature tip makes merge-base === HEAD.
+			git(repo, 'update-ref', 'refs/remotes/zaxbyhub/main', 'HEAD');
+			const result = await runPreCheckBatch({
+				files: [path.join(repo, 'legacy.txt')],
+				directory: repo,
+				sast_enabled: false,
+			});
+			expect(result.gates_passed).toBe(false);
+			expect(result.secretscan_preexisting_findings).toBeUndefined();
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test('staged rename consumes its R-record source path and joins the staged/unstaged hops', async () => {
+		const repo = canonicalMkdtemp('c3092-git-rn');
+		try {
+			initRepoOnMain(repo);
+			const base = brownfieldBase();
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'legacy secret on main');
+			git(repo, 'checkout', '-b', 'feature/w');
+			// Unrelated commit keeps HEAD != merge-base so the committed hop
+			// stays authoritative for this fixture.
+			fs.writeFileSync(path.join(repo, 'other.txt'), 'x\n');
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'unrelated');
+			// Staged rename emits `R  renamed.txt\0legacy.txt\0` in -z status;
+			// then an unstaged edit below the secret makes the scanner's
+			// worktree coordinates unverifiable across the index hop.
+			git(repo, 'mv', 'legacy.txt', 'renamed.txt');
+			const dirty = [...base];
+			dirty[9] = 'tail edited by coder';
+			fs.writeFileSync(path.join(repo, 'renamed.txt'), dirty.join('\n'));
+			const ambiguous = await _internals.getChangedLineAmbiguousFiles(
+				repo,
+				undefined,
+				[path.join(repo, 'renamed.txt')],
+			);
+			expect(ambiguous).not.toBeNull();
+			expect(ambiguous?.has('renamed.txt')).toBe(true);
+			// End-to-end: the ambiguity pins the carried secret to NEW.
+			const result = await runPreCheckBatch({
+				files: [path.join(repo, 'renamed.txt')],
+				directory: repo,
+				sast_enabled: false,
+			});
+			expect(result.gates_passed).toBe(false);
+			expect(result.secretscan_preexisting_findings).toBeUndefined();
+		} finally {
+			fs.rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	test('committed + staged hops on the same file (unstaged clean) mark it ambiguous', async () => {
+		const repo = canonicalMkdtemp('c3092-git-cs');
+		try {
+			initRepoOnMain(repo);
+			const base = brownfieldBase();
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), base.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'legacy secret on main');
+			git(repo, 'checkout', '-b', 'feature/w');
+			// Committed hop touches legacy.txt...
+			const committedEdit = [...base];
+			committedEdit[9] = 'tail committed edit';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), committedEdit.join('\n'));
+			git(repo, 'add', '.');
+			git(repo, 'commit', '-m', 'commit tail edit');
+			// ...then a second edit is staged only (worktree == index, no
+			// unstaged record): committed∩staged ⇒ ambiguous.
+			const stagedEdit = [...committedEdit];
+			stagedEdit[8] = 'filler staged edit';
+			fs.writeFileSync(path.join(repo, 'legacy.txt'), stagedEdit.join('\n'));
+			git(repo, 'add', 'legacy.txt');
+			const ambiguous = await _internals.getChangedLineAmbiguousFiles(
+				repo,
+				undefined,
+				[path.join(repo, 'legacy.txt')],
+			);
+			expect(ambiguous).not.toBeNull();
+			expect(ambiguous?.has('legacy.txt')).toBe(true);
 		} finally {
 			fs.rmSync(repo, { recursive: true, force: true });
 		}

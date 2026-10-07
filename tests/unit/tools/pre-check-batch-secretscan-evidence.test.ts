@@ -66,24 +66,6 @@ mock.module('../../../src/utils', () => ({
 	warn: mock(() => {}),
 }));
 
-// Track saveEvidence calls for verification
-const savedEvidence: Array<{
-	directory: string;
-	taskId: string;
-	evidence: SecretscanEvidence;
-}> = [];
-
-const mockSaveEvidence = mock(
-	async (
-		directory: string,
-		taskId: string,
-		evidence: SecretscanEvidence,
-	): Promise<unknown> => {
-		savedEvidence.push({ directory, taskId, evidence });
-		return {};
-	},
-);
-
 // #3092 review round 3: the previous module-level mock.module replacement
 // of evidence/manager leaked across test files in Bun's shared test-runner
 // process (AGENTS.md invariant 7) — it stripped loadEvidence and hijacked
@@ -91,6 +73,8 @@ const mockSaveEvidence = mock(
 // process-local `_internals.saveEvidence` DI swap below (restored in
 // afterEach) is the sanctioned seam and covers every assertion in this
 // suite, so no module mock is needed.
+const mockSaveEvidence = mock(async (): Promise<unknown> => ({}));
+
 const originalSaveEvidence = _internals.saveEvidence;
 
 // Helper to create temp test directories
@@ -121,9 +105,6 @@ describe('secretscan evidence persistence', () => {
 		}
 
 		// Clear saved evidence tracking
-		savedEvidence.length = 0;
-
-		// Reset mock call counts
 		mockDetectAvailableLinter.mockClear();
 		mockRunLint.mockClear();
 		mockQualityBudget.mockClear();
@@ -270,24 +251,17 @@ describe('secretscan evidence persistence', () => {
 		// quality_budget evidence write runs first and consumed the single
 		// rejection, so this test never actually exercised the secretscan
 		// catch (surfaced by the #2209 final critic).
-		const defaultImpl = async (
-			directory: string,
-			taskId: string,
-			evidence: SecretscanEvidence,
-		): Promise<unknown> => {
-			savedEvidence.push({ directory, taskId, evidence });
-			return {};
-		};
+		const defaultImpl = async (): Promise<unknown> => ({});
 		mockSaveEvidence.mockImplementation(
 			async (
-				directory: string,
+				_directory: string,
 				taskId: string,
-				evidence: SecretscanEvidence,
+				_evidence: SecretscanEvidence,
 			): Promise<unknown> => {
 				if (taskId === 'secretscan') {
 					throw new Error('Filesystem error');
 				}
-				return defaultImpl(directory, taskId, evidence);
+				return defaultImpl();
 			},
 		);
 		try {

@@ -20,10 +20,6 @@ import {
 import { runSecretscanOnFiles } from '../../../src/tools/secretscan';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
-// Absolute project dir that stays absolute on posix AND win32 (a hardcoded
-// 'C:/...' path is relative on macOS/Linux and failed the macOS CI shard).
-const PROJ = path.resolve('/proj');
-
 type ScannedFinding = {
 	path: string;
 	line: number;
@@ -378,7 +374,9 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		expect(evidence?.verdict).toBe('fail');
 		expect(evidence?.new_findings_count).toBe(1);
 		expect(evidence?.preexisting_findings_count).toBe(0);
-		expect(evidence?.diff_scoped).toBe(true);
+		// PRR-023: no classification ran in this arm, so the evidence must
+		// not claim diff-scoped semantics it did not exercise.
+		expect(evidence?.diff_scoped).toBe(false);
 	});
 
 	test('the changed-line map is read through the seam at most once with both arms consuming it', async () => {
@@ -411,9 +409,6 @@ describe('evaluateSecretscanGate diff-scoped arms (via runPreCheckBatch)', () =>
 		});
 		expect(result.gates_passed).toBe(false);
 		expect(result.secretscan_preexisting_findings).toHaveLength(1);
-		expect(_internals.getChangedLineRanges).not.toBe(
-			internalsBackup.getChangedLineRanges,
-		);
 		expect(seamCalls.count()).toBe(1);
 	});
 });

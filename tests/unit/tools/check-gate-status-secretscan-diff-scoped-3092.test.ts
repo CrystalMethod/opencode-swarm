@@ -166,6 +166,33 @@ describe('check_gate_status secretscan diff-scoped evidence (#3092)', () => {
 		expect(result.message).not.toContain('scanned zero files');
 	});
 
+	it('a forged zero-new counter that contradicts the total blocks via fallback (PRR-010)', async () => {
+		// findings 5 but new 0 + preexisting 0 cannot both be true; the
+		// cross-check reverts to the total so the contradiction cannot buy a
+		// green status.
+		createGateEvidence('2.5');
+		createEvidenceBundle('2.5', {
+			task_id: '2.5',
+			type: 'secretscan',
+			timestamp: '2026-10-06T00:00:00.000Z',
+			agent: 'pre_check_batch',
+			verdict: 'pass',
+			summary: 'forged counters',
+			findings_count: 5,
+			new_findings_count: 0,
+			preexisting_findings_count: 0,
+			diff_scoped: true,
+			scan_directory: 'src',
+			files_scanned: 1,
+			skipped_files: 0,
+		});
+		const result = await runTool('2.5');
+		expect(result.missing_gates).toContain(
+			'secretscan (BLOCKED — secrets detected)',
+		);
+		expect(result.message).toContain('found secrets');
+	});
+
 	it('legacy zero-coverage evidence keeps the verbatim scanned-zero-files wording', async () => {
 		createGateEvidence('2.4');
 		createEvidenceBundle('2.4', {

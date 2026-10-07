@@ -325,12 +325,29 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 						// would re-wedge the exact zero-new pass this exists
 						// to unblock.
 						const newFindingsRaw: unknown = lastSecretscan.new_findings_count;
-						const newFindingsBasis =
+						const preexistingRaw: unknown =
+							lastSecretscan.preexisting_findings_count;
+						const newFindingsValid =
 							typeof newFindingsRaw === 'number' &&
 							Number.isSafeInteger(newFindingsRaw) &&
-							newFindingsRaw >= 0
-								? newFindingsRaw
-								: findingsCount;
+							newFindingsRaw >= 0;
+						const preexistingValid =
+							typeof preexistingRaw === 'number' &&
+							Number.isSafeInteger(preexistingRaw) &&
+							preexistingRaw >= 0;
+						let newFindingsBasis = newFindingsValid
+							? newFindingsRaw
+							: findingsCount;
+						// #3128 review PRR-010: internally inconsistent counters
+						// (new + preexisting ≠ total) cannot prove the zero-new
+						// claim — fall back to the TOTAL, fail-closed.
+						if (
+							newFindingsValid &&
+							preexistingValid &&
+							newFindingsRaw + preexistingRaw !== findingsCount
+						) {
+							newFindingsBasis = findingsCount;
+						}
 						const hasNewFindings = newFindingsBasis > 0;
 						// #2918 vacuous coverage — same normative predicate as the
 						// pre_check gate and the decoder, evaluated over the persisted

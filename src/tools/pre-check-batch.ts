@@ -1250,11 +1250,36 @@ export async function getChangedLineAmbiguousFiles(
 	}
 	if (!mergeBase) return null;
 
-	const requestedPathspecs = requestedFiles
+	// #3092 review (PRR-002): a merge-base equal to HEAD means the committed
+	// hop is empty and NON-AUTHORITATIVE — either HEAD sits on the default
+	// branch itself or every candidate ref was planted/shadowed at the tip.
+	// Treating the empty hop as proof that nothing was committed recently let
+	// a freshly committed secret classify PRE-EXISTING. Fail closed: the
+	// ambiguity source is untrustworthy, so nothing gets the discount.
+	// Residual trust boundary: a local ref planted at an INTERMEDIATE commit
+	// can still shrink the committed hop — the same git-state trust the SAST
+	// classification inherits; full mitigation requires fetch-verified refs.
+	const headSha = (
+		await runGit(['rev-parse', 'HEAD'], directory, abortSignal)
+	)?.trim();
+	if (
+		headSha !== null &&
+		/^[0-9a-f]{40,64}$/i.test(headSha ?? '') &&
+		headSha?.toLowerCase() === mergeBase.toLowerCase()
+	) {
+		return null;
+	}
+
+	// :(literal) pathspec magic (#3092 review PRR-005): coder-supplied names
+	// are file paths, not fnmatch patterns — glob metacharacters in real
+	// filenames ([id].tsx, w?.ts) must match exactly, and an under-matching
+	// pattern silently empties the committed/status sets (fail-open).
+	const literalPathspecs = requestedFiles
 		.map((file) => path.relative(directory, file).replace(/\\/g, '/'))
 		.filter(
 			(file) => file.length > 0 && file !== '..' && !file.startsWith('../'),
-		);
+		)
+		.map((file) => `:(literal)${file}`);
 	const statusArgs = [
 		'-c',
 		'core.quotePath=false',
@@ -1262,7 +1287,7 @@ export async function getChangedLineAmbiguousFiles(
 		'--porcelain=v1',
 		'-z',
 		'--untracked-files=all',
-		...(requestedPathspecs.length > 0 ? ['--', ...requestedPathspecs] : []),
+		...(literalPathspecs.length > 0 ? ['--', ...literalPathspecs] : []),
 	];
 	const [committedNames, status] = await Promise.all([
 		runGit(
@@ -1274,9 +1299,10 @@ export async function getChangedLineAmbiguousFiles(
 				'--no-ext-diff',
 				'--no-color',
 				'--no-prefix',
+				'-z',
 				`${mergeBase}..HEAD`,
 				'--',
-				...(requestedPathspecs.length > 0 ? requestedPathspecs : []),
+				...(literalPathspecs.length > 0 ? literalPathspecs : []),
 			],
 			directory,
 			abortSignal,
@@ -1285,12 +1311,13 @@ export async function getChangedLineAmbiguousFiles(
 	]);
 	if (committedNames === null || status === null) return null;
 
+	// -z keeps git from C-quoting special names and from newline ambiguity,
+	// so these keys join the raw -z status records below without .trim()
+	// damage (#3092 review PRR-006). Renames emit both endpoints as separate
+	// NUL records; the deleted-side key never appears in staged/unstaged, so
+	// marking it is inert.
 	const committed = new Set(
-		committedNames
-			.split('\n')
-			.map((line) => line.trim())
-			.filter(Boolean)
-			.map(normalizeRepoPathKey),
+		committedNames.split('\0').filter(Boolean).map(normalizeRepoPathKey),
 	);
 
 	// Per-file staged/unstaged dirtiness from the XY columns. Rename/copy
@@ -1879,7 +1906,10 @@ export async function runPreCheckBatch(
 			secretscanClassification = {
 				newFindings: secretscanScanFindings,
 				preexistingFindings: [],
-				diffScoped: changedLineRanges !== null,
+				// #3128 review PRR-023: no classification ran in this arm, so no
+				// finding was ever tested against the map — report the scan as
+				// not diff-scoped rather than implying a discount was earned.
+				diffScoped: false,
 			};
 		} else {
 			const { newFindings, preexistingFindings } = classifySecretFindings(
@@ -2031,6 +2061,14 @@ export async function runPreCheckBatch(
 				// #3092: reads through the batch-lazy memo (same seam as the
 				// secretscan arm) so the map is computed at most once and
 				// `_internals.getChangedLineRanges` overrides steer both arms.
+				//
+				// #3128 review PRR-023 (documented asymmetry): the SAST arm does
+				// NOT receive the multi-hop ambiguity set — its missing-key and
+				// empty-set arms intentionally read as PRE-EXISTING (pinned by
+				// tests/unit/tools/pre-check-batch-sast-preexisting.test.ts), so
+				// the same staged/committed line-shift coordinate mismatch fixed
+				// for secrets remains live for SAST. Do not widen this arm
+				// without re-adjudicating those pins.
 				const changedLineRanges = await getChangedLineRangesMemoized();
 				const { newFindings, preexistingFindings } = classifySastFindings(
 					gateFindings,

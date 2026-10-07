@@ -131,8 +131,13 @@ function everySecretFindingIsPreexisting(
 		const { path, line, type } = finding;
 		if (
 			typeof path !== 'string' ||
+			path.length === 0 ||
 			typeof line !== 'number' ||
 			!Number.isSafeInteger(line) ||
+			// #3092 review PRR-021: mirror the producer classifier — it forces
+			// non-positive lines NEW unconditionally, so they can never be
+			// honestly claimed pre-existing.
+			line < 1 ||
 			typeof type !== 'string'
 		) {
 			return null;
@@ -149,6 +154,10 @@ function everySecretFindingIsPreexisting(
 		if (index < 0) return false;
 		remainingPreexisting.splice(index, 1);
 	}
+	// #3092 review PRR-021: a superset proof claims findings that are not in
+	// the total set — the honest producer emits exactly the pre-existing
+	// subset, so leftovers mean the proof does not match the scan.
+	if (remainingPreexisting.length !== 0) return false;
 	return true;
 }
 
@@ -233,7 +242,12 @@ function hardGateExplicitlyFailed(
 			typeof result.incomplete_files !== 'number' ||
 			!Number.isSafeInteger(result.incomplete_files) ||
 			result.incomplete_files < 0 ||
-			!Array.isArray(result.incomplete_paths)
+			!Array.isArray(result.incomplete_paths) ||
+			// #3092 review PRR-012: the truncation arm below is strict
+			// `=== true`, so a forged non-boolean truncated value ("true", 1)
+			// must not silently disable it — treat a present-but-non-boolean
+			// flag as malformed and keep blocking.
+			(result.truncated !== undefined && typeof result.truncated !== 'boolean')
 		) {
 			return true;
 		}
@@ -260,10 +274,12 @@ function hardGateExplicitlyFailed(
 			result.incomplete_paths.length === 0;
 		// #3092 diff-scope parity with the tool-side gate. The batch-carried
 		// pre-existing proof disarms ONLY the findings-count conditions:
-		// truncation, a total-set mismatch, incomplete coverage, and
-		// zero-coverage-without-vacuous-proof keep blocking regardless of the
-		// proof — the decoder is the contradiction boundary for a forged
-		// `passed`.
+		// truncation, incomplete coverage, and zero-coverage-without-vacuous-
+		// proof keep blocking regardless of the proof — the decoder is the
+		// contradiction boundary for a forged `passed`. (The former explicit
+		// count !== findings.length clause was removed as logically dead in
+		// review: a mismatch makes everySecretFindingIsPreexisting false, so
+		// the count/findings arms above already fire.)
 		const preexistingProof = everySecretFindingIsPreexisting(
 			result,
 			batchResult,
@@ -272,7 +288,6 @@ function hardGateExplicitlyFailed(
 			(result.count > 0 && !preexistingProof) ||
 			(result.findings.length > 0 && !preexistingProof) ||
 			result.truncated === true ||
-			result.count !== result.findings.length ||
 			result.incomplete_files > 0 ||
 			result.incomplete_paths.length > 0 ||
 			(result.files_scanned === 0 && !vacuousCoverage)

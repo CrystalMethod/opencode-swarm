@@ -117,4 +117,43 @@ describe('decodePreCheckResult secretscan diff-scope proof (#3092)', () => {
 		);
 		expect(decodePreCheckResult(payload).kind).not.toBe('pass');
 	});
+
+	test('a malformed proof entry (line below 1) never disarms the findings (PRR-021)', () => {
+		const payload = batchJson(
+			{},
+			{
+				secretscan_preexisting_findings: [secretFinding('C:/x/legacy.txt', 0)],
+			},
+		);
+		expect(decodePreCheckResult(payload).kind).not.toBe('pass');
+	});
+
+	test('a malformed proof entry (empty path) never disarms the findings (PRR-021)', () => {
+		const payload = batchJson(
+			{},
+			{ secretscan_preexisting_findings: [secretFinding('', 1)] },
+		);
+		expect(decodePreCheckResult(payload).kind).not.toBe('pass');
+	});
+
+	test('a superset proof (unmatched extra entries) stays non-pass (FB-006)', () => {
+		const payload = batchJson(
+			{},
+			{
+				secretscan_preexisting_findings: [
+					secretFinding(),
+					secretFinding('C:/x/ghost.txt', 9),
+				],
+			},
+		);
+		expect(decodePreCheckResult(payload).kind).not.toBe('pass');
+	});
+
+	test('a non-boolean truncated flag is malformed and blocks (PRR-012)', () => {
+		const payload = batchJson(
+			{ truncated: 'true' },
+			{ secretscan_preexisting_findings: [secretFinding()] },
+		);
+		expect(decodePreCheckResult(payload).kind).not.toBe('pass');
+	});
 });
