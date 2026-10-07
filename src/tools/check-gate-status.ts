@@ -318,10 +318,42 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 						const findingsCount = lastSecretscan.findings_count ?? 0;
 						const hasIncompleteCoverage =
 							incompleteFiles > 0 || incompletePaths.length > 0;
-						const hasFindings = findingsCount > 0;
+						// #3092 diff-scope parity: gate on NEW findings when the
+						// evidence carries the counter; legacy evidence without
+						// it falls back to the TOTAL (previous behavior). The
+						// predicate must preserve 0 — a truthiness fallback
+						// would re-wedge the exact zero-new pass this exists
+						// to unblock.
+						const newFindingsRaw: unknown = lastSecretscan.new_findings_count;
+						const preexistingRaw: unknown =
+							lastSecretscan.preexisting_findings_count;
+						const newFindingsValid =
+							typeof newFindingsRaw === 'number' &&
+							Number.isSafeInteger(newFindingsRaw) &&
+							newFindingsRaw >= 0;
+						const preexistingValid =
+							typeof preexistingRaw === 'number' &&
+							Number.isSafeInteger(preexistingRaw) &&
+							preexistingRaw >= 0;
+						let newFindingsBasis = newFindingsValid
+							? newFindingsRaw
+							: findingsCount;
+						// #3128 review PRR-010: internally inconsistent counters
+						// (new + preexisting ≠ total) cannot prove the zero-new
+						// claim — fall back to the TOTAL, fail-closed.
+						if (
+							newFindingsValid &&
+							preexistingValid &&
+							newFindingsRaw + preexistingRaw !== findingsCount
+						) {
+							newFindingsBasis = findingsCount;
+						}
+						const hasNewFindings = newFindingsBasis > 0;
 						// #2918 vacuous coverage — same normative predicate as the
 						// pre_check gate and the decoder, evaluated over the persisted
 						// evidence fields (optional; missing ⇒ non-vacuous ⇒ strict).
+						// Deliberately keyed on the TOTAL findings_count, NOT the
+						// new-findings basis: a pre-existing-only pass scanned files.
 						const policySkipped: unknown = lastSecretscan.policy_skipped_files;
 						const requestedFilesCount: unknown = lastSecretscan.requested_files;
 						const vacuousCoverage =
@@ -340,38 +372,47 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 							lastSecretscan.files_scanned === 0 && !vacuousCoverage;
 						if (
 							hasIncompleteCoverage ||
-							hasFindings ||
+							hasNewFindings ||
 							hasZeroCoverage ||
 							lastSecretscan.verdict === 'fail' ||
 							lastSecretscan.verdict === 'rejected'
 						) {
 							secretscanVerdict = 'fail';
-							if (hasIncompleteCoverage && !hasFindings) {
+							if (hasIncompleteCoverage && !hasNewFindings) {
 								missingGates.push('secretscan (BLOCKED — incomplete coverage)');
 								if (status === 'all_passed') {
 									status = 'incomplete';
 								}
 								message = `BLOCKED: Secretscan incomplete coverage in prior scan. ${message}`;
-							} else if (hasFindings && hasIncompleteCoverage) {
+							} else if (hasNewFindings && hasIncompleteCoverage) {
 								missingGates.push(
 									'secretscan (BLOCKED — secrets detected; incomplete coverage)',
 								);
 								if (status === 'all_passed') {
 									status = 'incomplete';
 								}
-								message = `BLOCKED: Secretscan found secrets and incomplete coverage in prior scan. ${message}`;
-							} else if (hasFindings) {
+								message = `BLOCKED: Secretscan found secrets and incomplete coverage in prior scan (${newFindingsBasis} new on changed lines). ${message}`;
+							} else if (hasNewFindings) {
 								missingGates.push('secretscan (BLOCKED — secrets detected)');
 								if (status === 'all_passed') {
 									status = 'incomplete';
 								}
-								message = `BLOCKED: Secretscan found secrets in prior scan. ${message}`;
-							} else {
+								message = `BLOCKED: Secretscan found secrets in prior scan (${newFindingsBasis} new on changed lines${findingsCount > newFindingsBasis ? `, ${findingsCount} total` : ''}). ${message}`;
+							} else if (hasZeroCoverage) {
 								missingGates.push('secretscan (BLOCKED — zero coverage)');
 								if (status === 'all_passed') {
 									status = 'incomplete';
 								}
 								message = `BLOCKED: Secretscan scanned zero files in prior scan. ${message}`;
+							} else {
+								// Failed/rejected verdict with complete coverage and
+								// no new findings — a producer contradiction (e.g.
+								// truncation or tampering), not a zero-coverage scan.
+								missingGates.push('secretscan (BLOCKED — zero coverage)');
+								if (status === 'all_passed') {
+									status = 'incomplete';
+								}
+								message = `BLOCKED: Secretscan verdict failed without new findings or coverage gaps (possible truncation or tampering). ${message}`;
 							}
 						} else if (
 							lastSecretscan.verdict === 'pass' ||
@@ -383,6 +424,11 @@ export const check_gate_status: ReturnType<typeof tool> = createSwarmTool({
 								// Satisfied, with a note: the pass rests on provable
 								// extension-policy exclusion, not on scanned files.
 								message += ` Advisory: Secretscan coverage was vacuous (${lastSecretscan.policy_skipped_files} of ${lastSecretscan.requested_files} requested file(s) skipped by scan policy).`;
+							} else if (findingsCount > 0) {
+								// #3092: green with visible pre-existing debt —
+								// secretscan green means zero NEW secrets on changed
+								// lines; pre-existing findings stay reported.
+								message += ` Advisory: ${findingsCount} pre-existing secret finding(s) remain visible (non-gating; secretscan green = zero new secrets on changed lines).`;
 							}
 						}
 					}

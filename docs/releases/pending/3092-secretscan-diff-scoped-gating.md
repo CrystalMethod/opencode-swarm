@@ -1,0 +1,86 @@
+# Diff-scoped secretscan gating
+
+## What changed
+
+`pre_check_batch`'s secretscan hard gate is now diff-scoped: findings classify
+as NEW (on coder-changed lines) or PRE-EXISTING (on untouched lines of files
+the batch touched) against the same changed-line map the SAST legacy path
+consumes, and only NEW secrets fail the gate. Pre-existing findings stay
+fully visible in the scan result and persisted evidence and surface as an
+advisory — a brownfield repository with committed secrets can now go green
+without a repo-wide ignore list.
+
+## Why
+
+In any repository with pre-existing secrets in tracked files, the gate failed
+on every run forever, blocking tasks at Stage A with no path forward except
+`.secretscanignore` (#3092).
+
+## Fail-closed contract
+
+- A finding is PRE-EXISTING only when the changed-line map is non-null, the
+  file key is present, the set is non-empty, it does not carry the
+  ALL_LINES_CHANGED sentinel, and the finding's line is a safe positive
+  integer NOT in the set. Everything else — missing key, empty set, null map
+  (git unavailable), unresolvable/zero/negative/non-integer lines, malformed
+  or root-escaping paths — is NEW.
+- `classifySecretFindings` never throws; any resolution failure classifies as
+  NEW. It intentionally diverges from `classifySastFindings` (whose
+  missing-key/empty-set arms are pinned intentional for SAST).
+- Files whose changed-line evidence mixes more than one Git hop (committed
+  and/or staged changes plus a later staged/unstaged edit) classify ALL their
+  findings as NEW: the changed-line map unions diffs written in HEAD/index/
+  worktree coordinates while findings carry worktree line numbers, so a
+  staged-or-committed secret shifted by a later insertion above it can never
+  prove itself pre-existing. If the ambiguity source is unavailable, nothing
+  gets the pre-existing discount.
+- A degenerate merge base never buys the discount (PR review round 3): when
+  `git merge-base` resolves to HEAD itself — HEAD sitting on the default
+  branch, the branch carrying no commits past its base yet, or a
+  local-writable candidate ref planted at the tip — the committed hop is
+  empty and non-authoritative, so the ambiguity source is treated as
+  untrustworthy and every finding is NEW. A freshly committed secret on the
+  working branch therefore fails the gate instead of proving itself
+  pre-existing against itself. Documented residual trust boundary: a ref
+  planted at an INTERMEDIATE commit can still shrink the committed hop (the
+  same Git-state trust the SAST classification inherits).
+- File names are matched literally: coder-supplied paths go to Git as
+  `:(literal)` pathspecs (glob metacharacters in real filenames like
+  `[id].tsx` no longer under-match and silently empty the evidence sets),
+  and status/name records are parsed from NUL-delimited `git` output so
+  special filenames survive without quoting damage.
+- Truncation now gates: `runSecretscanOnFiles` discloses a cap hit in
+  `message` (`Results limited to 100 findings`, directory-path parity) and
+  sets `truncated: true` on both scan paths, including the final-file
+  in-place trim that previously dropped findings silently; the gate, the hook
+  decoder, and the consumers fail closed on it. A present-but-non-boolean
+  `truncated` flag is treated as malformed and keeps blocking.
+- The hook decoder accepts a passed secretscan carrying findings ONLY when
+  the batch result carries `secretscan_preexisting_findings` exactly
+  multiset-covering the total set (proof entries with a path below one
+  character or a line below 1 are rejected, and a superset proof with
+  unmatched extras is rejected); truncation, count/findings mismatch,
+  incomplete coverage, and zero coverage still block regardless of proof.
+- Evidence gains optional `new_findings_count`, `preexisting_findings_count`,
+  and `diff_scoped` fields (legacy evidence decodes unchanged).
+  `check_gate_status` and `hasGreenPostSettlementPreCheck` gate on
+  `new_findings_count` when present (0 preserved — no truthiness fallback) and
+  fall back to the total `findings_count` on legacy evidence. A
+  `new + preexisting ≠ total` counter contradiction also falls back to the
+  total, so a forged zero-new counter cannot launder findings into a pass.
+  The #2918 vacuous-coverage predicate stays keyed on totals at every site.
+  When the ambiguity source is unavailable, the persisted evidence records
+  `diff_scoped: false` — no classification ran, so nothing claims diff-scoped
+  semantics.
+- The gate summary states the meaning of green: pass summaries where
+  classification ran end with `secretscan green = zero new secrets on changed
+  lines`; zero-finding summaries are byte-identical to the previous format.
+  Blocked statuses name the actual reason: `check_gate_status` reports the
+  new-findings basis in its `BLOCKED — secrets detected` literal
+  (`N new on changed lines`, with the pre-existing remainder disclosed), zero
+  coverage gets a distinct `BLOCKED — zero coverage` reason, and a failed
+  verdict with complete coverage and a zero-new basis names `possible
+  truncation or tampering` instead of claiming zero coverage.
+- Preflight's repo-wide secrets advisory (`preflight-service`) intentionally
+  stays on total findings — it has no coder diff context and exists to
+  surface pre-existing secrets.

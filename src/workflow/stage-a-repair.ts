@@ -169,8 +169,34 @@ export async function hasGreenPostSettlementPreCheck(
 					last.incomplete_paths.length === 0;
 				if (
 					(last.incomplete_files ?? 0) === 0 &&
+					(last.incomplete_paths?.length ?? 0) === 0 &&
 					((last.files_scanned ?? 0) > 0 || vacuousCoverage) &&
-					(last.findings_count ?? 0) === 0
+					// #3092: green means zero NEW secrets on changed lines. The
+					// new-findings counter preserves 0 explicitly (no truthiness
+					// fallback — that would collapse the zero-new pass onto the
+					// total and re-wedge the repair loop); legacy evidence without
+					// the counter falls back to the TOTAL (previous behavior).
+					(() => {
+						const total = last.findings_count ?? 0;
+						const newFindingsRaw: unknown = last.new_findings_count;
+						const preexistingRaw: unknown = last.preexisting_findings_count;
+						const newValid =
+							typeof newFindingsRaw === 'number' &&
+							Number.isSafeInteger(newFindingsRaw) &&
+							newFindingsRaw >= 0;
+						if (!newValid) return total === 0;
+						// #3128 review PRR-010: internally inconsistent counters
+						// (new + preexisting ≠ total) cannot prove the zero-new
+						// claim — fall back to the TOTAL, fail-closed.
+						const preValid =
+							typeof preexistingRaw === 'number' &&
+							Number.isSafeInteger(preexistingRaw) &&
+							preexistingRaw >= 0;
+						if (preValid && newFindingsRaw + preexistingRaw !== total) {
+							return total === 0;
+						}
+						return newFindingsRaw === 0;
+					})()
 				) {
 					sawSecretscanGreen = true;
 					continue;

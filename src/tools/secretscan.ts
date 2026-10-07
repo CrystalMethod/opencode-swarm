@@ -15,6 +15,11 @@ const MAX_FILE_SIZE_BYTES = 512 * 1024; // 512KB per file
 const MAX_FILES_SCANNED = 1000;
 const MAX_EXPLICIT_FILES_SCANNED = 100;
 const MAX_FINDINGS = 100;
+/**
+ * Findings cap shared by both scan paths. Exported for gate-side summary
+ * wording (#3092) — the value is a frozen contract, not a tunable.
+ */
+export const SECRETSCAN_MAX_FINDINGS = MAX_FINDINGS;
 const MAX_OUTPUT_BYTES = 512_000; // 512KB max output
 const MAX_CONTEXT_CHARS = 1000;
 const MAX_LONG_LINE_CHARS = 10_000;
@@ -96,6 +101,16 @@ export interface SecretscanResult {
 	/** Files requested or discovered but not completely examined. */
 	incomplete_files: number;
 	incomplete_paths: IncompletePath[];
+	/**
+	 * Findings were capped at MAX_FINDINGS and some results were discarded
+	 * (#3092). Both paths set this alongside their truncation disclosure; the
+	 * explicit-files path also pushes the `Results limited to ... findings`
+	 * sentence into `message` exactly like the directory path. Enforcing sites
+	 * treat `truncated === true` as fail-closed: findings beyond the cap were
+	 * never classified, so a gate decision over the visible set cannot prove
+	 * absence of new secrets.
+	 */
+	truncated?: boolean;
 	message?: string;
 }
 
@@ -1457,6 +1472,8 @@ export const secretscan: ReturnType<typeof createSwarmTool> = createSwarmTool({
 				ignored_files: 0,
 				incomplete_files: incompleteFiles,
 				incomplete_paths: discovery.incompletePaths,
+				// #3092: structural truncation flag alongside the message below.
+				...(allFindings.length >= MAX_FINDINGS && { truncated: true }),
 			};
 
 			// Add informative message if results were truncated
@@ -1576,6 +1593,10 @@ export async function runSecretscanOnFiles(
 		let skippedFiles = 0;
 		let policySkippedFiles = 0;
 		let ignoredFiles = 0;
+		// #3092: any cap hit — the between-files break or the in-place trim —
+		// is disclosed on the result (`message` + `truncated`) so enforcing
+		// sites can fail closed over findings they never saw.
+		let resultsTruncated = false;
 		const requestedFiles = Math.max(0, rawRequestedFiles ?? files.length);
 		const incompletePaths: IncompletePath[] = [];
 		const rawRoot = path.resolve(directory);
@@ -1652,6 +1673,7 @@ export async function runSecretscanOnFiles(
 				break;
 			}
 			if (findings.length >= MAX_FINDINGS) {
+				resultsTruncated = true;
 				recordIncompletePath(
 					incompletePaths,
 					canonicalRoot,
@@ -1829,7 +1851,10 @@ export async function runSecretscanOnFiles(
 				case 'scanned':
 					filesScanned++;
 					findings.push(...outcome.findings);
-					if (findings.length > MAX_FINDINGS) findings.length = MAX_FINDINGS;
+					if (findings.length > MAX_FINDINGS) {
+						findings.length = MAX_FINDINGS;
+						resultsTruncated = true;
+					}
 					break;
 				case 'skipped':
 					skippedFiles++;
@@ -1859,6 +1884,15 @@ export async function runSecretscanOnFiles(
 			return a.line - b.line;
 		});
 
+		// #3092: parity with the directory path — a cap hit is disclosed in
+		// `message` (same sentence) and flagged structurally via `truncated`,
+		// including the final-file in-place trim that records no incomplete
+		// path. Enforcing sites fail closed on both signals.
+		const disclosureParts: string[] = [];
+		if (resultsTruncated) {
+			disclosureParts.push(`Results limited to ${MAX_FINDINGS} findings`);
+		}
+
 		return {
 			scan_dir: directory,
 			findings,
@@ -1870,6 +1904,10 @@ export async function runSecretscanOnFiles(
 			requested_files: requestedFiles,
 			incomplete_files: incompleteFiles,
 			incomplete_paths: incompletePaths,
+			...(resultsTruncated && {
+				truncated: true,
+				message: `${disclosureParts.join('; ')}.`,
+			}),
 		};
 	} catch (e) {
 		return {
