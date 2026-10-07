@@ -209,9 +209,8 @@ export {
 	complete_pr_workflow,
 	executeCompletePrWorkflow,
 } from './complete-pr-workflow';
-export { epic_plan_waves } from './epic-plan-waves';
-export { epic_record_divergence } from './epic-record-divergence';
-export { epic_decide_phase } from './epic-run-phase';
+export { epic_next_wave } from './epic-next-wave';
+export { epic_phase_review } from './epic-phase-review';
 export { generate_mutants } from './generate-mutants';
 export {
 	executeInvalidatePrFeedbackPublication,
@@ -226,6 +225,10 @@ export { lean_turbo_runner_status } from './lean-turbo-runner-status';
 export { lean_turbo_status } from './lean-turbo-status';
 export { lint_spec } from './lint-spec';
 export { mutation_test } from './mutation-test';
+export {
+	executePrReviewSubmission,
+	pr_review_submission,
+} from './pr-review-submission';
 export {
 	executePreparePrWorkflowCheckout,
 	prepare_pr_workflow_checkout,
