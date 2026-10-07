@@ -1,5 +1,26 @@
 # Changelog
 
+## [7.191.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.190.1...v7.191.0) (2026-10-07)
+
+
+### Features
+
+* **pr-review:** controller-mediated, head-bound PR review submission tool ([7dc508c](https://github.com/ZaxbyHub/opencode-swarm/commit/7dc508c619c8359654cdc297443a18009f89d105))
+* **pr-review:** controller-mediated, head-bound PR review submission tool ([#3096](https://github.com/ZaxbyHub/opencode-swarm/issues/3096)) ([2fd76f8](https://github.com/ZaxbyHub/opencode-swarm/commit/2fd76f8a648034254e596e6eacfdf79682e1c208))
+* **secretscan:** add ignored_files counter and a distinct all-ignored gate reason (3107 review round 2) ([8ff2fe6](https://github.com/ZaxbyHub/opencode-swarm/commit/8ff2fe6333f8437641398f49b2d6523f7ad8f1aa))
+
+
+### Bug Fixes
+
+* **ci:** hash merged workflow tree in required-check evidence ([122f234](https://github.com/ZaxbyHub/opencode-swarm/commit/122f234bb013b8beeb441e82ba26870a4882ebea))
+* **ci:** rebuild required-check evidence from main and refresh local workflow hashes ([19a0506](https://github.com/ZaxbyHub/opencode-swarm/commit/19a05061c55b6c3860137ffbecee73b48cfaa91d))
+* **ci:** rebuild required-check evidence from main and refresh local workflow hashes ([500d9f5](https://github.com/ZaxbyHub/opencode-swarm/commit/500d9f554476ab6091f104bde5167d37a569e112))
+* **pr-review:** feedback round 2 — typed path refusals, non-CONFIRMED status markers, reviewer-required test arms ([1f5a4e0](https://github.com/ZaxbyHub/opencode-swarm/commit/1f5a4e0a823f23a372a70019962ab0e8de5f48e4))
+* **pr-review:** fold the payload write target for the G2 evidence-class gate ([2fe51d9](https://github.com/ZaxbyHub/opencode-swarm/commit/2fe51d9a2b349927d8a4c0263265181a54515a71))
+* **pr-review:** submit settled post_critic records only; harden submission ladder (PRR-001..015) ([0d12d11](https://github.com/ZaxbyHub/opencode-swarm/commit/0d12d113a761f986d223b855c90762beff07b349))
+* **secretscan:** honor .secretscanignore on the explicit-files scan path ([2098829](https://github.com/ZaxbyHub/opencode-swarm/commit/20988297a7a448f21aa8e483f2baaf9170d5ed87))
+* **secretscan:** honor .secretscanignore on the explicit-files scan path ([2746ab5](https://github.com/ZaxbyHub/opencode-swarm/commit/2746ab52726853279a338af6cd507dd131097b56))
+
 ## [7.190.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.190.0...v7.190.1) (2026-10-06)
 
 
