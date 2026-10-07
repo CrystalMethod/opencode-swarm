@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.191.1",
+  "tagCommit": "5d3d8c2f015f99b11c180f110d2420331f1afc2f",
+  "targetCommitish": "5d3d8c2f015f99b11c180f110d2420331f1afc2f",
+  "releaseBodySha256": "138bd8e78216c82dab3ff9d411944b0014cde7a3d6285486aebf8a22ef564c15",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/linux-sandbox-readonly-workspace-and-nested-bwrap.md",
+      "sha256": "5af6c2a1d91c87e300691dd0d95ba1a645b383110e2a8aedc7ad469eeb599f5c"
+    }
+  ]
+}
