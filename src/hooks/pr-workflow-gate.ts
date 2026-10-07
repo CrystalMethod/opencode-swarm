@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { type BigIntStats, type Dirent, readFileSync, statSync } from 'node:fs';
+import type { BigIntStats, Dirent } from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { SessionStatus } from '@opencode-ai/sdk';
@@ -52,13 +52,15 @@ import {
 } from '../background/pr-review-contract.js';
 import {
 	PR_REVIEW_REQUIRED_TRIGGER_IDS,
-	PR_REVIEW_TRIGGER_RECEIPT_MAX_BYTES,
 	type PrReviewInlineTriggerRow,
 	PrReviewInlineTriggerRowSchema,
-	parsePrReviewTriggerReceipt,
 	prReviewTriggerLedgerDigest,
 	validatePrReviewInlineTriggerLedger,
 } from '../background/pr-review-trigger-contract.js';
+import {
+	prReviewReceiptHasCoverageDegradations,
+	readPrReviewTriggerReceiptForGate,
+} from '../background/pr-review-trigger-receipt-reader.js';
 import {
 	type RevisionDigestResult,
 	resolveCommitCountSince,
@@ -205,7 +207,15 @@ import type {
 	PrReviewEvent,
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
+import {
+	ensurePrWorkflowSkillContractsFresh,
+	MAX_SKILL_CONTRACT_ADVISORIES,
+} from '../services/pr-workflow-skill-contract.js';
 import { swarmState } from '../state.js';
 import { getPrWorkflowToolCapability } from '../tools/tool-metadata.js';
 import { sameProjectRoot } from '../utils/canonical-root.js';
@@ -827,6 +837,23 @@ interface PrReviewValidationBatchRecord {
 }
 
 /**
+ * Issue #2878: one admitted micro-dispatch acknowledgment. The dead-family
+ * admission in `write_pr_review_trigger_eval` counts these per trigger family
+ * (filtered by pr head) to mechanically prove the bounded retry budget was
+ * exhausted before a liveness-dead family may be disclosed.
+ */
+interface PrReviewMicroFamilyDispatchRecord {
+	batchId: string;
+	prHeadSha: string;
+	lanes: Array<{
+		laneId: string;
+		workflowLane: string;
+		ownedWorkflowLanes?: string[];
+	}>;
+	admittedAt: string;
+}
+
+/**
  * Per-batch coherence keys for item-keyed reviewer/critic composition.
  *
  * This deliberately lives OUTSIDE `PrReviewValidationBatchRecord`: that record's
@@ -880,6 +907,13 @@ export interface PrWorkflowGateState {
 	mode: PrWorkflowMode;
 	activatedAt: string;
 	updatedAt: string;
+	/**
+	 * Skill-contract advisories recorded at activation (and appended by the
+	 * auto-resume wake path) when a stale installed copy of the mode's stamped
+	 * skill was detected — each names the stale path and the canonical source
+	 * (issue #2601). Purely diagnostic: detection never gates activation.
+	 */
+	skillContractAdvisories?: string[];
 	prHeadSha?: string;
 	prReviewBaseRef?: string;
 	prReviewBaseSha?: string;
@@ -899,6 +933,15 @@ export interface PrWorkflowGateState {
 	prReviewContractRetryDimensions?: PrReviewBaseDimensionId[];
 	/** Canonical ordered semantic ledger frozen by the first micro dispatch. */
 	prReviewTriggerLedger?: PrReviewInlineTriggerRow[];
+	/**
+	 * Issue #2878: per-family micro dispatch attempt ledger, appended by every
+	 * micro-dispatch acknowledgment (`recordPrReviewMicroFamilyDispatch`). The
+	 * dead-family admission in `write_pr_review_trigger_eval` counts these per
+	 * trigger family (filtered by pr head) to mechanically prove the bounded
+	 * retry budget was exhausted before disclosing a liveness-dead family.
+	 * Bounded at MAX_WORKFLOW_BATCHES with fail-closed overflow.
+	 */
+	prReviewMicroFamilyDispatches?: PrReviewMicroFamilyDispatchRecord[];
 	prReviewTriggerEvalPath?: string;
 	/**
 	 * The run_id bound to the trigger-evaluation receipt at first consumption.
@@ -1422,6 +1465,27 @@ const PrReviewValidationBatchRecordSchema = z
 	})
 	.strict();
 
+// Issue #2878: persisted shape of one admitted micro-dispatch acknowledgment
+// (see the PrReviewMicroFamilyDispatchRecord interface for semantics).
+const PrReviewMicroFamilyDispatchRecordSchema = z
+	.object({
+		batchId: z.string().min(1),
+		prHeadSha: z.string().min(1),
+		lanes: z
+			.array(
+				z
+					.object({
+						laneId: z.string().min(1),
+						workflowLane: z.string().min(1),
+						ownedWorkflowLanes: z.array(z.string().min(1)).min(1).optional(),
+					})
+					.strict(),
+			)
+			.min(1),
+		admittedAt: z.string().min(1),
+	})
+	.strict();
+
 // Intentionally NOT .strict(): this record is the newest persisted shape and is
 // the most likely to gain fields. Passthrough keeps a future field opaque but
 // present through any read-modify-write cycle instead of bricking a rollback.
@@ -1495,6 +1559,10 @@ const PrWorkflowGateStateSchema = z
 		mode: z.enum(['PR_REVIEW', 'PR_FEEDBACK']),
 		activatedAt: z.string().min(1),
 		updatedAt: z.string().min(1),
+		skillContractAdvisories: z
+			.array(z.string().min(1))
+			.max(MAX_SKILL_CONTRACT_ADVISORIES)
+			.optional(),
 		prHeadSha: z.string().min(1).optional(),
 		prReviewBaseRef: z.string().min(1).optional(),
 		prReviewBaseSha: z.string().min(1).optional(),
@@ -1525,6 +1593,10 @@ const PrWorkflowGateStateSchema = z
 		prReviewTriggerLedger: z
 			.array(PrReviewInlineTriggerRowSchema)
 			.length(PR_REVIEW_REQUIRED_TRIGGER_IDS.length)
+			.optional(),
+		prReviewMicroFamilyDispatches: z
+			.array(PrReviewMicroFamilyDispatchRecordSchema)
+			.max(MAX_WORKFLOW_BATCHES)
 			.optional(),
 		prReviewTriggerEvalPath: z.string().min(1).optional(),
 		prReviewTriggerEvalRunId: z.string().min(1).optional(),
@@ -1683,6 +1755,10 @@ export async function activatePrWorkflow(
 		prHeadSha?: string;
 		requireCheckoutPreflight?: boolean;
 		prUrl?: string;
+		// #2882 AC5: configured context authorizing a declared generic
+		// self-hosted GitLab MR URL as the PR_FEEDBACK target. Fail-closed
+		// when absent: the URL must then canonicalize on its own shape.
+		forge?: ForgeContext;
 	} = {},
 ): Promise<PrWorkflowGateState> {
 	const normalizedSessionID = normalizeSessionID(sessionID);
@@ -1708,14 +1784,17 @@ export async function activatePrWorkflow(
 			);
 			if (existing?.mode === mode) {
 				if (mode === 'PR_FEEDBACK' && options.prUrl) {
-					const requestedTarget = canonicalGitHubPrUrl(options.prUrl);
+					const requestedTarget = canonicalGitHubPrUrl(
+						options.prUrl,
+						options.forge,
+					);
 					if (!requestedTarget) {
 						throw new Error(
 							'BLOCKED: PR_FEEDBACK target must be a canonical GitHub PR URL',
 						);
 					}
 					const existingTarget = existing.prFeedbackTargetUrl
-						? canonicalGitHubPrUrl(existing.prFeedbackTargetUrl)
+						? canonicalGitHubPrUrl(existing.prFeedbackTargetUrl, options.forge)
 						: null;
 					if (existingTarget && requestedTarget !== existingTarget) {
 						throw new Error(
@@ -1773,10 +1852,19 @@ export async function activatePrWorkflow(
 			const initialHead = options.prHeadSha
 				? await assertCurrentCheckoutHead(directory, options.prHeadSha, mode)
 				: undefined;
+			// Issue #2601: on first activation for the session, verify the mode's
+			// stamped skill contract and heal the bundled copy before the gate
+			// becomes loadable. Bounded and fail-open — staleness detection
+			// never gates activation (an advisory is recorded on the state).
+			// Idempotent re-activation returns above without re-running this.
+			const skillContractAdvisories = await ensurePrWorkflowSkillContractsFresh(
+				directory,
+				mode,
+			);
 			const timestamp = isoNow();
 			const feedbackTargetUrl =
 				mode === 'PR_FEEDBACK' && options.prUrl
-					? canonicalGitHubPrUrl(options.prUrl)
+					? canonicalGitHubPrUrl(options.prUrl, options.forge)
 						? options.prUrl
 						: null
 					: undefined;
@@ -1793,6 +1881,9 @@ export async function activatePrWorkflow(
 				mode,
 				activatedAt: timestamp,
 				updatedAt: timestamp,
+				...(skillContractAdvisories.length > 0
+					? { skillContractAdvisories }
+					: {}),
 				...(initialHead ? { prHeadSha: initialHead } : {}),
 				...(feedbackTargetUrl
 					? { prFeedbackTargetUrl: feedbackTargetUrl }
@@ -1801,6 +1892,49 @@ export async function activatePrWorkflow(
 			return writeStateWhileLocked(directory, nextState);
 		}),
 	);
+}
+
+/**
+ * Issue #2601: append skill-contract advisories detected by the auto-resume
+ * wake path onto the durable gate state, independent of activation-time
+ * persistence. Read-modify-write under the session-state mutation lock with
+ * the same CAS writer activation uses; string-equality dedupe; capped at 8.
+ * Fail-open by design: a concurrent gate transition (BLOCKED from the CAS
+ * writer), a missing state, or any error drops the append silently — the
+ * advisory was already surfaced through `advisoryWarn` by the detector, and
+ * an advisory-record failure must never break the gate.
+ */
+export async function appendPrWorkflowSkillContractAdvisories(
+	directory: string,
+	sessionID: string,
+	advisories: string[],
+): Promise<void> {
+	if (advisories.length === 0) return;
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	if (!normalizedSessionID) return;
+	await withSessionStateMutation(directory, normalizedSessionID, async () => {
+		try {
+			const existing = await readPrWorkflowGateStateFromDisk(
+				directory,
+				normalizedSessionID,
+			);
+			if (!existing) return;
+			const current = existing.skillContractAdvisories ?? [];
+			const merged = [...current];
+			for (const advisory of advisories) {
+				if (merged.length >= MAX_SKILL_CONTRACT_ADVISORIES) break;
+				if (!merged.includes(advisory)) merged.push(advisory);
+			}
+			if (merged.length === current.length) return;
+			await writeStateWhileLocked(directory, {
+				...existing,
+				skillContractAdvisories: merged,
+				updatedAt: isoNow(),
+			});
+		} catch {
+			// Fail-open: see the doc comment above.
+		}
+	});
 }
 
 export async function readPrWorkflowGateState(
@@ -3881,6 +4015,13 @@ async function finalizeOverriddenProbeRetainedLanes(
 	sessionID: string,
 	correlationIds: readonly string[],
 	horizonMs: number = PR_WORKFLOW_STALE_LANE_TIMEOUT_MS,
+	/**
+	 * Issue #2971: the force override is an explicit, audited OPERATOR action,
+	 * so the lanes it finalizes carry the distinct `operator_cancelled` class
+	 * with a reason naming the force abort — never the host `liveness` class
+	 * (an operator abandonment must not masquerade as a provider failure).
+	 */
+	reason: string = '/swarm abort-pr-workflow force override',
 ): Promise<OverriddenProbeRetainedLaneOutcome> {
 	try {
 		await _test_exports.sweepStaleDelegationsAsync(
@@ -3895,6 +4036,8 @@ async function finalizeOverriddenProbeRetainedLanes(
 			{
 				statuses: PR_WORKFLOW_SWEEPABLE_LANE_STATUSES,
 				includeCorrelationIds: new Set(correlationIds),
+				failureClass: 'operator_cancelled',
+				reasonPrefix: `lane finalized by operator force abort: ${reason}`,
 			},
 		);
 	} catch {
@@ -4391,6 +4534,7 @@ export async function abortPrWorkflow(
 						options.laneLiveness?.laneLivenessWatchdog,
 						options.laneLiveness?.backgroundPendingTimeoutMs,
 					).horizonMs,
+					options.reason ?? '/swarm abort-pr-workflow force override',
 				)
 			: {
 					sessionOpenLaneIds: [],
@@ -7042,6 +7186,83 @@ export async function assertPrReviewBaseCoverageSettled(
 }
 
 /** Persist a council/reviewer/critic validation batch before launch. */
+/**
+ * Issue #2878: record one admitted micro-dispatch acknowledgment in the
+ * per-family dispatch attempt ledger. The dead-family admission in
+ * `write_pr_review_trigger_eval` counts these records (per trigger family,
+ * filtered by pr head) to mechanically prove the bounded retry budget
+ * (initial dispatch plus `PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET` retries) was
+ * exhausted before a liveness-dead family may be disclosed.
+ *
+ * Crash-window disposition, by ordering:
+ * - The record is persisted at acknowledgment time, strictly before any lane
+ *   session is created, so no dead lane can exist whose dispatch was not
+ *   first durably counted — the count can never under-report relative to the
+ *   lanes that actually ran.
+ * - A cap throw aborts the dispatch itself (the lane never launches), the
+ *   same fail-closed behavior as the validation-batch limit below.
+ * - A crash between this persist and lane launch leaves an orphan entry whose
+ *   lanes never started. That is benign: a retry of the exact same dispatch
+ *   call is a no-op (batchId idempotence below), and the over-count direction
+ *   is conservative for a disclosure gate that admits only at or above the
+ *   budget threshold — the cited (batch, lane) must still exist as a real
+ *   stale delegation record to be disclosed at all, so phantom attempts
+ *   alone can never unlock a disclosure.
+ *
+ * Unlike `recordPrReviewValidationBatch`, a duplicate batchId is a no-op
+ * rather than a throw: validation batches are one-shot contracts, while a
+ * dispatch acknowledgment is an idempotent fact that must survive a
+ * crash-retry of the same dispatch call without double-counting.
+ */
+export async function recordPrReviewMicroFamilyDispatch(
+	directory: string,
+	sessionID: string,
+	lanes: readonly PrWorkflowLaneSpec[],
+	options: { batchId: string; prHeadSha: string },
+): Promise<PrWorkflowGateState> {
+	const state = await bindPrWorkflowHead(
+		directory,
+		sessionID,
+		options.prHeadSha,
+	);
+	if (state.mode !== 'PR_REVIEW') throw wrongModeError(state, 'PR_REVIEW');
+	const batchId = normalizeBatchId(options.batchId);
+	const previous = state.prReviewMicroFamilyDispatches ?? [];
+	if (previous.some((record) => record.batchId === batchId)) {
+		return state;
+	}
+	if (previous.length >= MAX_WORKFLOW_BATCHES) {
+		// Fail closed with no eviction: silently dropping oldest records would
+		// under-count attempts and could re-wedge a run whose families'
+		// budgets were legitimately spent into an abort-only disclosure
+		// failure. The honest worst case (11 families x initial + 2 retries
+		// as separate partial-retry batches) is 33 records; the 128 cap is
+		// ~3.9x that headroom.
+		throw new Error(
+			`BLOCKED: PR_REVIEW micro-family dispatch ledger limit reached (${MAX_WORKFLOW_BATCHES} recorded acknowledgments). Nothing was appended and no lane was launched, so re-issuing this dispatch call is safe once the ledger has room. A healthy run records at most ~${11 * (1 + 2)} acknowledgments (11 families x initial dispatch + 2 retries), so reaching the cap indicates a dispatch loop. Recovery: let the active workflow settle or restart with abort_pr_workflow (kind "recovery").`,
+		);
+	}
+	const record: PrReviewMicroFamilyDispatchRecord = {
+		batchId,
+		prHeadSha: options.prHeadSha,
+		lanes: normalizeWorkflowLanes(lanes).map((lane) => ({
+			laneId: lane.laneId,
+			workflowLane: lane.workflowLane,
+			...(lane.ownedWorkflowLanes?.length
+				? { ownedWorkflowLanes: lane.ownedWorkflowLanes }
+				: {}),
+		})),
+		admittedAt: isoNow(),
+	};
+	const nextState: PrWorkflowGateState = {
+		...state,
+		updatedAt: isoNow(),
+		prReviewMicroFamilyDispatches: [...previous, record],
+	};
+	await persistState(directory, nextState);
+	return nextState;
+}
+
 export async function recordPrReviewValidationBatch(
 	directory: string,
 	sessionID: string,
@@ -11255,9 +11476,19 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	);
 	const authority = await readAuthoritativeFindingPolicy(directory, state);
 	const findings = authority.policyFindings;
+	// Issue #2840: the report projection must carry the same degradation
+	// downgrade the completion gates enforce — a disclosed coverage degradation
+	// (dead family) excludes APPROVE from the reported permitted verdicts.
+	const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
+		directory,
+		state.prReviewTriggerEvalPath,
+	);
 	const permittedVerdicts = allowedPrReviewReportVerdicts(
 		settlement.kind,
 		findings,
+		{
+			disclosedCoverageDegradation: disclosedDegradation,
+		},
 	);
 	const policyProjection = evaluateFinalFindingPolicy({
 		policyVersion: FINDING_POLICY_VERSION,
@@ -11286,23 +11517,17 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	return { policyVersion: 1, permittedVerdicts, blockingFindingIds };
 }
 
-function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com'
-		) {
-			return null;
-		}
-		const matched = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (!matched) return null;
-		const prNumber = Number(matched[3]);
-		if (!Number.isSafeInteger(prNumber) || prNumber <= 0) return null;
-		return `github.com/${matched[1].toLowerCase()}/${matched[2].toLowerCase()}/pull/${prNumber}`;
-	} catch {
-		return null;
-	}
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body. #2882 AC5: the optional configured context
+	// authorizes declared generic self-hosted GitLab MR URLs; absent context
+	// keeps the fail-closed behavior. The PR_REVIEW consent/handoff
+	// comparisons below intentionally pass no context (GitHub-only domain).
+	return canonicalForgePrUrl(value, configured);
 }
 
 function assertMatchingPrReviewFeedbackConsent(
@@ -12650,6 +12875,25 @@ export async function completePrWorkflow(
 			state,
 			ctx.revisionDigest,
 		);
+		// Issue #2840: the durable trigger-eval receipt's disclosed coverage
+		// degradations (dead family or coverage-quality) downgrade the verdict
+		// matrix at EVERY decision point below — a disclosed degradation makes
+		// the review DEGRADED_DISCLOSED and it can never emit APPROVE, even
+		// with all six base dimensions settled COMPLETE. Unset receipt path ⇒
+		// no degradation (no fs read); a corrupt-present receipt throws BLOCKED
+		// exactly like the inventory pass.
+		// PR review F-1: both consumers of the flag (the reducer guard and
+		// allowedPrReviewReportVerdicts) gate on kind === 'COMPLETE', so the
+		// value is only ever observable there — and a receipt read on any other
+		// kind could only ever THROW (a corrupt-present receipt BLOCKing a
+		// NO_COVERAGE completion that never read the receipt pre-#2840). Compute
+		// it for COMPLETE only; every other kind is provably false.
+		let disclosedDegradation =
+			settlement.kind === 'COMPLETE' &&
+			prReviewReceiptHasCoverageDegradations(
+				directory,
+				state.prReviewTriggerEvalPath,
+			);
 		// Issue #2512: coverage finalization is REDUCER-OWNED — the adapter
 		// dispatches `coverage_finalization_requested` and maps the typed
 		// rejections to the operator-facing BLOCKED messages the inline checks
@@ -12668,6 +12912,7 @@ export async function completePrWorkflow(
 					liveDimensions: finalizationSettlement.liveDimensions,
 				},
 				requestedVerdict: verdict,
+				disclosedDegradation,
 			});
 			if (outcome.status === 'applied') return;
 			const { code } = outcome.rejection;
@@ -12686,14 +12931,92 @@ export async function completePrWorkflow(
 					`BLOCKED: PR_REVIEW NO_COVERAGE completion must report verdict INCOMPLETE; got "${verdict}". A zero-coverage report never approves and never claims a code-quality review.`,
 				);
 			}
+			// Issue #2840: name the degradation in the operator-facing message —
+			// the generic fall-through's allowed-list formatting is reserved for
+			// rejections whose vocabulary the coverage kind alone explains.
+			if (code === 'degraded_disclosure_cannot_approve') {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
+				);
+			}
 			const allowedList = allowedPrReviewReportVerdicts(
 				finalizationSettlement.kind,
 				[],
+				{ disclosedCoverageDegradation: disclosedDegradation },
 			).join(' | ');
 			throw new Error(
 				`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion allows report_verdict ${allowedList}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
 			);
 		};
+		// Issue #2971: retryable-remainder rejection. Deliberately NOT purely
+		// additive: a legacy-policy PARTIAL/NO_COVERAGE whose unresolved dims
+		// still carry unconsumed contract retry budget was previously
+		// admissible and is now BLOCKED (issue AC8). Everything else —
+		// operator_cancelled, liveness, classless unresolved sets — keeps the
+		// existing admission path unchanged.
+		// Unresolved dimensions whose terminal class is NOT retryable
+		// (operator_cancelled, liveness, classless/armed-recovery) never
+		// trigger it, so the existing truthful INCOMPLETE/NO_COVERAGE
+		// admissions keep working. It fires only while an ELIGIBLE retryable
+		// dimension remains AND retry budget is available, and the budget is
+		// finite and monotonically consumed, so the gate cannot livelock:
+		// every blocked attempt either leads to a re-dispatch (consuming
+		// budget) or to an explicit operator-confirmed abandonment.
+		if (settlement.kind === 'PARTIAL' || settlement.kind === 'NO_COVERAGE') {
+			const stagedPolicyEnabled =
+				state.prReviewResilience?.policy?.enabled === true;
+			const consumedLegacyContractRetry = new Set(
+				state.prReviewContractRetryDimensions ?? [],
+			);
+			const attemptsUsed = state.prReviewResilience?.attempts?.length ?? 0;
+			const maxAttempts =
+				1 +
+				(state.prReviewResilience?.policy?.maxRetryAttemptsAfterInitial ?? 0);
+			const retryableRemainder = settlement.unresolvedDimensions.filter(
+				(entry) => {
+					if (entry.failureClass === 'operator_cancelled') return false;
+					if (stagedPolicyEnabled) {
+						return (
+							entry.failureClass === 'contract' ||
+							entry.failureClass === 'resource'
+						);
+					}
+					// Legacy policy: the ONE contract-only retry per dimension
+					// is the entire budget; resource-class terminals are not
+					// auto-retryable under legacy and never block.
+					return (
+						entry.failureClass === 'contract' &&
+						!consumedLegacyContractRetry.has(entry.dimension)
+					);
+				},
+			);
+			if (retryableRemainder.length > 0 && attemptsUsed < maxAttempts) {
+				// Bounded reconciliation receipt (existing journal, no new
+				// ledger): observed remainder + budget, fail-open on write.
+				try {
+					appendCoreEventSync(directory, {
+						type: 'pr_review_completion_retryable_remainder',
+						timestamp: isoNow(),
+						sessionID: state.sessionID,
+						prHeadSha: state.prHeadSha,
+						coverageKind: settlement.kind,
+						remainingDimensions: retryableRemainder.map(
+							(entry) =>
+								`${entry.dimension}:${entry.terminalState}:${entry.failureClass ?? 'none'}`,
+						),
+						attemptsUsed,
+						maxAttempts,
+						stagedPolicyEnabled,
+					});
+				} catch {
+					// Observation only — the BLOCKED refusal below is the
+					// operator-visible receipt and must still fire.
+				}
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async to consume the retry budget, or end the workflow through the human force path (/swarm abort-pr-workflow). If lanes are still live at an earlier stage, settle them explicitly first — cancel_lane_batch (confirm: true + reason) refuses busy/retry lanes, so live work is never destroyed on the model path.`,
+				);
+			}
+		}
 		dispatchCoverageFinalization(settlement);
 		if (settlement.kind === 'NO_COVERAGE') {
 			// NO_COVERAGE settles at completion (issue #2383): zero covered
@@ -12751,7 +13074,9 @@ export async function completePrWorkflow(
 			// Coverage-only preflight has no finding-policy artifact yet.  Pass an
 			// explicit empty set so the policy API cannot silently fall back to an
 			// omitted-findings compatibility path.
-			const preAllowed = allowedPrReviewReportVerdicts(settlement.kind, []);
+			const preAllowed = allowedPrReviewReportVerdicts(settlement.kind, [], {
+				disclosedCoverageDegradation: disclosedDegradation,
+			});
 			if (!preAllowed.includes(verdict)) {
 				throw new Error(
 					`BLOCKED: PR_REVIEW ${settlement.kind} completion allows report_verdict ${preAllowed.join(' | ')}; got "${verdict}". Partial coverage never approves and never claims a full review.`,
@@ -12771,6 +13096,19 @@ export async function completePrWorkflow(
 					'BLOCKED: PR_REVIEW state changed while checking terminal readiness; retry from current state',
 				);
 			}
+			// PR review F-2: the terminal-ladder await above can straddle a
+			// trigger-eval receipt write; the revision check covers gate-state
+			// changes, not receipt bytes. Re-read the degradation AFTER the
+			// ladder so the post-ladder dispatch and policy check consume the
+			// current receipt, not the pre-await capture (the pre-ladder
+			// preflight keep its own capture — an illegal verdict must fail fast
+			// before the expensive ladder).
+			if (ready.settlement.kind === 'COMPLETE') {
+				disclosedDegradation = prReviewReceiptHasCoverageDegradations(
+					directory,
+					readyState.prReviewTriggerEvalPath,
+				);
+			}
 			dispatchCoverageFinalization(ready.settlement);
 			const finalFindingAuthority = await readAuthoritativeFindingPolicy(
 				directory,
@@ -12779,6 +13117,7 @@ export async function completePrWorkflow(
 			const policyAllowed = allowedPrReviewReportVerdicts(
 				ready.settlement.kind,
 				finalFindingAuthority.policyFindings,
+				{ disclosedCoverageDegradation: disclosedDegradation },
 			);
 			if (!policyAllowed.includes(verdict)) {
 				throw new Error(
@@ -13125,6 +13464,9 @@ export async function completePrWorkflow(
 }
 
 export const _test_exports = {
+	// Issue #2601 (PRR-009): direct codec access so tests can pin the
+	// skillContractAdvisories schema cap independently of the append guard.
+	parseGateState: (data: unknown) => PrWorkflowGateStateSchema.safeParse(data),
 	// Issue #2382: the text-signature classifier was replaced by the typed
 	// circuit-signal classifier (durable structured evidence only). Exposed so
 	// the provider-terminal / ignored-reason classification can be asserted
@@ -13664,6 +14006,10 @@ function containsProtectedWorkflowPath(value: string): boolean {
 
 const PR_WORKFLOW_SHARED_CONTROLLER_TOOLS = new Set([
 	'abort_pr_workflow',
+	// Issue #2971: the authorized cancellation surface is a controller tool —
+	// it must stay reachable during an active PR_REVIEW/PR_FEEDBACK gate (the
+	// read-only name classifier would otherwise reject the 'cancel' token).
+	'cancel_lane_batch',
 	'collect_lane_results',
 	'complete_pr_workflow',
 	'dispatch_lanes_async',
@@ -15013,33 +15359,17 @@ function derivePrReviewCandidateInventory(
 	}
 	const degradedSourceKeys = new Set<string>();
 	if (state.prReviewTriggerEvalPath) {
-		const triggerPath = validateSwarmPath(
+		// Issue #2840: the bounded receipt read (path validation, byte cap,
+		// JSON + strict receipt parse, BLOCKED on corrupt-present) is shared
+		// with the verdict path through pr-review-trigger-receipt-reader.ts.
+		const receiptRead = readPrReviewTriggerReceiptForGate(
 			directory,
 			state.prReviewTriggerEvalPath,
 		);
-		let triggerArtifact: unknown;
-		try {
-			const triggerStat = statSync(triggerPath);
-			if (
-				!triggerStat.isFile() ||
-				triggerStat.size > PR_REVIEW_TRIGGER_RECEIPT_MAX_BYTES
-			) {
-				throw new Error('trigger evaluation artifact exceeds its read bound');
-			}
-			triggerArtifact = JSON.parse(readFileSync(triggerPath, 'utf-8'));
-		} catch {
+		const receipt = 'noReceipt' in receiptRead ? null : receiptRead.receipt;
+		if (!receipt) {
 			throw new Error(
 				'BLOCKED: PR_REVIEW trigger evaluation artifact is missing or invalid',
-			);
-		}
-		let receipt: ReturnType<typeof parsePrReviewTriggerReceipt>;
-		try {
-			receipt = parsePrReviewTriggerReceipt(triggerArtifact);
-		} catch (error) {
-			throw new Error(
-				`BLOCKED: PR_REVIEW trigger evaluation is invalid: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
 			);
 		}
 		for (const row of receipt.matchedRows) {

@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.1",
+  "tagCommit": "ec66974f2bc9c89a9c1cc8dec94894615e7e2387",
+  "targetCommitish": "ec66974f2bc9c89a9c1cc8dec94894615e7e2387",
+  "releaseBodySha256": "87fdf31776c384c1475e84b2f2b61b347ef57adbd04f14f85cc48a33b992f6f5",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2668-restart-policy-reconciliation.md",
+      "sha256": "906e0561b59464a164473ecd33612461b5317bea0b302baf13a531a8e805c38b"
+    },
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/2679-project-root-ownership-bootstrap.md",
+      "sha256": "c08df6583fde3ac2cd53af243c0194157020265b81674b15d74382fbc46c945e"
+    },
+    {
+      "prNumber": null,
+      "order": 6,
+      "path": "docs/releases/pending/2802-architect-consumer-skills-refs.md",
+      "sha256": "40344b56d6faad225cc74f8dc2ac87af4600e8df3ef700eac5c4d90b132b544b"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/fix-2745-pr-feedback-loop-production-wiring.md",
+      "sha256": "f13a8589e0f634acde6db0abcc83cef018133bb3c773bac3d620ca2e0e17defe"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/guardrails-coder-mutation-guidance-2758.md",
+      "sha256": "1635cf98b8a695a90fb9e427c9b6e3a05bfd4100aeda0024164fc4aebbd9f246"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/issue-2667-hydration-project-owned-generation-fenced.md",
+      "sha256": "3a501e7449971d5eeded386b4864f3ef7b85526042a96f4b48bdad3924588d10"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/issue-2763-empty-scope-completion.md",
+      "sha256": "d52526bebccece4b5fec3815ea5e003be373ebb6e1e0f69536d5fb8296db3fc2"
+    }
+  ]
+}

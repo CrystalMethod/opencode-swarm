@@ -40,7 +40,7 @@ export async function handleDashboardCommand(
 	_args: string[] | string,
 ): CommandResult {
 	const handle = getDashboardHandle(directory);
-	if (handle && handle.listening) {
+	if (handle?.listening) {
 		return [
 			'## Swarm dashboard',
 			'',

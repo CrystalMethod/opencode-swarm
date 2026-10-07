@@ -62,6 +62,14 @@ const BARE_GH = 'gh';
 const PROBE_MAX_BUFFER_BYTES = 64 * 1024;
 const PROBE_OUTPUT_EXCERPT_CHARS = 60;
 
+/**
+ * Budget/TTL constants exported for the gh↔glab resolver parity ratchet
+ * (tests/unit/utils/forge-executable-parity.test.ts, issue #2733): the glab
+ * twin must track the gh hardening, and the ratchet enforces identical probe
+ * bounds so a future gh hardening cannot land without its glab mirror.
+ */
+export { PER_PROBE_TIMEOUT_MS, TOTAL_BUDGET_MS, NEGATIVE_CACHE_TTL_MS };
+
 const WINDOWS_PATH_EXTENSIONS = ['.exe', '.cmd', '.bat'];
 
 /**

@@ -3,6 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { loadPluginConfigWithMeta } from '../config';
 import type { Plan } from '../config/plan-schema';
+import { appendCoreEventSync } from '../events/core-events.js';
 import { resolveGitExecutable } from '../utils/git-executable';
 import { derivePlanIdentityHash } from './utils';
 
@@ -25,10 +26,8 @@ import { derivePlanIdentityHash } from './utils';
 
 export const DEFAULT_AUTO_CHECKPOINT_THRESHOLD = 3;
 
-/** Generation suffix cap for replacement plans that restart the count. */
-const MAX_LABEL_GENERATIONS = 20;
-
 const GIT_PROBE_TIMEOUT_MS = 10_000;
+const GIT_PROBE_MAX_BUFFER_BYTES = 1024 * 1024;
 
 /** Outcome of evaluating the cadence for one completed transition. */
 export interface AutoCheckpointDecision {
@@ -48,6 +47,19 @@ export interface AutoCheckpointOutcome extends AutoCheckpointDecision {
 	saved: boolean;
 	warning?: string;
 }
+
+/**
+ * Test seam (AGENTS.md invariant 7): lets tests fault-inject the config
+ * loader and the git spawn without mocking the module graph. Restores are
+ * the test's responsibility (afterEach).
+ */
+export const _internals: {
+	loadPluginConfigWithMeta: typeof loadPluginConfigWithMeta;
+	spawnSync: typeof child_process.spawnSync;
+} = {
+	loadPluginConfigWithMeta,
+	spawnSync: child_process.spawnSync.bind(child_process),
+};
 
 export function countCompletedTasks(plan: Plan): number {
 	return plan.phases.reduce(
@@ -126,13 +138,14 @@ export function evaluateAutoCheckpoint(input: {
 function resolveHead(directory: string): string | null {
 	let result: child_process.SpawnSyncReturns<string>;
 	try {
-		result = child_process.spawnSync(
+		result = _internals.spawnSync(
 			resolveGitExecutable(),
 			['rev-parse', 'HEAD'],
 			{
 				cwd: directory,
 				encoding: 'utf-8',
 				timeout: GIT_PROBE_TIMEOUT_MS,
+				maxBuffer: GIT_PROBE_MAX_BUFFER_BYTES,
 				stdio: ['ignore', 'pipe', 'pipe'],
 				windowsHide: true,
 			},
@@ -187,7 +200,7 @@ export async function maybeSaveAutoCheckpoint(
 	let enabled = true;
 	let threshold = DEFAULT_AUTO_CHECKPOINT_THRESHOLD;
 	try {
-		const { config } = loadPluginConfigWithMeta(directory);
+		const { config } = _internals.loadPluginConfigWithMeta(directory);
 		if (config.checkpoint?.enabled === false) {
 			enabled = false;
 		}
@@ -233,39 +246,40 @@ export async function maybeSaveAutoCheckpoint(
 	if (sameFamily.some((entry) => entry.sha === head)) {
 		return { ...decision, saved: true, skipReason: 'already_current' };
 	}
-	// A replacement plan with the same swarm/title restarts the completed
-	// count; its boundary entry gets the next free generation suffix instead
-	// of colliding with the prior plan's label.
+	// The suffix space is unbounded and `taken` is finite (bounded by
+	// max_retention), so this loop always terminates well before generation
+	// exceeds the taken-set size plus one — no exhaustion cap is needed.
 	const taken = new Set(existing.map((entry) => entry.label));
 	let generation = 1;
 	let label = baseLabel;
 	while (taken.has(label)) {
 		generation += 1;
-		if (generation > MAX_LABEL_GENERATIONS) {
-			return {
-				...decision,
-				saved: false,
-				warning: `auto-checkpoint label generations exhausted for ${baseLabel}`,
-			};
-		}
 		label = buildAutoCheckpointLabel(plan, completedCount, generation);
 	}
 
 	const { saveCheckpointRecord } = await import('../tools/checkpoint.js');
 	const result = await saveCheckpointRecord(label, directory);
 	if (result.success) {
+		emitAutoSavedEvent(directory, {
+			label,
+			completedCount,
+			threshold: decision.threshold,
+		});
 		return { ...decision, label, saved: true };
 	}
 	// A concurrent writer may have recorded this boundary between our
 	// lock-free read and the save (the loser of that race gets a
 	// duplicate-label failure). Re-read and reconcile: if the live family now
-	// holds the current SHA, this was exactly the checkpoint we wanted — a
-	// quiet idempotent no-op, not an operator warning.
+	// holds the SHA we resolved (or the tree's current one — a commit may
+	// have landed between our probe and the save), this was exactly the
+	// checkpoint we wanted — a quiet idempotent no-op, not an operator
+	// warning.
+	const reconcileHead = resolveHead(directory) ?? head;
 	const afterSave = readCheckpointEntries(directory);
 	if (
 		afterSave.some(
 			(entry) =>
-				entry.sha === head &&
+				(entry.sha === head || entry.sha === reconcileHead) &&
 				parseLabelGeneration(baseLabel, entry.label) !== null,
 		)
 	) {
@@ -280,21 +294,43 @@ export async function maybeSaveAutoCheckpoint(
 }
 
 /**
+ * Best-effort observability for automatic saves: retention eviction emits
+ * `checkpoint_retention_applied`, so successful automatic saves emit
+ * `checkpoint_auto_saved` on the same `.swarm/events.jsonl` stream —
+ * operators can see trigger firings. Never throws; the checkpoint write
+ * already succeeded.
+ */
+function emitAutoSavedEvent(
+	directory: string,
+	payload: { label: string; completedCount: number; threshold: number },
+): void {
+	try {
+		appendCoreEventSync(directory, {
+			event: 'checkpoint_auto_saved',
+			...payload,
+			timestamp: new Date().toISOString(),
+		});
+	} catch {
+		// Best-effort event logging only.
+	}
+}
+
+/**
  * Generation number for a label in this boundary's family: 1 for the exact
- * base label, 2..MAX_LABEL_GENERATIONS for its `-gN` suffixed forms, null for
- * anything else — including a manually-created label that merely starts with
- * the family prefix (e.g. `<base>-garbage`), which must never be mistaken for
- * an automatic entry.
+ * base label, 2..N for its `-gN` suffixed forms (any numeric generation —
+ * the suffix space is unbounded), null for anything else — including a
+ * manually-created label that merely starts with the family prefix (e.g.
+ * `<base>-garbage`), which must never be mistaken for an automatic entry.
  */
 function parseLabelGeneration(baseLabel: string, label: string): number | null {
 	if (label === baseLabel) return 1;
 	// Guard the slice: an unrelated label that merely shares the length and a
 	// `-gN` tail (but not the base prefix) is not family.
 	if (!label.startsWith(baseLabel)) return null;
-	const match = /^-g(\d{1,3})$/.exec(label.slice(baseLabel.length));
+	const match = /^-g(\d{1,6})$/.exec(label.slice(baseLabel.length));
 	if (!match) return null;
 	const generation = Number(match[1]);
-	return generation >= 2 && generation <= MAX_LABEL_GENERATIONS
-		? generation
-		: null;
+	// Generation 1 is the bare base label itself; '01' normalizes to 1 and is
+	// rejected so zero-padded forms can never shadow the base entry.
+	return generation >= 2 ? generation : null;
 }

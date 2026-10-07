@@ -10,6 +10,12 @@ import {
 	resolveExecutableFromPath,
 	runExternalTool,
 } from '../utils/external-tool-runner';
+import {
+	buildWindowsBatchCommand as buildSharedWindowsBatchCommand,
+	resolveContainedWindowsBatchCommand as resolveSharedContainedWindowsBatchCommand,
+	WINDOWS_BATCH_WRAPPER_EXTENSIONS,
+	type WindowsBatchDeps,
+} from '../utils/windows-batch';
 import { createSwarmTool } from './create-tool';
 
 // ============ Constants ============
@@ -26,11 +32,18 @@ const BIN_DIRECTORY = '.bin';
 const MAX_PACKAGE_MANIFEST_BYTES = 256 * 1024;
 const MAX_PATH_SHIM_BYTES = 64 * 1024;
 const UNSAFE_SHELL_WRAPPER_EXTENSIONS = new Set(['.bat', '.cmd', '.ps1']);
-const WINDOWS_BATCH_WRAPPER_EXTENSIONS = ['.cmd', '.bat'] as const;
-// Node quotes array-form cmd.exe tokens, keeping spaces and parentheses opaque.
-// Reject shell separators, quoting, expansion markers, and line breaks instead
-// of attempting to escape them into an executable command string.
-const WINDOWS_CMD_UNSAFE_TOKEN = /["%!^&|<>\r\n]/;
+
+// The constrained cmd.exe batch-launch helpers live in
+// `src/utils/windows-batch.ts` (shared with the Maven wrapper launch in
+// `src/lang/backends/java.ts`). Lint keeps its own DI seam: these thunks read
+// `_internals` at CALL time, so tests that replace `_internals.platform`,
+// `comSpec`, `realpathSync`, or `statSync` still steer the shared helpers.
+const lintWindowsBatchDeps: WindowsBatchDeps = {
+	platform: () => _internals.platform(),
+	comSpec: () => _internals.comSpec(),
+	realpathSync: (candidate) => _internals.realpathSync(candidate),
+	statSync: (candidate) => _internals.statSync(candidate),
+};
 
 const LINTER_PACKAGES: Record<SupportedLinter, string> = {
 	biome: '@biomejs/biome',
@@ -828,52 +841,15 @@ function resolveAdditionalExecutable(name: string): string | null {
 	);
 }
 
-function resolveWindowsCommandInterpreter(): string | null {
-	const candidate = _internals.comSpec();
-	if (
-		!candidate ||
-		!path.isAbsolute(candidate) ||
-		path.basename(candidate).toLowerCase() !== 'cmd.exe' ||
-		!isRegularFile(candidate)
-	) {
-		return null;
-	}
-	try {
-		const canonical = _internals.realpathSync(candidate);
-		return path.basename(canonical).toLowerCase() === 'cmd.exe'
-			? canonical
-			: null;
-	} catch {
-		return null;
-	}
-}
-
 function buildWindowsBatchCommand(
 	wrapperPath: string,
 	args: string[],
 ): string[] | null {
-	const interpreter = resolveWindowsCommandInterpreter();
-	if (!interpreter) return null;
-
-	let canonicalWrapper: string;
-	try {
-		canonicalWrapper = _internals.realpathSync(wrapperPath);
-	} catch {
-		return null;
-	}
-	if (
-		!isRegularFile(canonicalWrapper) ||
-		!WINDOWS_BATCH_WRAPPER_EXTENSIONS.includes(
-			path.extname(canonicalWrapper).toLowerCase() as '.cmd' | '.bat',
-		)
-	) {
-		return null;
-	}
-
-	const tokens = [canonicalWrapper, ...args];
-	if (tokens.some((token) => WINDOWS_CMD_UNSAFE_TOKEN.test(token))) return null;
-	const command = `call ${tokens.map((token) => `"${token}"`).join(' ')}`;
-	return [interpreter, '/d', '/s', '/v:off', '/c', command];
+	return buildSharedWindowsBatchCommand(
+		wrapperPath,
+		args,
+		lintWindowsBatchDeps,
+	);
 }
 
 function resolveWindowsBatchCommandFromPath(
@@ -894,27 +870,12 @@ function resolveContainedWindowsBatchCommand(
 	fileName: string,
 	args: string[],
 ): string[] | null {
-	if (_internals.platform() !== 'win32') return null;
-	const candidate = path.join(cwd, fileName);
-	if (!isRegularFile(candidate)) return null;
-
-	let canonicalCwd: string;
-	let canonicalCandidate: string;
-	try {
-		canonicalCwd = _internals.realpathSync(cwd);
-		canonicalCandidate = _internals.realpathSync(candidate);
-	} catch {
-		return null;
-	}
-	const relative = path.relative(canonicalCwd, canonicalCandidate);
-	if (
-		relative === '' ||
-		relative.startsWith('..') ||
-		path.isAbsolute(relative)
-	) {
-		return null;
-	}
-	return buildWindowsBatchCommand(canonicalCandidate, args);
+	return resolveSharedContainedWindowsBatchCommand(
+		cwd,
+		fileName,
+		args,
+		lintWindowsBatchDeps,
+	);
 }
 
 function buildAdditionalCommand(name: string, args: string[]): string[] | null {
@@ -1229,19 +1190,30 @@ async function runResolvedLint(
 	}
 
 	const exitCode = runResult.exitCode ?? 0;
+	const combinedOutput = combineOutput(runResult);
 	const result: LintSuccessResult = {
 		success: true,
 		mode,
 		linter: command.linter,
 		command: displayCommand,
 		exitCode,
-		output: combineOutput(runResult),
+		output: combinedOutput,
 	};
 
 	if (exitCode === 0) {
 		result.message = `${command.linter} ${mode} completed successfully with no issues`;
 	} else if (mode === 'fix') {
 		result.message = `${command.linter} fix completed with exit code ${exitCode}. Run check mode to see remaining issues.`;
+	} else if (
+		command.linter === 'biome' &&
+		combinedOutput.includes('No files were processed')
+	) {
+		// #2918: biome exits 1 with "No files were processed in the specified
+		// paths" when every path is ignored by its configuration (docs-only
+		// batches). The old message claimed issues were found — false when
+		// zero files were processed. Informational semantics unchanged
+		// (success stays true); detection is biome-gated.
+		result.message = `${command.linter} check processed no files (all specified paths ignored by biome configuration)`;
 	} else {
 		result.message = `${command.linter} check found issues (exit code ${exitCode}).`;
 	}

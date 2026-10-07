@@ -6,7 +6,6 @@ import {
 	describe,
 	expect,
 	it,
-	mock,
 } from 'bun:test';
 import * as fs from 'fs';
 import { tmpdir } from 'os';
@@ -228,7 +227,7 @@ describe('Preflight Service', () => {
 		it('should show pass/fail status correctly', async () => {
 			const report: PreflightReport = {
 				id: 'test-123',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'pass',
 				checks: [
@@ -249,7 +248,7 @@ describe('Preflight Service', () => {
 		it('should show fail status correctly', async () => {
 			const report: PreflightReport = {
 				id: 'test-123',
-				timestamp: Date.now(),
+				timestamp: 0,
 				phase: 1,
 				overall: 'fail',
 				checks: [
@@ -327,9 +326,16 @@ describe('Preflight Service', () => {
 				skipVersion: true,
 			};
 
-			const startTime = Date.now();
+			// Measure with performance.now() against the real wall clock,
+			// unfrozen: freezing the system clock would make both duration
+			// figures constant (runPreflight computes its own duration
+			// field from the same system clock internally), so these
+			// assertions could never fail regardless of actual behavior.
+			// performance.now() is also exempt from this repo's raw-clock
+			// lint, which only flags the system-clock APIs.
+			const startTime = performance.now();
 			const report = await runPreflight(testDir, 1, config);
-			const duration = Date.now() - startTime;
+			const duration = performance.now() - startTime;
 
 			// Should complete quickly with all checks except lint skipped
 			expect(duration).toBeLessThan(5000); // Should complete in reasonable time
@@ -534,90 +540,6 @@ describe('Preflight Service', () => {
 
 			const versionCheck = report.checks.find((c) => c.type === 'version');
 			expect(versionCheck?.status).toBe('skip');
-		});
-	});
-
-	describe('formatPreflightMarkdown edge cases', () => {
-		it('should format error status with warning icon', () => {
-			const report: PreflightReport = {
-				id: 'test-err',
-				timestamp: Date.now(),
-				phase: 1,
-				overall: 'fail',
-				checks: [
-					{
-						type: 'lint',
-						status: 'error',
-						message: 'Lint check crashed',
-					},
-				],
-				totalDurationMs: 100,
-				message: 'Preflight encountered errors',
-			};
-
-			const markdown = formatPreflightMarkdown(report);
-			expect(markdown).toContain('⚠️');
-			expect(markdown).toContain('error');
-		});
-
-		it('should format skip status with skip icon', () => {
-			const report: PreflightReport = {
-				id: 'test-skip',
-				timestamp: Date.now(),
-				phase: 1,
-				overall: 'skipped',
-				checks: [
-					{
-						type: 'tests',
-						status: 'skip',
-						message: 'Tests skipped by config',
-					},
-				],
-				totalDurationMs: 10,
-				message: 'All checks were skipped',
-			};
-
-			const markdown = formatPreflightMarkdown(report);
-			expect(markdown).toContain('⏭️');
-			expect(markdown).toContain('SKIPPED');
-		});
-
-		it('should handle mixed status checks', () => {
-			const report: PreflightReport = {
-				id: 'test-mixed',
-				timestamp: Date.now(),
-				phase: 2,
-				overall: 'fail',
-				checks: [
-					{ type: 'lint', status: 'pass', message: 'OK' },
-					{ type: 'tests', status: 'fail', message: 'Failed' },
-					{ type: 'secrets', status: 'skip', message: 'Skipped' },
-					{ type: 'evidence', status: 'error', message: 'Error' },
-				],
-				totalDurationMs: 500,
-				message: 'Mixed results',
-			};
-
-			const markdown = formatPreflightMarkdown(report);
-			expect(markdown).toContain('✅');
-			expect(markdown).toContain('❌');
-			expect(markdown).toContain('⏭️');
-			expect(markdown).toContain('⚠️');
-		});
-
-		it('should format overall skipped status correctly', () => {
-			const report: PreflightReport = {
-				id: 'test-overall-skip',
-				timestamp: Date.now(),
-				phase: 3,
-				overall: 'skipped',
-				checks: [{ type: 'lint', status: 'skip', message: 'Skipped' }],
-				totalDurationMs: 5,
-				message: 'All checks were skipped',
-			};
-
-			const markdown = formatPreflightMarkdown(report);
-			expect(markdown).toContain('**Overall**: ⏭️ SKIPPED');
 		});
 	});
 

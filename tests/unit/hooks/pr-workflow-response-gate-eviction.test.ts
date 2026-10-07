@@ -5,6 +5,7 @@ import { _test_exports as workflowInternals } from '../../../src/hooks/pr-workfl
 import {
 	createPrWorkflowResponseGate,
 	MAX_TRACKED_WAKE_SESSIONS,
+	_internals as responseGateInternals,
 } from '../../../src/hooks/pr-workflow-response-gate.js';
 import { withFrozenClockAsync } from '../../helpers/test-clock.js';
 import {
@@ -167,4 +168,18 @@ describe('evictIfOverBound — regression: LRU eviction must not delete a live o
 			{ fixedNow: 1_000, tickMs: 1 },
 		);
 	});
+});
+
+// Issue #2601: stub the wake-path skill-contract verifier (fs-bound) so
+// fake-timer wake assertions stay deterministic; clean-host result is [].
+const __originalSkillContractVerifier =
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh;
+
+beforeEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh = async () => [];
+});
+
+afterEach(() => {
+	responseGateInternals.ensurePrWorkflowSkillContractsFresh =
+		__originalSkillContractVerifier;
 });

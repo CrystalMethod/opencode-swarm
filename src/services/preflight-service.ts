@@ -29,7 +29,11 @@ import {
 	type SecretscanErrorResult,
 	type SecretscanResult,
 } from '../tools/secretscan';
-import { runTests, type TestResult } from '../tools/test-runner';
+import {
+	detectTestFrameworkViaDispatch,
+	runTests,
+	type TestResult,
+} from '../tools/test-runner';
 import { log } from '../utils';
 
 /** Preflight check types */
@@ -402,6 +406,32 @@ async function runTestsCheck(
 	const startTime = Date.now();
 
 	try {
+		// Reach the real language-backend framework detection instead of the
+		// legacy `runTests('none', ...)` path, whose hard guard returns
+		// `framework: 'none'` for empty scope/files/targets before dispatch
+		// detection ever runs. When a supported project structure is present
+		// we report the detected framework WITHOUT executing the test suite:
+		// the result carries `detectedOnly: true`, which consumers render as a
+		// distinct informational/skip status ("tests not executed") rather than
+		// a plain pass. Only genuinely undetectable projects fall through to
+		// the legacy `runTests('none', ...)` path below, which DOES execute the
+		// suite.
+		const detectedFramework = await detectTestFrameworkViaDispatch(_dir);
+
+		if (detectedFramework !== 'none') {
+			return {
+				type: 'tests',
+				status: 'pass',
+				message: `Test framework detected: ${detectedFramework}`,
+				details: {
+					framework: detectedFramework,
+					scope,
+					detectedOnly: true,
+				},
+				durationMs: Date.now() - startTime,
+			};
+		}
+
 		const result: TestResult = await runTests(
 			'none', // Auto-detect
 			scope,
@@ -1169,6 +1199,14 @@ export async function runPreflight(
 		message = 'Preflight passed all checks';
 	}
 
+	const testsCheckForMessage = checks.find((c) => c.type === 'tests');
+	const testsDetectedOnlyForMessage =
+		testsCheckForMessage?.details?.detectedOnly === true;
+	if (overall === 'pass' && testsDetectedOnlyForMessage) {
+		message =
+			'Preflight passed all checks except tests (detected only — not executed)';
+	}
+
 	log(`[Preflight] Complete: ${overall} ${message}`);
 
 	return {
@@ -1186,11 +1224,22 @@ export async function runPreflight(
  * Format preflight report as markdown
  */
 export function formatPreflightMarkdown(report: PreflightReport): string {
+	const testsDetectedOnlyOverall = report.checks.some(
+		(c) => c.type === 'tests' && c.details?.detectedOnly === true,
+	);
 	const lines = [
 		'## Preflight Report',
 		'',
 		`**Phase**: ${report.phase}`,
-		`**Overall**: ${report.overall === 'pass' ? '✅ PASS' : report.overall === 'fail' ? '❌ FAIL' : '⏭️ SKIPPED'}`,
+		`**Overall**: ${
+			report.overall === 'fail'
+				? '❌ FAIL'
+				: report.overall === 'skipped'
+					? '⏭️ SKIPPED'
+					: testsDetectedOnlyOverall
+						? '⏭️ PARTIAL (tests detected only)'
+						: '✅ PASS'
+		}`,
 		`**Duration**: ${(report.totalDurationMs / 1000).toFixed(2)}s`,
 		'',
 		'### Checks',
@@ -1198,15 +1247,25 @@ export function formatPreflightMarkdown(report: PreflightReport): string {
 	];
 
 	for (const check of report.checks) {
-		const icon =
-			check.status === 'pass'
+		// A tests check that only detected a framework (no suite executed)
+		// must not render as a plain pass — it is surfaced as a distinct
+		// informational/skip status with an explicit "tests not executed"
+		// message so it is not mistaken for a real test run.
+		const detectedOnly =
+			check.type === 'tests' && check.details?.detectedOnly === true;
+		const icon = detectedOnly
+			? '⏭️'
+			: check.status === 'pass'
 				? '✅'
 				: check.status === 'fail'
 					? '❌'
 					: check.status === 'error'
 						? '⚠️'
 						: '⏭️';
-		lines.push(`- ${icon} **${check.type}**: ${check.message}`);
+		const message = detectedOnly
+			? 'detected only — tests not executed'
+			: check.message;
+		lines.push(`- ${icon} **${check.type}**: ${message}`);
 	}
 
 	lines.push('');

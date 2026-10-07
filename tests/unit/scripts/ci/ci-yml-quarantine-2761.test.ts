@@ -86,16 +86,17 @@ function commentBlockAbove(ledgerPath: string, entry: string): string {
 describe('ci.yml integration — quarantine ledger entries for issue #2761 merge-group flake detection', () => {
 	test.each(
 		ISSUE_2761_QUARANTINED_PATHS,
-	)('$path is an active entry in its ledger', ({
+	)('$path is retired from its ledger (#2973)', ({
 		path: quarantinedPath,
 		expectedLedger,
 	}) => {
-		// Regression guard for issue #2761: without these entries, rule A of
-		// scripts/ci/detect-and-quarantine-flakes.sh would re-file duplicate
-		// issues on every detection (it only drops candidates already present
-		// in a ledger) and the affected unit shards would keep flaking.
+		// #2973 retirement (2026-09-27): the 2602 lifecycle entry's
+		// safeRmRecursive fix had already landed (PR #2807) and the batch-gc
+		// entry's slowness was floor-raised to 150s by the retiring PR.
+		// Absence guard: no silent re-add without fresh merge-group
+		// failure evidence.
 		expect(existsSync(expectedLedger)).toBe(true);
-		expect(activeEntries(expectedLedger)).toContain(quarantinedPath);
+		expect(activeEntries(expectedLedger)).not.toContain(quarantinedPath);
 	});
 
 	test.each(
@@ -124,17 +125,19 @@ describe('ci.yml integration — quarantine ledger entries for issue #2761 merge
 
 	test.each(
 		ISSUE_2761_QUARANTINED_PATHS,
-	)('$path carries OWNER + EXPIRY metadata (issue #2477 Check 7)', ({
+	)('$path leaves no stale entry line or OWNER/EXPIRY block (#2973)', ({
 		path: quarantinedPath,
 		expectedLedger,
 	}) => {
-		// check:invariants Check 7 requires every active quarantine entry to
-		// carry `# OWNER:` and `# EXPIRY: YYYY-MM-DD` in the comment block
-		// directly above it; a missing block fails the gate and would block
-		// this very PR's CI, so the pinning test re-asserts the grammar.
-		const block = commentBlockAbove(expectedLedger, quarantinedPath);
-		expect(block).toContain('# OWNER:');
-		expect(block.match(/#\s*EXPIRY:\s*\d{4}-\d{2}-\d{2}/) !== null).toBe(true);
+		// The entries were removed by the #2973 retirement, so no ledger
+		// line for the path may remain (a surviving entry line — with its
+		// OWNER/EXPIRY comment block — would be an orphan the removal
+		// missed; commentBlockAbove returning '' alone would not distinguish
+		// a removed entry from a metadata-stripped one).
+		const lines = readFileSync(expectedLedger, 'utf8')
+			.replace(/\r\n/g, '\n')
+			.split('\n');
+		expect(lines.some((line) => line.trim() === quarantinedPath)).toBe(false);
 	});
 
 	test.each(

@@ -172,9 +172,11 @@ describe('gate-denial tracker wiring in src/index.ts', () => {
 		expect(rollbackCondition).not.toContain('failClosedRegionCompleted');
 		// ...and must call the delegation gate's rollback entry point from
 		// inside its own try/catch so the original denial still propagates, with
-		// the rethrow landing AFTER the rollback attempt.
+		// the rethrow landing AFTER the rollback attempt. The second argument
+		// is optional (issue #2829 threads input.sessionID for durable
+		// binding eviction); the guard pins the wiring shape, not the arity.
 		expect(catchBody).toMatch(
-			/try\s*\{\s*await delegationGateHooks\.abortDeniedSettlementForCall\(\s*input\.callID,?\s*\);?\s*\}\s*catch\s*\{/,
+			/try\s*\{\s*await delegationGateHooks\.abortDeniedSettlementForCall\(\s*input\.callID\s*(?:,\s*input\.sessionID\s*)?,?\s*\);?\s*\}\s*catch\s*\{/,
 		);
 		const callIdx = catchBody.indexOf(
 			'delegationGateHooks.abortDeniedSettlementForCall(',

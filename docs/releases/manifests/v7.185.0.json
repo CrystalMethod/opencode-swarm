@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.185.0",
+  "tagCommit": "00669431030c350a5c28c41710f30e93fe3f40ca",
+  "targetCommitish": "00669431030c350a5c28c41710f30e93fe3f40ca",
+  "releaseBodySha256": "39330168ddc41fd87083913f7be7809d8b51e5a6ec2d0f6b24b956b1609b2c8c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2733-gitlab-first-class-provider.md",
+      "sha256": "14bbb0eb1c358de2ffccf3c82580f84e6da6906a8f7dbbe0de0f9def0fe9fb7d"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2829-stage-b-dispatch-generation-durability.md",
+      "sha256": "668501e95030ca983c0124c79cc786d1a49edc080c46514757484eda1c776523"
+    }
+  ]
+}

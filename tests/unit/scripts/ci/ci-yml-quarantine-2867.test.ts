@@ -18,33 +18,35 @@ const INTEGRATION_LEDGER_PATH = join(
 	'scripts/ci/quarantined-integration-tests.txt',
 );
 
-// Two paths quarantined by THIS PR for issue #2867. Of the two #2867
+// One path quarantined by THIS PR for issue #2867. Of the two #2867
 // candidates auto-filed by the merge-group flake-detection workflow
 // (issue #1782) from CI run 35491073606 (merge_group, head cffc439a,
 // 2026-09-20T05:12:12Z) and surfaced via flake-detection run 35492561496
 // (2026-09-20T05:47:22Z), both were single-OS windows-latest flakes with
 // green ubuntu-1..6 / macos-1..6 / the-other-windows-shards siblings in
-// the same CI run, which the windows-ledger re-add policy in
-// scripts/ci/quarantined-tests-windows.txt routes to the windows ledger.
-// One candidate (`close-active-state-unlink-retry.test.ts`) was already
-// auto-filed by the four earlier sibling issues #2843 / #2844 / #2845 /
-// #2846 — all still OPEN, with quarantine commits sitting on unmerged
-// sibling auto-fix branches — but those entries are not yet on
-// origin/main, so the file is NOT yet in any ledger on this branch and
-// the rule-A drop in detect-and-quarantine-flakes.sh would still re-file
-// a duplicate if this branch's run also failed. The second candidate
-// (`delegation-gate-background-coder.test.ts`) is a CORE-TREE entry per
-// detector rule C (`tests/unit/hooks/**`); the workflow surfaced it
-// with the `# CORE-TREE (requires human review)` prefix; the issue's
-// triage comment requires a manual review of the merge-group logs before
-// placing it. The review (this PR's commit body) confirms the
-// `Passed on retry 2 (flaky)` annotation prefix is NOT in the
-// INFRA_SIGNATURES list of the detector (no `Runner offline` / `was not
-// acquired by Runner` / `no space left on device` / `waiting for a
-// runner`) so this is a real assertion flake, and the sibling OS
-// shards are all green, so placement is the windows ledger (single-OS
-// evidence) rather than the general ledger (which would falsely imply
-// cross-OS flake by suppressing the file on every RUNNER_OS).
+// the same CI run. The second candidate
+// (`delegation-gate-background-coder.test.ts`, quarantined here) is a
+// CORE-TREE entry per detector rule C (`tests/unit/hooks/**`); the
+// workflow surfaced it with the `# CORE-TREE (requires human review)`
+// prefix; the issue's triage comment requires a manual review of the
+// merge-group logs before placing it. The review (this PR's commit
+// body) confirms the `Passed on retry 2 (flaky)` annotation prefix is
+// NOT in the INFRA_SIGNATURES list of the detector (no `Runner offline`
+// / `was not acquired by Runner` / `no space left on device` /
+// `waiting for a runner`) so this is a real assertion flake, and the
+// sibling OS shards are all green, so placement is the windows ledger
+// (single-OS evidence) rather than the general ledger (which would
+// falsely imply cross-OS flake by suppressing the file on every
+// RUNNER_OS).
+//
+// The first candidate (`close-active-state-unlink-retry.test.ts`) is
+// NOT quarantined by this PR: its teardown root cause was fixed on main
+// by e7d227ab3 (PR #2862 review round, 2026-09-20 — safeRmRecursive
+// EBUSY-retry migration, explicitly naming this file as the
+// "pre-existing Windows-flaky" case), and the windows ledger's re-add
+// policy forbids entries whose failure class has a root fix in-tree.
+// The sibling auto-fix PRs #2857/#2861 that would have quarantined it
+// were closed on 2026-10-07 with that evidence.
 //
 // Wrapped in object literals so `test.each`'s `$path` template
 // interpolates the actual path into each test title (a primitive-string
@@ -53,7 +55,6 @@ const INTEGRATION_LEDGER_PATH = join(
 // ci-yml-quarantine-2812.test.ts and ci-yml-quarantine-2761.test.ts use
 // the same destructured object form).
 const ISSUE_2867_THIS_PR_QUARANTINED_PATHS: ReadonlyArray<{ path: string }> = [
-	{ path: 'tests/unit/commands/close-active-state-unlink-retry.test.ts' },
 	{ path: 'tests/unit/hooks/delegation-gate-background-coder.test.ts' },
 ];
 
@@ -123,9 +124,11 @@ describe('ci.yml integration — windows quarantine ledger entries for issue #28
 		// (e.g. an entry removed without updating the header, or a count
 		// bumped without the matching entries) makes the header lie to
 		// triage. Note: this only catches count drift; the presence
-		// tests above are the cross-PR overwrite guard. Post-#2867 count
-		// is 11 (9 pre-existing on main from PRs #2774 / #2811 + the
-		// 2812 windows-ledger additions + 2 net-new from this PR).
+		// tests above are the cross-PR overwrite guard. Post-rebase
+		// count is 2 (the j02 issue-#2826 entry re-applied by PR
+		// #2834's rebase + the net-new delegation-gate entry from this
+		// PR; the 9-entry cohort that pre-dated both was retired
+		// 2026-09-27 per issue #2973).
 		const raw = readFileSync(WINDOWS_LEDGER_PATH, 'utf8').replace(
 			/\r\n/g,
 			'\n',

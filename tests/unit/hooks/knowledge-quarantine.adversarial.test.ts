@@ -63,7 +63,7 @@ describe('quarantineEntry - Path Traversal Attacks', () => {
 		// Should NOT throw, should just early return
 		await expect(
 			quarantineEntry('../../../etc', entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 	});
 
 	it('blocks Windows-style path traversal: ..\\..\\windows', async () => {
@@ -72,7 +72,7 @@ describe('quarantineEntry - Path Traversal Attacks', () => {
 
 		await expect(
 			quarantineEntry('..\\..\\windows', entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 	});
 
 	it('blocks embedded traversal: foo/../../../bar', async () => {
@@ -81,7 +81,7 @@ describe('quarantineEntry - Path Traversal Attacks', () => {
 
 		await expect(
 			quarantineEntry('foo/../../../bar', entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 	});
 
 	it('allows absolute paths (no .. in path)', async () => {
@@ -95,7 +95,7 @@ describe('quarantineEntry - Path Traversal Attacks', () => {
 		// Should not crash - entry won't be found, but no error thrown
 		await expect(
 			quarantineEntry(tempDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({ status: 'not_found' });
 	});
 
 	it('blocks empty string directory', async () => {
@@ -104,7 +104,7 @@ describe('quarantineEntry - Path Traversal Attacks', () => {
 
 		await expect(
 			quarantineEntry('', entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 	});
 });
 
@@ -148,7 +148,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 
 		// Original entry should still exist
 		const { readFile } = await import('node:fs/promises');
@@ -165,7 +165,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 
 		// Original entry should still exist
 		const { readFile } = await import('node:fs/promises');
@@ -183,7 +183,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 		// Should not crash - just won't find a matching entry
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({ status: 'not_found' });
 	});
 
 	it('rejects CRLF injection (\\r\\n contains \\n)', async () => {
@@ -192,7 +192,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toEqual({ status: 'invalid_input' });
 	});
 
 	it('handles very long entryId (10000 chars) without crashing', async () => {
@@ -202,7 +202,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 		// Should not crash - just won't find a matching entry
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({ status: 'not_found' });
 	});
 
 	it('handles JSON injection attempt in entryId', async () => {
@@ -212,7 +212,7 @@ describe('quarantineEntry - Injection Attacks on entryId', () => {
 		// Should not crash - just won't find a matching entry
 		await expect(
 			quarantineEntry(testDir, entryId, reason, 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({ status: 'not_found' });
 	});
 });
 
@@ -391,7 +391,7 @@ describe('quarantineEntry - Concurrent-like Behavior', () => {
 		// Second quarantine - should be no-op (entry already removed from knowledge.jsonl)
 		await expect(
 			quarantineEntry(testDir, entryId, 'second reason', 'architect'),
-		).resolves.toBeUndefined();
+		).resolves.toMatchObject({ status: 'not_found' });
 
 		// Should still be in quarantine, not duplicated
 		const { readFile } = await import('node:fs/promises');

@@ -866,6 +866,18 @@ export function auditEntryHealth(entry: KnowledgeEntryBase): EntryHealthResult {
 // Quarantine Entry (With Lockfile)
 // ============================================================================
 
+/**
+ * #2950: what `quarantineEntry` actually did inside the lock. Callers that
+ * need to report truthfully (the knowledge_archive tool) switch on this
+ * instead of assuming the mutation happened; value-discarding callers are
+ * unaffected.
+ */
+export type QuarantineEntryOutcome =
+	| { status: 'quarantined' }
+	| { status: 'denied'; basis: string; detail: string }
+	| { status: 'not_found' }
+	| { status: 'invalid_input' };
+
 export async function quarantineEntry(
 	directory: string,
 	entryId: string,
@@ -880,26 +892,26 @@ export async function quarantineEntry(
 		input: CurationAuthorizationInput;
 		context: CurationContext;
 	},
-): Promise<void> {
+): Promise<QuarantineEntryOutcome> {
 	// Guard against path traversal
 	if (!directory || directory.includes('..')) {
 		warn(
 			'[knowledge-validator] quarantineEntry: directory traversal attempt blocked',
 		);
-		return;
+		return { status: 'invalid_input' };
 	}
 
 	// 1. Validate inputs
 	if (!entryId || entryId.includes('\0') || entryId.includes('\n')) {
 		warn('[knowledge-validator] quarantineEntry: invalid entryId rejected');
-		return;
+		return { status: 'invalid_input' };
 	}
 
 	const validReportedBy = ['architect', 'user', 'auto'] as const;
 	if (
 		!validReportedBy.includes(reportedBy as (typeof validReportedBy)[number])
 	) {
-		return;
+		return { status: 'invalid_input' };
 	}
 
 	const sanitizedReason = reason
@@ -931,7 +943,7 @@ export async function quarantineEntry(
 		const entries = await readKnowledge<KnowledgeEntryBase>(knowledgePath);
 		const entry = entries.find((e) => e.id === entryId);
 		if (!entry) {
-			return;
+			return { status: 'not_found' };
 		}
 
 		// #1848 §2: cohort-safe authorization. When a curation context is
@@ -953,7 +965,13 @@ export async function quarantineEntry(
 					`[knowledge-validator] quarantineEntry blocked by cohort-safety policy ` +
 						`(basis: ${decision.basis}): ${decision.detail}`,
 				);
-				return; // non-destructive no-op; the policy recorded a proposal
+				// non-destructive no-op; the policy recorded a proposal. #2950:
+				// surface the denial to callers that report truthfully.
+				return {
+					status: 'denied',
+					basis: decision.basis,
+					detail: decision.detail,
+				};
 			}
 		}
 
@@ -1012,6 +1030,7 @@ export async function quarantineEntry(
 			`${JSON.stringify(rejectedRecord)}\n`,
 			'utf-8',
 		);
+		return { status: 'quarantined' };
 	} finally {
 		if (release) {
 			await release();

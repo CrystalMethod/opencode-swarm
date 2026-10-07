@@ -334,7 +334,7 @@ All tests use `bun:test`. Do not use Jest, Vitest, or any other framework. See `
 
 ### Test file size limits
 
-- **Maximum 500 lines per test file** (FR-006 SC-006.1), enforced by `scripts/check-test-file-cap.ts` as a diff-scoped ratchet (new over-cap files and grown over-cap files fail CI; pre-existing violators are non-blocking). Escape hatch: `TEST_CAP_ENFORCE=0` soft-warns. Verify locally on any platform — Windows PowerShell included — with `bun run check:test-file-cap` (fetch `origin/main` first; the check is diff-scoped and reads committed changes).
+- **Maximum 500 lines per test file** (FR-006 SC-006.1), enforced by `scripts/check-test-file-cap.ts` as a diff-scoped ratchet (new over-cap files and grown over-cap files fail CI; pre-existing violators are non-blocking). Escape hatch: `TEST_CAP_ENFORCE=0` soft-warns. The config-consumption ratchet (`scripts/check-config-consumption.ts`, issue #2904) has the same escape hatch: `CONFIG_CONSUMPTION_ENFORCE=0` soft-warns for a deliberate declaration-growth PR. Verify locally on any platform — Windows PowerShell included — with `bun run check:test-file-cap` (fetch `origin/main` first; the check is diff-scoped and reads committed changes).
 - `delegation-gate.test.ts` was the monolith — 2835 lines split into 45 focused files, each under 500 lines
 - When a test file exceeds 500 lines, split it by behavior/feature into focused files
 - SME tests (FR-008) use parameterization to keep files lean while maximizing coverage
@@ -351,7 +351,7 @@ If your code change alters the behavior of an existing function (new error messa
 
 ### Opt-in tool maps
 
-Some tools are gated behind feature flags and use **opt-in tool maps** (e.g., `MEMORY_AGENT_TOOL_MAP` when `memory.enabled === true`, `EXTERNAL_SKILL_AGENT_TOOL_MAP` when `external_skills.curation_enabled === true`). These tools must still be fully registered (export, `TOOL_NAMES`, `tool-metadata`, manifest entry), but are merged into agent configs conditionally at build time. See AGENTS.md invariant #11 (Tool registration + agent-map coherence) for the complete checklist.
+Some tools are gated behind feature flags and use **opt-in tool maps** (e.g., `MEMORY_AGENT_TOOL_MAP` when `memory.enabled === true`, `EXTERNAL_SKILL_AGENT_TOOL_MAP` when `external_skills.curation_enabled === true`, `EPIC_AGENT_TOOL_MAP` — architect-only `epic_next_wave` / `epic_phase_review` — when `epic.mode.enabled === true`). These tools must still be fully registered (export, `TOOL_NAMES`, `tool-metadata`, manifest entry), but are merged into agent configs conditionally at build time. See AGENTS.md invariant #11 (Tool registration + agent-map coherence) for the complete checklist.
 
 ### Adding adversarial tests
 
@@ -402,12 +402,16 @@ Do not prefix the heading with a version (`# v7.21.4`) — release-please owns t
 
 ### What still happens automatically
 
-After your PR merges, release-please opens or updates its release PR. CI runs `scripts/release-notes-fragments.mjs update-pr` to aggregate every pending fragment referenced by that release PR and inject it inside the `<!-- custom-release-notes:start --> … <!-- custom-release-notes:end -->` marker block (preserving release-please's own body markers). When the release PR merges and a tag is cut, `update-release` mirrors the same aggregation into the GitHub Release body.
+After your PR merges, release-please opens or updates its release PR. CI runs `scripts/release-notes-fragments.mjs update-pr` to aggregate every pending fragment referenced by that release PR and inject it inside the `<!-- custom-release-notes:start --> … <!-- custom-release-notes:end -->` marker block (preserving release-please's own body markers). When the release PR merges and a tag is cut, `update-release` mirrors the same aggregation into the GitHub Release body. A fragment's leading YAML frontmatter block (`---`-fenced, mapping-shaped) is treated as authoring metadata: it is stripped from the rendered release notes, while the provenance oracle keeps comparing the raw fragment bytes and accepts both the raw and the rendered published forms.
 
 The tag job then prepares an exact-tag cleanup plan. It proves the remote
 peeled tag, local peeled tag, and checkout HEAD are the same commit, binds the
 full GitHub Release body and each consumed fragment's SHA-256, and passes that
-plan to a fresh `main` checkout. The apply step is dry-run first and writes
+plan to a fresh `main` checkout. The apply step runs with
+`GH_TOKEN`/`GITHUB_REPOSITORY` step env (any step invoking a gh-dependent
+fragment-script mode must carry them — enforced by
+`tests/unit/scripts/ci/release-fragments-gh-auth-shape-2898.test.ts`), is
+dry-run first, and writes
 `docs/releases/v<version>.md` plus
 `docs/releases/manifests/v<version>.json`; it deletes only a current pending
 file whose raw bytes still equal the tagged bytes. Changed, renamed, missing,
@@ -440,12 +444,20 @@ exact tag oldest-to-newest and run
 `nextCursor` is null, also pass
 `--historical-batch .release-fragment-cleanup/batch.json`. The immutable plan
 records the digest-bound ordered tag snapshot, exact slice, and continuation.
-Then run
-`apply-cleanup --plan
-.release-fragment-cleanup/plan.json` followed by the explicit `--apply` form
-from a current main checkout. Cleanup-plan paths are restricted to one JSON file
+Both `prepare-cleanup` and `apply-cleanup` — the dry-run first, then the
+explicit `--apply` form — validate an exact-tag proof that requires the
+checkout HEAD to be the tag commit, so run them AT the tag checkout (a
+detached worktree per batch; early historical tags predate the cleanup
+feature, so overlay the current script without staging it, `git restore .`
+before each tag-to-tag move, and restore
+`docs/releases/manifests/historical-replay-state.json` before every tag
+except the first of the whole ordered list). Cleanup-plan paths are
+restricted to one JSON file
 directly under `.release-fragment-cleanup/`. Existing matching history is
-preserved; any conflict fails closed. Commit each bounded batch as a cleanup
+preserved; any conflict fails closed. The resulting `docs/releases` changes
+(history, manifests, replay state, and deletion of exactly the
+manifest-referenced pending fragments whose bytes still hash-match) are then
+committed from a current main checkout as the batch PR. Commit each bounded batch as a cleanup
 PR. Each non-final tag writes a version-controlled replay-state artifact so
 required retention CI can verify that bounded work remains. That authorization
 expires after seven days, reruns preserve its original deadline, and an expiry
@@ -456,7 +468,11 @@ removes that state and fails closed before mutation unless its projected pending
 count satisfies the limit. The final batch has
 `nextCursor: null`, and its last tag must satisfy `verify-retention`.
 The drift workflow runs `verify-retention` to reject byte-identical consumed
-fragments and to enforce the pending-fragment count limit.
+fragments and to enforce the pending-fragment count limit, reporting the
+14-day add rate and projected days-to-limit (with a `::warning::` under 30
+days). Every release run ends in a `release-health-summary` job that reports
+the cleanup conclusion and emits an `::error::` annotation if the cleanup job
+did not complete.
 
 ---
 

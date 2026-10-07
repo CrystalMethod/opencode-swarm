@@ -318,8 +318,31 @@ describe('handleIssueCommand', () => {
 			}
 		});
 
-		test('Non-GitHub URL (gitlab) fails parsing', () => {
-			// gitlab URLs fail at parseIssueRef because regex requires github.com
+		// (#2733 sanctioned flip) GitLab is now a first-class forge: this test
+		// previously asserted that a gitlab.com issue URL failed parsing
+		// because the regex required github.com. The accepted shape is the
+		// canonical GitLab '/-/issues/N' form.
+		test('GitLab issue URL now parses (previously rejected)', () => {
+			const result = handleIssueCommand(tmpDir, [
+				'https://gitlab.com/owner/repo/-/issues/42',
+			]);
+			expect(result).toContain(
+				'issue="https://gitlab.com/owner/repo/-/issues/42"',
+			);
+			expect(result).not.toContain('Could not parse');
+		});
+
+		test('Self-hosted GitLab nested-namespace issue URL parses', () => {
+			const result = handleIssueCommand(tmpDir, [
+				'https://gitlab.acme.test/ops/infra/app/-/issues/9',
+			]);
+			expect(result).toContain(
+				'issue="https://gitlab.acme.test/ops/infra/app/-/issues/9"',
+			);
+			expect(result).not.toContain('Could not parse');
+		});
+
+		test('A GitHub-shaped issue path on a gitlab host still fails (not the GitLab shape)', () => {
 			const result = handleIssueCommand(tmpDir, [
 				'https://gitlab.com/owner/repo/issues/42',
 			]);

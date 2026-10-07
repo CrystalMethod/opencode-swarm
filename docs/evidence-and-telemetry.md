@@ -212,11 +212,12 @@ Every `delegation_end` event includes token and cost fields:
 
 | Field | Description |
 |---|---|
-| `tokens_input` | Input tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_output` | Output tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_reasoning` | Reasoning tokens attributed to the delegation, or `0` when unavailable |
-| `tokens_cache` | Cache-read/input tokens attributed to the delegation, or `0` when unavailable |
+| `tokens_input` | Input tokens attributed to the delegation, or `null` when the producer held no value (unknown — never fabricated as 0; issue #2789) |
+| `tokens_output` | Output tokens attributed to the delegation, or `null` when unknown |
+| `tokens_reasoning` | Reasoning tokens attributed to the delegation, or `null` when unknown |
+| `tokens_cache` | Cache-read/input tokens attributed to the delegation, or `null` when unknown |
 | `cost_usd` | Reported or estimated USD cost, or `null` when unavailable |
+| `unknown_usage_delegations` | `/swarm costs --json` only: count of delegations whose four token axes were all unknown. Note this includes a `cost_source: 'reported'` line that carried no usage evidence — "reported" attests the cost basis, not the token axes |
 | `cost_source` | `reported`, `estimated`, or `unavailable` |
 | `model` | Model id used for attribution when known |
 | `gate` | Delegation gate/reason when known |
@@ -295,6 +296,12 @@ Written to `.swarm/evidence/{phase}/curator-findings.json` when the curator LLM 
 ```
 
 Written atomically (tmp+rename) only when findings are present. Verdict values: `applied`, `ignored`, `violated`, `not_applicable`.
+
+---
+
+## Epic Phase Review
+
+While an epic is open (Epic Mode, opt-in `epic.mode.enabled`), `epic_phase_review` dispatches a read-only phase reviewer and then a phase critic itself, and writes `.swarm/evidence/{phase}/epic-phase-review.json` (`src/epic/phase-readiness.ts`). It records the phase, review time, the binding (plan id, plan structure hash, phase task ids and digests, task-evidence digest), and the reviewer and critic verdicts (critic `null` when the reviewer did not approve). Verdicts are parsed from the agents' own responses, never self-reported. The `phase_complete` gate `epic_phase_readiness` requires both to be APPROVED, bound to the current plan and task evidence, and at most 24 h old. Block codes: `EPIC_PHASE_REVIEW_MISSING`, `EPIC_PHASE_REVIEW_INVALID`, `EPIC_PHASE_REVIEWER_NOT_APPROVED`, `EPIC_PHASE_CRITIC_MISSING`, `EPIC_PHASE_CRITIC_NOT_APPROVED`, `EPIC_PHASE_REVIEW_STALE`, `EPIC_PHASE_PLAN_UNREADABLE`, `EPIC_PHASE_WAVES_OPEN`. Epic Mode emits no telemetry events of its own; use `/swarm epic status` and `/swarm epic report` instead.
 
 ---
 

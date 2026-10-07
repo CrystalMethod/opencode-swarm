@@ -114,8 +114,12 @@ async function establishNOfSix(successfulCount: number): Promise<{
 			'swarm-pr-review:base',
 			lanes,
 			{
-				status: 'error',
-				workflowLaneFailureClass: 'contract',
+				// Issue #2971: the retryable-remainder completion gate blocks a
+				// PARTIAL completion while contract-class dimensions still have
+				// legacy retry budget. This fixture models the OPERATOR-CONFIRMED
+				// abandonment shape, which the gate admits truthfully.
+				status: 'cancelled',
+				workflowLaneFailureClass: 'operator_cancelled',
 			},
 		);
 	}
@@ -181,7 +185,7 @@ describe('terminal N-of-6 settlement (issue #2383) — parameterized N=0..6', ()
 			for (const entry of settled.settlement.unresolvedDimensions) {
 				expect(entry.terminalState).toBe('FAILED');
 				expect(entry.reasonKind).toBe('lane_failure');
-				expect(entry.failureClass).toBe('contract');
+				expect(entry.failureClass).toBe('operator_cancelled');
 				expect(entry.terminalEventId).toBeTruthy();
 			}
 		});

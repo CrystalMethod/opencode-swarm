@@ -32,6 +32,7 @@ import { ast_grep } from './ast-grep';
 import { authorize_pr_review_reentry } from './authorize-pr-review-reentry';
 import { batch_symbols } from './batch-symbols';
 import { build_check } from './build-check';
+import { cancel_lane_batch } from './cancel-lane-batch';
 import { check_gate_status } from './check-gate-status';
 import { checkpoint } from './checkpoint';
 import { co_change_analyzer } from './co-change-analyzer';
@@ -54,9 +55,8 @@ import {
 } from './dispatch-lanes';
 import { doc_extract, doc_scan } from './doc-scan';
 import { detect_domains } from './domain-detector';
-import { epic_plan_waves } from './epic-plan-waves';
-import { epic_record_divergence } from './epic-record-divergence';
-import { epic_decide_phase } from './epic-run-phase';
+import { epic_next_wave } from './epic-next-wave';
+import { epic_phase_review } from './epic-phase-review';
 import { evidence_check } from './evidence-check';
 import { external_skill_delete } from './external-skill-delete';
 import { external_skill_discover } from './external-skill-discover';
@@ -97,6 +97,7 @@ import { phase_complete } from './phase-complete';
 import { pkg_audit } from './pkg-audit';
 import { placeholder_scan } from './placeholder-scan';
 import { plan_conflict_check } from './plan-conflict-check';
+import { pr_review_submission } from './pr-review-submission';
 import { pr_workflow_status } from './pr-workflow-status';
 import { pre_check_batch } from './pre-check-batch';
 import { prepare_pr_feedback_scope } from './prepare-pr-feedback-scope';
@@ -199,6 +200,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	completion_verify: () => completion_verify,
 	complete_pr_workflow: () => complete_pr_workflow,
 	abort_pr_workflow: () => abort_pr_workflow,
+	cancel_lane_batch: () => cancel_lane_batch,
 	authorize_pr_review_reentry: () => authorize_pr_review_reentry,
 	submit_pr_review_result: () => submit_pr_review_result,
 	approve_plan_critic: () => approve_plan_critic,
@@ -226,6 +228,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	plan_conflict_check: () => plan_conflict_check,
 	prepare_pr_feedback_scope: () => prepare_pr_feedback_scope,
 	write_pr_review_artifact: () => write_pr_review_artifact,
+	pr_review_submission: () => pr_review_submission,
 	write_pr_review_trigger_eval: () => write_pr_review_trigger_eval,
 	test_runner: () => test_runner,
 	test_impact: () => test_impact,
@@ -315,7 +318,6 @@ export const TOOL_MANIFEST = defineHandlers({
 	external_skill_reject: () => external_skill_reject,
 	external_skill_delete: () => external_skill_delete,
 	external_skill_revoke: () => external_skill_revoke,
-	epic_decide_phase: () => epic_decide_phase,
-	epic_plan_waves: () => epic_plan_waves,
-	epic_record_divergence: () => epic_record_divergence,
+	epic_next_wave: () => epic_next_wave,
+	epic_phase_review: () => epic_phase_review,
 });

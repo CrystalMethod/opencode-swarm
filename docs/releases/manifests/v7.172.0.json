@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.172.0",
+  "tagCommit": "c2e8d44b6f7892ff594e9f3cbe7b019c9b99b79e",
+  "targetCommitish": "c2e8d44b6f7892ff594e9f3cbe7b019c9b99b79e",
+  "releaseBodySha256": "41b0faefb2e19dad46f7c595ed913e35b41dfe01f044f44e010da19e086c586b",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2498-gated-github-action.md",
+      "sha256": "4fe5b0f0f2bcdafb4093568d8db1ec094d731353c204dfc5dafcbe4bdf901b4d"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2499-readonly-mcp-verification-surface.md",
+      "sha256": "2c33817edf964c7b4d1e416fe919a561fbaa8f3337f6c50ba56462434572be88"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2511-delegation-read-uncertainty.md",
+      "sha256": "04d50a78a7ed870f28e6ae53e66d995f3e27892ca4fcdb9f65681152bf2e6b3a"
+    }
+  ]
+}

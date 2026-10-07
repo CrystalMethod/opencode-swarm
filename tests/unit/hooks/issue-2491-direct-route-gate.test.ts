@@ -312,7 +312,7 @@ describe('issue #2491 direct delegation-gate route authorization', () => {
 					},
 				},
 			);
-			await hook.abortDeniedSettlementForCall(deniedCallID);
+			await hook.abortDeniedSettlementForCall(deniedCallID, 'parent-2491');
 
 			// A fresh call identity must be able to reclaim the released first slot;
 			// if the denied call's live binding were stranded, it would be assigned

@@ -312,4 +312,86 @@ describe('write_pr_review_artifact liveness-class admission (issue #2615)', () =
 		);
 		expect(onDisk.unresolvedDimensions[0].failureClass).toBe('liveness');
 	});
+
+	test('admits INCOMPLETE coverage when the unresolved lane settled cancelled with the operator_cancelled class (issue #2971)', async () => {
+		// Mirror of test 1 for the DISTINCT #2971 class: an explicit, confirmed
+		// operator cancellation (cancel_lane_batch) settles through the same
+		// shared exactly-once claim, admits INCOMPLETE, and is disclosed with
+		// the operator-action safeDetail — never the host-abandonment text.
+		const { missingDimension, records } =
+			await establishFivePlusOneUnresolvedLane(async (subagentSessionId) => {
+				// Settle exactly as cancel_lane_batch does: status 'cancelled' with
+				// the empty-body-digest synthetic result and the distinct typed
+				// 'operator_cancelled' class (never 'liveness').
+				await claimTerminalResult(directory, subagentSessionId, {
+					eventId: `fixture-terminal-${subagentSessionId}`,
+					status: 'cancelled',
+					// Real instant read through the helper (check:test-clock):
+					// the terminal must sit between the fixture's writes and
+					// the admission read, so it cannot be a fixed constant.
+					recordedAt: withFrozenClock(() => Date.now(), {
+						fixedNow: Date.now(),
+					}),
+					result: {
+						error:
+							'lane cancelled via cancel_lane_batch: liveness-admission fixture',
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+						workflowLaneFailureClass: 'operator_cancelled',
+					},
+				});
+			});
+		const result = JSON.parse(
+			await executeWritePrReviewArtifact(
+				{
+					kind: 'findings',
+					run_id: 'liveness-run',
+					pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+					boundary: 'post_explorer',
+					records,
+					partial_base_coverage: { unresolved_dimensions: [missingDimension] },
+				},
+				directory,
+				{ sessionID: PR_ARTIFACT_SESSION_ID },
+			),
+		) as {
+			success: boolean;
+			partial_base_coverage?: {
+				unresolved_dimensions: Array<{
+					dimension: string;
+					terminal_state: string;
+					failure_class?: string;
+				}>;
+			};
+		};
+		expect(result.success).toBe(true);
+		expect(JSON.stringify(result)).not.toContain(
+			'lacks a typed terminal failure',
+		);
+		const disclosed = result.partial_base_coverage?.unresolved_dimensions.find(
+			(entry) => entry.dimension === missingDimension,
+		);
+		expect(disclosed?.terminal_state).toBe('FAILED');
+		expect(disclosed?.failure_class).toBe('operator_cancelled');
+		const onDisk = JSON.parse(
+			await fs.readFile(
+				path.join(
+					directory,
+					'.swarm',
+					'pr-review',
+					'liveness-run',
+					'coverage-disclosure.json',
+				),
+				'utf8',
+			),
+		);
+		expect(onDisk.unresolvedDimensions[0].failureClass).toBe(
+			'operator_cancelled',
+		);
+		expect(onDisk.unresolvedDimensions[0].safeDetail).toMatch(/operator/);
+		expect(onDisk.unresolvedDimensions[0].safeDetail).not.toMatch(
+			/abandoned by its host/,
+		);
+	});
 });

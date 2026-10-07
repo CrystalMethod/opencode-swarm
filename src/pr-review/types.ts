@@ -164,7 +164,8 @@ export interface PrReviewCriticSettledReceipt {
  * whose production authority lives at a richer executor boundary — transcript
  * downgrade protection (`validateExactStructuredReceiptCoverage`), provider
  * terminal evidence classification (`classifyPrReviewCircuitSignal`),
- * operator lane cancellation (`collectOnce` cancel_pending), publication
+ * operator lane cancellation (`cancel_lane_batch`, issue #2971; the
+ * collector's `cancel_pending` is observation-only guidance), publication
  * arming/settlement (`completePrWorkflow`), and reviewer re-entry consumption
  * (`reservePrReviewReentryAuthorizationAgainstBinding`) — are deliberately
  * RETIRED from this union rather than declared without a dispatch site.
@@ -246,6 +247,16 @@ export type PrReviewEvent =
 			type: 'coverage_finalization_requested';
 			settlement: PrReviewCoverageSettlementInput;
 			requestedVerdict?: PrReviewReportVerdict;
+			/**
+			 * Issue #2840: true when the durable trigger-eval receipt discloses a
+			 * coverage degradation (dead family or coverage-quality). A disclosed
+			 * degradation makes the review DEGRADED_DISCLOSED — the verdict matrix
+			 * below must reject APPROVE even for a COMPLETE settlement.
+			 */
+			// PR review F-5: REQUIRED (single production dispatch site always
+			// populates it) — an alternate future caller omitting it must fail
+			// to compile, never silently get the pre-#2840 permissive matrix.
+			disclosedDegradation: boolean;
 	  }
 	| {
 			type: 'critic_result_recorded';
@@ -290,6 +301,9 @@ export type PrReviewTransitionRejectionCode =
 	| 'live_lane_blocks_coverage'
 	| 'partial_coverage_cannot_approve'
 	| 'no_coverage_requires_incomplete'
+	// Issue #2840: a disclosed coverage degradation (dead family) makes the
+	// review DEGRADED_DISCLOSED; it can never emit APPROVE.
+	| 'degraded_disclosure_cannot_approve'
 	| 'critic_required_unfulfilled'
 	| 'stale_foreign_authorization'
 	| 'stale_generation_result'

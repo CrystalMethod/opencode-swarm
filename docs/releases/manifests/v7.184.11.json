@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.11",
+  "tagCommit": "691e978a57080c6c795ed74cda1d06dc8bce4cb3",
+  "targetCommitish": "691e978a57080c6c795ed74cda1d06dc8bce4cb3",
+  "releaseBodySha256": "2f554aaab34c1999fc8beaea5cd0a1a02953569eaa8889a5cbaccbd7ed1a959d",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2583-scoring-context-prm-docs-align.md",
+      "sha256": "3c42138324beff666c26e38a10c65c67699cf33bbfa0c2f19484824ebaa41976"
+    }
+  ]
+}

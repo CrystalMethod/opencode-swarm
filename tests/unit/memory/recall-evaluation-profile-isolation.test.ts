@@ -103,7 +103,11 @@ describe('recall evaluation profile isolation', () => {
 				).toBe(true);
 			}
 		}
-	}, 15_000);
+		// 60s floor (#2973 retirement of the #2812 wall-clock flake): local runs take
+		// ~3s but loaded windows-latest runners were observed at 15.0-15.2s against this
+		// former 15s cap; the stubbed embeddings keep the work FS-bound, so only the
+		// cap needed loaded-runner margin.
+	}, 60_000);
 
 	test('quality profiles enforce the returned-token cap for an oversized record without changing no-profile recall', async () => {
 		await withSafeTestDir(async (directory) => {

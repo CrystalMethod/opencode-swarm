@@ -406,13 +406,20 @@ export interface BackgroundDelegationWorkflowLaneRecovery {
 // tests/unit/pr-review/lane-failure-class-parity.test.ts — every member must
 // have a live producer. The 'deadline' member was removed in #2615; its last
 // producer had already been deleted in #2381. 'liveness' covers
-// host-accepted-then-abandoned, stale-swept and operator-cancelled lanes
-// (producers: the collect-path stale sweep, the Task-side stale flip, and
-// cancel_pending in src/tools/dispatch-lanes.ts).
+// host-accepted-then-abandoned and stale-swept lanes (producers: the
+// collect-path stale sweep and the Task-side stale flip).
+// Issue #2971: 'operator_cancelled' is the distinct class for an explicitly
+// authorized operator cancellation (producer: cancel_lane_batch in
+// src/tools/cancel-lane-batch.ts, plus the /swarm abort-pr-workflow force
+// override's sweep stamping). Historical records whose cancellation was
+// written as 'liveness' by pre-#2971 builds remain readable via the persisted
+// union below — no migration; an operator-cancelled dimension is NOT
+// auto-retryable and never consumes the automatic retry budget.
 export type BackgroundDelegationWorkflowLaneFailureClass =
 	| 'contract'
 	| 'resource'
-	| 'liveness';
+	| 'liveness'
+	| 'operator_cancelled';
 
 /**
  * Legacy failure class retired from lane results by #2615 (its last producer
@@ -643,7 +650,13 @@ const ResultSchema = z
 		// rejecting it here made the whole namespace read fail as uncertain.
 		// Mirrors PrReviewDisclosureFailureClass on the disclosure side.
 		workflowLaneFailureClass: z
-			.enum(['contract', 'resource', 'liveness', 'deadline'])
+			.enum([
+				'contract',
+				'resource',
+				'liveness',
+				'operator_cancelled',
+				'deadline',
+			])
 			.optional(),
 		// Issue #2382: must be declared here (schema is .strict()) — see the
 		// interface comment and the parity guard below this schema.
@@ -3730,6 +3743,34 @@ export async function publishPrReviewResultReceipt(
 					}
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): an `error` terminal
+				// with workflowLaneFailureClass 'contract' that PASSED
+				// record-result integrity and failed only at the receipt branch
+				// is a stale-snapshot settlement — the collect settle path is
+				// the sole producer of that shape and always includes its
+				// snapshot's receipt in the result when it had one. Terminals
+				// that failed record-result integrity (degraded/empty output,
+				// missing digest) are genuine typed contract failures and are
+				// NOT admitted. When the terminal claim won the lock before
+				// the child's publish landed, the publish is the child's
+				// genuine exactly-bound settlement; admit it below (the
+				// immutable-identity checks still gate the write) so the lane
+				// settles on its receipt instead of losing the dimension to
+				// transport ordering.
+				const staleContractResult =
+					current.terminalResult?.result.workflowLaneFailureClass === 'contract'
+						? current.terminalResult?.result
+						: current.result?.workflowLaneFailureClass === 'contract'
+							? current.result
+							: undefined;
+				const staleContractTerminalForReceipt =
+					current.status === 'error' &&
+					!current.result?.prReviewResultReceipt &&
+					!current.terminalResult?.result.prReviewResultReceipt &&
+					staleContractResult !== undefined &&
+					staleContractResult.outputDegraded !== true &&
+					(staleContractResult.chars ?? 0) > 0 &&
+					!!staleContractResult.digest;
 				if (current.status !== 'pending' && current.status !== 'running') {
 					// Issue #2585 (AC13): the architect-parent repair lever may
 					// publish onto a liveness-terminal lane ONLY when the submission
@@ -3744,7 +3785,10 @@ export async function publishPrReviewResultReceipt(
 						(current.terminalResult?.result.workflowLaneFailureClass ===
 							'liveness' ||
 							current.result?.workflowLaneFailureClass === 'liveness');
-					if (!livenessTerminalForParentRepair) {
+					if (
+						!livenessTerminalForParentRepair &&
+						!staleContractTerminalForReceipt
+					) {
 						outcome = {
 							status: 'terminal',
 							reason: `delegation is already ${current.status}`,
@@ -3807,22 +3851,74 @@ export async function publishPrReviewResultReceipt(
 					};
 					return;
 				}
+				// Issue #2865 (claim-first interleaving): the admitted publish
+				// supersedes the stale-decision terminal — the record settles
+				// `completed` on the exactly-bound receipt, mirroring the
+				// terminal the settle path would have written had its snapshot
+				// observed the receipt. The stale error text and contract class
+				// are dropped from the persisted result so the folded record
+				// never carries a settlement verdict next to the receipt that
+				// contradicts it. Idempotent: a replay short-circuits to
+				// `duplicate` at the receipt check above; the new eventId
+				// differs from the refused error terminal's (status+digest
+				// identity), and the fold is last-wins.
+				const staleContractAdmissionResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
+				delete staleContractAdmissionResult.error;
+				delete staleContractAdmissionResult.workflowLaneFailureClass;
+				const staleContractAdmission =
+					staleContractTerminalForReceipt === true
+						? buildTypedDelegationTerminal(
+								current,
+								'completed',
+								staleContractAdmissionResult,
+								Date.now(),
+							)
+						: undefined;
+				if (staleContractAdmission) {
+					logger.warn(
+						`[background] publishPrReviewResultReceipt: admitting receipt onto stale-decision ` +
+							`contract terminal for correlationId=${input.parentSessionId}/${input.childSessionId} ` +
+							`lane=${input.laneId}; record settles completed on the exactly-bound receipt`,
+					);
+				}
+				const ordinaryPublishResult: BackgroundDelegationResult = {
+					...(current.result ?? {
+						chars: 0,
+						truncated: false,
+						digest: createHash('sha256').update('').digest('hex'),
+					}),
+					prReviewResultReceipt: parsed.data,
+				};
 				const next: BackgroundDelegationRecord = {
 					...current,
 					schemaVersion: 4,
 					updatedAt: Date.now(),
-					result: {
-						...(current.result ?? {
-							chars: 0,
-							truncated: false,
-							digest: createHash('sha256').update('').digest('hex'),
-						}),
-						prReviewResultReceipt: parsed.data,
-					},
+					// On claim-first admission the folded record's own result is
+					// the sanitized receipt-bearing result — the stale error
+					// text and contract class must not survive next to the
+					// receipt (downstream consumers project record.result.*).
+					// Every other publish path keeps the ordinary result.
+					result: staleContractAdmission
+						? staleContractAdmissionResult
+						: ordinaryPublishResult,
 					...(parentRepairBackfill
 						? {
 								terminalResult: parentRepairBackfill,
 								completedAt: parentRepairBackfill.recordedAt,
+							}
+						: {}),
+					...(staleContractAdmission
+						? {
+								status: 'completed',
+								terminalResult: staleContractAdmission,
+								completedAt: staleContractAdmission.recordedAt,
 							}
 						: {}),
 				};
@@ -4055,6 +4151,14 @@ export interface TerminalClaim {
  *
  * A different event for an already-claimed correlation is rejected. Replays of the
  * same event receive an explicit resume/retry disposition from durable state.
+ *
+ * This function is the FIRST terminal writer for a correlation. It is not the
+ * only one: `publishPrReviewResultReceipt`'s issue #2865 claim-first admission
+ * deliberately supersedes a provably-stale error/`contract` terminal with a
+ * completed receipt-backed terminal under separate rules (and a later claim of
+ * a different event here is rejected and counted as a late terminal in the
+ * delegation-health artifact — an operator-visible audit counter, with no
+ * alerting threshold attached).
  */
 export async function claimTerminalResult(
 	directory: string,
@@ -4102,6 +4206,41 @@ export async function claimTerminalResult(
 					return;
 				}
 				if (current.status !== 'pending' && current.status !== 'running') {
+					return;
+				}
+				// Issue #2865: refuse to persist an error/`contract` terminal
+				// whose result lacks a receipt the record provably holds at
+				// claim time. That signature arises from a settlement decision
+				// made on a stale record snapshot: the single producer of an
+				// error+`contract` terminal is the PR-review collect path, and
+				// a terminal that PASSED record-result integrity (not degraded,
+				// non-empty content, digest present) and carries no receipt in
+				// its result failed at the receipt branch only — the
+				// stale-snapshot shape (a "mismatched structured receipt"
+				// rejection carries the receipt and never reaches this guard
+				// because the merge below is then a no-op; degraded/empty
+				// content-integrity failures keep their typed class and are
+				// persisted normally). Refusing leaves the record open, so the
+				// next collection pass — which re-reads records at entry —
+				// settles the lane on the now visible receipt instead of
+				// persisting the self-contradicting terminal state (error says
+				// "missing structured receipt" while the receipt sits in the
+				// same record).
+				const staleContractIncoming =
+					parsedTerminal.data.status === 'error' &&
+					parsedTerminal.data.result.workflowLaneFailureClass === 'contract' &&
+					parsedTerminal.data.result.outputDegraded !== true &&
+					(parsedTerminal.data.result.chars ?? 0) > 0 &&
+					!!parsedTerminal.data.result.digest;
+				if (
+					normalizedResult !== parsedTerminal.data.result &&
+					staleContractIncoming
+				) {
+					logger.warn(
+						`[background] claimTerminalResult: refusing stale-decision contract terminal for ` +
+							`correlationId=${correlationId}; a structured receipt is already recorded on the open record; ` +
+							`lane left open for the next collection pass`,
+					);
 					return;
 				}
 
@@ -5347,7 +5486,16 @@ function sweepStaleLocked(
 		excludeCorrelationIds?: ReadonlySet<string>;
 		includeCorrelationIds?: ReadonlySet<string>;
 	} = {},
-	limits: { maxSweep?: number } = {},
+	limits: {
+		maxSweep?: number;
+		/**
+		 * Issue #2971: opt-in terminal override for authorized operator
+		 * finalizations (the /swarm abort-pr-workflow force path). Defaults
+		 * preserve the historical 'liveness' stale terminal byte-for-byte.
+		 */
+		failureClass?: BackgroundDelegationWorkflowLaneFailureClass;
+		reasonPrefix?: string;
+	} = {},
 ): number {
 	let swept = 0;
 	const { excludeCorrelationIds, includeCorrelationIds } = filters;
@@ -5368,20 +5516,24 @@ function sweepStaleLocked(
 		// class so PR-review partial-coverage admission can settle a
 		// stale-swept dimension without abort_pr_workflow. 'liveness' marks a
 		// lane abandoned without an observed host failure.
-		const staleReason = `lane presumed stale after ${timeoutMs}ms without a terminal event`;
+		const staleReason = limits.reasonPrefix
+			? `${limits.reasonPrefix} (lane finalized after ${timeoutMs}ms without a terminal event)`
+			: `lane presumed stale after ${timeoutMs}ms without a terminal event`;
+		const failureClass: BackgroundDelegationWorkflowLaneFailureClass =
+			limits.failureClass ?? 'liveness';
 		// Issue #2615 (review finding): a pre-existing result (e.g. a classless
 		// partial-transcript preview stamped before the flip) must not silently
 		// survive the stale transition untyped — merge the 'liveness' class over
 		// it while preserving its original error/digest evidence. Only a record
 		// with NO result gets the synthesized stale-reason result (fresh digest).
 		const livenessResult: BackgroundDelegationResult = record.result
-			? { ...record.result, workflowLaneFailureClass: 'liveness' }
+			? { ...record.result, workflowLaneFailureClass: failureClass }
 			: {
 					error: staleReason,
 					chars: staleReason.length,
 					truncated: false,
 					digest: createHash('sha256').update(staleReason).digest('hex'),
-					workflowLaneFailureClass: 'liveness',
+					workflowLaneFailureClass: failureClass,
 				};
 		// Issue #2700: the flip writes the typed terminal evidence atomically
 		// with the disposition — same event shape the claim path produces
@@ -5457,6 +5609,9 @@ export async function sweepStaleDelegations(
 		statuses?: ReadonlySet<SweepableDelegationStatus>;
 		excludeCorrelationIds?: ReadonlySet<string>;
 		includeCorrelationIds?: ReadonlySet<string>;
+		/** Issue #2971: opt-in operator-action terminal stamping (see sweepStaleLocked). */
+		failureClass?: BackgroundDelegationWorkflowLaneFailureClass;
+		reasonPrefix?: string;
 	} = {},
 ): Promise<number> {
 	if (!timeoutMs || timeoutMs <= 0) return 0;
@@ -5465,6 +5620,10 @@ export async function sweepStaleDelegations(
 		excludeCorrelationIds: options.excludeCorrelationIds,
 		includeCorrelationIds: options.includeCorrelationIds,
 	};
+	const limits = {
+		...(options.failureClass ? { failureClass: options.failureClass } : {}),
+		...(options.reasonPrefix ? { reasonPrefix: options.reasonPrefix } : {}),
+	};
 	try {
 		return await withEvidenceLock(
 			directory,
@@ -5472,7 +5631,14 @@ export async function sweepStaleDelegations(
 			STORE_LOCK_AGENT,
 			STORE_LOCK_TASK,
 			async () =>
-				sweepStaleLocked(directory, timeoutMs, Date.now(), statuses, filters),
+				sweepStaleLocked(
+					directory,
+					timeoutMs,
+					Date.now(),
+					statuses,
+					filters,
+					limits,
+				),
 		);
 	} catch (err) {
 		logger.warn(

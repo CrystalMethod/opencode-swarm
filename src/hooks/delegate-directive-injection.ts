@@ -27,8 +27,12 @@ import {
 } from '../agents/reviewer-directive-compliance.js';
 import { stripKnownSwarmPrefix } from '../config/schema.js';
 import { loadPlan } from '../plan/manager.js';
+import { recordPendingDispatchAuthorization } from '../state.js';
 import { log, warn } from '../utils/logger.js';
-import { extractCurrentPhaseFromPlan } from './extractors.js';
+import {
+	extractCurrentPhaseFromPlan,
+	extractPhaseIdFromLabel,
+} from './extractors.js';
 import { recordKnowledgeEvent } from './knowledge-events.js';
 import {
 	buildDelegateDirectiveBlock,
@@ -215,6 +219,10 @@ export async function injectDelegateDirectivesBefore(
 				? taskIdResolution.taskId
 				: undefined;
 
+		const injectionPhaseId =
+			phaseLabel !== undefined
+				? extractPhaseIdFromLabel(phaseLabel)
+				: undefined;
 		const { entries, trace_id } = await injectForDelegate({
 			directory,
 			agent: targetAgent,
@@ -223,8 +231,18 @@ export async function injectDelegateDirectivesBefore(
 			taskId,
 			sessionId,
 			phase: phaseLabel,
+			// #2947: persist the stable numeric phase id alongside the label.
+			...(injectionPhaseId !== undefined ? { phase_id: injectionPhaseId } : {}),
 			config,
 		});
+		// Issue #3036: the membership this injection committed is stamped with
+		// the architect's session id. Queue a dispatch fact so the child session
+		// created for this dispatch can adopt its parent at registration time
+		// (bounded FIFO + TTL; consumed by the authoritative taskMetadata pair
+		// when that lands first).
+		if (sessionId && entries.length > 0) {
+			recordPendingDispatchAuthorization(sessionId, targetAgent);
+		}
 
 		const prefixParts: string[] = [];
 		// (#1849 RC-4) Thread the retrieval trace_id into the rendered block so the
@@ -248,7 +266,12 @@ export async function injectDelegateDirectivesBefore(
 		// Issue #2628: the block obeys the same budget-clamp pattern as the
 		// delegate block (configured budget clamped to the hard cap).
 		if (stripKnownSwarmPrefix(targetAgent).toLowerCase() === 'reviewer') {
-			const toVerify = await readPhaseDirectivesToVerify(directory, phaseLabel);
+			const toVerify = await readPhaseDirectivesToVerify(
+				directory,
+				phaseLabel,
+				// #2947: id-first window matching, same as the gate (#2984 review).
+				injectionPhaseId,
+			);
 			const complianceBlock = buildDirectiveComplianceBlock(
 				toVerify,
 				Math.min(

@@ -24,6 +24,7 @@ import * as path from 'node:path';
 
 import type { Plan } from '../config/plan-schema';
 import { loadPlan } from '../plan/manager';
+import { detectForgeFromUrl } from '../providers/forge-provider.js';
 import type {
 	IssueReference,
 	TraceState,
@@ -342,8 +343,26 @@ function isPhaseComplete(status: string | undefined): boolean {
 function isValidIssueReference(obj: unknown): obj is IssueReference {
 	if (typeof obj !== 'object' || obj === null) return false;
 	const o = obj as Record<string, unknown>;
-	if (typeof o.url !== 'string' || !o.url.startsWith('https://github.com/'))
-		return false;
+	if (typeof o.url !== 'string') return false;
+	// #2733: shape-detected hosts validate on their own; a configured generic
+	// self-hosted GitLab host validates against the forge declaration that
+	// was persisted WITH the reference at write time (config-free recovery —
+	// the metadata travels with the durable record, and every URL guard in
+	// detectForgeFromUrl still applies to the URL itself).
+	if (detectForgeFromUrl(o.url) === null) {
+		const forge = o.forge as { provider?: unknown; host?: unknown } | undefined;
+		if (
+			!forge ||
+			forge.provider !== 'gitlab' ||
+			typeof forge.host !== 'string' ||
+			detectForgeFromUrl(o.url, {
+				provider: 'gitlab',
+				host: forge.host,
+			}) === null
+		) {
+			return false;
+		}
+	}
 	return (
 		typeof o.owner === 'string' &&
 		typeof o.repo === 'string' &&

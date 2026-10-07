@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.168.1",
+  "tagCommit": "064d42e26b62d4ecdcb587f1e1cdad78c255f5af",
+  "targetCommitish": "064d42e26b62d4ecdcb587f1e1cdad78c255f5af",
+  "releaseBodySha256": "cb1dada96cade6064b417d00926673c93f18cbf1532471774b8331f6a975862d",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2533-disabled-compaction-host-hook.md",
+      "sha256": "bf3c887e6b8de335c4c49ede20371bf921229232a040ffb0a6c1a603b3f8e6de"
+    }
+  ]
+}

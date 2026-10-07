@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.171.2",
+  "tagCommit": "fee88c7396db9f6280dbb42eb50eca6952a3d170",
+  "targetCommitish": "fee88c7396db9f6280dbb42eb50eca6952a3d170",
+  "releaseBodySha256": "1d1aac44abc4992d70b7221806caddad6241af75a0e0965f7f6b683774915ade",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2487-retention-gates.md",
+      "sha256": "2c66449399bd29b7f6222135d39d4f760700a38a8fd9fdfc128386dd6c554af0"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.4",
+  "tagCommit": "372445b4e5ff865cf1f9bccc40b2e0bb917066e9",
+  "targetCommitish": "372445b4e5ff865cf1f9bccc40b2e0bb917066e9",
+  "releaseBodySha256": "1bd44e284415f3f40961df913753bde9466bd9dc003d83b292d9d18d889571b5",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2815-probe-timeout-mislabel.md",
+      "sha256": "cdc07c603d6677dbe467419760d37b410cfce0b14a14e405e222656eeb62a66e"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2692-quarantine-completion-observer-coder-windows.md",
+      "sha256": "66a392d773829bb5b09ab6fd7b63823ba3085b1da92af1815e54eb67ff46572c"
+    }
+  ]
+}

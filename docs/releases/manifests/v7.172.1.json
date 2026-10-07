@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.172.1",
+  "tagCommit": "8664abdd6c4c7a085188aa1bcf17a0447bb7641b",
+  "targetCommitish": "8664abdd6c4c7a085188aa1bcf17a0447bb7641b",
+  "releaseBodySha256": "f427a64c8d790d7be6bbd8495fb00017730b6b6ada8ee8c1ddcebf929591075c",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2531-ledger-recovery-ufffd.md",
+      "sha256": "80105259a32d8ed052eb0563c6e3b907f3a0feff8ad39324e7ad42a8688343a9"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.168.0",
+  "tagCommit": "7140bb258fa7ecda07d4b45ee4e3c6af7b307671",
+  "targetCommitish": "7140bb258fa7ecda07d4b45ee4e3c6af7b307671",
+  "releaseBodySha256": "f55f9638f4ac23c9f7349bfde3e0f8da3cd05e9d0aedd067d42f72f4c5997ddb",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2507-dispatch-protection.md",
+      "sha256": "10e4101b8d941088c5e6fff810ea300024e1ec340244f2274b5e36c7a6fd4547"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2599-worktree-lane-session-leak.md",
+      "sha256": "266727fd14cc0586ce34f3bb2bf2465dff882ce15781b89bd25c8628187f6b9a"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/issue-2484-plan-ledger-sqlite.md",
+      "sha256": "8e42ebf574e00c362547d2b0e41cce4cadba9749ebf383dee1e5efc3a1001935"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/issue-2484-sqlite-ledger-hardening.md",
+      "sha256": "1445b109d219d0180bfeace98e7f107da5f375f07caf1485d8116fcd3f12d2a6"
+    }
+  ]
+}

@@ -228,7 +228,6 @@ mock.module('../../../src/state.js', () => {
 		hasActiveFullAuto: () => false,
 		getActiveFullAutoSessionID: () => undefined,
 		hasActiveLeanTurbo: () => false,
-		hasActiveEpicMode: () => false,
 		updateTaskWorkflowCache: () => {},
 	};
 });
@@ -1076,8 +1075,7 @@ describe('handleCloseCommand — finalizer stages', () => {
 
 	describe('Align stage', () => {
 		it('regression: detects a git repo and runs aggressive reset during finalize', async () => {
-			// Previous coverage pinned the git mock to non-repo, so finalize could
-			// skip alignment without any command-level test proving the reset path.
+			// Previous coverage pinned the git mock to non-repo; this proves the reset path.
 			mockGetGitRepositoryStatus.mockImplementation(() => ({ isRepo: true }));
 			mockResetToMainAfterMerge.mockImplementation(() => ({
 				success: true,
@@ -1095,6 +1093,7 @@ describe('handleCloseCommand — finalizer stages', () => {
 			expect(mockGetGitRepositoryStatus).toHaveBeenCalledWith(testDir);
 			expect(mockResetToMainAfterMerge).toHaveBeenCalledWith(testDir, {
 				pruneBranches: false,
+				expectedDirtyPaths: [],
 			});
 			expect(mockResetToRemoteBranch).not.toHaveBeenCalled();
 			expect(result).toContain('**Git:** Reset to origin/main');

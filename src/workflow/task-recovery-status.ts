@@ -76,7 +76,7 @@ export function classifySettlementWalState(
 		transitionId: entry.transitionId,
 		generation:
 			entry.expectedGeneration ??
-			(workflow && workflow.authoritative ? workflow.generation : undefined),
+			(workflow?.authoritative ? workflow.generation : undefined),
 	};
 
 	if (entry.state === 'unreadable') {

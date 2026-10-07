@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.178.1",
+  "tagCommit": "4aee3b2bb1b28e264182d07cfbc57b0a4843d724",
+  "targetCommitish": "4aee3b2bb1b28e264182d07cfbc57b0a4843d724",
+  "releaseBodySha256": "78427ce33484992a64b8de5273c6fb604f7a215924875cb7a1f948f11a8fedcd",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2532-parallel-first-phase-bindings.md",
+      "sha256": "54341fce02a712d2655778c0e2387af9339900778e7bc89d9541f40b4de52a02"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2577-memory-cohort-migration-lock.md",
+      "sha256": "0cc11bb7866be5a2a950cecaec617324bcf90eecb2a89a0228f003fc0e63f87d"
+    }
+  ]
+}

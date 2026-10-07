@@ -78,7 +78,10 @@ import {
 	WatchdogConfigSchema,
 } from './config/schema';
 import { createRoleFilterSystemHook } from './context/role-filter.js';
-import { updateContextMapAfterAgent } from './context-map/post-agent-update.js';
+import {
+	extractContextDecisionsFromContextMd,
+	updateContextMapAfterAgent,
+} from './context-map/post-agent-update.js';
 import {
 	closeDashboardServerForRootIfOwner,
 	type DashboardHandle,
@@ -237,6 +240,12 @@ import {
 	recordDeniedToolCall,
 } from './hooks/trajectory-logger';
 import { estimateTokens } from './hooks/utils';
+import { applyV2AgentModelOverride } from './host/v2/model-apply';
+import {
+	openCodeSwarmV2Setup,
+	type V2SetupDependencies,
+} from './host/v2/setup';
+import type { V2PluginContext } from './host/v2/types';
 import {
 	hasGitMarkerAncestor,
 	hasManifestAncestor,
@@ -248,10 +257,14 @@ import type { MemoryConfig as RuntimeMemoryConfig } from './memory/config.js';
 import { evictAndClose } from './memory/provider-pool.js';
 import {
 	advancePendingTaskModelRoute,
+	advanceSessionFallbackSelection,
 	bindPendingTaskModelRouteChild,
 	clearPendingTaskModelRoutesForSession,
 	getPendingTaskModelRouteSnapshot,
+	recordSessionChatAgent,
 	registerPendingTaskModelRoute,
+	resolveSessionChatAgent,
+	resolveSessionChatModelOverride,
 	resolveTaskChatModelOverride,
 } from './models/task-model-routing.js';
 import { initObservability } from './observability/index.js';
@@ -335,6 +348,10 @@ import {
 	ensureSwarmGitExcluded,
 } from './utils/gitignore-warning';
 import { resolveProjectRootDecision } from './utils/project-boundary';
+import {
+	isQuotaError,
+	isStickyModelError,
+} from './utils/provider-error-classification.js';
 import { withTimeout, withTimeoutSignal } from './utils/timeout';
 import { truncateToolOutput } from './utils/tool-output';
 
@@ -815,6 +832,25 @@ export function schedulePostResolutionTasksForTest(
 }
 
 /**
+ * #2789 test seam: the recovery readback is module-internal (no other
+ * consumer), so this thin wrapper gives the unknown-preservation contract a
+ * non-booting unit-test surface, mirroring `schedulePostResolutionTasksForTest`.
+ */
+export async function recoverPendingCostCorrectionForTest(
+	directory: string,
+	parentSessionId: string,
+	childSessionId: string,
+	pricing?: CostPricingConfig,
+): Promise<PendingCostCorrection | null | undefined> {
+	return recoverPendingCostCorrection(
+		directory,
+		parentSessionId,
+		childSessionId,
+		pricing,
+	);
+}
+
+/**
  * Compute the effective set of tools eligible for line-based truncation.
  *
  * SUMMARIZER_EXEMPT_TOOL_NAMES is applied as an unconditional floor
@@ -840,7 +876,24 @@ export function computeEffectiveTruncatableTools(
 	return effective;
 }
 
-const OpenCodeSwarm: Plugin = async (ctx) => {
+/**
+ * Shared server-initialization wrapper (issue #3004 / ADR-0003): the startup
+ * latency contract (#2670) brackets, the initialization core, and the
+ * post-resolution task SCHEDULING all live here. Consumed by the v1
+ * `server()` entrypoint and — dependency-injected — by the v2 `setup()`
+ * entrypoint (src/host/v2/setup.ts), so a v2 host gets the identical
+ * bounded-init behavior including the deferred-task drain (bundled-skill
+ * sync, repo-graph, retention sweeps).
+ */
+let serverInitInvocations = 0;
+
+const runServerInit = async (ctx: Parameters<Plugin>[0]) => {
+	serverInitInvocations += 1;
+	if (serverInitInvocations > 1) {
+		log(
+			'[opencode-swarm] WARNING: plugin initialization invoked more than once in this process; module-level swarm state is shared between invocations (dual host load?)',
+		);
+	}
 	// Startup latency contract (#2670): server-interval origin. begin() also
 	// opens the startup advisory window and resets per-boot contract state.
 	beginStartupServerInterval();
@@ -861,9 +914,9 @@ const OpenCodeSwarm: Plugin = async (ctx) => {
 		const stack =
 			err instanceof Error ? (err.stack ?? err.message) : String(err);
 		// Intentional FATAL surface: OpenCode's plugin loader silently drops a
-		// plugin whose entry rejects, leaving the user with no commands/agents
-		// and no visible error (issue #675). Raw stderr here is the one place it
-		// is justified. biome-ignore added in PR5 of epic #1752 when noConsole was enabled.
+		// plugin whose entry rejects, leaving the user with no commands/agents and
+		// no visible error (issue #675). Raw stderr here is the one place it is
+		// justified. biome-ignore added in PR5 of epic #1752 when noConsole was enabled.
 		// biome-ignore lint/suspicious/noConsole: FATAL initialization failure — user must see this to debug plugin load issues (issue #675)
 		console.error(
 			'[opencode-swarm] FATAL: plugin initialization failed. Plugin will not be available.',
@@ -873,6 +926,8 @@ const OpenCodeSwarm: Plugin = async (ctx) => {
 		throw err;
 	}
 };
+
+const OpenCodeSwarm: Plugin = async (ctx) => runServerInit(ctx);
 
 const MAX_TRACKED_ASSISTANT_USAGE_EVENTS = 200;
 const latestAssistantUsageBySession = new Map<string, unknown>();
@@ -991,16 +1046,24 @@ async function recoverPendingCostCorrection(
 	const effective = event;
 	if (effective.cost_source === 'reported') return null;
 	const currentFields = {
+		// #2789: unknown-preserving readback — an axis the recorded event does
+		// not hold stays null instead of being coerced to a fabricated 0.
 		tokens_input:
-			typeof effective.tokens_input === 'number' ? effective.tokens_input : 0,
+			typeof effective.tokens_input === 'number'
+				? effective.tokens_input
+				: null,
 		tokens_output:
-			typeof effective.tokens_output === 'number' ? effective.tokens_output : 0,
+			typeof effective.tokens_output === 'number'
+				? effective.tokens_output
+				: null,
 		tokens_reasoning:
 			typeof effective.tokens_reasoning === 'number'
 				? effective.tokens_reasoning
-				: 0,
+				: null,
 		tokens_cache:
-			typeof effective.tokens_cache === 'number' ? effective.tokens_cache : 0,
+			typeof effective.tokens_cache === 'number'
+				? effective.tokens_cache
+				: null,
 		cost_usd:
 			typeof effective.cost_usd === 'number' ? effective.cost_usd : null,
 		cost_source:
@@ -1921,6 +1984,7 @@ async function initializeOpenCodeSwarm(
 	): {
 		exactAgentName: string;
 		role: string;
+		swarmID?: string;
 		primaryModel?: string;
 		fallbackModels: readonly string[];
 	} | null => {
@@ -1928,12 +1992,12 @@ async function initializeOpenCodeSwarm(
 		const trimmedAgentName = exactAgentName.trim();
 		if (!trimmedAgentName) return null;
 		const role = stripKnownSwarmPrefix(trimmedAgentName);
-		const swarmAgents = getSwarmAgents(
-			extractSwarmIdFromAgentName(trimmedAgentName),
-		);
+		const swarmID = extractSwarmIdFromAgentName(trimmedAgentName) || undefined;
+		const swarmAgents = getSwarmAgents(swarmID);
 		return {
 			exactAgentName: trimmedAgentName,
 			role,
+			swarmID,
 			primaryModel:
 				resolveRuntimeAgentModel(config, agents, trimmedAgentName) ??
 				resolveRegisteredAgentModel(config, trimmedAgentName),
@@ -3845,12 +3909,20 @@ async function initializeOpenCodeSwarm(
 					const route = childSessionID
 						? resolveTaskRouteForChildSession(childSessionID)
 						: undefined;
+					// Issue #2989 review (F-001): the no-route (primary-session)
+					// arm resolves from the chat-boundary-recorded agent FIRST —
+					// the shared activeAgent pointer is reset to the bare
+					// orchestrator name by every Task-tool completion, which
+					// would misresolve a same-turn provider error for a
+					// swarm-prefixed primary agent onto the wrong (or an empty)
+					// chain.
 					const routeModel = resolveTaskRouteModelChain(
 						route
 							? (swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName ??
 									route.role)
-							: (swarmState.activeAgent.get(childSessionID) ??
+							: (resolveSessionChatAgent(childSessionID) ??
+									swarmState.activeAgent.get(childSessionID) ??
 									swarmState.agentSessions.get(childSessionID)?.agentName),
 					);
 					const errorSignal = extractSessionErrorSignal(properties);
@@ -3860,13 +3932,116 @@ async function initializeOpenCodeSwarm(
 						errorSignal &&
 						isRetryableProviderFailure(classifyProviderFailure(errorSignal))
 					) {
-						advancePendingTaskModelRoute({
+						const routedAdvance = advancePendingTaskModelRoute({
 							childSessionID,
 							role: route.role,
 							actionDigest: route.actionDigest,
 							primaryModel: routeModel.primaryModel,
 							fallbackModels: routeModel.fallbackModels,
 						});
+						// Issue #3022 (AC3): on v2 hosts the advanced model has no
+						// output.message.model surface to land on — rewrite the
+						// REGISTERED agent's model reference (exact name; the v2
+						// editor is create-or-update and a bare role key would
+						// mint a phantom agent on multi-swarm configs). No-op on v1.
+						if (routedAdvance?.accepted && !routedAdvance.exhausted) {
+							// #3029 review F-003: fallbackIndex counts positions in the
+							// NORMALIZED chain (deduped, parse-filtered), so it must index
+							// the chain's own modelString — indexing the raw fallback list
+							// mismaps when a fallback duplicates the primary or is
+							// unparseable (applies the failing primary or skips a valid
+							// fallback).
+							// #3029 review F-002: the v2 apply is host-global (sticky until
+							// restart), so only apply it for the sticky-appropriate error
+							// classes — the retired/unavailable-model scenario this
+							// surface exists for, or quota exhaustion — never for a single
+							// transient timeout/5xx.
+							const stickyEligible = isStickyModelError(errorSignal);
+							const chainModel = routedAdvance.modelString;
+							if (
+								stickyEligible &&
+								typeof chainModel === 'string' &&
+								chainModel.length > 0
+							) {
+								void applyV2AgentModelOverride(
+									routeModel.exactAgentName,
+									chainModel,
+								);
+							}
+						}
+					} else if (
+						!route &&
+						routeModel &&
+						routeModel.fallbackModels.length > 0 &&
+						errorSignal &&
+						isRetryableProviderFailure(classifyProviderFailure(errorSignal))
+					) {
+						// Issue #2989: a session with NO Task route is a
+						// primary/host-driven session (the user's own chat).
+						// The classifier already recognizes the provider text
+						// (e.g. GitHub Copilot's 429 quota-exceeded envelope,
+						// extracted from error.data per #2529), but before this
+						// branch the error was silently dropped: every fallback
+						// advance surface required a plugin-owned dispatch
+						// identity. Advance the session's own role-scoped chain
+						// (sticky for the session; see
+						// clearPendingTaskModelRoutesForSession's
+						// 'invocation' mode) and apply it at the next
+						// chat.message boundary below.
+						const advanced = advanceSessionFallbackSelection({
+							sessionID: childSessionID,
+							role: routeModel.role,
+							swarmID: routeModel.swarmID,
+							primaryModel: routeModel.primaryModel,
+							fallbackModels: routeModel.fallbackModels,
+						});
+						const reason = isQuotaError(errorSignal) ? 'quota' : 'transient';
+						telemetry.modelFallback(
+							childSessionID,
+							routeModel.role,
+							routeModel.primaryModel ?? 'unknown',
+							advanced.modelString ?? 'exhausted',
+							reason,
+						);
+						const session = swarmState.agentSessions.get(childSessionID);
+						if (session) {
+							if (advanced.exhausted) {
+								pushAdvisory(
+									session,
+									`MODEL FALLBACK: [primary-model-fallback-exhausted:${routeModel.role}] all configured fallback models for ${routeModel.role} failed after a provider ${reason} error; staying on the session's selected model.`,
+									{
+										dedupeKey: `[primary-model-fallback-exhausted:${routeModel.role}]`,
+									},
+								);
+							} else if (advanced.accepted && advanced.modelString) {
+								pushAdvisory(
+									session,
+									`MODEL FALLBACK: [primary-model-fallback:${routeModel.role}] switching ${routeModel.role} from configured primary ${routeModel.primaryModel ?? 'unknown'} to ${advanced.modelString} after a provider ${reason} error; the next message uses the fallback.`,
+									{
+										dedupeKey: `[primary-model-fallback:${routeModel.role}]`,
+									},
+								);
+								// Issue #3022 (AC3): apply the advanced model on v2
+								// hosts by rewriting the REGISTERED agent's model
+								// reference (no-op on v1, where the chat-boundary
+								// override owns application). #3029 review F-002: the
+								// v2 apply is host-global (sticky until restart), so
+								// gate it to the sticky-appropriate error classes —
+								// retired/unavailable model or quota — never a single
+								// transient timeout/5xx.
+								if (isStickyModelError(errorSignal)) {
+									void applyV2AgentModelOverride(
+										routeModel.exactAgentName,
+										advanced.modelString,
+									);
+								}
+							}
+						}
+						// Unknown identity (error before any chat.message recorded
+						// it and no activeAgent/agentSessions entry exists):
+						// routeModel above is null and the whole branch is a
+						// silent no-op — fail-open, identical to the pre-fix
+						// behavior for that session.
 					}
 				}
 				const lifecycleStatus = lifecycleEvent?.properties?.status;
@@ -5319,6 +5494,7 @@ async function initializeOpenCodeSwarm(
 					try {
 						await delegationGateHooks.abortDeniedSettlementForCall(
 							input.callID,
+							input.sessionID,
 						);
 					} catch {
 						/* rollback is best-effort; the denial still propagates */
@@ -5753,6 +5929,12 @@ async function initializeOpenCodeSwarm(
 								implementation_summary: agentOutput.slice(0, 500),
 								task_goal: '',
 								final_status: 'completed',
+								decisions: extractContextDecisionsFromContextMd(bootstrapRoot, {
+									agent_role:
+										resolveSessionChatAgent(input.sessionID) ??
+										swarmState.activeAgent.get(input.sessionID) ??
+										'unknown',
+								}),
 								directory: bootstrapRoot,
 							});
 						}
@@ -6008,6 +6190,13 @@ async function initializeOpenCodeSwarm(
 			// the primary/default model after every configured model is exhausted.
 			try {
 				if (input?.sessionID && typeof input?.agent === 'string') {
+					// Issue #2989 review (F-001): record the exact chat-boundary
+					// agent BEFORE anything else. The session.error no-route
+					// branch resolves its chain from this identity — the shared
+					// activeAgent pointer is reset by every Task-tool
+					// completion and would misresolve a same-turn provider
+					// error for a swarm-prefixed primary agent.
+					recordSessionChatAgent(String(input.sessionID), input.agent);
 					const routeModel = resolveTaskRouteModelChain(String(input.agent));
 					if (routeModel) {
 						const resolution = await resolveTaskChatModelOverride({
@@ -6092,6 +6281,39 @@ async function initializeOpenCodeSwarm(
 										};
 									}
 								).message.model = resolution.model;
+							} else if (resolution.status === 'missing') {
+								// Issue #2989: no Task route for this session —
+								// a primary/host-driven session. Apply its own
+								// role-scoped fallback selection (advanced on
+								// session.error) at this request boundary. The
+								// read is non-seeding, so a session with no
+								// prior provider failure is untouched. An
+								// exhausted chain never throws here: a primary
+								// session's user message must never be blocked
+								// by the plugin (the exhaustion advisory was
+								// already emitted on the error).
+								const sessionResolution = resolveSessionChatModelOverride({
+									sessionID: String(input.sessionID),
+									role: routeModel.role,
+									swarmID: routeModel.swarmID,
+									primaryModel: routeModel.primaryModel,
+									fallbackModels: routeModel.fallbackModels,
+								});
+								if (
+									sessionResolution.status === 'override' &&
+									sessionResolution.model
+								) {
+									(
+										output as {
+											message: {
+												model?: {
+													providerID: string;
+													modelID: string;
+												};
+											};
+										}
+									).message.model = sessionResolution.model;
+								}
 							}
 						}
 					}
@@ -6184,10 +6406,19 @@ async function initializeOpenCodeSwarm(
 	};
 }
 
-// v1 plugin shape: OpenCode's readV1Plugin requires the default export to be
-// an object exposing `id` and `server`. Bare-function defaults fall through to
-// the legacy iterator, which then walks Object.values(mod) and throws on any
-// non-function export. Issue #675.
+// Dual-shape plugin entrypoint (issue #3004 / ADR-0003):
+//
+// v1 hosts (OpenCode 1, @opencode-ai/plugin 1.x): readV1Plugin reads
+// `mod.default`, requires at least one of { id, server, tui } and calls
+// `server()` — it never consults other keys, so the added `setup` is inert
+// there (verified against anomalyco/opencode readV1Plugin at v1.18.3 and
+// v1.18.33; issue #675 history preserved below).
+//
+// v2 hosts (OpenCode 2, @opencode/plugin 2.x): the plugin-module loader
+// decodes `mod.default` against Schema.Struct({ default: Union([{id, effect},
+// {id, setup}]) }) — excess keys are ignored — and calls `setup(ctx)` with the
+// v2 Context. The v2 registration surface lives in src/host/v2/ (see
+// docs/host/v2-hook-inventory.md for the full v1→v2 mapping).
 //
 // `satisfies` keeps the wrapper type-checked against the inferred shape without
 // loosening the OpenCodeSwarm function's `Plugin` type. The id literal must
@@ -6195,7 +6426,18 @@ async function initializeOpenCodeSwarm(
 export default {
 	id: 'opencode-swarm' as const,
 	server: OpenCodeSwarm,
-} satisfies { id: string; server: Plugin };
+	setup: (ctx: unknown) =>
+		openCodeSwarmV2Setup(ctx as V2PluginContext, {
+			// Dependency-injected so src/host/v2 never imports this module (no
+			// index ↔ host cycle); the cast bridges the structural subset the
+			// adapter declares to the full inferred hooks type.
+			runInit: runServerInit as unknown as V2SetupDependencies['runInit'],
+		}),
+} satisfies {
+	id: string;
+	server: Plugin;
+	setup: (ctx: never) => Promise<() => Promise<void>>;
+};
 
 // Type re-exports remain — they are erased at runtime so they do not appear
 // in Object.values(mod) and cannot break OpenCode's plugin loader.

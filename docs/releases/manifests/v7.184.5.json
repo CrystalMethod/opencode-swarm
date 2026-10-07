@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.5",
+  "tagCommit": "c2ef3e6d06403d0eeea0aa38df73c4d599582add",
+  "targetCommitish": "c2ef3e6d06403d0eeea0aa38df73c4d599582add",
+  "releaseBodySha256": "6365ed55c0f9762f9f0713b10c84bb58afc1e96be679ba5a26d67f59ed381e5d",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2660-init-rehome-quarantine.md",
+      "sha256": "ebd339e82ffcd01100e274b24dbe26c408c3745b7549e435daccbb90f79bda92"
+    }
+  ]
+}

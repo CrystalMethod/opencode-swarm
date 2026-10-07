@@ -3,6 +3,16 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ToolDefinition } from '@opencode-ai/plugin/tool';
 import { z } from 'zod';
+import {
+	consumeConfirmToken,
+	issueConfirmToken,
+} from '../commands/destructive-purge';
+import { backupTrackedChangesBeforeRollback } from '../commands/reset-backup';
+import {
+	measureGitDestruction,
+	ROLLBACK_GIT_KIND,
+	trackedDirtyCandidates,
+} from '../commands/rollback-gate';
 import { loadPluginConfigWithMeta } from '../config';
 import {
 	buildTaskCompletionDescriptor,
@@ -773,7 +783,11 @@ export async function saveCheckpointRecord(
 	});
 }
 
-function handleRestore(label: string, directory: string): string {
+function handleRestore(
+	label: string,
+	directory: string,
+	confirmToken?: string,
+): string {
 	try {
 		const log = readCheckpointLog(directory);
 		const checkpoint = log.checkpoints.find(
@@ -786,6 +800,105 @@ function handleRestore(label: string, directory: string): string {
 			});
 		}
 
+		// #2946: a destructive scope (uncommitted tracked work, or untracked
+		// files at paths the target tree materializes, that a hard reset
+		// would discard) requires the two-step preview + confirm-token
+		// contract. The candidate set is derived by the shared rollback-gate
+		// module so a token minted by /swarm rollback or /swarm checkpoint
+		// (command layer) is consumable here at the sink — and vice versa.
+		const measurement = measureGitDestruction(directory, checkpoint.sha);
+		if (measurement.kind === 'unreadable') {
+			return serializeResult('restore', {
+				success: false,
+				error:
+					'cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.',
+			});
+		}
+		if (measurement.dirtyRelPaths.length > 0) {
+			const candidates = trackedDirtyCandidates(
+				directory,
+				measurement.dirtyRelPaths,
+			);
+			const scopeAnchor = candidates[0].path;
+			if (!confirmToken) {
+				const token = issueConfirmToken(scopeAnchor, directory, {
+					kind: ROLLBACK_GIT_KIND,
+					candidates,
+				});
+				const shown = measurement.dirtyRelPaths.slice(0, 10);
+				const overflow = measurement.dirtyRelPaths.length - shown.length;
+				return serializeResult('restore', {
+					success: false,
+					requires_confirm: true,
+					preview: [
+						`Restoring to checkpoint "${label}" runs a hard git reset and would DESTROY ${candidates.length} uncommitted tracked file(s):`,
+						...shown.map((p) => `  - ${p}`),
+						...(overflow > 0 ? [`  (+${overflow} more)`] : []),
+						'Backups are taken automatically once confirmed.',
+					],
+					confirm_token: token,
+					message:
+						'restore preview — re-run with confirm_token to execute (valid 15 minutes)',
+				});
+			}
+			const verdict = consumeConfirmToken(
+				scopeAnchor,
+				directory,
+				confirmToken,
+				{ kind: ROLLBACK_GIT_KIND, candidates },
+			);
+			if (!verdict.ok) {
+				return serializeResult('restore', {
+					success: false,
+					error: verdict.reason,
+				});
+			}
+			const backup = backupTrackedChangesBeforeRollback(
+				directory,
+				measurement.dirtyRelPaths,
+			);
+			// Fail closed when the safety net is incomplete: a destructive
+			// restore never proceeds over files whose current bytes were not
+			// actually copied (#2976 review F-3). Only paths that exist on
+			// disk owe a copy — a rename record's ORIG side has no live bytes
+			// (the file moved), so requiring it would refuse every rename.
+			const atRiskExisting = measurement.dirtyRelPaths.filter((rel) =>
+				fs.existsSync(path.join(directory, rel)),
+			).length;
+			if (!backup.backupDir || backup.copied.length < atRiskExisting) {
+				return serializeResult('restore', {
+					success: false,
+					error: `backup incomplete (${backup.copied.length}/${atRiskExisting} at-risk file(s) copied) — restore refused so nothing is destroyed.${
+						backup.warnings.length > 0
+							? ` Warnings: ${backup.warnings.join('; ')}`
+							: ''
+					}`,
+				});
+			}
+			const logBeforeReset = log;
+			gitExec(['reset', '--hard', checkpoint.sha], directory);
+			writeCheckpointLog(logBeforeReset, directory);
+			return serializeResult('restore', {
+				success: true,
+				label,
+				sha: checkpoint.sha,
+				backup_dir: backup.backupDir,
+				...(backup.warnings.length > 0
+					? { backup_warnings: backup.warnings }
+					: {}),
+				message: `Restored to checkpoint: "${label}" (hard reset)${
+					backup.backupDir
+						? `; destroyed bytes backed up to ${path.relative(directory, backup.backupDir)}`
+						: ''
+				}${
+					backup.warnings.length > 0
+						? `; warnings: ${backup.warnings.join('; ')}`
+						: ''
+				}`,
+			});
+		}
+
+		// Clean tree: nothing tracked to destroy — single-call restore.
 		const logBeforeReset = log;
 		gitExec(['reset', '--hard', checkpoint.sha], directory);
 		writeCheckpointLog(logBeforeReset, directory);
@@ -1027,7 +1140,7 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 	allowWorkingDirectoryOverride: true,
 	description:
 		'Save, restore, list, and delete git checkpoints. ' +
-		'Use save to create a named snapshot, restore to return tracked files to a checkpoint, ' +
+		'Use save to create a named snapshot, restore to return tracked files to a checkpoint (a destructive restore previews first and requires a confirm token issued in the preview; destroyed bytes are backed up under .swarm/rollback-backups/), ' +
 		'list to see all checkpoints, delete to remove a checkpoint from the log, and save_task_completion to record a retry-safe task completion checkpoint. ' +
 		'Git commits are preserved on delete.',
 	args: {
@@ -1040,6 +1153,12 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 			.string()
 			.optional()
 			.describe('Checkpoint label (required for save, restore, delete)'),
+		confirm_token: z
+			.string()
+			.optional()
+			.describe(
+				'Confirm token from a destructive-restore preview (required when restore would destroy uncommitted tracked work; the preview response carries the token)',
+			),
 		task_id: z
 			.string()
 			.optional()
@@ -1056,12 +1175,17 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 
 		let action: string;
 		let label: string | undefined;
+		let confirmToken: string | undefined;
 		let taskId: string | undefined;
 		try {
 			action = String(args.action);
 			label =
 				args.label !== undefined && args.label !== null
 					? String(args.label)
+					: undefined;
+			confirmToken =
+				args.confirm_token !== undefined && args.confirm_token !== null
+					? String(args.confirm_token)
 					: undefined;
 			taskId =
 				args.task_id !== undefined && args.task_id !== null
@@ -1126,7 +1250,7 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 					action: 'restore',
 					directory,
 					operationKey: `restore-${label!}`,
-					run: async () => handleRestore(label!, directory),
+					run: async () => handleRestore(label!, directory, confirmToken),
 				});
 			case 'list':
 				return handleList(directory);

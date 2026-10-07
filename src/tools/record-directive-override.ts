@@ -56,6 +56,9 @@ export async function executeRecordDirectiveOverride(
 		args.justification,
 		ctx.sessionID,
 		phaseLabel,
+		// #2947: pass the validated numeric phase id so the override finds and
+		// commits against its target even when the recomposed label skews.
+		args.phase,
 	);
 	return {
 		success: true,

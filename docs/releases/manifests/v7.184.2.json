@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.2",
+  "tagCommit": "f7f304d4e6b4cc27a314cf64ee913e3cfa097d93",
+  "targetCommitish": "f7f304d4e6b4cc27a314cf64ee913e3cfa097d93",
+  "releaseBodySha256": "49076276cfab914536ec3904ccf59bd52f60fd752cbf5c25e1570e420324e6c6",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2740-three-merge-group-flaky-tests-quarantine.md",
+      "sha256": "fcd226b03115371844244503f5fb90ba0acdba50dd2444dca5b839f9a59b9cc4"
+    }
+  ]
+}

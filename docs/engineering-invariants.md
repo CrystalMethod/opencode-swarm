@@ -210,7 +210,7 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   canonical event and derives the written `.swarm/telemetry.jsonl` line from
   it as a documented lossy projection (`toLegacyTelemetryLine`) — output is
   byte-identical to before this change, verified against a checked-in golden
-  corpus captured from the unmodified tree at `e50386b9`. **One documented
+  corpus originally captured from the unmodified tree at `e50386b9` (deliberately regenerated at `0aa722596` by issue #2789; see the capture-script docblock). **One documented
   exception:** a payload carrying an own *accessor* (getter) property is read
   more than once on the new path (`extractWorkflowIds`, `extractOutcome` and
   the adapter's shallow key scan all read own keys before the spread), whereas
@@ -420,7 +420,7 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
 - **Symptom:** guardrail advisories, knowledge and memory recall, delegation guidance and issue-trace directives were silently absent from the model's input while plugin telemetry recorded them as delivered; a `--trace` turn in which only issue-trace injected failed the host prompt build with `TypeError: undefined is not an object (evaluating 'msg.parts.length')`.
 - **Root cause:** the OpenCode host's message→request converter (`toModelMessagesEffect`, pinned @opencode-ai 1.18.3; host repo `anomalyco/opencode` tag `v1.18.3`, commit `127bdb30784d508cc556c71a0f32b508a3061517`, session module `message-v2`, the `toModelMessagesEffect` loop at lines 195-244) branches only on `user` and `assistant` with no `else`, and its `Message` union (`@opencode-ai/sdk` `types.gen.d.ts:128`) has no `system` member — every synthetic `role:'system'` entry the plugin spliced into `experimental.chat.messages.transform` output was discarded before the request was built. The flat `{role, content}` entries issue-trace pushed have no `parts`, and the loop head dereferences `msg.parts.length` unconditionally — hence the TypeError. Delivery predicates asserted presence in the plugin's own output array, so telemetry lied. The sibling `chat.system.transform` surface (plain `string[]`) DOES render (host `llm/request` module, the `system.map` spread), which masked the total loss.
 - **Fix:** all plugin injections ride USER-role guidance carriers built by `src/hooks/system-guidance-carrier.ts` (`info.id` prefix `swarm-guidance:<kind>`, role `user`, one text part wrapped in the `<swarm_system_directive>` provenance fence; detection by id prefix, never text). The final structure-mutating transform handler now runs `materializeSystemGuidanceInPlace` — a boundary that converts any remaining system entry to a carrier in place (or drops tool-result-shaped / whitespace-only ones), so the transformed array contains zero system entries: a strictly stronger form of the #608/#628 local-model guarantee. Delivery telemetry gates on `deliveredGuidanceDelta` (non-empty text delta + host-renderable carrier shape). The knowledge-application and skill-propagation transform scans skip carriers so injected directives can never be parsed as architect/reviewer acknowledgements, and `classifyMessage` treats carriers as CRITICAL (never pruned), matching the old system-role exemption.
-- **Durable guards:** `tests/helpers/host-contract-v1_18_3.ts` (provenance-headed distillation of the host loop) + `tests/unit/hooks/host-message-role-contract-2526.test.ts` (renders user/assistant only; system never; flat throws; AND a version tripwire asserting the installed `@opencode-ai/plugin` + `@opencode-ai/sdk` equal `1.18.3` — a lockfile bump fails loudly and forces re-verification of the fixture against the new host source); `tests/unit/hooks/system-splice-ratchet-2526.test.ts` (source scan: no `role:'system'` construction outside the role-filter system-string adapter and the materializer); `tests/unit/hooks/host-rendered-guidance-2526.test.ts` (exit gate: real registered plugin chain + pinned host converter — guardrail advisory, knowledge recall, memory recall each render; `--trace` turn completes with the MODE directive).
+- **Durable guards:** `tests/helpers/host-contract-v1_18_3.ts` (provenance-headed distillation of the host loop) + `tests/unit/hooks/host-message-role-contract-2526.test.ts` (renders user/assistant only; system never; flat throws; AND a version tripwire asserting the installed `@opencode-ai/plugin` + `@opencode-ai/sdk` equal `1.18.3` — a lockfile bump fails loudly and forces re-verification of the fixture against the new host source; host releases are covered independently of the lockfile by the weekly `host-contract-check.yml` scheduled check (`scripts/check-host-contract.ts`), which compares the converter loop's structural digest against the host source at npm-latest and is the re-verification trigger on a host release); `tests/unit/hooks/system-splice-ratchet-2526.test.ts` (source scan: no `role:'system'` construction outside the role-filter system-string adapter and the materializer); `tests/unit/hooks/host-rendered-guidance-2526.test.ts` (exit gate: real registered plugin chain + pinned host converter — guardrail advisory, knowledge recall, memory recall each render; `--trace` turn completes with the MODE directive).
 - **Maps to AGENTS.md:** invariant 10 (chat/system-message hook contracts).
 
 ### Issue #2673 — system render capability at the final request boundary
@@ -457,6 +457,213 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   strict Qwen/Gemma system rendering remains on the system boundary.
 - **Maps to AGENTS.md:** invariants 8 (bounded session state) and 10
   (host-order, in-place chat/system message contracts).
+
+### Issue #2865 — Terminal settlement decided from a stale durable-record snapshot
+
+- **Symptom:** the PR-review collect path built its discovery validation
+  inputs from the pass-entry delegation-record snapshot. A child lane's
+  exactly-once structured receipt could land on the durable record *during*
+  the pass (between the snapshot and the lane's sequential settle), so a
+  correctly-settled lane terminally failed `missing structured receipt` while
+  `claimTerminalResult`'s receipt merge persisted the same receipt next to
+  the error — a self-contradicting terminal record. Retries re-ran the race;
+  exhausted retry budgets turned settled dimensions `FAILED(contract)` and
+  clean-control reviews `INCOMPLETE (PARTIAL)`.
+- **Fix applied:** three layers so every publish-vs-claim ordering of a real
+  receipt settles the lane on it: (1) settle-time fresh re-read +
+  re-validation when a discovery validation fails without a receipt;
+  (2) `claimTerminalResult` refuses an `error`/`contract` terminal whose
+  result lacks a receipt the record holds, leaving it open for the next pass;
+  (3) `publishPrReviewResultReceipt` admits an exactly-bound receipt onto
+  such a provably-stale terminal, settling `completed` with the stale
+  error/class dropped from both result levels. The refusal/admission
+  signature is scoped to terminals that PASSED record-result integrity and
+  failed only at the receipt branch (`outputDegraded !== true`, non-empty
+  `chars`, `digest` present) — degraded/empty content-integrity failures keep
+  their typed class and are never admitted or refused.
+- **Invariant:** a terminal settlement decision must read the durable record
+  at the decision point (or guard the linearization point); never decide from
+  an in-memory snapshot of a field the terminal write itself re-reads under
+  the store lock. Guardrail: `tests/unit/background/pending-delegations-claim-refusal-2865.test.ts`.
+- **Maps to AGENTS.md:** invariant 9 (guardrails/retry — bounded, action-local,
+  exactly-once semantics preserved).
+
+### Issue #2926 — session-keyed attribution read by a foreign session key (decision: disclosure-first)
+
+- **Symptom:** the per-task attribution record (`AgentSessionState.modifiedFilesByTask`,
+  issue #2818's fix) is written under the writer's session key (foreground coder session at
+  `src/hooks/guardrails/tool-before.ts`; parent session at `src/background/stage-b-gates.ts`)
+  but read under the CHECKING session's key (`checkReviewerGateWithScope` ←
+  `ctx.sessionID`). Whenever writer≠checker (multi-session swarms, restart, snapshot restored
+  for the wrong session, 128-cap eviction, workflow-complete release), the read came back
+  empty and the SCOPE WARNING silently fell back to the repository-wide `git diff` — #2818's
+  cross-task mis-attribution, resurrected for that subset, with an evidence clause that could
+  not distinguish the degraded mode from a legitimate legacy run.
+- **Decision (issue option 3, disclosure-first):** keep the session keying and the fallback;
+  make the degraded mode non-silent. `checkReviewerGateWithScope` appends a `SCOPE ADVISORY:`
+  line to the gate reason on every in-session scoped completion whose checking session has NO
+  attribution record at all — including when the repo-wide comparison produced no warning
+  (clean set). A present-but-empty record (the coder delegation's own zero-file slot, left by
+  `resetModifiedFilesForTask` at delegation) is the task's legitimate record, not a degraded
+  fallback, and does not disclose. The advisory states only always-true facts (never claims a
+  comparison ran): a bounded fail-open probe of the other live sessions — same
+  project-identity class only (both sessions keyed-and-equal, or both key-less; a key-less
+  checker cannot claim a keyed foreign record), exact taskId, non-empty entry, per-entry Map
+  guard — distinguishes `attribution record … exists under another session — not used for
+  scope verification` from `no attribution record in this session — not used for scope
+  verification`. Both the condition and the probe are evaluated BEFORE the diff await so the
+  plan reads and the live-session scan precede any git spawn (the live-session read remains
+  racy against concurrent session mutations; advisory-text-only consequence). On successful
+  completions the advisory additionally surfaces in `UpdateTaskStatusResult.warnings`, so the
+  disclosure reaches the operator on the common passing path, not only when the gate blocks.
+  In clean-set completions the producing source is disclosed by the
+  attribution-record/repository-wide dichotomy; explicit source naming rides the warning's
+  own evidence clause when a warning fires.
+- **Rejected-for-now:** option 1 (consult the parent/advancing session's record) — two
+  writers can hold divergent records for one task (incremental coder-session appends vs the
+  parent's atomic replace) and coder-session records provably miss shell side-effects
+  (#2927's accepted narrowing), so a foreign partial record can silently false-CLEAR a real
+  violation; option 2 (persisted `(workspace, taskId)` store) — L-tier persistence blast
+  radius plus a staleness/invalidation hazard for an advisory evidence source. Revisit
+  trigger: operators needing actual cross-session scoping, or #2925/#2927 converging on
+  durable per-task file records.
+- **Honest limits:** post-restart the probe finds only snapshot-restored records (released /
+  evicted / never-snapshotted records read as "no record", deliberately conflating
+  never-recorded with recorded-then-lost); attribution accuracy for the mismatch subset is
+  unchanged; Epic-retained completed-task records can still produce a context-free
+  foreign-session wording; the plan.json read pair and the live-session scan are both
+  evaluated pre-spawn but remain racy against concurrent plan/session mutations
+  (advisory-text-only consequence).
+- **Invariant:** session-private `AgentSessionState` data read through a foreign session key
+  must fail LOUD (advisory disclosure), never silently, and never by guessing another
+  session's record. Guardrail:
+  `tests/unit/hooks/attribution-session-contract-2926.test.ts`.
+- **Maps to AGENTS.md:** invariant 8 (session and global state — keyed and bounded); the
+  advisory is text-only (invariant 9 posture: never blocks, never widens attribution).
+### Issue #2927 — Scope-warning coverage contract for shell side-effects (decided: Option 1)
+
+- **Decision (2026-09-23):** the after-the-fact advisory `SCOPE WARNING` is a
+  **direct-write attribution check** on foreground paths, and that boundary is
+  the contract — Option 1 (accept + keep documented) of the three options
+  recorded in issue #2927. This is a standing decision record, not an outage
+  entry; the release fragment `docs/releases/pending/2927-scope-warning-coverage-contract.md`
+  carries the user-visible disclosure.
+- **Symptom being decided:** since PR #2917 (issue #2818),
+  `validateDiffScope` (`src/hooks/diff-scope.ts`) compares the checked task's
+  own attribution record (`modifiedFilesByTask`) against its declared scope
+  and does not consult git whenever that record is non-empty. Foreground
+  attribution records are written only by the direct-write tool loop in
+  `src/hooks/guardrails/tool-before.ts` (`recordModifiedFileForTask`, sole
+  call site, under `if (trackingSession?.delegationActive)`) — bash/shell is
+  intentionally outside `WRITE_TOOL_NAMES` (`src/config/constants.ts`,
+  issue #1778). A shell side-effect file change (formatter, codegen,
+  `git checkout -- file`) therefore reaches no after-the-fact advisory check
+  once the task has any attribution record: it is not in attribution (by
+  design), the per-task check skips git, and pre-execution shell-write
+  enforcement (the coder default) is the only gate. Observe mode and
+  scope-lenient roles have no after-the-fact coverage for such changes —
+  disclosed and accepted.
+- **Non-gap (do not "fix" this):** background settlement attribution is
+  git-derived — `changedFilesSinceSnapshot` (`src/background/workspace-snapshot.ts`)
+  feeds `recordModifiedFilesForTask` (the plural producer, distinct from the
+  foreground singular writer) into the parent session's attribution record
+  (`src/background/stage-b-gates.ts`). Background attribution therefore DOES
+  see shell side-effects; the decided boundary is foreground-only. Any wording
+  that says "attribution records only contain direct-write files" without the
+  foreground qualifier is wrong.
+- **Rejected alternatives (trade-offs recorded per the issue):**
+  **Option 2** — union the attribution set with a task-windowed git diff —
+  rejected: adds per-check git cost and a "task start ref" bookkeeping
+  surface, and re-admits exactly the cross-task mis-attribution noise that
+  #2818/#2917 removed. **Option 3** — record shell-detected writes into
+  attribution — rejected: silently changes what "attributed" means for every
+  consumer of the attribution record (settlement, evidence), not just the
+  advisory check, and needs observe-mode telemetry limits. Neither is
+  justified without operator evidence.
+- **Revisit trigger:** operator reports of formatter/codegen drift escaping
+  review on foreground paths. A revisit that lands on Option 2 or Option 3 is
+  a behavior change: it must reopen AGENTS.md invariant 9 and the PR
+  invariant audit, and supersede this entry.
+- **Legacy leg (unchanged):** sessions without a non-empty attribution record
+  (legacy sessions, CLI-direct runs, records released at workflow-complete,
+  entries evicted at the bounded 128-task cap, and empty-but-present
+  `attributedFiles` arrays) keep the repository-wide comparison, with the
+  warning naming its evidence (diff basis + latest commit short SHA).
+- **Guardrail:** `tests/unit/hooks/shell-side-effect-attribution-boundary-2927.test.ts`
+  pins both consumer legs and the producer boundary (behavioral: a
+  shell-mediated write creates no attribution record while a direct write
+  does; static: the shell-write region of `tool-before.ts` contains neither
+  producer spelling).
+- **Maps to AGENTS.md:** none (no operational rule changes; this entry is the
+  long-form home AGENTS.md's charter assigns to this doc). Related open
+  siblings from the same review: #2925 (normalize attribution paths at the
+  write site — delivered; see its entry below), #2926 (session-mismatch
+  attribution fallback — its repo-wide fallback partially re-exposes shell
+  side-effects by design of the legacy leg; any resolution there must stay
+  consistent with this decision).
+
+### Issue #2925 — Attribution file paths canonicalized at the write site
+
+- **Contract:** the per-task file-attribution record
+  (`AgentSessionState.modifiedFilesByTask`) stores ONE portable form:
+  repo-relative against the writer's workspace directory, forward-slashed,
+  win32-case-folded (`normalizePath`, `src/utils/path.ts`). Canonicalization
+  lives at the write boundary — both setter spellings
+  (`recordModifiedFilesForTask` / `recordModifiedFileForTask`,
+  `src/state.ts`) accept an optional `workspaceDirectory` and the two
+  pinned producers pass it: the foreground singular writer
+  (`src/hooks/guardrails/tool-before.ts`, the #2002 one-base
+  `sessionWorkspaceDirectory`) and the background plural writer
+  (`src/background/stage-b-gates.ts`, `args.directory`). The producer
+  spellings/sites remain exactly the #2927 boundary.
+- **Drop rule:** entries that cannot be proven canonical drop silently
+  (entries are advisory): absolute input without a base (no
+  `workspaceDirectory` — storing it raw is the pre-#2925 defect), any input
+  resolving outside the workspace (`..`-prefixed or different-drive
+  relative), relative `..`-bearing input without a base, entries over 4,096
+  characters, and entries containing control characters (mirroring the
+  sibling boundaries `normalizeAttributionPath` / `isBoundedGenerationValue`;
+  both bounds apply to the trimmed entry, and drive-relative win32 inputs
+  like `D:foo` drop deterministically regardless of base geometry). The singular
+  setter returns `true` for a dropped entry (advisory no-op) while its
+  pre-existing invalid-taskId guard still returns `false`; its input guard
+  widened from length-only to trim-based, so whitespace-only input (previously
+  stored verbatim) now returns `false`. Appends canonicalize only the
+  incoming entry; stored legacy raw entries persist verbatim until the task's
+  list is atomically replaced.
+- **Boundary exceptions (deliberate):** the snapshot deserializer
+  (`deserializeModifiedFilesByTask`, `src/session/snapshot-reader.ts`) builds
+  the map directly — legacy raw-absolute entries round-trip verbatim from
+  old snapshots and stay covered by read-side canonicalization; and the
+  pre-Map legacy backfill in `ensureAgentSession` (`src/state.ts`) copies
+  `modifiedFilesThisCoderTask` verbatim (legacy-data preservation).
+- **Per-consumer double-normalization dispositions (audit, all idempotent on
+  canonical input or repaired):** `validateDiffScope`
+  (`canonicaliseAttributionEntry` + `normalizePath` membership) — idempotent,
+  kept as defense-in-depth; `src/full-auto/severe-result.ts` (resolve →
+  relative → `normalizePath`, `..`-escape drop) — idempotent;
+  Epic wave-close divergence (`src/epic/wave-close.ts`, re-canonicalized
+  via `canonicalAttributionPath`, then `normalizePath` on both sides) —
+  idempotent;
+  `review-receipt-scope` (`path.resolve` + containment + `canonicalPath`) and
+  `guardrails/index` (`isInDeclaredScope` resolve + path-identity) —
+  idempotent; `delegation-gate` → `routeReviewForChanges`
+  (`path.join(directory, file)` + `git show HEAD:<file>`) — repaired
+  upstream by canonical storage (raw absolute entries previously produced
+  doubled-root joins); `update-task-status` (`getModifiedFilesForTask` at
+  src/tools/update-task-status.ts:1181 feeds `validateDiffScope` and the
+  #2926 advisory) — pass-through, covered by the diff-scope disposition; `full-auto-permission`'s `changedFiles` classifier field is dead
+  (`src/full-auto/policy.ts` declares it, nothing reads it) — disclosed,
+  unchanged. Future cased-path test fixtures must expect the win32-folded
+  form.
+- **Guardrail:** `tests/unit/hooks/attribution-canonicalization-2925.test.ts`
+  (helper table, setter drop/guard-order/dedupe/legacy-append semantics,
+  producer wiring through the real guardrails hook, consumer idempotence,
+  deserializer verbatim tolerance); the issue-tracer frozen checks C1-C8
+  (see `.agents/issue-traces/2925-write-site-attribution-path-canonicalization/`)
+  gate the RED→GREEN transitions.
+- **Maps to AGENTS.md:** invariant 8 (session state — the record stays
+  session-keyed and bounded; the helper is pure).
 
 
 ## Invariants — anti-pattern, required pattern, verification

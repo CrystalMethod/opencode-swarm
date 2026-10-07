@@ -1,16 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { handleCostsCommand } from '../../../src/commands/costs';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let testDir: string;
 
 beforeEach(() => {
-	testDir = path.join(
-		os.tmpdir(),
-		`costs-command-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-	);
+	testDir = canonicalMkdtemp('costs-command-test-');
 	mkdirSync(path.join(testDir, '.swarm'), { recursive: true });
 });
 
@@ -52,8 +49,19 @@ describe('handleCostsCommand', () => {
 		expect(result).toContain('## Swarm Costs');
 		expect(result).toContain('Total tracked cost: $0.004200');
 		expect(result).toContain('Delegations: 2');
+		// #2789: the coder row held known input/output usage, so those axes
+		// keep their numeric rendering; its reasoning/cache axes were never
+		// held and render as unknown instead of fabricated zeros.
 		expect(result).toContain('| coder | 1 | $0.004200 | 1,000 | 250 |');
-		expect(result).toContain('| reviewer | 1 | $0.000000 | 0 | 0 |');
+		expect(result).toContain(
+			'Tokens: input 1,000, output 250, reasoning unknown, cache unknown',
+		);
+		expect(result).toContain('Unknown usage: 1');
+		// #2789: the reviewer delegation held no token axes at all — every
+		// axis renders as unknown, never as a fabricated 0.
+		expect(result).toContain(
+			'| reviewer | 1 | $0.000000 | unknown | unknown | unknown | unknown | 1 |',
+		);
 		expect(result).toContain('| 2.1 | 2 | $0.004200 | 1,000 | 250 |');
 		expect(result).toContain('### By Gate');
 		expect(result).toContain('| qa_review | 1 | $0.004200 | 1,000 | 250 |');
@@ -77,8 +85,10 @@ describe('handleCostsCommand', () => {
 		expect(result).toContain(
 			'Cost source: reported $0.000000, estimated $0.000000, unavailable 1',
 		);
+		// #2789: a legacy delegation with no token fields renders unknown
+		// axes — the historical zero-filled row was the defect being fixed.
 		expect(result).toContain(
-			'| legacy_coder | 1 | $0.000000 | 0 | 0 | 0 | 0 | 1 |',
+			'| legacy_coder | 1 | $0.000000 | unknown | unknown | unknown | unknown | 1 |',
 		);
 	});
 
@@ -104,5 +114,32 @@ describe('handleCostsCommand', () => {
 		expect(parsed.by_agent[0].name).toBe('coder');
 		expect(parsed.by_gate[0].name).toBe('unknown');
 		expect(parsed.by_retry[0].name).toBe('0');
+		// #2789: the delegation carries no token axes, so the --json shape must
+		// report unknown totals (never coerced 0) and count the delegation.
+		expect(parsed.total_input_tokens).toBeNull();
+		expect(parsed.total_output_tokens).toBeNull();
+		expect(parsed.total_reasoning_tokens).toBeNull();
+		expect(parsed.total_cache_tokens).toBeNull();
+		expect(parsed.unknown_usage_delegations).toBe(1);
+		expect(parsed.by_agent[0].input_tokens).toBeNull();
+	});
+
+	it('escapes pipe and line-break characters in untrusted row names', async () => {
+		writeTelemetry([
+			{
+				event: 'delegation_end',
+				agentName: 'co|der\r\nextra',
+				taskId: '4.1',
+				tokens_input: 1,
+				cost_source: 'unavailable',
+			},
+		]);
+
+		const result = await handleCostsCommand(testDir, []);
+
+		// A crafted telemetry name must not break the markdown table: the pipe
+		// is escaped and every line-break form (CRLF or a bare carriage
+		// return) collapses to a space, keeping the row on one line.
+		expect(result).toContain('| co\\|der extra | 1 |');
 	});
 });

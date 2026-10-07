@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.174.0",
+  "tagCommit": "2a347e86f9a725b5be3d01e9f96f447abed25b17",
+  "targetCommitish": "2a347e86f9a725b5be3d01e9f96f447abed25b17",
+  "releaseBodySha256": "b6572565166fcfe8344c5656ba1b58c29085288b4aa24fbf042fd54442c19e34",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2491-review-routing-confidence.md",
+      "sha256": "6a85cbdfc303c59c068d151f7c7245cee494c96fb817bff28b8f1f487dfebad3"
+    }
+  ]
+}

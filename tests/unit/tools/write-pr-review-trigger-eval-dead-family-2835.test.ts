@@ -14,6 +14,7 @@ import {
 	enforcePrReviewBaseDimensions,
 	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
+	recordPrReviewMicroFamilyDispatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
 import {
 	executeWritePrReviewTriggerEval,
@@ -235,6 +236,17 @@ async function establishBoundReviewGate(root: string): Promise<void> {
 			evidence,
 		})),
 	);
+	// Issue #2878: the dead-family admission now requires the bounded retry
+	// budget to be provably exhausted, so the fixture records the initial
+	// dispatch plus two retries with the cited dead batch as the last attempt.
+	for (const batchId of ['micro-attempt-1', 'micro-attempt-2', DEAD_BATCH]) {
+		await recordPrReviewMicroFamilyDispatch(
+			root,
+			SESSION_ID,
+			[{ laneId: DEAD_LANE, workflowLane: DEAD_TRIGGER }],
+			{ batchId, prHeadSha: HEAD_SHA },
+		);
+	}
 	await recordLivenessDeadMicroLane(root);
 }
 

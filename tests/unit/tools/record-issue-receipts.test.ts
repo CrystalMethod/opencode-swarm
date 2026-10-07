@@ -159,4 +159,52 @@ describe('record_issue_publication', () => {
 		);
 		expect(JSON.parse(result).success).toBe(false);
 	});
+
+	// (#2733) GitLab MR URLs are first-class prUrls for publication receipts.
+	test('accepts a GitLab MR prUrl and writes the receipt', async () => {
+		const result = await executeRecordIssuePublication(
+			{
+				issueNumber: 42,
+				prNumber: 7,
+				prUrl: 'https://gitlab.com/acme/app/-/merge_requests/7',
+			},
+			dir,
+		);
+		expect(JSON.parse(result).success).toBe(true);
+
+		const written = JSON.parse(
+			fs.readFileSync(
+				path.join(dir, '.swarm', 'issue-publication.json'),
+				'utf-8',
+			),
+		);
+		expect(written.prUrl).toBe(
+			'https://gitlab.com/acme/app/-/merge_requests/7',
+		);
+		expect(await publicationReceiptExists(dir, 42)).toBe(true);
+	});
+
+	test('accepts a self-hosted GitLab MR prUrl', async () => {
+		const result = await executeRecordIssuePublication(
+			{
+				issueNumber: 42,
+				prNumber: 9,
+				prUrl: 'https://gitlab.acme.test/ops/infra/app/-/merge_requests/9',
+			},
+			dir,
+		);
+		expect(JSON.parse(result).success).toBe(true);
+	});
+
+	test('rejects a bitbucket prUrl (unsupported forge)', async () => {
+		const result = await executeRecordIssuePublication(
+			{
+				issueNumber: 42,
+				prNumber: 7,
+				prUrl: 'https://bitbucket.org/owner/repo/pull/1',
+			},
+			dir,
+		);
+		expect(JSON.parse(result).success).toBe(false);
+	});
 });

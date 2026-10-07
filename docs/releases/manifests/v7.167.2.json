@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.167.2",
+  "tagCommit": "d7f3ad5a641455e66f71892760ef5e17d96ff5af",
+  "targetCommitish": "d7f3ad5a641455e66f71892760ef5e17d96ff5af",
+  "releaseBodySha256": "92dcdce0d37e75eaddab4fe693657511ea9fb82a5b7839bc5faffc01a9ae8b6a",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2489-manifest-root-cache.md",
+      "sha256": "cf5c7d2442a86c4d2e6eeec8c2e4481c897f5e92af07a32221a48b43a6a90dc4"
+    }
+  ]
+}

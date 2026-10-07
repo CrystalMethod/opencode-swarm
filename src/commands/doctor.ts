@@ -4,6 +4,7 @@ import {
 	detectStraySwarmDirs,
 	readDoctorArtifact,
 	removeStraySwarmDir,
+	resolvePlanParallelizationFlag,
 	runConfigDoctor,
 } from '../services/config-doctor';
 import {
@@ -228,7 +229,12 @@ export async function handleDoctorCommand(
 
 	const meta = loadPluginConfigWithMeta(directory);
 	const config = meta.config;
-	const result = runConfigDoctor(config, directory);
+	// The worktree-isolation advisory keys on the plan execution profile, not
+	// the dark parallelization config block (issue #2901); resolve it once via
+	// the config-doctor seam-backed helper.
+	const planParallelizationEnabled =
+		await resolvePlanParallelizationFlag(directory);
+	const result = runConfigDoctor(config, directory, planParallelizationEnabled);
 
 	// If auto-fix is requested and there are auto-fixable issues, apply fixes
 	// before formatting — but do NOT return early; stray .swarm detection
@@ -324,6 +330,22 @@ export async function handleDoctorCommand(
 			output +=
 				'\nDispatching these roles will fail permanently. Fix the effective model in opencode-swarm.json — the matching swarm override wins over top-level `agents.<role>.model`. `fallback_models` only serve transient runtime failures.\n';
 		}
+	} catch {
+		/* fail-open: the doctor must still produce its structural report */
+	}
+
+	// #2947: knowledge-receipt phase-id check. Interactive surface ONLY —
+	// never wired into runConfigDoctor/runConfigDoctorWithFixes, so nothing
+	// here can run on the plugin startup path (AGENTS.md invariant 1). The
+	// journaled backfill runs only under --fix; detection is fail-open.
+	try {
+		const { renderKnowledgeReceiptPhaseIdSection } = await import(
+			'./doctor-knowledge-receipt-phase-id.js'
+		);
+		output += await renderKnowledgeReceiptPhaseIdSection(
+			directory,
+			enableAutoFix,
+		);
 	} catch {
 		/* fail-open: the doctor must still produce its structural report */
 	}

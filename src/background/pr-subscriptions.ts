@@ -61,6 +61,10 @@ import {
 import { withEvidenceLock } from '../evidence/lock.js';
 import { observeStoreHealth } from '../health/learning-health.js';
 import { validateSwarmPath } from '../hooks/utils.js';
+import {
+	canonicalForgePrUrl,
+	isForgePrUrl,
+} from '../providers/forge-provider.js';
 import { telemetry } from '../telemetry.js';
 import { log } from '../utils';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write.js';
@@ -304,6 +308,12 @@ export interface PrSubscriptionRecord {
 	/** e.g. "owner/repo". */
 	repoFullName: string;
 	prUrl: string;
+	/**
+	 * #2733: the configured forge declaration this prUrl was validated
+	 * against (present only for generic self-hosted GitLab hosts). Persisted
+	 * with the record so reload validation is config-free.
+	 */
+	forge?: { provider: 'gitlab'; host: string };
 	headRefOid?: string;
 	/** Epoch ms — last time the poller checked this PR. */
 	lastCheckedAt: number;
@@ -337,6 +347,12 @@ export interface SubscribeInput {
 	prNumber: number;
 	repoFullName: string;
 	prUrl: string;
+	/**
+	 * #2733: the configured forge declaration this prUrl was validated
+	 * against (present only for generic self-hosted GitLab hosts). Persisted
+	 * with the record so reload validation is config-free.
+	 */
+	forge?: { provider: 'gitlab'; host: string };
 	/** Max active subscriptions allowed (for limit enforcement). */
 	maxSubscriptions?: number;
 }
@@ -348,14 +364,23 @@ const RecordSchema = z
 		prNumber: z.number().int().positive(),
 		repoFullName: z
 			.string()
-			.regex(/^[^/]+\/[^/]+$/, 'Must be owner/repo format'),
-		prUrl: z
-			.string()
-			.min(1)
 			.regex(
-				/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/,
-				'Must be a valid GitHub PR URL',
+				/^[^/\s]+(?:\/[^/\s]+)+$/,
+				'Must be owner/repo format (GitLab nested namespaces allowed)',
 			),
+		prUrl: z.string().min(1),
+		/**
+		 * Provider metadata persisted WITH the record (#2733): a generic
+		 * self-hosted GitLab host is valid only when the record carries the
+		 * configured declaration it was validated against, making reload
+		 * config-free (the metadata travels with the durable record).
+		 */
+		forge: z
+			.object({
+				provider: z.literal('gitlab'),
+				host: z.string().min(1),
+			})
+			.optional(),
 		headRefOid: z.string().optional(),
 		lastCheckedAt: z.number(),
 		lastCommentId: z.string().optional(),
@@ -374,7 +399,28 @@ const RecordSchema = z
 		customFailureThreshold: z.number().int().min(0).optional(),
 		customCooldownSeconds: z.number().int().min(0).optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((record, ctx) => {
+		// #2733: prUrl is shape-valid on its own (github/gitlab.com/gitlab.*),
+		// or valid against the forge declaration persisted with the record
+		// (a configured generic self-hosted host). No declaration, no pass.
+		if (isForgePrUrl(record.prUrl)) return;
+		if (
+			record.forge &&
+			isForgePrUrl(record.prUrl, {
+				provider: record.forge.provider,
+				host: record.forge.host,
+			})
+		) {
+			return;
+		}
+		ctx.addIssue({
+			code: z.ZodIssueCode.custom,
+			path: ['prUrl'],
+			message:
+				'Must be a valid PR URL (GitHub /pull/N or GitLab /-/merge_requests/N)',
+		});
+	});
 
 // ---------------------------------------------------------------------------
 // Checkpoint schema (issue #2042 Required 1)
@@ -3406,6 +3452,7 @@ export async function subscribe(
 					prNumber: input.prNumber,
 					repoFullName: input.repoFullName,
 					prUrl: input.prUrl,
+					...(input.forge ? { forge: input.forge } : {}),
 					lastCheckedAt: now,
 					isWatching: true,
 					hasUnaddressedEvents: false,
@@ -3456,6 +3503,7 @@ export async function subscribe(
 				prNumber: input.prNumber,
 				repoFullName: input.repoFullName,
 				prUrl: input.prUrl,
+				...(input.forge ? { forge: input.forge } : {}),
 				lastCheckedAt: now,
 				isWatching: true,
 				hasUnaddressedEvents: false,
@@ -3573,6 +3621,93 @@ export async function lookupByPr(
 		}
 	}
 	return null;
+}
+
+/**
+ * Find the active subscription record whose forge declaration authorizes a
+ * given MR/PR URL or (repoFullName, prNumber) identity (issue #2882 AC5).
+ *
+ * Every PROVIDED key field must match. `prUrl` matches on raw string equality
+ * or — for declared generic self-hosted GitLab hosts, which never canonicalize
+ * without context — on record-scoped canonicalization (both URLs canonicalized
+ * with the candidate record's own `forge` declaration). This resolves the
+ * lookup chicken-and-egg: the declaration needed to canonicalize lives on the
+ * record being looked for.
+ *
+ * Tie-breaking: first match wins. The store's composite `correlationId`
+ * (`${sessionID}::${repoFullName}::${prNumber}`) is unique, so true duplicates
+ * are impossible; callers needing session scoping pass `sessionID` too.
+ * Returns null on miss — callers then run with NO configured context and the
+ * existing fail-closed canonicalization behavior stands.
+ */
+export async function findSubscriptionRecordForPrUrl(
+	directory: string,
+	key: {
+		prUrl?: string;
+		repoFullName?: string;
+		prNumber?: number;
+		sessionID?: string;
+	},
+): Promise<PrSubscriptionRecord | null> {
+	if (key.repoFullName !== undefined && key.prNumber !== undefined) {
+		// lookupByPr returns the FIRST active record for the identity regardless
+		// of session; when a sessionID is supplied and that record belongs to a
+		// different session, fall through to the full scan below rather than
+		// failing closed — multiple sessions subscribed to the same MR is a
+		// supported scenario (Copr review round, PR #2895).
+		const record = await lookupByPr(directory, key.repoFullName, key.prNumber);
+		if (
+			record &&
+			(!key.sessionID || record.sessionID === key.sessionID) &&
+			(key.prUrl === undefined ||
+				record.prUrl === key.prUrl ||
+				subscriptionPrUrlMatches(record, key.prUrl))
+		) {
+			return record;
+		}
+		if (!key.sessionID) return null;
+	}
+	if (key.prUrl === undefined && key.repoFullName === undefined) return null;
+	if (key.prUrl === undefined) {
+		// repoFullName+prNumber given (no prUrl), session mismatch above: scan
+		// for that session's own record.
+		const active = await listActive(directory);
+		for (const record of active) {
+			if (key.sessionID && record.sessionID !== key.sessionID) continue;
+			if (
+				record.repoFullName === key.repoFullName &&
+				record.prNumber === key.prNumber
+			) {
+				return record;
+			}
+		}
+		return null;
+	}
+	const active = await listActive(directory);
+	for (const record of active) {
+		if (key.sessionID && record.sessionID !== key.sessionID) continue;
+		if (
+			record.prUrl === key.prUrl ||
+			subscriptionPrUrlMatches(record, key.prUrl)
+		) {
+			return record;
+		}
+	}
+	return null;
+}
+
+/**
+ * Record-scoped canonical match: authorize the URL with the record's own
+ * persisted forge declaration (null for records without one — shape-detected
+ * hosts canonicalize unconfigured).
+ */
+function subscriptionPrUrlMatches(
+	record: PrSubscriptionRecord,
+	prUrl: string,
+): boolean {
+	const left = canonicalForgePrUrl(record.prUrl, record.forge);
+	const right = canonicalForgePrUrl(prUrl, record.forge);
+	return left !== null && left === right;
 }
 
 /**

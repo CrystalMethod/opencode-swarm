@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.14",
+  "tagCommit": "cb403bc01164a5fd1cdf3b751c9bff2ee81755bb",
+  "targetCommitish": "cb403bc01164a5fd1cdf3b751c9bff2ee81755bb",
+  "releaseBodySha256": "973c4668c0c58a9444f2cad31379e87a06d562d073250273d773e80a6f098164",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/issue-2812-six-merge-group-flaky-tests-windows-quarantine.md",
+      "sha256": "b692e1461e89adc4153b993f20e180280855443e26f4c5890d28a560afea60a5"
+    }
+  ]
+}

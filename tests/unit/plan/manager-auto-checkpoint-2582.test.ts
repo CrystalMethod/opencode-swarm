@@ -13,15 +13,29 @@ import * as child_process from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { closeProjectDb } from '../../../src/db/project-db.js';
-import { buildAutoCheckpointLabel } from '../../../src/plan/auto-checkpoint.js';
+import { _internals as mergeEpochInternals } from '../../../src/epic/merge-epoch.js';
+import {
+	_internals as autoCheckpointInternals,
+	buildAutoCheckpointLabel,
+	maybeSaveAutoCheckpoint,
+} from '../../../src/plan/auto-checkpoint.js';
 import { _internals as managerInternals } from '../../../src/plan/manager.js';
 import { executeSavePlan } from '../../../src/tools/save-plan.js';
-import { enableEpicMode } from '../../../src/turbo/epic/state.js';
+import { openEpicForTest } from '../../helpers/epic-lifecycle';
+import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const ORIGINAL_TRIGGER = managerInternals.maybeSaveAutoCheckpoint;
+const ORIGINAL_MERGE_FAILURE = mergeEpochInternals.getWorktreeMergeFailure;
+const ORIGINAL_BOUND_PATH = mergeEpochInternals.getBoundStatusPath;
+const ORIGINAL_LOADER = autoCheckpointInternals.loadPluginConfigWithMeta;
+const ORIGINAL_SPAWN_SYNC = autoCheckpointInternals.spawnSync;
 
 let tempDir: string;
+let isolatedEnv: { cleanup: () => void } | undefined;
+let consoleCapture: string[] = [];
+let originalConsoleWarn: typeof console.warn | undefined;
+let originalConsoleLog: typeof console.log | undefined;
 
 interface CheckpointEntryLike {
 	label: string;
@@ -36,6 +50,10 @@ function gitRun(directory: string, args: string[]): string {
 		timeout: 30_000,
 		stdio: ['ignore', 'pipe', 'pipe'],
 		windowsHide: true,
+		env: {
+			...process.env,
+			GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+		},
 	});
 	if (result.status !== 0) {
 		throw new Error(
@@ -85,6 +103,10 @@ async function savePlanWithTasks(taskIds: string[]): Promise<void> {
 		},
 		tempDir,
 	);
+	if (!result.success) {
+		process.stderr.write(`DEBUG savePlan result: ${JSON.stringify(result).slice(0, 400)}
+`);
+	}
 	expect(result.success).toBe(true);
 }
 
@@ -123,10 +145,35 @@ beforeEach(() => {
 	);
 	process.env.SWARM_SKIP_SPEC_GATE = '1';
 	process.env.SWARM_SKIP_GATE_SELECTION = '1';
+	// m-c-004/F9 safety net: capture console BEFORE anything that can throw,
+	// so afterEach can never restore undefined console methods.
+	consoleCapture = [];
+	originalConsoleWarn = console.warn;
+	originalConsoleLog = console.log;
+	console.warn = (...args: unknown[]) => {
+		consoleCapture.push(args.map(String).join(' '));
+	};
+	console.log = (...args: unknown[]) => {
+		consoleCapture.push(args.map(String).join(' '));
+	};
+	// PRR-002: the loader deep-merges the developer's real user config; keep
+	// unset keys (max_retention etc.) deterministic across machines.
+	isolatedEnv = createIsolatedTestEnv();
 });
 
 afterEach(() => {
 	managerInternals.maybeSaveAutoCheckpoint = ORIGINAL_TRIGGER;
+	mergeEpochInternals.getWorktreeMergeFailure = ORIGINAL_MERGE_FAILURE;
+	mergeEpochInternals.getBoundStatusPath = ORIGINAL_BOUND_PATH;
+	autoCheckpointInternals.loadPluginConfigWithMeta = ORIGINAL_LOADER;
+	autoCheckpointInternals.spawnSync = ORIGINAL_SPAWN_SYNC;
+	console.warn = originalConsoleWarn;
+	console.log = originalConsoleLog;
+	try {
+		isolatedEnv?.cleanup();
+	} catch {
+		// best-effort
+	}
 	delete process.env.SWARM_SKIP_SPEC_GATE;
 	delete process.env.SWARM_SKIP_GATE_SELECTION;
 	try {
@@ -213,6 +260,7 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 	});
 
 	test('a throwing trigger never fails the durable status write and is always visibly warned', async () => {
+		gitInit(tempDir);
 		await savePlanWithTasks(['1.1']);
 		managerInternals.maybeSaveAutoCheckpoint = async () => {
 			throw new Error('injected auto-checkpoint failure');
@@ -299,24 +347,124 @@ describe('auto-checkpoint cadence through updateTaskStatus (#2582)', () => {
 		).toBe(true);
 	});
 
-	test('Epic-mode completion records the post-Rule-2 HEAD', async () => {
+	test('Epic-mode completion records HEAD and writes no commit (Epic v2 C3)', async () => {
 		gitInit(tempDir);
-		// Enable Epic mode through the sanctioned API (the hand-written legacy
-		// state file is migrated/validated and a bare session object does not
-		// survive it).
-		enableEpicMode(tempDir, 'test-session');
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+			epic: { mode: { enabled: true } },
+		});
+		gitRun(tempDir, ['add', '.opencode/opencode-swarm.json']);
+		gitRun(tempDir, ['commit', '-m', 'config']);
+		await savePlanWithTasks(['1.1']);
+		// An epic is open for this plan (real lifecycle row + sentinel).
+		openEpicForTest(tempDir);
+		const headBefore = gitRun(tempDir, ['rev-parse', 'HEAD']).trim();
+
+		await completeTasks(['1.1']);
+		const entries = readCheckpointEntries();
+		expect(entries).toHaveLength(1);
+		// An epic task's work is committed when its worktree lands, so the
+		// completion itself commits nothing and the checkpoint records HEAD.
+		expect(gitRun(tempDir, ['rev-parse', 'HEAD']).trim()).toBe(headBefore);
+		expect(entries[0]?.sha).toBe(headBefore);
+	});
+
+	test('default threshold (3) applies when the config omits the key (PRR-006)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({ checkpoint: { enabled: true } });
+		await savePlanWithTasks(['1.1', '1.2', '1.3', '1.4']);
+
+		await completeTasks(['1.1', '1.2']);
+		expect(readCheckpointEntries()).toHaveLength(0);
+		await completeTasks(['1.3']);
+		const entries = readCheckpointEntries();
+		expect(entries).toHaveLength(1);
+		expect(entries[0]?.label).toMatch(/-003$/);
+		await completeTasks(['1.4']);
+		expect(readCheckpointEntries()).toHaveLength(1);
+	});
+
+	test('worktree-merge failure of an epic task skips the auto-checkpoint (PRR-008, Epic v2 C3)', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+			epic: { mode: { enabled: true } },
+		});
+		await savePlanWithTasks(['1.1']);
+		openEpicForTest(tempDir);
+		// The shared registry is bound to this project and holds an undated
+		// failure for 1.1 (undated ⇒ relevant, fail closed).
+		mergeEpochInternals.getBoundStatusPath = () =>
+			path.join(tempDir, '.swarm', 'worktree-merge-status.json');
+		mergeEpochInternals.getWorktreeMergeFailure = () => ({
+			outcome: 'failed' as const,
+			stage: 'merge',
+			message: 'injected merge-back failure',
+		});
+
+		await completeTasks(['1.1']);
+		expect(readTaskStatus('1.1')).toBe('completed');
+		expect(readCheckpointEntries()).toHaveLength(0);
+		expect(
+			consoleCapture.some((message) =>
+				message.includes('auto-checkpoint SKIPPED for 1.1'),
+			),
+		).toBe(true);
+	});
+
+	test('the same injected failure does NOT skip the checkpoint without an open epic', async () => {
+		gitInit(tempDir);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		await savePlanWithTasks(['1.1']);
+		mergeEpochInternals.getBoundStatusPath = () =>
+			path.join(tempDir, '.swarm', 'worktree-merge-status.json');
+		mergeEpochInternals.getWorktreeMergeFailure = () => ({
+			outcome: 'failed' as const,
+			stage: 'merge',
+			message: 'injected merge-back failure',
+		});
+
+		await completeTasks(['1.1']);
+		expect(readCheckpointEntries()).toHaveLength(1);
+	});
+
+	test('successful automatic saves emit checkpoint_auto_saved on the events stream (PRR-009)', async () => {
+		gitInit(tempDir);
 		writeCheckpointConfig({
 			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
 		});
 		await savePlanWithTasks(['1.1']);
 
 		await completeTasks(['1.1']);
-		const entries = readCheckpointEntries();
-		expect(entries).toHaveLength(1);
-		const head = gitRun(tempDir, ['rev-parse', 'HEAD']).trim();
-		expect(entries[0]?.sha).toBe(head);
-		const subject = gitRun(tempDir, ['log', '-1', '--format=%s']).trim();
-		// The Rule 2 marker commit ran before the checkpoint recorded its SHA.
-		expect(subject.startsWith('swarm(task 1.1):')).toBe(true);
+		const eventsPath = path.join(tempDir, '.swarm', 'events.jsonl');
+		expect(fs.existsSync(eventsPath)).toBe(true);
+		const events = fs
+			.readFileSync(eventsPath, 'utf-8')
+			.split('\n')
+			.filter((line) => line.trim().length > 0)
+			.map((line) => JSON.parse(line) as { event?: string; label?: string });
+		const autoSaved = events.filter(
+			(event) => event.event === 'checkpoint_auto_saved',
+		);
+		expect(autoSaved).toHaveLength(1);
+		expect(autoSaved[0]?.label).toBe(readCheckpointEntries()[0]?.label);
+	});
+
+	test('unborn repo trigger reports no_restorable_head skipReason (PRR-007)', async () => {
+		gitInit(tempDir, false);
+		writeCheckpointConfig({
+			checkpoint: { enabled: true, auto_checkpoint_threshold: 1 },
+		});
+		await savePlanWithTasks(['1.1']);
+		await completeTasks(['1.1']);
+		expect(readCheckpointEntries()).toHaveLength(0);
+		const plan = JSON.parse(
+			fs.readFileSync(path.join(tempDir, '.swarm', 'plan.json'), 'utf-8'),
+		) as Parameters<typeof maybeSaveAutoCheckpoint>[1];
+		const outcome = await maybeSaveAutoCheckpoint(tempDir, plan);
+		expect(outcome.saved).toBe(false);
+		expect(outcome.skipReason).toBe('no_restorable_head');
 	});
 });

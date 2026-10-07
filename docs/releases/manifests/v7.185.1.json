@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.185.1",
+  "tagCommit": "3440753e49fd4fee6d9b3804747cf71867fbf179",
+  "targetCommitish": "3440753e49fd4fee6d9b3804747cf71867fbf179",
+  "releaseBodySha256": "94fe4a1d8ccec9f3f3921024d44576ace837fe29841d7d47c9a8d73a9989f675",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2840-dead-family-verdict-gate.md",
+      "sha256": "8ff330f79cb1c4e154ebdcb5ace8c518aef573f66c13ba0bb4cf3f4d2d61e27b"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2841-plan-context-sanitizer-blocked-cursor.md",
+      "sha256": "a9d3b46bc51be3d4a44bd6a83599b9fb1e5da56edac8f3ecec873a3b3afa6d92"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2886-context-compaction-sanitizer-blocked-phase.md",
+      "sha256": "cdafbf8e47b4861648844080f003b55b2042555d23c75ba5fbfa7d68f33e8808"
+    }
+  ]
+}

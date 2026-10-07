@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.173.1",
+  "tagCommit": "650580d7f1b4ff1b621a295de41cad4ef4473bb2",
+  "targetCommitish": "650580d7f1b4ff1b621a295de41cad4ef4473bb2",
+  "releaseBodySha256": "d62ae60d9c6c32240944cb28dc7cdddb7a28a4fe6cbee8e7d3c93d1346e188ca",
+  "fragments": [
+    {
+      "prNumber": 2682,
+      "path": "docs/releases/pending/2508-settlement-merge-safety-purge.md",
+      "sha256": "783009c6c6f04c72e83739c78a864205f433c705b0dfee8d7ec56345aeb89bb8"
+    }
+  ]
+}

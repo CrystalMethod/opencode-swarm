@@ -18,6 +18,7 @@ const mockSubscribe = mock(() => Promise.resolve({}));
 // ---------------------------------------------------------------------------
 let tempDir: string;
 let savedPrSubscribeInternals: typeof prSubscribeInternals;
+let savedPrRefInternals: typeof prRefInternals.spawnSync;
 
 beforeEach(() => {
 	tempDir = mkdtempSync(join(tmpdir(), 'pr-subscribe-test-'));
@@ -30,11 +31,9 @@ beforeEach(() => {
 			max_subscriptions: 20,
 		},
 	})) as typeof prSubscribeInternals.loadPluginConfig;
-	// Mock subscribe via DI seam
 	prSubscribeInternals.subscribe = mockSubscribe;
-	// Reset per-test state for the spawnSync seam used by bare-number resolution.
-	// detectGitRemote() calls _internals.spawnSync('git', ['remote', 'get-url', 'origin'], ...)
-	// — see src/commands/_shared/url-security.ts.
+	// Bare-number resolution shells out via the pr-ref spawnSync seam (src/commands/_shared/url-security.ts).
+	savedPrRefInternals = prRefInternals.spawnSync;
 	prRefInternals.spawnSync = ((_bin: string, args: string[]) => {
 		if (args.join(' ') === 'remote get-url origin') {
 			return {
@@ -50,10 +49,11 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(tempDir, { recursive: true, force: true });
 	mockSubscribe.mockReset();
-	// Restore internals
 	prSubscribeInternals.loadPluginConfig =
 		savedPrSubscribeInternals.loadPluginConfig;
 	prSubscribeInternals.subscribe = savedPrSubscribeInternals.subscribe;
+	// Restore the pr-ref spawnSync seam too, or the stub leaks into sibling test files.
+	prRefInternals.spawnSync = savedPrRefInternals;
 });
 
 // ---------------------------------------------------------------------------

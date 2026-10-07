@@ -108,7 +108,7 @@ async function establishMixedCoverage(successCount: number): Promise<string[]> {
 			'corpus-failed',
 			'swarm-pr-review:base',
 			failedLanes,
-			{ status: 'error', workflowLaneFailureClass: 'contract' },
+			{ status: 'cancelled', workflowLaneFailureClass: 'operator_cancelled' }, // #2971: operator abandonment is non-retryable and filtered out of the W5 remainder, so this legacy contract shape admits rather than blocks.
 		);
 	}
 	return failed;

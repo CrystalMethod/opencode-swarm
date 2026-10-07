@@ -48,6 +48,7 @@ export type PrReviewCircuitIgnoredReason =
 	| 'cancellation'
 	| 'stale_observation'
 	| 'host_abandonment'
+	| 'operator_abandonment'
 	| 'unknown';
 
 export type PrReviewCircuitSignal =
@@ -245,9 +246,19 @@ export function classifyPrReviewCircuitSignal(
 	}
 	if (result?.workflowLaneFailureClass === 'liveness') {
 		// Issue #2615: a typed 'liveness' terminal is host-side abandonment
-		// (stale sweep, unobservable host, or operator cancel) — never evidence
-		// of a repeated typed dispatch failure, so never correlated.
+		// (stale sweep or unobservable host) — never evidence of a repeated
+		// typed dispatch failure, so never correlated. Issue #2971: operator
+		// cancellations no longer wear this class (see operator_cancelled
+		// below); historical pre-#2971 cancel rows read as liveness here,
+		// which stays correct (they are still not dispatch-failure evidence).
 		return { kind: 'ignored', reason: 'host_abandonment' };
+	}
+	if (result?.workflowLaneFailureClass === 'operator_cancelled') {
+		// Issue #2971: an explicitly authorized operator cancellation is an
+		// operator action — never a provider/liveness failure and never
+		// evidence of a repeated typed dispatch failure, so it neither
+		// correlates nor consumes the automatic retry budget.
+		return { kind: 'ignored', reason: 'operator_abandonment' };
 	}
 	switch (record.status) {
 		case 'error':

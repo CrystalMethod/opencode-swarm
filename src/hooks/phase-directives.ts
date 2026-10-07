@@ -28,9 +28,12 @@ import { isActiveStatus } from './knowledge-types.js';
 export async function collectPhaseDirectiveIds(
 	directory: string,
 	phaseLabel?: string,
+	/** #2947: stable phase id — id-first matching with label fallback (#2984 review). */
+	phaseId?: number,
 ): Promise<string[]> {
 	const result = await queryLiveMemberships(directory, {
 		phase: phaseLabel || undefined,
+		...(phaseId !== undefined ? { phase_id: phaseId } : {}),
 		include_terminal: true,
 		include_phase_closed: false,
 	});
@@ -126,10 +129,13 @@ export function pickDirectiveRepresentatives(
 export async function readPhaseDirectivesToVerify(
 	directory: string,
 	phaseLabel?: string,
+	/** #2947: stable phase id — id-first matching with label fallback (#2984 review). */
+	phaseId?: number,
 ): Promise<DirectiveToVerify[]> {
 	try {
 		const result = await queryLiveMemberships(directory, {
 			phase: phaseLabel || undefined,
+			...(phaseId !== undefined ? { phase_id: phaseId } : {}),
 			include_terminal: true,
 			include_phase_closed: false,
 		});
@@ -193,8 +199,13 @@ export async function readPhaseDirectivesToVerify(
 export async function readPhaseCriticalDirectiveIds(
 	directory: string,
 	phaseLabel?: string,
+	phaseId?: number,
 ): Promise<string[]> {
-	const directives = await readPhaseDirectivesToVerify(directory, phaseLabel);
+	const directives = await readPhaseDirectivesToVerify(
+		directory,
+		phaseLabel,
+		phaseId,
+	);
 	return [
 		...new Set(
 			directives

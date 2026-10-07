@@ -43,7 +43,7 @@ export const LEGACY_ADAPTER_RULES: readonly string[] = Object.freeze([
 	'Record the source store and its schema version: `sourceStore` names the file; `sourceSchemaVersion` is the version the store declares.',
 	'Preserve originally reported values: values are aliased, never coerced, normalized, rounded, or re-serialized.',
 	'Record timing confidence: a time read by the writer at record time is `writer-clock`, never `exact`.',
-	"Unknown is not zero: the adapter lists in `unknown` every catalogued key the PRODUCER left undefined, and never itself defaults one to 0, \"\", false, or null. The guarantee stops at the adapter boundary — a producer that pre-coerces its own defaults defeats it, because the adapter only ever sees the coerced value. The known instance is `delegation_end` (`src/telemetry.ts` `delegationEnd`, pre-existing): it coerces `?? 0` / `?? null` / `?? 'unavailable'` before emitting, so its cost fields can never appear in `unknown`; there, `cost_source: 'unavailable'` is how absence stays recoverable.",
+	'Unknown is not zero: the adapter lists in `unknown` every catalogued key the PRODUCER left undefined, and never itself defaults one to 0, "", false, or null. The guarantee stops at the adapter boundary — a producer that pre-coerces its own defaults defeats it, because the adapter only ever sees the coerced value. The known instance was `delegation_end` (`src/telemetry.ts` `delegationEnd`): before issue #2789 it coerced token axes with `?? 0`, so they could never appear in `unknown`; it now emits held-null token axes (`?? null`), matching `cost_usd`, and `cost_source: \'unavailable\'` still records absence of a cost basis.',
 	'Missing lineage stays missing: an absent correlation ID stays `undefined` and is never synthesized to make a join succeed.',
 	'Never drop unrecognized fields: no allowlist filter is applied to the payload on the way through.',
 ]);
@@ -293,6 +293,9 @@ export const KNOWN_TELEMETRY_KEYS: Readonly<Record<string, readonly string[]>> =
 		]),
 		plan_md_write_failed: Object.freeze(['directory', 'error', 'timestamp']),
 		snapshot_failed: Object.freeze(['error', 'retries', 'source']),
+		// src/session/snapshot-coordination-init.ts settlement chokepoint
+		// (issue #2794): counts-only supersession payload.
+		plan_recovery_superseded: Object.freeze(['count', 'trigger']),
 
 		// src/hooks/conflict-resolution.ts:55-73. Note `type` and `timestamp`: this
 		// producer supplies its own, and the caller's values must keep winning in

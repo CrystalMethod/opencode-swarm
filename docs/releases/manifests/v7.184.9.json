@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.9",
+  "tagCommit": "374c2642e9abb337b1efc2a9a1f3d1f1dae52057",
+  "targetCommitish": "374c2642e9abb337b1efc2a9a1f3d1f1dae52057",
+  "releaseBodySha256": "e93fbe9bc94491747b8af5d81417a3de9e61d555f84710be6f89b8f0867b1466",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2580-plan-cursor-both-context-paths.md",
+      "sha256": "bc8f9b863afc3e56c490944c528fbd9c362ce96baf701db0278f2a522cea85a1"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2600-trace-plan-binding.md",
+      "sha256": "fe33ac3a1a4ee44755726bad8906c4184ab75f6e4535186bb53a167641edd48d"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2838-plan-cursor-review-hardening.md",
+      "sha256": "e60562e41f6f6f986b83e1f9cdeee8dbbae97dcc247e6f763ffd62360e689859"
+    }
+  ]
+}

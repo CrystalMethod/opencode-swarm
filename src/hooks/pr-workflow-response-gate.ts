@@ -4,7 +4,16 @@ import {
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 } from '../background/pr-feedback-event-queue.js';
+import { findSubscriptionRecordForPrUrl } from '../background/pr-subscriptions.js';
 import { appendCoreEventSync } from '../events/core-events.js';
+import {
+	canonicalForgePrUrl,
+	type ForgeContext,
+} from '../providers/forge-provider.js';
+import {
+	ensurePrWorkflowSkillContractsFresh,
+	SKILL_CONTRACT_WAKE_BUDGET_MS,
+} from '../services/pr-workflow-skill-contract.js';
 import { log } from '../utils';
 import {
 	cancelPrWorkflowPluginWake,
@@ -14,6 +23,7 @@ import {
 	observePrWorkflowAutoWakeEvent,
 } from './pr-workflow-auto-wake.js';
 import {
+	appendPrWorkflowSkillContractAdvisories,
 	type PrReviewDepthTier,
 	readPrWorkflowGateState,
 } from './pr-workflow-gate.js';
@@ -32,12 +42,16 @@ export const _internals: {
 	readPrFeedbackMonitorQueue: typeof readPrFeedbackMonitorQueue;
 	observePrWorkflowAutoWakeEvent: typeof observePrWorkflowAutoWakeEvent;
 	scanDelegationsForRecovery: typeof scanDelegationsForRecovery;
+	// Issue #2601: seam for the wake-path skill-contract verification so
+	// fake-timer wake suites can stub the real (fs-bound) verifier.
+	ensurePrWorkflowSkillContractsFresh: typeof ensurePrWorkflowSkillContractsFresh;
 } = {
 	readPrWorkflowGateState,
 	claimPrFeedbackMonitorEvents,
 	readPrFeedbackMonitorQueue,
 	observePrWorkflowAutoWakeEvent,
 	scanDelegationsForRecovery,
+	ensurePrWorkflowSkillContractsFresh,
 };
 
 /**
@@ -416,30 +430,62 @@ function isTerminalToolStatus(value: unknown): boolean {
 	);
 }
 
-function canonicalGitHubPrUrl(value: string): string | null {
-	try {
-		const url = new URL(value);
-		const match = url.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
-		if (
-			url.protocol !== 'https:' ||
-			url.hostname.toLowerCase() !== 'github.com' ||
-			!match
-		) {
-			return null;
-		}
-		const number = Number(match[3]);
-		if (!Number.isSafeInteger(number) || number <= 0) return null;
-		return `github.com/${match[1].toLowerCase()}/${match[2].toLowerCase()}/pull/${number}`;
-	} catch {
-		return null;
-	}
+function canonicalGitHubPrUrl(
+	value: string,
+	configured?: ForgeContext,
+): string | null {
+	// Provider-aware delegation (issue #2733): canonicalForgePrUrl is the
+	// shared implementation; its GitHub output is byte-identical to the
+	// previous module-local body. #2882 AC5: the optional configured context
+	// authorizes declared generic self-hosted GitLab MR URLs; absent context
+	// keeps the fail-closed behavior.
+	return canonicalForgePrUrl(value, configured);
 }
 
-function sameGitHubPr(left: string, right: string): boolean {
-	const leftCanonical = canonicalGitHubPrUrl(left);
+function sameGitHubPr(
+	left: string,
+	right: string,
+	configured?: ForgeContext,
+): boolean {
+	const leftCanonical = canonicalGitHubPrUrl(left, configured);
 	return (
-		leftCanonical !== null && leftCanonical === canonicalGitHubPrUrl(right)
+		leftCanonical !== null &&
+		leftCanonical === canonicalGitHubPrUrl(right, configured)
 	);
+}
+
+/**
+ * #2882 AC5: resolve the wake's configured forge context from the
+ * subscription record's persisted declaration — keyed on the first queued
+ * event's identity, falling back to the feedback target URL. Undefined on
+ * miss or when nothing is queued (fail-closed: canonicalization then runs
+ * unconfigured exactly as before).
+ */
+async function resolveWakeForgeContext(
+	directory: string,
+	firstQueuedEvent?: {
+		prUrl?: string;
+		repoFullName?: string;
+		prNumber?: number;
+	},
+	feedbackTarget?: string,
+): Promise<ForgeContext | undefined> {
+	try {
+		const key = firstQueuedEvent?.repoFullName
+			? {
+					repoFullName: firstQueuedEvent.repoFullName,
+					prNumber: firstQueuedEvent.prNumber,
+					...(firstQueuedEvent.prUrl ? { prUrl: firstQueuedEvent.prUrl } : {}),
+				}
+			: feedbackTarget
+				? { prUrl: feedbackTarget }
+				: null;
+		if (!key) return undefined;
+		const record = await findSubscriptionRecordForPrUrl(directory, key);
+		return record?.forge;
+	} catch {
+		return undefined;
+	}
 }
 
 function formatQueuedMonitorEventsText(
@@ -1340,17 +1386,56 @@ export function createPrWorkflowResponseGate(options: {
 			state = prePromptState;
 			feedbackTarget =
 				state.prFeedbackTargetUrl ?? state.prFeedbackReviewHandoff?.prUrl;
+			// #2882 AC5: derive the configured forge context once per wake from
+			// the subscription record's persisted declaration (first queued
+			// event's identity, falling back to the feedback target URL), then
+			// use it for every canonicalization on this wake.
+			const wakeForgeContext = await resolveWakeForgeContext(
+				options.directory,
+				queuedMonitorRecord?.events[0],
+				feedbackTarget,
+			);
 			const queuedMonitorEvents =
 				queuedMonitorRecord?.events.filter(
 					(event) =>
 						!event.claimedWorkflowInstanceId &&
 						Boolean(feedbackTarget) &&
-						sameGitHubPr(event.prUrl, feedbackTarget ?? ''),
+						sameGitHubPr(event.prUrl, feedbackTarget ?? '', wakeForgeContext),
 				) ?? [];
 			const queuedMonitorText =
 				queuedMonitorEvents.length > 0
 					? `\n${formatQueuedMonitorEventsText(queuedMonitorEvents)}`
 					: '';
+			// Issue #2601: close the auto-resume bundled-staleness window. This
+			// path re-enters MODE without a command, so the command-path sync
+			// never runs here — the init-time sync is fail-open and may predate
+			// a plugin update. Bounded, fail-open verification heals the bundled
+			// copy, records advisories on the durable state, and surfaces a
+			// bounded advisory block to the architect. Steady state (clean host)
+			// leaves the prompt byte-identical to the pre-#2601 text
+			// (AGENTS.md invariant 10).
+			const skillContractAdvisories =
+				await _internals.ensurePrWorkflowSkillContractsFresh(
+					options.directory,
+					state.mode,
+					{
+						budgetMs: SKILL_CONTRACT_WAKE_BUDGET_MS,
+					},
+				);
+			if (skillContractAdvisories.length > 0) {
+				await appendPrWorkflowSkillContractAdvisories(
+					options.directory,
+					sessionID,
+					skillContractAdvisories,
+				);
+			}
+			const skillContractAdvisoryText =
+				skillContractAdvisories.length === 0
+					? ''
+					: `\n[skill-contract advisory] ${skillContractAdvisories
+							.slice(0, 4)
+							.map((advisory) => advisory.slice(0, 500))
+							.join('\n[skill-contract advisory] ')}`;
 			const promptStartTime = now();
 			finalBoundary.lastObservedAt = promptStartTime;
 			if (shouldDeferBoundaryWake(finalBoundary, promptStartTime)) {
@@ -1377,7 +1462,7 @@ export function createPrWorkflowResponseGate(options: {
 									suspended: false,
 									suspendedReason: undefined,
 									maxConsecutive: maxConsecutive,
-								})}\nDo not stop or summarize. Inspect the durable gate, dispatch or collect the next missing required lane, and continue until complete_pr_workflow succeeds. If the bind/checkout path is genuinely unreachable, call abort_pr_workflow instead of looping.${queuedMonitorText}`,
+								})}\nDo not stop or summarize. Inspect the durable gate, dispatch or collect the next missing required lane, and continue until complete_pr_workflow succeeds. If the bind/checkout path is genuinely unreachable, call abort_pr_workflow instead of looping.${queuedMonitorText}${skillContractAdvisoryText}`,
 							},
 						],
 					},
@@ -1434,6 +1519,7 @@ export function createPrWorkflowResponseGate(options: {
 							postWakeState.prFeedbackReviewHandoff?.prUrl ??
 							'',
 						feedbackTarget,
+						wakeForgeContext,
 					)
 				) {
 					await _internals
@@ -1443,6 +1529,8 @@ export function createPrWorkflowResponseGate(options: {
 							state.workflowInstanceId,
 							feedbackTarget,
 							queuedMonitorEvents.map((event) => event.dedupToken),
+							process.pid,
+							wakeForgeContext,
 						)
 						.catch(() => []);
 				}

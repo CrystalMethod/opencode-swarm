@@ -213,7 +213,7 @@ describe('issue #2214 — coder settlement finalization', () => {
 			{ args: { ...CODER_ARGS } },
 		);
 		expect(readWal(directory, '1.1').state).toBe('DISPATCHED');
-		await hook.abortDeniedSettlementForCall('denied-later');
+		await hook.abortDeniedSettlementForCall('denied-later', 'parent');
 		expect(readWal(directory, '1.1').state).toBe('ABORTED');
 		expect(await recoverCoderSettlement(directory, '1.1')).toBeNull();
 		// The task is repairable: no unsettled dispatch fences plan-status change.

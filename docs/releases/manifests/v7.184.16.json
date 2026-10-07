@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.184.16",
+  "tagCommit": "15824bbb2b434b550d25916637258922fd199960",
+  "targetCommitish": "15824bbb2b434b550d25916637258922fd199960",
+  "releaseBodySha256": "808b03f4d35905787224c4ddddf2cffb5c71108f2b5cbce1d782117514109c77",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2865-collect-receipt-publish-race.md",
+      "sha256": "42926f70e51866536b25d8d5c287754e3f8d5e666bef29457d0338dbd95f26f1"
+    }
+  ]
+}

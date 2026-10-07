@@ -36,7 +36,10 @@ import {
 	readPriorDriftReports,
 } from './curator-drift.js';
 import type { DriftReport } from './curator-types.js';
-import { extractCurrentPhaseFromPlan } from './extractors.js';
+import {
+	extractCurrentPhaseFromPlan,
+	extractPhaseIdFromLabel,
+} from './extractors.js';
 import { resolveMessageTransformContext } from './host-boundary.js';
 import { recordKnowledgeShown } from './knowledge-application.js';
 import {
@@ -223,9 +226,7 @@ interface BuiltBlock {
  * {@link confirmEntriesPhase} / the `injection_skip` telemetry.
  */
 function phaseNumberOf(label: string | undefined): number | undefined {
-	if (!label) return undefined;
-	const m = /^Phase\s+(\d+)/i.exec(label);
-	return m ? Number(m[1]) : undefined;
+	return extractPhaseIdFromLabel(label);
 }
 
 /**
@@ -604,6 +605,11 @@ export interface InjectForDelegateParams {
 	 * and the phase-complete gate window directives by phase (Change 2).
 	 */
 	phase?: string;
+	/**
+	 * #2947: stable numeric phase id persisted on the membership so the
+	 * phase-complete gate can key on it when the label legitimately drifts.
+	 */
+	phase_id?: number;
 	/** Test seam: override the search function. Defaults to the live one. */
 	searchFn?: typeof searchKnowledge;
 }
@@ -719,6 +725,7 @@ export async function injectForDelegate(
 				session_id: sessionId,
 				exposure_kind: 'delegate_directive',
 				phase: params.phase,
+				phase_id: params.phase_id,
 				task_id: params.taskId,
 				agent,
 				cohort_id: cohortId,
@@ -892,6 +899,9 @@ async function injectForDelegateIntoMessages(
 	const phaseLabel = plan
 		? (extractCurrentPhaseFromPlan(plan) ?? `Phase ${plan.current_phase ?? 1}`)
 		: undefined;
+	// #2947: persist the stable numeric phase id alongside the label.
+	const phaseId =
+		phaseLabel !== undefined ? extractPhaseIdFromLabel(phaseLabel) : undefined;
 
 	// Issue #2045: the delegate block obeys the caller-supplied effective budget
 	// (three-regime headroom split + unified allocator, hard-capped at
@@ -904,6 +914,7 @@ async function injectForDelegateIntoMessages(
 		taskTitle,
 		sessionId,
 		phase: phaseLabel,
+		...(phaseId !== undefined ? { phase_id: phaseId } : {}),
 		config,
 	});
 	// (#1849 RC-4) Thread the retrieval trace_id into the rendered block so the
@@ -937,7 +948,12 @@ async function injectForDelegateIntoMessages(
 		);
 	if (block) injectKnowledgeMessage(output, block, sessionId);
 	if (isReviewer && !alreadyVerified) {
-		const toVerify = await readPhaseDirectivesToVerify(directory, phaseLabel);
+		const toVerify = await readPhaseDirectivesToVerify(
+			directory,
+			phaseLabel,
+			// #2947: id-first window matching, same as the gate (#2984 review).
+			phaseId,
+		);
 		// Issue #2628: same budget-clamp pattern as the Task prompt-prepend path
 		// (configured budget clamped to the compliance hard cap) so both reviewer
 		// dispatch paths render the block under the same bound.
@@ -1784,6 +1800,9 @@ export function createKnowledgeInjectorHook(
 					sessionId,
 				);
 				const sourceLinkId = _internals.readLinkPointer(directory)?.linkId;
+				const architectPhaseId = extractPhaseIdFromLabel(
+					retrievalCtx.currentPhase,
+				);
 				const membership = await _internals.commitDisplayedMembership(
 					directory,
 					{
@@ -1791,6 +1810,9 @@ export function createKnowledgeInjectorHook(
 						session_id: sessionId,
 						exposure_kind: 'architect_directive',
 						phase: retrievalCtx.currentPhase,
+						...(architectPhaseId !== undefined
+							? { phase_id: architectPhaseId }
+							: {}),
 						task_id: retrievalCtx.taskId,
 						agent: 'architect',
 						cohort_id: cohortId,

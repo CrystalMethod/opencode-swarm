@@ -11,6 +11,8 @@ import {
 	enforcePrWorkflowDispatchLanesAsync,
 	readPrWorkflowGateState,
 } from '../../../src/hooks/pr-workflow-gate.js';
+import { _internals as skillContractInternals } from '../../../src/services/pr-workflow-skill-contract.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import {
 	HEAD_SHA,
 	SESSION_ID,
@@ -18,6 +20,26 @@ import {
 	teardownPrWorkflowGateFixtures,
 	tempDir,
 } from './pr-workflow-gate.test-fixtures.js';
+
+// Issue #2601 review (F2): the activation/wake paths now verify skill
+// contracts, including a read of the user-global home; isolate that seam so
+// the developer machine's real home cannot perturb these suites.
+const isolatedSkillContractHome = { current: '' };
+const originalSkillContractHome = skillContractInternals.resolveUserGlobalHome;
+
+beforeEach(() => {
+	isolatedSkillContractHome.current = canonicalMkdtemp('sw2601-home-');
+	skillContractInternals.resolveUserGlobalHome = () =>
+		isolatedSkillContractHome.current;
+});
+
+afterEach(async () => {
+	skillContractInternals.resolveUserGlobalHome = originalSkillContractHome;
+	await fs.rm(isolatedSkillContractHome.current, {
+		recursive: true,
+		force: true,
+	});
+});
 
 beforeEach(setupPrWorkflowGateFixtures);
 afterEach(teardownPrWorkflowGateFixtures);

@@ -362,7 +362,11 @@ describe('collect_lane_results host-call deadline', () => {
 			),
 		);
 
-		expect(status).toHaveBeenCalledTimes(2);
+		// Issue #2971: one BATCHED status probe per pass replaces the per-lane
+		// round-trip — the hung probe starves readiness for BOTH lanes (each
+		// then reads 'unknown'), and the salvage path still collects the later
+		// lane's transcript.
+		expect(status).toHaveBeenCalledTimes(1);
 		expect(messages).toHaveBeenCalledTimes(2);
 		expect(result.completed).toBe(1);
 		expect(result.pending).toBe(1);
@@ -428,7 +432,10 @@ describe('collect_lane_results host-call deadline', () => {
 			directory,
 		);
 
-		expect(status).toHaveBeenCalledTimes(8);
+		// Issue #2971: ONE batched status probe per pass (not 8 per-lane
+		// round-trips); every lane still gets exactly one bounded messages
+		// opportunity.
+		expect(status).toHaveBeenCalledTimes(1);
 		expect(messages).toHaveBeenCalledTimes(8);
 		expect(seenMessages).toEqual(
 			Array.from(
@@ -468,32 +475,6 @@ describe('collect_lane_results host-call deadline', () => {
 		expect(messages).toHaveBeenCalledTimes(1);
 	});
 
-	test('bounds a hung session.abort call without claiming cancellation', async () => {
-		const directory = makeTempDir();
-		const batchId = 'hung-abort';
-		await recordPending({ directory, batchId });
-		const abort = mock(() => new Promise<never>(() => {}));
-		_internals.getSessionOps = () => ({
-			...baseOps(),
-			abort,
-			messages: mock(async () => ({ data: null })),
-		});
-
-		const result = await withTestDeadline(
-			executeCollectLaneResults(
-				{
-					batch_id: batchId,
-					cancel_pending: true,
-					include_pending: true,
-					timeout_ms: 25,
-				},
-				directory,
-			),
-		);
-		expect(result.cancelled).toBe(0);
-		expect(result.pending).toBe(1);
-		expect(result.message).toContain('Collection deadline exhausted');
-		expect(result.errors?.join('; ')).toContain('session.abort');
-		expect(abort).toHaveBeenCalledTimes(1);
-	});
+	// The bounded hung-abort cancel pin (issue #2971) lives in
+	// dispatch-lanes-cancel-bounded.test.ts (FR-006 line-cap split).
 });

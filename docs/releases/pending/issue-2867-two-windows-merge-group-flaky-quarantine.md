@@ -1,28 +1,36 @@
-# Quarantine two net-new Windows-only flaky tests from issue #2867
+# Quarantine the delegation-gate CORE-TREE windows-latest flake from issue #2867
 
 ## What changed
 
-- Appended two net-new entries to the Windows-only CI quarantine ledger,
-  `scripts/ci/quarantined-tests-windows.txt`, each carrying the structured
+- Appended one net-new entry to the Windows-only CI quarantine ledger,
+  `scripts/ci/quarantined-tests-windows.txt`, carrying the structured
   `# OWNER:` / `# EXPIRY:` metadata block required by
   `scripts/check-invariants.ts` Check 7 (issue #2477):
-  - `tests/unit/commands/close-active-state-unlink-retry.test.ts`
-    (windows-latest shard 6 hard failure; `::error ... FAILED` annotation,
-    all 3 in-job retries failed)
   - `tests/unit/hooks/delegation-gate-background-coder.test.ts`
     (windows-latest shard 2 passed-on-retry flake; `::notice ... Passed
     on retry 2 (flaky)` annotation — CORE-TREE per detector rule C,
     routed to the windows ledger after human review because the
     annotation is not an infra signature and the sibling OS shards are
     all green)
-- Updated the ledger's `# STATUS: N active entries` header from 9 to 11
-  (9 pre-existing on main + 2 net-new from this PR).
+- The ledger's second #2867 candidate,
+  `close-active-state-unlink-retry.test.ts`, is deliberately NOT
+  quarantined by this PR: its teardown root cause was fixed on main by
+  e7d227ab3 (PR #2862 review round, 2026-09-20 — `safeRmRecursive`
+  EBUSY-retry migration explicitly naming this file as the
+  "pre-existing Windows-flaky" case), and the windows ledger's re-add
+  policy forbids entries whose failure class has a root fix in-tree.
+  The sibling auto-fix PRs #2857/#2861 were closed on 2026-10-07 with
+  that evidence.
+- The ledger's `# STATUS:` header now reads 2 active entries. The
+  9-entry cohort that held counts 9→11 when this PR was opened was
+  retired on 2026-09-27 (issue #2973) and the ledger rewritten to 0, so
+  the 2026-10-07 rebase re-applies this entry alongside the
+  issue-#2826 j02 entry (PR #2834) rather than bumping 9→11.
 - Added a new pinning regression file
   (`tests/unit/scripts/ci/ci-yml-quarantine-2867.test.ts`) covering ledger
   presence, scope isolation (windows-only), on-disk path presence for the
-  two net-new entries, the windows-ledger `# STATUS` count matching the
-  active-entry count, and the Check 7 OWNER / EXPIRY metadata block for
-  each entry.
+  net-new entry, the windows-ledger `# STATUS` count matching the
+  active-entry count, and the Check 7 OWNER / EXPIRY metadata block.
 - No source, hook, or workflow code changed. The change is confined to
   the ledger file, the new pinning test file, and this pending release
   fragment.
@@ -116,7 +124,7 @@ candidate is fresh for #2867 — no earlier auto-filed issue names it.
 ## Migration steps
 
 None. Quarantine is a CI-gating data change: the ci.yml unit-shard
-discovery pipeline (`grep | sort | comm`) now excludes these two paths
+discovery pipeline (`grep | sort | comm`) now excludes this path
 from the gated test set on `windows-latest` only (the windows ledger
 applies on `RUNNER_OS == 'Windows'` per the "Collect and partition test
 files" step at `ci.yml:629-636`). Ubuntu and macOS continue to run them,
@@ -127,21 +135,24 @@ ubuntu/macos over-suppression).
 
 ## Known caveats
 
-- The two net-new quarantined suites pin core behavior: active-state
-  SQLite unlink retry semantics and the background coder Stage A
-  provenance / parallel-slot-cap path. Both suites are skipped only on
-  `windows-latest` merge-group/CI unit shards; ubuntu and macOS continue
-  to run them, and each Windows skip has an `EXPIRY` of `2026-10-20`
-  with a root-fix criterion. The `EXPIRY` is what forces the retirement
-  conversation; `scripts/check-invariants.ts` Check 7 hard-fails the CI
-  gate once the `EXPIRY` passes the 14-day grace window.
-- Each entry carries `# OWNER: zaxbysauce` and `# EXPIRY: 2026-10-20`
+- The net-new quarantined suite pins core behavior: the background
+  coder Stage A provenance / parallel-slot-cap path. It is skipped only
+  on `windows-latest` merge-group/CI unit shards; ubuntu and macOS
+  continue to run it, and the Windows skip has an `EXPIRY` of
+  `2026-10-20` with a root-fix criterion. The `EXPIRY` is what forces
+  the retirement conversation; `scripts/check-invariants.ts` Check 7
+  hard-fails the CI gate once the `EXPIRY` passes the 14-day grace
+  window. (The second #2867 candidate,
+  `close-active-state-unlink-retry.test.ts`, is not quarantined — its
+  root cause has a fix in-tree per e7d227ab3; see What changed.)
+- The entry carries `# OWNER: zaxbysauce` and `# EXPIRY: 2026-10-20`
   metadata per the issue #2477 grammar; re-add/edit must preserve both
   lines.
-- `scripts/ci/quarantined-tests-windows.txt` now holds 11 active entries
-  (9 pre-existing on `origin/main` from issues #1982 / #2185 / #2692 /
-  #2761 / #2812, plus the 2 net-new from this PR). The
-  `# STATUS: 11 active entries` header line tracks this count; drift
+- `scripts/ci/quarantined-tests-windows.txt` now holds 2 active entries
+  (the issue-#2826 j02 entry re-applied by PR #2834's 2026-10-07 rebase,
+  plus the net-new delegation-gate entry from this PR; the 9-entry
+  cohort that pre-dated both was retired 2026-09-27 per issue #2973).
+  The `# STATUS: 2 active entries` header line tracks this count; drift
   between the declared count and the actual active-entry count is
   caught by the
   `windows ledger STATUS header count matches its active-entry count`

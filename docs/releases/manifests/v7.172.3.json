@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.172.3",
+  "tagCommit": "5f9144349970d5af3e2d46273599a1208a60ec01",
+  "targetCommitish": "5f9144349970d5af3e2d46273599a1208a60ec01",
+  "releaseBodySha256": "4cb59143052d6ff5eec4d8164b2df9df1dec02896a77660747e5d400c3cdf4e5",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2615-typed-terminal-failure-class.md",
+      "sha256": "9208c3709df026b0c55506984f7b621a049d5b2a778cb89fb090458acad4ad76"
+    }
+  ]
+}

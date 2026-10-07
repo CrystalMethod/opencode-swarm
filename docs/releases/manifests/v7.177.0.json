@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.177.0",
+  "tagCommit": "b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f",
+  "targetCommitish": "b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f",
+  "releaseBodySha256": "83e91d4b1492b9d473e663a8dd5f85a920797b8e85549de638c9e580b5dec287",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/2510-pr-workflow-retention-authority.md",
+      "sha256": "b3174808b97299d7c049c828c42be7defc35e85034948d3321e3b7677a9038d1"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/2575-full-auto-state-locking.md",
+      "sha256": "d72d7e76500c1f077809c66d1f9966edfc2af90da4cbcc7bccfa7bff26d0011a"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2675-reproducible-repository-validation.md",
+      "sha256": "1745e75b6c02d9112cdc4632b5f532e5e28f6413a8aeb2dc037dd137e8f960ed"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/2678-prm-bounded-episode.md",
+      "sha256": "696e386f4b4f1afd93a8923ef66225498a7791b7318dec7932de41acf272c6ac"
+    }
+  ]
+}
