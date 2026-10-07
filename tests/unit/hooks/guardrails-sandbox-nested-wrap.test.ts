@@ -15,7 +15,11 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { _internals as guardrailsInternals } from '../../../src/hooks/guardrails';
 import type { SandboxPolicyOptions } from '../../../src/sandbox/executor';
-import { readSandboxWrapOutcome } from '../../../src/sandbox/skip-state';
+import {
+	_resetSandboxWrapOutcomeState,
+	getSandboxSkipSummary,
+	readSandboxWrapOutcome,
+} from '../../../src/sandbox/skip-state';
 import { ensureAgentSession, getAgentSession } from '../../../src/state';
 import { installActiveScopeBinding } from '../../helpers/active-scope-binding';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
@@ -76,6 +80,7 @@ describe('guardrails sandbox: nested wrapper refusal and read-only workspace', (
 				cacheKey: 'linux:bubblewrap:test',
 			}) as Awaited<ReturnType<typeof originalAssessSandboxEnforcement>>;
 		resetSwarmState();
+		_resetSandboxWrapOutcomeState();
 		const created = createSafeTestDir('sandbox-nested-');
 		directory = created.dir;
 		cleanup = created.cleanup;
@@ -185,6 +190,12 @@ describe('guardrails sandbox: nested wrapper refusal and read-only workspace', (
 		);
 		expect(wrapped).toBe(0);
 		expect(readSandboxWrapOutcome(SESSION, 'nested-then-1')).toBeNull();
+		// The refusal records its skip reason for `/swarm diagnose` before
+		// clearing the per-call outcome. Without the record, a refused call
+		// would vanish from the diagnostic summary entirely.
+		expect(getSandboxSkipSummary(SESSION).reasons).toContain(
+			'command already invokes the sandbox wrapper',
+		);
 		const circuit = (
 			getAgentSession(SESSION) as unknown as {
 				nonTransientCircuit?: { category: string | null; hardStop: boolean };

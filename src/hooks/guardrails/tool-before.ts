@@ -1538,10 +1538,14 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 		try {
 			readonlyWorkspaceRoot = fs.realpathSync(workspaceRoot);
 		} catch {
-			// Unresolvable: keep the logical path. bwrap then exits with
-			// `Can't find source path`, so the wrap surfaces as an ordinary
-			// command failure at runtime (not a wrap-time error and not counted
-			// by the sandbox circuit); nothing runs unsandboxed.
+			// Unresolvable: keep the logical path. This branch is defensive and
+			// unreachable while the session workspace exists (scope resolution
+			// rejects a missing one first), so it is reasoned rather than
+			// exercised: wrapCommand only builds a string, so a bwrap that cannot
+			// bind the path fails at runtime as an ordinary command failure —
+			// not a wrap-time throw, and not counted by the sandbox circuit,
+			// which arms only when wrapCommand itself throws. Nothing runs
+			// unsandboxed either way.
 		}
 
 		try {
