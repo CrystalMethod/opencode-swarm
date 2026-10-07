@@ -1,5 +1,14 @@
 # Changelog
 
+## [7.191.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.3...v7.191.4) (2026-10-07)
+
+
+### Bug Fixes
+
+* **secretscan:** close [#3128](https://github.com/ZaxbyHub/opencode-swarm/issues/3128) review findings — degenerate merge-base guard, counter cross-checks, decoder hardening ([dfda44e](https://github.com/ZaxbyHub/opencode-swarm/commit/dfda44e9b3426e721ea077ee08bd5ca8831cee03))
+* **secretscan:** close reviewer round-3 gate findings ([0d9a48f](https://github.com/ZaxbyHub/opencode-swarm/commit/0d9a48ffe3131edce5dec974e20baab0639b5040))
+* **tools:** diff-scope the pre_check_batch secretscan gate, closes [#3092](https://github.com/ZaxbyHub/opencode-swarm/issues/3092) ([624cb60](https://github.com/ZaxbyHub/opencode-swarm/commit/624cb60c84211549037e382a61f73fa59171b563))
+
 ## [7.191.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.2...v7.191.3) (2026-10-07)
 
 
