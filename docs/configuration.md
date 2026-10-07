@@ -1434,6 +1434,35 @@ dimension is reported `real` by the capability probe.
 | `network_allowlist` | `[]` | Bounded network allowlist used for capability identity. |
 | `writable_roots` | `[]` | Additional bounded writable roots used for capability identity. |
 
+On Linux the Bubblewrap sandbox mounts the session workspace (canonical path)
+read-only before the declared scope paths, so a command can read the whole
+project it is working in (for example a test loading the module it exercises)
+while only the scope paths, `writable_roots`, and the private `/tmp` and `/dev`
+tmpfs mounts are writable. A workspace that itself lives under `/tmp` is hidden
+by that tmpfs.
+
+The read-only mount exposes everything in the workspace to sandboxed commands,
+including `.env` files, credentials in `.git/config`, and `.swarm/` state. With
+`network_mode: on` that content can leave the sandbox (network defaults to
+`off`). macOS `sandbox-exec` and the Windows executors ignore `readonly_roots`
+(containment on macOS is write-only).
+
+When a bash call is about to be wrapped by Bubblewrap and the command itself
+starts with `bwrap`, it is refused before it runs: a nested bwrap fails with
+"No permissions to create new namespace". Re-issue the plain command. The
+refusal is a best-effort check on the first word of the command, not a
+security boundary: a command it does not recognise is normally wrapped as
+before and fails at runtime. It refuses `bwrap` (bare, or a `/bin`, `/usr/bin` or
+`/usr/local/bin` path), also when it sits behind `exec`, `env`, `/bin/env` or
+`/usr/bin/env` with env flags or `NAME=value` assignments, for example
+`env -i bwrap`, `env FOO=1 bwrap`, `/usr/bin/env bwrap` and `exec env bwrap`.
+It does not recognise `env -u VAR bwrap`, `env -C DIR bwrap`,
+`exec -a NAME bwrap`, `env - bwrap`, `env 'FOO=1' bwrap`, a bare
+`FOO=1 bwrap`, `/usr/local/bin/env bwrap`, `sudo`, `command`, `sh -c`,
+pipelines, or `cd x && bwrap`; those are wrapped and fail at runtime as
+before. Because an option's separate argument is not recognised,
+`env -u bwrap ls` is also refused; nothing runs.
+
 The status surface reports filesystem, network, process, and effective
 strength separately as `real`, `weak`, or `none`. Linux reports missing
 seccomp explicitly; macOS does not claim network/process containment; Windows
