@@ -61,6 +61,9 @@ export const _internals = {
 	// too, so the decision-moment ledger re-check (snapshot says exhausted,
 	// fresh read disagrees) is deterministically testable.
 	readPrWorkflowGateState,
+	// Feedback round (G6/G8): exposed so tests can pin the cross-version
+	// replay-equality invariant of comparableTriggerReceipt directly.
+	comparableTriggerReceipt,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -628,22 +631,56 @@ export async function executeWritePrReviewTriggerEval(
 		// accepted+credited (absent receipt, schema-invalid, identity-mismatched,
 		// or the family sitting in the envelope's unresolved set) keeps today's
 		// exact text-path behavior.
+		// Review round (F2): this is a decision moment, so re-read the cited
+		// record fresh — the same #2840/#2878 discipline the dead-family branch
+		// above applies. A receipt landing between the loop-top snapshot and
+		// this decision (claim-first admission) must credit the family, not
+		// degrade it. Identity fields are dispatch-bound and immutable, so
+		// evaluating against the fresh record is safe; on uncertain reads fail
+		// closed like every other store read in this loop. A workflow restart
+		// mid-call makes the validator reject (stale workflowInstanceId) and the
+		// call then fails at the bound-scope guards below before anything is
+		// persisted, so gate-state staleness cannot diverge durably.
+		let creditRecord = record!;
+		const freshCreditRead = _internals.findByBatchIdDetailed(
+			directory,
+			row.source_batch_id!,
+			{
+				parentSessionId: sessionID,
+			},
+		);
+		if (freshCreditRead.status === 'uncertain') {
+			return failure(
+				`MATCHED trigger ${row.trigger_id} cannot validate receipt-settled coverage: the delegation store is unreadable after ${freshCreditRead.attempts} attempts (${freshCreditRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,
+			);
+		}
+		const freshCreditRecord = freshCreditRead.value.find(
+			(candidate) => candidate.laneId === row.source_lane_id,
+		);
+		if (
+			freshCreditRecord &&
+			freshCreditRecord.batchId === creditRecord.batchId &&
+			freshCreditRecord.laneId === creditRecord.laneId &&
+			freshCreditRecord.subagentSessionId === creditRecord.subagentSessionId
+		) {
+			creditRecord = freshCreditRecord;
+		}
 		const receiptCoverage = validateExactStructuredReceiptCoverage({
-			record: record!,
-			result: record!.result!,
+			record: creditRecord,
+			result: creditRecord.result!,
 			artifact: null,
 			expected: {
 				mode:
-					record!.mode === 'swarm-pr-review:base'
-						? record!.mode
+					creditRecord.mode === 'swarm-pr-review:base'
+						? creditRecord.mode
 						: 'swarm-pr-review:micro',
-				workflowLane: record!.workflowLane ?? row.trigger_id,
+				workflowLane: creditRecord.workflowLane ?? row.trigger_id,
 				ownedWorkflowLanes: recordOwnedLanes,
 				prHeadSha: parsed.data.pr_head_sha,
 				gitHead: parsed.data.pr_head_sha,
 				revisionDigest: currentRevisionDigest,
 				workflowInstanceId: gateState.workflowInstanceId,
-				workflowRevision: record!.workflowGeneration,
+				workflowRevision: creditRecord.workflowGeneration,
 				baseSha: gateState.prReviewBaseSha,
 			},
 		});
@@ -964,6 +1001,10 @@ export async function executeWritePrReviewTriggerEval(
 			receipt_covered_family_count: receiptCoveredFamilies.length,
 			...(receiptCoveredFamilies.length > 0
 				? {
+						// Echo the full array (mirroring the coverage_degradations
+						// branch) so the disclosure note references identities the
+						// response actually supplies — review finding G5.
+						receipt_covered_families: receiptCoveredFamilies,
 						receipt_covered_note:
 							'receipt-settled families recorded on the receipt; disclose them as receipt-covered (not transcript-covered, not degraded) in the final review report',
 					}

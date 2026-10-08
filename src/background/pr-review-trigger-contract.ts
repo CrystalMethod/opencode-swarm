@@ -448,6 +448,13 @@ const V2ReceiptSchema = ReceiptEnvelopeSchema.extend({
 	no_match_count: z.number().int().min(0),
 	rows: z.array(V2RowSchema),
 	coverage_degradations: z.array(TriggerCoverageDegradationSchema).default([]),
+	// Ordering invariant (issue #3094 review, G6): cross-version replay equality
+	// in the writer's comparableTriggerReceipt relies on every key AFTER
+	// `receipt_covered_families` being dropped from the comparison (today only
+	// the optional `base_verification` follows it). When adding a new
+	// receipt-level field, either insert it BEFORE this field or extend
+	// comparableTriggerReceipt's normalization — otherwise pre-upgrade receipts
+	// silently stop replaying equal.
 	receipt_covered_families: z
 		.array(TriggerReceiptCoveredFamilySchema)
 		.default([]),

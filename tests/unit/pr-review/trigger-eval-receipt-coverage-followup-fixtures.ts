@@ -6,7 +6,6 @@ import {
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations';
 import {
-	encodePrReviewWorkflowBinding,
 	PrReviewResultReceiptSchema,
 	prReviewLaneResultEnvelopeDigest,
 } from '../../../src/background/pr-review-contract';

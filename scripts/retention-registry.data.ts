@@ -1060,7 +1060,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 		readBound: { pattern: 'line-bounded', bound: '10 MiB findings read guard; run-reservation.json ≤16 KiB; trigger-eval.json ≤2 MiB; coverage-disclosure.json ≤4 KiB; route receipts 64 KiB hard read bound; submission payload has no in-process reader (gh reads the --input file)', sync: true, citation: 'src/tools/write-pr-review-artifact.ts readFindings (10 MiB guard); src/tools/export-pr-review-partial-results.ts readBoundedJson (16 KiB / 2 MiB / 4 KiB bounds); src/review/routing-enforcement.ts:327 MAX_ROUTE_RECEIPT_BYTES with readers at :516/:589; src/tools/pr-review-submission.ts executePrReviewSubmission (submission-payload.json write)' },
 		lockModel: 'artifact-boundary assertions rather than file locks; route receipts use canonical atomic replacement',
-		crashBehavior: 'atomic temp+rename (findings, handoff, trigger-eval, route receipts); post-abort-export via the canonical atomicWriteSwarmFile (fsync + bounded rename retry); submission-payload.json is a direct per-attempt overwrite (non-atomic, renderer-cap bounded)',
+		crashBehavior: 'atomic temp+rename or temp+link (findings, handoff, route receipts); trigger-eval receipt is atomic temp+link refusing overwrite on EEXIST (createTriggerReceipt); post-abort-export via the canonical atomicWriteSwarmFile (fsync + bounded rename retry); submission-payload.json is a direct per-attempt overwrite (non-atomic, renderer-cap bounded)',
 		closePolicy: 'untouched by close — the 30 d sweep owns the run-dir reap',
 		resetPolicy: 'not reset',
 		legacyCompatibility: 'records matched against authoritative verdicts on read',

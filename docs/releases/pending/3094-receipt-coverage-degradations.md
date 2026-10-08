@@ -29,12 +29,12 @@ made verdict APPROVE unreachable (issue #3094).
   (`comparableTriggerReceipt` materializes the absent field), so an
   idempotent re-run of a pre-existing run still replays instead of failing
   with conflicting content.
-- The writer response now carries `receipt_covered_family_count` and a
-  disclosure note instructing the final review report to surface
-  receipt-settled families as receipt-covered (not transcript-covered, not
-  degraded).
+- The writer response now carries `receipt_covered_family_count`, the
+  `receipt_covered_families` array, and a disclosure note instructing the final
+  review report to surface receipt-settled families as receipt-covered (not
+  transcript-covered, not degraded).
 
-## Why it matters
+## Why
 
 Before this fix, a tier-L review where every MATCHED family settled via
 structured receipts received one false coverage degradation per family; any
