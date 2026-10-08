@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.192.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.4...v7.192.0) (2026-10-08)
+
+
+### Features
+
+* **pr-review:** post-abort partial-results export bound to receipt-authenticated findings ([05caa3d](https://github.com/ZaxbyHub/opencode-swarm/commit/05caa3df969d7a0d10ed492a599dadff5c34721c))
+
+
+### Bug Fixes
+
+* **pr-review:** close fb-review MAJORs 1-3 (NONE-severity dismissal, truncation field, refusal-arm tests) ([a68c309](https://github.com/ZaxbyHub/opencode-swarm/commit/a68c309f7b957e6fe41cf97621232ab009057fc9))
+* **pr-review:** resolve pr3140 review findings (PRR-001..025) ([343c536](https://github.com/ZaxbyHub/opencode-swarm/commit/343c5360f802d81cfeefdeba98fe6c9a2ac75f64))
+
 ## [7.191.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.3...v7.191.4) (2026-10-07)
 
 
