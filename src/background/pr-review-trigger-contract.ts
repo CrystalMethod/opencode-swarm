@@ -448,13 +448,16 @@ const V2ReceiptSchema = ReceiptEnvelopeSchema.extend({
 	no_match_count: z.number().int().min(0),
 	rows: z.array(V2RowSchema),
 	coverage_degradations: z.array(TriggerCoverageDegradationSchema).default([]),
-	// Ordering invariant (issue #3094 review, G6): cross-version replay equality
-	// in the writer's comparableTriggerReceipt relies on every key AFTER
-	// `receipt_covered_families` being dropped from the comparison (today only
-	// the optional `base_verification` follows it). When adding a new
-	// receipt-level field, either insert it BEFORE this field or extend
-	// comparableTriggerReceipt's normalization — otherwise pre-upgrade receipts
-	// silently stop replaying equal.
+	// Cross-version replay invariant (issue #3094 review, G6): zod-materialized
+	// defaults make a rebuilt receipt carry keys that pre-upgrade receipts lack
+	// on disk, and comparableTriggerReceipt compares the raw stringified key
+	// set (position irrelevant). ANY receipt-level field with `.default()` —
+	// wherever it sits in this schema — must be normalized in the writer's
+	// comparableTriggerReceipt (absent on disk → materialized value) or
+	// idempotent re-runs of pre-upgrade runs fail with "conflicting content".
+	// The followup coverage test pins this with a schema-derived
+	// old/new receipt pair; adding a defaulted field without extending the
+	// normalization fails it.
 	receipt_covered_families: z
 		.array(TriggerReceiptCoveredFamilySchema)
 		.default([]),

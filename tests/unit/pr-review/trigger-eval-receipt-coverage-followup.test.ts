@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, writeFileSync } from 'node:fs';
 import { encodePrReviewWorkflowBinding } from '../../../src/background/pr-review-contract';
+import { buildPrReviewTriggerReceiptV2 } from '../../../src/background/pr-review-trigger-contract';
 import { PR_REVIEW_REQUIRED_MICRO_LANE_IDS } from '../../../src/hooks/pr-workflow-gate';
 import { _internals as writerInternals } from '../../../src/tools/write-pr-review-trigger-eval';
 import {
@@ -227,12 +228,19 @@ describe('write_pr_review_trigger_eval receipt coverage followups (issue #3094)'
 
 	test('receipt landing between snapshot and credit decision still credits (F2 re-read)', async () => {
 		const root = tempRoot();
+		// Discrimination constraint (review round 1): the instrumented family
+		// must be the FIRST row citing its batch, so its loop-top snapshot read
+		// is batch-read #1 (receipt-free) and its credit block's fresh re-read
+		// is batch-read #2 (receipt landed). Any later row's snapshot would
+		// already carry the injected receipt and the test would pass without
+		// the re-read fix (verified against parent 5e2e661e).
+		const settledIndex = 0;
 		const binding = await establishBoundReviewGate(root, {
-			skipMicroIndexes: [2],
+			skipMicroIndexes: [settledIndex],
 		});
-		const family = PR_REVIEW_REQUIRED_MICRO_LANE_IDS[2];
+		const family = PR_REVIEW_REQUIRED_MICRO_LANE_IDS[settledIndex];
 		const batchId = 'micro-batch-0';
-		const laneId = 'lane-2';
+		const laneId = `lane-${settledIndex}`;
 		const correlationId = `${batchId}-${laneId}-session`;
 		// Record is identity-bound (jobId + generation) but carries NO receipt
 		// yet — the receipt "lands" between the loop-top snapshot and the
@@ -259,16 +267,15 @@ describe('write_pr_review_trigger_eval receipt coverage followups (issue #3094)'
 			childSessionId: correlationId,
 		});
 		const realFind = writerInternals.findByBatchIdDetailed;
-		const seenPerLane = new Map<string, number>();
+		let batchReads = 0;
 		writerInternals.findByBatchIdDetailed = ((directory, batch, options) => {
 			const read = realFind(directory, batch, options);
 			if (batch !== batchId || read.status !== 'ok') return read;
-			const key = `${batch}\0${laneId}`;
-			const seen = (seenPerLane.get(key) ?? 0) + 1;
-			seenPerLane.set(key, seen);
-			if (seen < 2) return read;
-			// From the second read on (the credit block's fresh re-read), the
-			// receipt has landed on the record.
+			batchReads += 1;
+			if (batchReads < 2) return read;
+			// Batch-read #2 is this row's credit-block re-read (row 0 is the
+			// first MATCHED row, so its snapshot consumed batch-read #1). The
+			// receipt has landed on the record by then.
 			return {
 				...read,
 				value: read.value.map((candidate) =>
@@ -355,35 +362,29 @@ describe('write_pr_review_trigger_eval receipt coverage followups (issue #3094)'
 	});
 
 	test('comparableTriggerReceipt replay equality survives the schema boundary (G6 invariant)', () => {
-		// Old-shape receipt: written before receipt_covered_families existed —
-		// key absent, base_verification present (raw decoded object order).
-		const oldShape = {
-			schema_version: 2,
-			run_id: 'r',
+		// Schema-derived pair (review round 1): the new shape comes from the
+		// real builder (zod materializes every .default() — including any
+		// future one), and the old shape is the same receipt with the
+		// receipt-level disclosure keys stripped, as a pre-upgrade reader would
+		// have written them. If a future defaulted receipt field is added
+		// without extending comparableTriggerReceipt's normalization, `built`
+		// materializes it while `onDisk` lacks it and this test fails.
+		const built = buildPrReviewTriggerReceiptV2({
+			run_id: 'g6-invariant',
 			pr_head_sha: 'abc123',
 			base_ref: 'origin/main',
 			base_sha: 'def456',
-			trigger_count: 1,
-			matched_count: 1,
-			not_triggered_count: 0,
-			no_match_count: 0,
-			dispatched_micro_lane_count: 1,
-			rows: [],
-			coverage_degradations: [],
-			base_verification: 'live',
 			evaluated_at: '2026-10-08T00:00:00.000Z',
-		};
-		// New-shape receipt: zod-materialized receipt_covered_families sits
-		// between coverage_degradations and base_verification.
-		const newShape = {
-			...oldShape,
-			coverage_degradations: [],
-			receipt_covered_families: [],
+			dispatched_micro_lane_count: 11,
+			rows: rows(),
 			base_verification: 'live',
-		};
+		});
+		const onDisk = JSON.parse(JSON.stringify(built));
+		delete (onDisk as { receipt_covered_families?: unknown })
+			.receipt_covered_families;
 		const comparable = writerInternals.comparableTriggerReceipt as (
 			receipt: unknown,
 		) => string;
-		expect(comparable(oldShape)).toBe(comparable(newShape));
+		expect(comparable(onDisk)).toBe(comparable(built));
 	});
 });
