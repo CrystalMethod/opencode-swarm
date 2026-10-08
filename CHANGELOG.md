@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.192.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.192.0...v7.192.1) (2026-10-08)
+
+
+### Bug Fixes
+
+* **pr-review:** close swarm-pr-review findings on receipt-settled coverage ([e4d7b83](https://github.com/ZaxbyHub/opencode-swarm/commit/e4d7b83ed4bfdc8047e75147e6d5788e01e270d6))
+* **pr-review:** credit receipt-settled family coverage in trigger eval ([3b10baf](https://github.com/ZaxbyHub/opencode-swarm/commit/3b10baf82b30ce5ac4463390c5c0e7b9eb5cc2b4))
+* **pr-review:** credit receipt-settled family coverage in trigger eval, closes [#3094](https://github.com/ZaxbyHub/opencode-swarm/issues/3094) ([8abc2bf](https://github.com/ZaxbyHub/opencode-swarm/commit/8abc2bfb747843d2834dc105f04c21c6667d1dd3))
+* **pr-review:** normalize coverage_degradations in replay comparison; schema-derived G6 guard ([6552239](https://github.com/ZaxbyHub/opencode-swarm/commit/6552239da80fefe1c8cd3af246c71513d586ca74))
+
 ## [7.192.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.191.4...v7.192.0) (2026-10-08)
 
 
