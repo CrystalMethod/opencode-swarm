@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { existsSync, writeFileSync } from 'node:fs';
 import { encodePrReviewWorkflowBinding } from '../../../src/background/pr-review-contract';
-import { buildPrReviewTriggerReceiptV2 } from '../../../src/background/pr-review-trigger-contract';
+import {
+	buildPrReviewTriggerReceiptV2,
+	V2ReceiptSchemaForInvariants,
+} from '../../../src/background/pr-review-trigger-contract';
 import { PR_REVIEW_REQUIRED_MICRO_LANE_IDS } from '../../../src/hooks/pr-workflow-gate';
 import { _internals as writerInternals } from '../../../src/tools/write-pr-review-trigger-eval';
 import {
@@ -362,13 +365,33 @@ describe('write_pr_review_trigger_eval receipt coverage followups (issue #3094)'
 	});
 
 	test('comparableTriggerReceipt replay equality survives the schema boundary (G6 invariant)', () => {
-		// Schema-derived pair (review round 1): the new shape comes from the
-		// real builder (zod materializes every .default() — including any
-		// future one), and the old shape is the same receipt with the
-		// receipt-level disclosure keys stripped, as a pre-upgrade reader would
-		// have written them. If a future defaulted receipt field is added
-		// without extending comparableTriggerReceipt's normalization, `built`
-		// materializes it while `onDisk` lacks it and this test fails.
+		// Schema-derived pair (review rounds 1-2): the new shape comes from the
+		// real builder; the pre-upgrade on-disk shape omits EVERY key the v2
+		// schema materializes via `.default()` — enumerated by parsing a
+		// minimal-supplied input against V2ReceiptSchema and diffing the output
+		// keys against the supplied ones, so a future .default() receipt field
+		// added ANYWHERE in the schema is automatically included in the omission
+		// set. If such a field is added without extending
+		// comparableTriggerReceipt's normalization, `built` materializes it,
+		// `onDisk` lacks it, and this test fails regardless of field position.
+		const suppliedMinimal = {
+			schema_version: 2 as const,
+			run_id: 'g6-probe',
+			pr_head_sha: 'abc123',
+			base_ref: 'origin/main',
+			base_sha: 'def456',
+			evaluated_at: '2026-10-08T00:00:00.000Z',
+			dispatched_micro_lane_count: 1,
+			trigger_count: 0,
+			matched_count: 0,
+			not_triggered_count: 0,
+			no_match_count: 0,
+			rows: [],
+		};
+		const parsed = V2ReceiptSchemaForInvariants.parse(suppliedMinimal);
+		const defaultedKeys = Object.keys(parsed).filter(
+			(key) => !(key in suppliedMinimal),
+		);
 		const built = buildPrReviewTriggerReceiptV2({
 			run_id: 'g6-invariant',
 			pr_head_sha: 'abc123',
@@ -380,11 +403,15 @@ describe('write_pr_review_trigger_eval receipt coverage followups (issue #3094)'
 			base_verification: 'live',
 		});
 		const onDisk = JSON.parse(JSON.stringify(built));
-		delete (onDisk as { receipt_covered_families?: unknown })
-			.receipt_covered_families;
+		for (const key of defaultedKeys) {
+			delete (onDisk as Record<string, unknown>)[key];
+		}
 		const comparable = writerInternals.comparableTriggerReceipt as (
 			receipt: unknown,
 		) => string;
+		// The defaulted set must be non-empty (guards the probe itself: if the
+		// enumeration breaks, the test degrades to comparing built with itself).
+		expect(defaultedKeys).toContain('receipt_covered_families');
 		expect(comparable(onDisk)).toBe(comparable(built));
 	});
 });

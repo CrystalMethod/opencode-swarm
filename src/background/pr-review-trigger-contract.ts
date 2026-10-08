@@ -455,14 +455,22 @@ const V2ReceiptSchema = ReceiptEnvelopeSchema.extend({
 	// wherever it sits in this schema — must be normalized in the writer's
 	// comparableTriggerReceipt (absent on disk → materialized value) or
 	// idempotent re-runs of pre-upgrade runs fail with "conflicting content".
-	// The followup coverage test pins this with a schema-derived
-	// old/new receipt pair; adding a defaulted field without extending the
-	// normalization fails it.
+	// The followup coverage test derives the defaulted-key set from a
+	// V2ReceiptSchema.parse probe, so a future .default() field added anywhere
+	// in this schema without extending the normalization fails that test.
 	receipt_covered_families: z
 		.array(TriggerReceiptCoveredFamilySchema)
 		.default([]),
 	base_verification: z.enum(['live', 'bound_fallback']).optional(),
 }).strict();
+
+/**
+ * Exported for the issue #3094 replay-invariant test: the test probes this
+ * schema's parse output to enumerate every defaulted (materialized-on-parse)
+ * receipt key, so it keeps guarding future `.default()` fields added anywhere
+ * on the receipt without reaching into zod internals.
+ */
+export const V2ReceiptSchemaForInvariants = V2ReceiptSchema;
 
 function assertCanonicalDefinitionFields(
 	rows: ReadonlyArray<{

@@ -73,11 +73,15 @@ function comparableTriggerReceipt(receipt: TriggerReceiptV2): string {
 		...receipt,
 		evaluated_at: undefined,
 		base_verification: undefined,
-		// Issue #3094: normalize the additive disclosure field so a pre-upgrade
-		// on-disk receipt (key absent; readBoundedTriggerReceipt returns the raw
-		// decoded object) still compares equal to a rebuilt artifact whose zod
-		// parse materialized the `.default([])`. Without this, an idempotent
-		// replay across the schema boundary would fail as "conflicting content".
+		// Issue #3094 + review round: normalize every defaulted receipt-level
+		// field so a pre-upgrade on-disk receipt (key absent; the reader returns
+		// the raw decoded object) compares equal to a rebuilt artifact whose
+		// zod parse materialized the `.default([])`. Without this, an
+		// idempotent replay across a schema boundary fails with "conflicting
+		// content". When a new `.default()` receipt-level field is added to
+		// V2ReceiptSchema, extend this normalization — the followup G6 test
+		// enumerates defaulted keys from the schema and fails if one is missed.
+		coverage_degradations: receipt.coverage_degradations ?? [],
 		receipt_covered_families: receipt.receipt_covered_families ?? [],
 	});
 }
