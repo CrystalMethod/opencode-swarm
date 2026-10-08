@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: c3e787acb35f
+swarm-contract-digest: e153881f260b
 ---
 
 # /swarm-pr-review
@@ -1978,12 +1978,11 @@ are:
    and a one-line `reason` describing the blocker. The tool clears the durable gate state
    and stops the auto-resume loop. It refuses only while PR workflow lanes are still LIVE (a recent `updatedAt`); collect those with `collect_lane_results` first.
    Lanes idle past the 30-minute staleness horizon settle as presumed-stale instead of blocking, disclosed as `presumed_stale_lanes` on the response and in `.swarm/events.jsonl`; a schema-invalid (but JSON-parseable) gate state no longer defeats abort either. See `references/lane-output-recoverability.md`.
-   It accepts both unbound and bound PR_REVIEW workflows so an unrecoverable
-   bind/checkout blocker cannot strand the gate. Settled discovery or validation
+   It accepts both unbound and bound PR_REVIEW workflows so an unrecoverable bind/checkout blocker cannot strand the gate. Settled discovery or validation
    lanes with incomplete coverage use the truthful N-of-6 settlement path instead
-   of aborting. An audit event is appended to `.swarm/events.jsonl`.
-   When the tool reports `checkout_restore_required`, immediately call
-   `prepare_pr_workflow_checkout` with `operation: "restore"`; do not leave the
+   of aborting. An audit event is appended to `.swarm/events.jsonl`. After a legitimate abort the run's validated findings stay exportable: call
+   `export_pr_review_partial_results` (`run_id` + `pr_head_sha`) for a partial, non-authoritative salvage artifact — never a submission, never consent.
+   When the tool reports `checkout_restore_required`, immediately call `prepare_pr_workflow_checkout` with `operation: "restore"`; do not leave the
    user detached from their original checkout with a hidden preserved stash.
 3. **Ask the user to run `/swarm abort-pr-workflow`** (a human-only
    restricted command; the agent cannot invoke it via `swarm_command`).

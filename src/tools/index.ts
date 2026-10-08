@@ -211,6 +211,10 @@ export {
 } from './complete-pr-workflow';
 export { epic_next_wave } from './epic-next-wave';
 export { epic_phase_review } from './epic-phase-review';
+export {
+	executeExportPrReviewPartialResults,
+	export_pr_review_partial_results,
+} from './export-pr-review-partial-results';
 export { generate_mutants } from './generate-mutants';
 export {
 	executeInvalidatePrFeedbackPublication,

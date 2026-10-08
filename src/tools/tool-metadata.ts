@@ -385,6 +385,11 @@ export const TOOL_METADATA = {
 			'submit a settled, head-bound PR review to GitHub through the gh PR Review API after the PR_REVIEW gate clears; architect-only, refuses while a gate is active or the run was aborted after settlement',
 		agents: ['architect'],
 	},
+	export_pr_review_partial_results: {
+		description:
+			'export the validated partial results of an ABORTED PR_REVIEW run as a partial, non-authoritative artifact bound per-item to receipt-authenticated findings; architect-only, requires the gate cleared and an abort event binding session and head, never implies completion or feedback consent',
+		agents: ['architect'],
+	},
 	prepare_pr_feedback_scope: {
 		description:
 			'prepare an exact file scope for one PR-feedback coder Task after immutable feedback verification settles',

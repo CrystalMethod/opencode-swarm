@@ -58,6 +58,7 @@ import { detect_domains } from './domain-detector';
 import { epic_next_wave } from './epic-next-wave';
 import { epic_phase_review } from './epic-phase-review';
 import { evidence_check } from './evidence-check';
+import { export_pr_review_partial_results } from './export-pr-review-partial-results';
 import { external_skill_delete } from './external-skill-delete';
 import { external_skill_discover } from './external-skill-discover';
 import { external_skill_inspect } from './external-skill-inspect';
@@ -229,6 +230,7 @@ export const TOOL_MANIFEST = defineHandlers({
 	prepare_pr_feedback_scope: () => prepare_pr_feedback_scope,
 	write_pr_review_artifact: () => write_pr_review_artifact,
 	pr_review_submission: () => pr_review_submission,
+	export_pr_review_partial_results: () => export_pr_review_partial_results,
 	write_pr_review_trigger_eval: () => write_pr_review_trigger_eval,
 	test_runner: () => test_runner,
 	test_impact: () => test_impact,
