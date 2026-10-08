@@ -348,17 +348,17 @@ function renderSummary(input: {
 	untestedFamilies: string[];
 	notTriggeredFamilies: string[];
 	boundariesReached: string[];
-	baseCoverage: { status: string; unresolvedDimensions?: string[] };
+	baseCoverage: { status: string; unresolved_dimensions?: string[] };
 	familiesSource: string;
 	abortEvent: AbortEvent;
 }): string {
 	const coverage =
 		input.baseCoverage.status === 'unresolved' &&
-		input.baseCoverage.unresolvedDimensions &&
-		input.baseCoverage.unresolvedDimensions.length > 0
+		input.baseCoverage.unresolved_dimensions &&
+		input.baseCoverage.unresolved_dimensions.length > 0
 			? {
 					kind: 'PARTIAL (post-abort)',
-					unresolved_dimensions: input.baseCoverage.unresolvedDimensions,
+					unresolved_dimensions: input.baseCoverage.unresolved_dimensions,
 				}
 			: {
 					kind: 'UNKNOWN (post-abort; no coverage-disclosure.json)',
@@ -408,7 +408,7 @@ function renderSummary(input: {
 		`- Boundaries reached: ${input.boundariesReached.length > 0 ? input.boundariesReached.join(', ') : '(none)'}`,
 	);
 	lines.push(
-		`- Base coverage: ${input.baseCoverage.status}${input.baseCoverage.unresolvedDimensions && input.baseCoverage.unresolvedDimensions.length > 0 ? ` (${input.baseCoverage.unresolvedDimensions.join(', ')})` : ''}.`,
+		`- Base coverage: ${input.baseCoverage.status}${input.baseCoverage.unresolved_dimensions && input.baseCoverage.unresolved_dimensions.length > 0 ? ` (${input.baseCoverage.unresolved_dimensions.join(', ')})` : ''}.`,
 	);
 	lines.push(
 		`- Abort lane state: open_lanes ${input.abortEvent.openLanes ?? 0}; presumed-stale lanes ${(input.abortEvent.presumedStaleLanes ?? []).length > 0 ? (input.abortEvent.presumedStaleLanes ?? []).join(', ') : '(none disclosed)'}. Lanes settled uncollected at abort are NOT claimed as tested.`,
@@ -601,7 +601,7 @@ export async function executeExportPrReviewPartialResults(
 	}
 
 	// Optional coverage disclosure (partial base coverage admitted pre-abort).
-	let baseCoverage: { status: string; unresolvedDimensions?: string[] } = {
+	let baseCoverage: { status: string; unresolved_dimensions?: string[] } = {
 		status: 'unknown',
 	};
 	const disclosurePath = resolve('coverage-disclosure.json');
@@ -625,7 +625,7 @@ export async function executeExportPrReviewPartialResults(
 				.filter((entry): entry is string => entry !== null);
 			baseCoverage = {
 				status: 'unresolved',
-				unresolvedDimensions: dimensions,
+				unresolved_dimensions: dimensions,
 			};
 		} catch {
 			// Unreadable disclosure keeps the honest unknown status; it is
