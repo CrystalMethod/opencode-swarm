@@ -425,6 +425,10 @@ describe('post-abort export feedback round (pr3140-20261008)', () => {
 		expect(summary).not.toContain('with no live severity');
 		expect(summary).toContain('without a recorded severity');
 		expect(summary).toContain('FB-2');
+		// Machine-readable truncation state accompanies the prose disclosure.
+		const truncation = asRecord(artifact.summary_truncation);
+		expect(truncation.body_truncated).toBe(false);
+		expect(truncation.truncated_inline_comments).toBe(0);
 
 		const reservationPath = path.join(runDir, 'run-reservation.json');
 		const reservation = asRecord(
@@ -436,6 +440,104 @@ describe('post-abort export feedback round (pr3140-20261008)', () => {
 		const hardened = readArtifact();
 		const hardenedSummary = String(hardened.summary);
 		expect(hardenedSummary).not.toContain('wf\n');
+	});
+
+	test('recorded NONE severity joins the not-dismissed disclosure, never the renderer', async () => {
+		await prepareAbortedWorkflow({ findingsRowCount: 1 });
+		const findingsPath = path.join(runDir, 'findings.jsonl');
+		const noneRow = findingRow(9, head);
+		noneRow.severity = 'NONE';
+		noneRow.status = 'DISPROVED';
+		fs.appendFileSync(findingsPath, `${JSON.stringify(noneRow)}\n`);
+		const result = await runExport();
+		expect(result.success).toBe(true);
+		const artifact = readArtifact();
+		const summary = String(artifact.summary);
+		expect(summary).not.toContain('dismissed) omitted');
+		expect(summary).not.toContain('with no live severity');
+		expect(summary).toContain('without a recorded severity');
+		expect(summary).toContain('FB-9');
+		const findings = asStringArray(artifact.findings);
+		const noneArtifactRow = findings
+			.map(asRecord)
+			.find((row) => row.finding_id === 'FB-9');
+		expect(noneArtifactRow).toBeDefined();
+		expect(noneArtifactRow?.severity).toBe('NONE');
+	});
+
+	test('whitespace-padded live severity renders canonical, never dismissed', async () => {
+		await prepareAbortedWorkflow({ findingsRowCount: 1 });
+		const findingsPath = path.join(runDir, 'findings.jsonl');
+		const padded = findingRow(7, head);
+		padded.severity = ' High ';
+		fs.appendFileSync(
+			findingsPath,
+			`${JSON.stringify(padded)}
+`,
+		);
+		const result = await runExport();
+		expect(result.success).toBe(true);
+		const artifact = readArtifact();
+		const summary = String(artifact.summary);
+		expect(summary).not.toContain('dismissed) omitted');
+		expect(summary).not.toContain('with no live severity');
+		expect(summary).toContain('[FB-7]');
+		expect(summary).toContain('### HIGH');
+	});
+
+	test('re-export re-reads the run sources rather than no-oping', async () => {
+		await prepareAbortedWorkflow({ findingsRowCount: 1 });
+		let result = await runExport();
+		expect(result.success).toBe(true);
+		expect(result.finding_count).toBe(1);
+		const findingsPath = path.join(runDir, 'findings.jsonl');
+		fs.appendFileSync(findingsPath, `${JSON.stringify(findingRow(2, head))}\n`);
+		result = await runExport();
+		expect(result.success).toBe(true);
+		expect(result.finding_count).toBe(2);
+		const artifact = readArtifact();
+		const findings = asStringArray(artifact.findings).map(asRecord);
+		expect(findings.find((row) => row.finding_id === 'FB-2')).toBeDefined();
+	});
+
+	test('gate-indeterminate when the gate reader throws', async () => {
+		await prepareAbortedWorkflow();
+		// The durable reader is salvage-tolerant by design, so the throw path is
+		// exercised through the module's own DI seam (no mock.module).
+		const original = _internals.readGateState;
+		_internals.readGateState = async () => {
+			throw new Error('simulated unreadable gate authority');
+		};
+		try {
+			const result = await runExport();
+			expect(result.success).toBe(false);
+			expect(result.type).toBe('gate-indeterminate');
+		} finally {
+			_internals.readGateState = original;
+		}
+	});
+
+	test('artifact-too-large when the serialized export exceeds the cap', async () => {
+		await prepareAbortedWorkflow();
+		// Unknown fields are retained verbatim (F-009 passthrough), so nested
+		// padding survives to the pretty-printed artifact: the 2-space indent
+		// re-expands a compact ≤10 MiB findings.jsonl past the +24 MiB margin.
+		const chain = (): Record<string, unknown> => {
+			let node: Record<string, unknown> = {};
+			for (let depth = 0; depth < 25; depth += 1) {
+				node = { a: node };
+			}
+			return node;
+		};
+		const paddingRow = findingRow(50, head);
+		paddingRow.fb_padding = Array.from({ length: 30_000 }, () => chain());
+		const findingsPath = path.join(runDir, 'findings.jsonl');
+		fs.writeFileSync(findingsPath, `${JSON.stringify(paddingRow)}\n`);
+		const stat = fs.statSync(findingsPath);
+		expect(stat.size).toBeLessThanOrEqual(10 * 1024 * 1024);
+		const result = await runExport();
+		expect(result.success).toBe(false);
+		expect(result.type).toBe('artifact-too-large');
 	});
 
 	test('finding_count is distinct ids while record_count counts rows', async () => {

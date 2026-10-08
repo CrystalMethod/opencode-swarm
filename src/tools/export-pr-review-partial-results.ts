@@ -419,7 +419,11 @@ function renderSummary(input: {
 	boundariesReached: string[];
 	baseCoverage: BaseCoverageState;
 	abortEvent: AbortEvent;
-}): string {
+}): {
+	text: string;
+	bodyTruncated: boolean;
+	truncatedInlineComments: number;
+} {
 	const dims = input.baseCoverage.unresolved_dimensions ?? [];
 	const dimensionLine =
 		dims.length > 0
@@ -450,14 +454,26 @@ function renderSummary(input: {
 					};
 	// Render only the LATEST record per finding id (findings.jsonl accumulates
 	// one record per boundary; the earliest record can carry a superseded
-	// severity), and only rows with a recorded severity — severity-less rows
-	// are listed separately below, never "dismissed".
+	// severity), and only rows with a LIVE severity — rows whose severity is
+	// absent, canonical NONE, or non-canonical would trigger the renderer's
+	// "(dismissed) omitted" line, which imports verdict semantics this export
+	// must not carry; they are listed separately below, never "dismissed".
+	const LIVE_SEVERITIES = new Set([
+		'CRITICAL',
+		'HIGH',
+		'MEDIUM',
+		'LOW',
+		'INFO',
+	]);
+	const hasLiveSeverity = (row: PersistedFindingRow): boolean =>
+		row.severity !== undefined &&
+		LIVE_SEVERITIES.has(row.severity.trim().toUpperCase());
 	const latestById = new Map<string, PersistedFindingRow>();
 	for (const row of input.rows) latestById.set(row.finding_id, row);
 	const latestRows = [...latestById.values()];
-	const rendererRows = latestRows.filter((row) => row.severity !== undefined);
+	const rendererRows = latestRows.filter(hasLiveSeverity);
 	const severitylessIds = latestRows
-		.filter((row) => row.severity === undefined)
+		.filter((row) => !hasLiveSeverity(row))
 		.map((row) => row.finding_id);
 	const rendererFindings: RendererFinding[] = rendererRows.map((row) => ({
 		finding_id: row.finding_id,
@@ -465,7 +481,11 @@ function renderSummary(input: {
 		file_line: row.file_line,
 		evidence: row.evidence,
 		next_action: row.next_action,
-		severity: row.severity,
+		// Identical normalization to hasLiveSeverity: the renderer does not
+		// trim, so a padded-but-live value must land canonical or it would
+		// trip the renderer's "(dismissed) omitted" line after passing the
+		// filter above.
+		severity: row.severity?.trim().toUpperCase(),
 	}));
 	const rendered = renderPrReviewSubmissionBody({
 		run_id: input.runId,
@@ -540,12 +560,17 @@ function renderSummary(input: {
 	lines.push(
 		'> Family-level lane settlement receipts live in the delegation ledger, which this export deliberately does not read; no family-level settlement is claimed.',
 	);
-	return lines.join('\n');
+	return {
+		text: lines.join('\n'),
+		bodyTruncated: rendered.bodyTruncated,
+		truncatedInlineComments: rendered.truncatedInlineComments,
+	};
 }
 
 export const _internals = {
 	atomicWrite,
 	findAbortEventForHead,
+	readGateState: readPrWorkflowGateState,
 };
 
 export async function executeExportPrReviewPartialResults(
@@ -573,7 +598,7 @@ export async function executeExportPrReviewPartialResults(
 	// live path around the consent machinery).
 	let gateState: Awaited<ReturnType<typeof readPrWorkflowGateState>>;
 	try {
-		gateState = await readPrWorkflowGateState(directory, sessionID);
+		gateState = await _internals.readGateState(directory, sessionID);
 	} catch (error) {
 		return failure(
 			'gate-indeterminate',
@@ -821,6 +846,20 @@ export async function executeExportPrReviewPartialResults(
 
 	const boundariesReached = [...new Set(rows.map((row) => row.boundary))];
 	const silence = computeSilence(receipt, abortEvent, receiptVersion);
+	const renderedSummary = renderSummary({
+		runId,
+		head: declaredHead,
+		workflowInstanceId,
+		abortedAt: abortEvent.timestamp,
+		receipt,
+		receiptVersion,
+		rows,
+		untestedFamilies: silence.untestedFamilies,
+		notTriggeredFamilies: silence.notTriggeredFamilies,
+		boundariesReached,
+		baseCoverage,
+		abortEvent,
+	});
 	const exportedAt = isoNow();
 	const artifact = {
 		kind: 'post-abort-partial-export' as const,
@@ -861,20 +900,11 @@ export async function executeExportPrReviewPartialResults(
 			presumed_stale_lane_ids: abortEvent.presumedStaleLanes ?? [],
 			note: 'lanes settled uncollected at abort are not claimed as tested',
 		},
-		summary: renderSummary({
-			runId,
-			head: declaredHead,
-			workflowInstanceId,
-			abortedAt: abortEvent.timestamp,
-			receipt,
-			receiptVersion,
-			rows,
-			untestedFamilies: silence.untestedFamilies,
-			notTriggeredFamilies: silence.notTriggeredFamilies,
-			boundariesReached,
-			baseCoverage,
-			abortEvent,
-		}),
+		summary_truncation: {
+			body_truncated: renderedSummary.bodyTruncated,
+			truncated_inline_comments: renderedSummary.truncatedInlineComments,
+		},
+		summary: renderedSummary.text,
 	};
 	const serialized = `${JSON.stringify(artifact, null, 2)}\n`;
 	const serializedBytes = Buffer.byteLength(serialized, 'utf8');
@@ -896,7 +926,7 @@ export async function executeExportPrReviewPartialResults(
 	// Re-check the gate immediately before the write: the export must never
 	// complete under a gate that was re-armed while the reads ran.
 	try {
-		const gateRecheck = await readPrWorkflowGateState(directory, sessionID);
+		const gateRecheck = await _internals.readGateState(directory, sessionID);
 		if (gateRecheck !== null) {
 			return failure(
 				'gate-active',
