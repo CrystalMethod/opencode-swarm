@@ -1033,7 +1033,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		],
 		writerCitations: [
 			'src/tools/write-pr-review-artifact.ts:715-727 — findings JSONL append (≤1000 records/call at :1002) + handoff JSON create at :931, atomic',
-			'src/tools/write-pr-review-trigger-eval.ts:105-116 — atomic temp+rename write, refuses overwrite (EEXIST at :116; conflicting content at :840)',
+			'src/tools/write-pr-review-trigger-eval.ts createTriggerReceipt — trigger-eval receipt atomic write (temp+link; refuses overwrite on EEXIST)',
 			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — a run-scoped submission-payload.json provenance copy, overwritten per attempt (validateSwarmPath-contained, run_id-charset-bounded path; direct write, not temp+rename)',
 			'src/tools/export-pr-review-partial-results.ts executeExportPrReviewPartialResults — a run-scoped post-abort-export.json partial-salvage artifact (issue #3097) written through the canonical atomicWriteSwarmFile (fsync + bounded rename retry + cache invalidation), byte-capped (findings cap + 24 MiB margin; typed artifact-too-large refusal beyond), idempotent re-export; the gate re-check runs immediately before the write',
 			'src/hooks/pr-workflow-gate.ts:11147 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',

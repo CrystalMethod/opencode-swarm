@@ -394,6 +394,26 @@ export type TriggerCoverageDegradation = z.infer<
 	typeof TriggerCoverageDegradationSchema
 >;
 
+/**
+ * Issue #3094: a MATCHED family whose coverage was credited by an exact-bound
+ * structured receipt (`submit_pr_review_result`) instead of a transcript
+ * `[CANDIDATE]`/`[CLEAN]` row. Receipt-level disclosure only — ledger rows stay
+ * untouched so the frozen-ledger digest is unaffected, exactly like
+ * {@link TriggerCoverageDegradation}. Distinct from degradations: a
+ * receipt-covered family is fully settled, never APPROVE-forbidding.
+ */
+export const TriggerReceiptCoveredFamilySchema = z
+	.object({
+		trigger_id: TriggerIdSchema,
+		source_batch_id: z.string().trim().min(1),
+		source_lane_id: z.string().trim().min(1),
+	})
+	.strict();
+
+export type TriggerReceiptCoveredFamily = z.infer<
+	typeof TriggerReceiptCoveredFamilySchema
+>;
+
 const ReceiptEnvelopeSchema = z.object({
 	run_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
 	pr_head_sha: z
@@ -428,6 +448,9 @@ const V2ReceiptSchema = ReceiptEnvelopeSchema.extend({
 	no_match_count: z.number().int().min(0),
 	rows: z.array(V2RowSchema),
 	coverage_degradations: z.array(TriggerCoverageDegradationSchema).default([]),
+	receipt_covered_families: z
+		.array(TriggerReceiptCoveredFamilySchema)
+		.default([]),
 	base_verification: z.enum(['live', 'bound_fallback']).optional(),
 }).strict();
 
@@ -470,6 +493,14 @@ export interface BuildPrReviewTriggerReceiptV2Args {
 	rows: unknown;
 	/** Receipt-level degradation disclosure; ledger rows stay untouched so the frozen-ledger digest is unaffected. */
 	coverage_degradations?: TriggerCoverageDegradation[];
+	/**
+	 * Issue #3094: receipt-level disclosure of families whose coverage was
+	 * credited by an exact-bound structured receipt rather than a transcript
+	 * row. Same receipt-level class as `coverage_degradations`; ledger rows stay
+	 * untouched and the field defaults to empty so existing call sites and
+	 * pre-existing receipts are unaffected.
+	 */
+	receipt_covered_families?: TriggerReceiptCoveredFamily[];
 	/**
 	 * How `base_sha` was verified for this receipt. `live` means the writer
 	 * re-derived the merge base with git at write time; `bound_fallback` means
@@ -536,6 +567,7 @@ export function buildPrReviewTriggerReceiptV2(
 		no_match_count: 0,
 		rows,
 		coverage_degradations: input.coverage_degradations ?? [],
+		receipt_covered_families: input.receipt_covered_families ?? [],
 		...(input.base_verification
 			? { base_verification: input.base_verification }
 			: {}),
@@ -586,6 +618,13 @@ export interface ParsedPrReviewTriggerReceipt {
 	/** Empty for pre-v2.2 receipts. Present entries mean the family's cited lane is provenance-valid but coverage-degraded. */
 	coverageDegradations: TriggerCoverageDegradation[];
 	/**
+	 * Issue #3094: families whose coverage was credited by an exact-bound
+	 * structured receipt. Empty for receipts written before the field existed;
+	 * a present entry means the family is fully settled and is NOT a
+	 * degradation — synthesis must disclose it as receipt-covered.
+	 */
+	receiptCoveredFamilies: TriggerReceiptCoveredFamily[];
+	/**
 	 * Undefined for legacy receipts and for v2 receipts written before the field
 	 * existed. `bound_fallback` means the writer could not re-derive the merge
 	 * base live and accepted the bound scope instead; synthesis must disclose it.
@@ -618,6 +657,7 @@ function parsedReceipt(
 	rows: PrReviewPersistedInputRow[],
 	coverageDegradations: TriggerCoverageDegradation[] = [],
 	baseVerification?: 'live' | 'bound_fallback',
+	receiptCoveredFamilies: TriggerReceiptCoveredFamily[] = [],
 ): ParsedPrReviewTriggerReceipt {
 	return {
 		schemaVersion,
@@ -635,6 +675,7 @@ function parsedReceipt(
 			> => row.result === 'NOT_TRIGGERED',
 		),
 		coverageDegradations,
+		receiptCoveredFamilies,
 		...(baseVerification ? { baseVerification } : {}),
 	};
 }
@@ -680,6 +721,7 @@ export function parsePrReviewTriggerReceipt(
 			validated.rows,
 			receipt.coverage_degradations,
 			receipt.base_verification,
+			receipt.receipt_covered_families,
 		);
 	}
 

@@ -16,6 +16,7 @@ import {
 	PrReviewWriterInputRowSchema,
 	parsePrReviewTriggerReceipt,
 	type TriggerCoverageDegradation,
+	type TriggerReceiptCoveredFamily,
 	validatePrReviewInlineTriggerLedger,
 	validatePrReviewPersistedInputLedger,
 	validatePrReviewWriterInputLedger,
@@ -33,6 +34,12 @@ import {
 	prReviewDiscoveryArtifactCoversLane,
 	readPrWorkflowGateState,
 	resolvePrReviewWriterRunId,
+	// Issue #3094: the writer credits receipt-settled family coverage through
+	// the gate's own exact-identity validator (schema parse + workflow/batch/
+	// lane/child/SHA/digest conjunction + creditedLanes filter) so the
+	// transcript-settled and receipt-settled models can never disagree about
+	// what "covered" means.
+	validateExactStructuredReceiptCoverage,
 } from '../hooks/pr-workflow-gate.js';
 import { validateSwarmPath } from '../hooks/utils';
 import { criticalWarn } from '../utils/logger.js';
@@ -63,6 +70,12 @@ function comparableTriggerReceipt(receipt: TriggerReceiptV2): string {
 		...receipt,
 		evaluated_at: undefined,
 		base_verification: undefined,
+		// Issue #3094: normalize the additive disclosure field so a pre-upgrade
+		// on-disk receipt (key absent; readBoundedTriggerReceipt returns the raw
+		// decoded object) still compares equal to a rebuilt artifact whose zod
+		// parse materialized the `.default([])`. Without this, an idempotent
+		// replay across the schema boundary would fail as "conflicting content".
+		receipt_covered_families: receipt.receipt_covered_families ?? [],
 	});
 }
 
@@ -358,6 +371,7 @@ export async function executeWritePrReviewTriggerEval(
 	// duplicating (or reintroducing stale) content for it downstream.
 	const citedLaneOwnership = new Map<string, string[]>();
 	const coverageDegradations: TriggerCoverageDegradation[] = [];
+	const receiptCoveredFamilies: TriggerReceiptCoveredFamily[] = [];
 	// Issue #2878: persisted per-family dispatch attempts for this run. Every
 	// micro-dispatch acknowledgment appends one record
 	// (`recordPrReviewMicroFamilyDispatch` in the gate), so counting the
@@ -603,6 +617,47 @@ export async function executeWritePrReviewTriggerEval(
 			});
 			continue;
 		}
+		// Issue #3094: receipt-settled coverage. When the cited lane holds a
+		// structured `submit_pr_review_result` receipt that passes the gate's
+		// exact-identity validator AND its envelope credits THIS row's family,
+		// the family is fully settled: the envelope is the authoritative result
+		// (it takes precedence over transcript text per v7.160.1), so the
+		// transcript-quality/coverage reasons below describe a superseded
+		// channel and recording any of them would forbid APPROVE for a settled
+		// family. Disclose the family as receipt-covered instead. Anything but
+		// accepted+credited (absent receipt, schema-invalid, identity-mismatched,
+		// or the family sitting in the envelope's unresolved set) keeps today's
+		// exact text-path behavior.
+		const receiptCoverage = validateExactStructuredReceiptCoverage({
+			record: record!,
+			result: record!.result!,
+			artifact: null,
+			expected: {
+				mode:
+					record!.mode === 'swarm-pr-review:base'
+						? record!.mode
+						: 'swarm-pr-review:micro',
+				workflowLane: record!.workflowLane ?? row.trigger_id,
+				ownedWorkflowLanes: recordOwnedLanes,
+				prHeadSha: parsed.data.pr_head_sha,
+				gitHead: parsed.data.pr_head_sha,
+				revisionDigest: currentRevisionDigest,
+				workflowInstanceId: gateState.workflowInstanceId,
+				workflowRevision: record!.workflowGeneration,
+				baseSha: gateState.prReviewBaseSha,
+			},
+		});
+		if (
+			receiptCoverage.status === 'accepted' &&
+			receiptCoverage.creditedWorkflowLanes.includes(row.trigger_id)
+		) {
+			receiptCoveredFamilies.push({
+				trigger_id: row.trigger_id,
+				source_batch_id: row.source_batch_id!,
+				source_lane_id: row.source_lane_id!,
+			});
+			continue;
+		}
 		// Coverage-quality failures are tolerated and DISCLOSED on the durable
 		// receipt instead of dead-ending the whole review (retries remain the
 		// first resort per the skill's COVERAGE GATE). A lane that completed but
@@ -809,6 +864,7 @@ export async function executeWritePrReviewTriggerEval(
 		dispatched_micro_lane_count: dispatchedMicroLaneCount,
 		rows: validatedRows,
 		coverage_degradations: coverageDegradations,
+		receipt_covered_families: receiptCoveredFamilies,
 		base_verification: baseVerification,
 	});
 
@@ -903,6 +959,13 @@ export async function executeWritePrReviewTriggerEval(
 				? {
 						coverage_degradations: coverageDegradations,
 						note: 'degraded families recorded on the receipt; disclose them in the final review report',
+					}
+				: {}),
+			receipt_covered_family_count: receiptCoveredFamilies.length,
+			...(receiptCoveredFamilies.length > 0
+				? {
+						receipt_covered_note:
+							'receipt-settled families recorded on the receipt; disclose them as receipt-covered (not transcript-covered, not degraded) in the final review report',
 					}
 				: {}),
 		},
