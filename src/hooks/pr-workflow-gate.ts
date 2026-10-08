@@ -16689,7 +16689,7 @@ type ExactStructuredReceiptCoverageValidation =
 	  }
 	| { status: 'rejected'; failure: PrReviewLaneValidationFailure };
 
-function validateExactStructuredReceiptCoverage(
+export function validateExactStructuredReceiptCoverage(
 	input: PrReviewDiscoveryLaneValidationInput,
 ): ExactStructuredReceiptCoverageValidation {
 	if (

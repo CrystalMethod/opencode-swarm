@@ -16,6 +16,7 @@ import {
 	PrReviewWriterInputRowSchema,
 	parsePrReviewTriggerReceipt,
 	type TriggerCoverageDegradation,
+	type TriggerReceiptCoveredFamily,
 	validatePrReviewInlineTriggerLedger,
 	validatePrReviewPersistedInputLedger,
 	validatePrReviewWriterInputLedger,
@@ -33,6 +34,12 @@ import {
 	prReviewDiscoveryArtifactCoversLane,
 	readPrWorkflowGateState,
 	resolvePrReviewWriterRunId,
+	// Issue #3094: the writer credits receipt-settled family coverage through
+	// the gate's own exact-identity validator (schema parse + workflow/batch/
+	// lane/child/SHA/digest conjunction + creditedLanes filter) so the
+	// transcript-settled and receipt-settled models can never disagree about
+	// what "covered" means.
+	validateExactStructuredReceiptCoverage,
 } from '../hooks/pr-workflow-gate.js';
 import { validateSwarmPath } from '../hooks/utils';
 import { criticalWarn } from '../utils/logger.js';
@@ -54,6 +61,9 @@ export const _internals = {
 	// too, so the decision-moment ledger re-check (snapshot says exhausted,
 	// fresh read disagrees) is deterministically testable.
 	readPrWorkflowGateState,
+	// Feedback round (G6/G8): exposed so tests can pin the cross-version
+	// replay-equality invariant of comparableTriggerReceipt directly.
+	comparableTriggerReceipt,
 };
 
 type TriggerReceiptV2 = ReturnType<typeof buildPrReviewTriggerReceiptV2>;
@@ -63,6 +73,16 @@ function comparableTriggerReceipt(receipt: TriggerReceiptV2): string {
 		...receipt,
 		evaluated_at: undefined,
 		base_verification: undefined,
+		// Issue #3094 + review round: normalize every defaulted receipt-level
+		// field so a pre-upgrade on-disk receipt (key absent; the reader returns
+		// the raw decoded object) compares equal to a rebuilt artifact whose
+		// zod parse materialized the `.default([])`. Without this, an
+		// idempotent replay across a schema boundary fails with "conflicting
+		// content". When a new `.default()` receipt-level field is added to
+		// V2ReceiptSchema, extend this normalization — the followup G6 test
+		// enumerates defaulted keys from the schema and fails if one is missed.
+		coverage_degradations: receipt.coverage_degradations ?? [],
+		receipt_covered_families: receipt.receipt_covered_families ?? [],
 	});
 }
 
@@ -358,6 +378,7 @@ export async function executeWritePrReviewTriggerEval(
 	// duplicating (or reintroducing stale) content for it downstream.
 	const citedLaneOwnership = new Map<string, string[]>();
 	const coverageDegradations: TriggerCoverageDegradation[] = [];
+	const receiptCoveredFamilies: TriggerReceiptCoveredFamily[] = [];
 	// Issue #2878: persisted per-family dispatch attempts for this run. Every
 	// micro-dispatch acknowledgment appends one record
 	// (`recordPrReviewMicroFamilyDispatch` in the gate), so counting the
@@ -603,6 +624,81 @@ export async function executeWritePrReviewTriggerEval(
 			});
 			continue;
 		}
+		// Issue #3094: receipt-settled coverage. When the cited lane holds a
+		// structured `submit_pr_review_result` receipt that passes the gate's
+		// exact-identity validator AND its envelope credits THIS row's family,
+		// the family is fully settled: the envelope is the authoritative result
+		// (it takes precedence over transcript text per v7.160.1), so the
+		// transcript-quality/coverage reasons below describe a superseded
+		// channel and recording any of them would forbid APPROVE for a settled
+		// family. Disclose the family as receipt-covered instead. Anything but
+		// accepted+credited (absent receipt, schema-invalid, identity-mismatched,
+		// or the family sitting in the envelope's unresolved set) keeps today's
+		// exact text-path behavior.
+		// Review round (F2): this is a decision moment, so re-read the cited
+		// record fresh — the same #2840/#2878 discipline the dead-family branch
+		// above applies. A receipt landing between the loop-top snapshot and
+		// this decision (claim-first admission) must credit the family, not
+		// degrade it. Identity fields are dispatch-bound and immutable, so
+		// evaluating against the fresh record is safe; on uncertain reads fail
+		// closed like every other store read in this loop. A workflow restart
+		// mid-call makes the validator reject (stale workflowInstanceId) and the
+		// call then fails at the bound-scope guards below before anything is
+		// persisted, so gate-state staleness cannot diverge durably.
+		let creditRecord = record!;
+		const freshCreditRead = _internals.findByBatchIdDetailed(
+			directory,
+			row.source_batch_id!,
+			{
+				parentSessionId: sessionID,
+			},
+		);
+		if (freshCreditRead.status === 'uncertain') {
+			return failure(
+				`MATCHED trigger ${row.trigger_id} cannot validate receipt-settled coverage: the delegation store is unreadable after ${freshCreditRead.attempts} attempts (${freshCreditRead.reason}); the batch's records are UNKNOWN, not absent. Nothing was persisted, so this call is retryable as-is once the store is readable.`,
+			);
+		}
+		const freshCreditRecord = freshCreditRead.value.find(
+			(candidate) => candidate.laneId === row.source_lane_id,
+		);
+		if (
+			freshCreditRecord &&
+			freshCreditRecord.batchId === creditRecord.batchId &&
+			freshCreditRecord.laneId === creditRecord.laneId &&
+			freshCreditRecord.subagentSessionId === creditRecord.subagentSessionId
+		) {
+			creditRecord = freshCreditRecord;
+		}
+		const receiptCoverage = validateExactStructuredReceiptCoverage({
+			record: creditRecord,
+			result: creditRecord.result!,
+			artifact: null,
+			expected: {
+				mode:
+					creditRecord.mode === 'swarm-pr-review:base'
+						? creditRecord.mode
+						: 'swarm-pr-review:micro',
+				workflowLane: creditRecord.workflowLane ?? row.trigger_id,
+				ownedWorkflowLanes: recordOwnedLanes,
+				prHeadSha: parsed.data.pr_head_sha,
+				gitHead: parsed.data.pr_head_sha,
+				revisionDigest: currentRevisionDigest,
+				workflowInstanceId: gateState.workflowInstanceId,
+				workflowRevision: creditRecord.workflowGeneration,
+				baseSha: gateState.prReviewBaseSha,
+			},
+		});
+		if (
+			receiptCoverage.status === 'accepted' &&
+			receiptCoverage.creditedWorkflowLanes.includes(row.trigger_id)
+		) {
+			receiptCoveredFamilies.push({
+				trigger_id: row.trigger_id,
+				source_batch_id: row.source_batch_id!,
+				source_lane_id: row.source_lane_id!,
+			});
+			continue;
+		}
 		// Coverage-quality failures are tolerated and DISCLOSED on the durable
 		// receipt instead of dead-ending the whole review (retries remain the
 		// first resort per the skill's COVERAGE GATE). A lane that completed but
@@ -809,6 +905,7 @@ export async function executeWritePrReviewTriggerEval(
 		dispatched_micro_lane_count: dispatchedMicroLaneCount,
 		rows: validatedRows,
 		coverage_degradations: coverageDegradations,
+		receipt_covered_families: receiptCoveredFamilies,
 		base_verification: baseVerification,
 	});
 
@@ -903,6 +1000,17 @@ export async function executeWritePrReviewTriggerEval(
 				? {
 						coverage_degradations: coverageDegradations,
 						note: 'degraded families recorded on the receipt; disclose them in the final review report',
+					}
+				: {}),
+			receipt_covered_family_count: receiptCoveredFamilies.length,
+			...(receiptCoveredFamilies.length > 0
+				? {
+						// Echo the full array (mirroring the coverage_degradations
+						// branch) so the disclosure note references identities the
+						// response actually supplies — review finding G5.
+						receipt_covered_families: receiptCoveredFamilies,
+						receipt_covered_note:
+							'receipt-settled families recorded on the receipt; disclose them as receipt-covered (not transcript-covered, not degraded) in the final review report',
 					}
 				: {}),
 		},

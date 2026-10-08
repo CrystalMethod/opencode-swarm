@@ -75,14 +75,24 @@ ownership of their families through a verifiable provenance chain (identity,
 ownership, digest, retained artifact). A lane whose coverage QUALITY is
 imperfect — it ended `error`/`cancelled` after exhausting retries, or its
 artifact has no covered `[CANDIDATE]`/`[CLEAN]` row for the row's own family —
-no longer dead-ends the run: the writer records the failure on the durable
-receipt as a `coverage_degradations` entry (trigger id, source lane, reason,
-row-scoped so a consolidated lane's covered families are never misattributed)
-and proceeds. The tool result reports `coverage_degradation_count`; the
-synthesis phase MUST disclose every degraded family, with its recorded reason,
-in the final review report. Retries remain the first resort (COVERAGE GATE); a
-missing provenance chain still fails closed, and the reviewer/critic inventory
-skips exactly the receipt-disclosed dispatch tuples.
+no longer dead-ends the run, with one precedence: the writer first re-reads the
+cited record at the decision moment, and when its structured
+`submit_pr_review_result` receipt passes the exact-identity validator and
+credits the family, the family is recorded on the durable receipt as a
+`receipt_covered_families` entry — a distinct, NON-degrading settlement class
+(the tool result reports `receipt_covered_family_count`, the
+`receipt_covered_families` array, and a `receipt_covered_note`). Only
+otherwise does the writer record the failure on the durable receipt as a
+`coverage_degradations` entry (trigger id, source lane, reason, row-scoped so a
+consolidated lane's covered families are never misattributed) and proceed. The
+tool result reports `coverage_degradation_count`; the synthesis phase MUST
+disclose every degraded family, with its recorded reason, AND every
+receipt-covered family as receipt-covered (not transcript-covered, not
+degraded) in the final review report. Retries remain the first resort
+(COVERAGE GATE); a missing provenance chain still fails closed. The
+reviewer/critic inventory skips exactly the DEGRADATION-disclosed dispatch
+tuples; receipt-covered tuples are resolved through the inventory's
+structured-receipt branch instead, never the degradation waiver.
 
 ## Bounded merge-base fallback (`base_verification`)
 

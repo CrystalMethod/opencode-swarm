@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: e153881f260b
+swarm-contract-digest: 86411ce9796f
 ---
 
 # /swarm-pr-review
@@ -1202,7 +1202,7 @@ pass the exact reviewed merge-base as `base_sha`, the exact live base branch
 tip/ref used to compute it as `base_ref`, and the same `pr_head_sha` to the
 writer. The writer runs bounded `git merge-base -- <base_ref> <pr_head_sha>` and
 rejects any claimed `base_sha` that is not the exact result. When that bounded re-check is unavailable (git timeout, spawn failure, unresolvable ref) but the supplied `base_ref` and `base_sha` exactly equal the durably bound review scope, the writer proceeds and discloses `base_verification: bound_fallback` on the receipt, which synthesis must surface in the final review report (`references/lane-output-recoverability.md`); every other outcome stays fail-closed. It accepts only an
-exact eleven-row v2 receipt backed by verifiable provenance (identity, ownership, digest, retained artifact); a coverage-QUALITY failure is disclosed on the receipt as `coverage_degradations` and the run proceeds, with synthesis disclosing degraded families (`references/lane-output-recoverability.md`). `NOT_TRIGGERED` rows are provenance-free. Counts are recomputed and
+exact eleven-row v2 receipt backed by verifiable provenance (identity, ownership, digest, retained artifact); a coverage-QUALITY failure is disclosed on the receipt as `coverage_degradations` and the run proceeds, with synthesis disclosing degraded families — unless the family is receipt-settled, in which case it is recorded as `receipt_covered_families` (never a degradation) and synthesis discloses it as receipt-covered (`references/lane-output-recoverability.md`). `NOT_TRIGGERED` rows are provenance-free. Counts are recomputed and
 must agree. It never uses keyword or path classification alone as absence
 evidence. Any head mismatch makes persistence fail. Historical unversioned and
 schema-v1 all-`MATCHED` receipts remain readable, but new writes are strict v2.

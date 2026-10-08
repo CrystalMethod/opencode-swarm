@@ -1033,7 +1033,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		],
 		writerCitations: [
 			'src/tools/write-pr-review-artifact.ts:715-727 — findings JSONL append (≤1000 records/call at :1002) + handoff JSON create at :931, atomic',
-			'src/tools/write-pr-review-trigger-eval.ts:105-116 — atomic temp+rename write, refuses overwrite (EEXIST at :116; conflicting content at :840)',
+			'src/tools/write-pr-review-trigger-eval.ts createTriggerReceipt — trigger-eval receipt atomic write (temp+link; refuses overwrite on EEXIST)',
 			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — a run-scoped submission-payload.json provenance copy, overwritten per attempt (validateSwarmPath-contained, run_id-charset-bounded path; direct write, not temp+rename)',
 			'src/tools/export-pr-review-partial-results.ts executeExportPrReviewPartialResults — a run-scoped post-abort-export.json partial-salvage artifact (issue #3097) written through the canonical atomicWriteSwarmFile (fsync + bounded rename retry + cache invalidation), byte-capped (findings cap + 24 MiB margin; typed artifact-too-large refusal beyond), idempotent re-export; the gate re-check runs immediately before the write',
 			'src/hooks/pr-workflow-gate.ts:11147 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',
@@ -1060,7 +1060,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 		readBound: { pattern: 'line-bounded', bound: '10 MiB findings read guard; run-reservation.json ≤16 KiB; trigger-eval.json ≤2 MiB; coverage-disclosure.json ≤4 KiB; route receipts 64 KiB hard read bound; submission payload has no in-process reader (gh reads the --input file)', sync: true, citation: 'src/tools/write-pr-review-artifact.ts readFindings (10 MiB guard); src/tools/export-pr-review-partial-results.ts readBoundedJson (16 KiB / 2 MiB / 4 KiB bounds); src/review/routing-enforcement.ts:327 MAX_ROUTE_RECEIPT_BYTES with readers at :516/:589; src/tools/pr-review-submission.ts executePrReviewSubmission (submission-payload.json write)' },
 		lockModel: 'artifact-boundary assertions rather than file locks; route receipts use canonical atomic replacement',
-		crashBehavior: 'atomic temp+rename (findings, handoff, trigger-eval, route receipts); post-abort-export via the canonical atomicWriteSwarmFile (fsync + bounded rename retry); submission-payload.json is a direct per-attempt overwrite (non-atomic, renderer-cap bounded)',
+		crashBehavior: 'atomic temp+rename or temp+link (findings, handoff, route receipts); trigger-eval receipt is atomic temp+link refusing overwrite on EEXIST (createTriggerReceipt); post-abort-export via the canonical atomicWriteSwarmFile (fsync + bounded rename retry); submission-payload.json is a direct per-attempt overwrite (non-atomic, renderer-cap bounded)',
 		closePolicy: 'untouched by close — the 30 d sweep owns the run-dir reap',
 		resetPolicy: 'not reset',
 		legacyCompatibility: 'records matched against authoritative verdicts on read',
