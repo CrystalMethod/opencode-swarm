@@ -111,7 +111,7 @@
 			"file": "src/commands/coupling.ts",
 			"identifier": "persistReportJson",
 			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"persistReportJson\" exists in src/commands/coupling.ts but not inside src/commands/coupling.ts:153 (epic-turbo-state.writerCitations[4])."
+			"note": "Pre-existing debt, not approved drift: \"persistReportJson\" exists in src/commands/coupling.ts but not inside src/commands/coupling.ts:153 (epic-turbo-state.writerCitations[2])."
 		},
 		{
 			"rowId": "evidence-bundles",
@@ -301,13 +301,6 @@
 			"identifier": "savePlan",
 			"kind": "out-of-range",
 			"note": "Pre-existing debt, not approved drift: \"savePlan\" exists in src/plan/manager.ts but not inside src/plan/manager.ts:1721 (plan-projections.writerCitations[0])."
-		},
-		{
-			"rowId": "pr-review-run-artifacts",
-			"file": "src/tools/write-pr-review-artifact.ts",
-			"identifier": "readFindings",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"readFindings\" exists in src/tools/write-pr-review-artifact.ts but not inside src/tools/write-pr-review-artifact.ts:86-101 (pr-review-run-artifacts.readerCitations[0])."
 		},
 		{
 			"rowId": "recommendation-ledger",

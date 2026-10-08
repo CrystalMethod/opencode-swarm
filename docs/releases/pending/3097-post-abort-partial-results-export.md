@@ -32,14 +32,21 @@ of scope (#3097)"). This adds the missing third surface.
   absent from the trigger receipt, and MATCHED families whose cited lane was
   settled presumed-stale at abort), not-triggered families are listed
   separately, reached boundaries are disclosed, and an `abort_lane_state` band
-  reports open/presumed-stale lanes without claiming them tested.
+  reports open/presumed-stale lanes without claiming them tested. Findings
+  without a recorded severity are carried in the artifact and named in the
+  summary as "rows without a recorded severity" — never "dismissed". The
+  reader retains unknown fields a newer plugin may add (issue #2491 F-009
+  posture) and accepts both v1 and v2 trigger receipts (v1 rows are
+  MATCHED-only; a bound_fallback base verification is forwarded to the
+  provenance block and the summary).
 - Rider: the `abort_pr_workflow` tool description now documents the enforced
   500-character `reason` limit ("(max 500 chars)").
 - Registered through the full tool set (metadata + manifest thunk + barrel);
   the retention registry's `pr-review-run-artifacts` row now covers
-  `post-abort-export.json` (atomic temp+rename, findings-cap + 1 MiB bound,
-  typed `artifact-too-large` refusal) and the pre-existing
-  `run-reservation.json` omission.
+  `post-abort-export.json` (written through the canonical
+  `atomicWriteSwarmFile`, findings-cap + 24 MiB margin bound, typed
+  `artifact-too-large` refusal), the pre-existing `run-reservation.json`
+  omission, and `coverage-disclosure.json`.
 
 ## Why
 
@@ -51,15 +58,26 @@ exportability even though the validated artifacts survive on disk.
 ## Disclosed limits
 
 - The abort event carries no `run_id`; binding is (session, head, receipt run
-  id). Two aborted runs at the same head in one session are disambiguated only
-  by the requested run's receipt/reservation.
+  id), and the abort must postdate the run's `reserved_at` — a stale abort
+  from an earlier workflow at the same head cannot authorize or mislabel a
+  later run's export.
+- A present-but-unreadable or foreign-bound `coverage-disclosure.json` is
+  disclosed as `unreadable` in the artifact — never smoothed into "absent";
+  a legacy v1 disclosure's `missingDimension` is honored.
+- An abbreviated `pr_head_sha` is rejected at argument validation: the
+  receipt and every findings row bind the full commit SHA.
+- `findings.jsonl` may accumulate one record per finding per boundary; the
+  export carries every record (labeled by lane and status) while the
+  rendered summary and `finding_count` reflect the latest record per
+  finding id.
 - Family-level lane settlement receipts live in the delegation ledger, which
   this export deliberately does not read (self-contained reads per the issue;
   #3118 precedent); family silence derives from the trigger receipt's own
   coverage record, the presumed-stale lane join, and the `abort_lane_state`
   disclosure — no family-level settlement is claimed.
 - Events older than the 3 MiB retained-events tail fail closed
-  (`abort-scan-indeterminate`).
+  (`abort-scan-indeterminate`); the retained window itself is capped, so
+  truncation is a burst/legacy state that event maintenance clears.
 - The export never writes `feedback-consent.json` or `feedback-handoff.json`
   and never re-arms gate state; it refuses while a gate is active so it cannot
   become a parallel live path around the consent machinery.
