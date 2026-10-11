@@ -379,4 +379,48 @@ describe('v2 session-client errors + lifecycle (issue #3169 Phase 2)', () => {
 			rmSync(directory, { recursive: true, force: true });
 		}
 	});
+
+	// Review round 1 regression: the dispatcher's timeout teardown races the
+	// in-flight prompt (its awaitWithAbort rejects without awaiting the shim's
+	// promise), so abort/delete arrive before realId is bound. The pending
+	// flags must defer the cleanup to the prompt's finally — a never-resolving
+	// wait with a short dispatcher timeout is the exact production shape.
+	test('AC6 timed-out dispatch teardown still removes the real session (abort-before-resolution race)', async () => {
+		const directory = canonicalMkdtemp('swarm-v2-race-');
+		try {
+			const domain = makeFakeDomain(directory, OK_ENTRIES);
+			// Realistic latency: the host interrupt/prompt take a few ticks.
+			const hangMs = 50;
+			const client = createV2SessionClient(makeFakeCtx(directory, domain))!;
+			const realWait = domain.wait;
+			(domain as unknown as Record<string, unknown>).wait = async (
+				input: unknown,
+			) => {
+				await new Promise((resolve) => setTimeout(resolve, hangMs * 4));
+				return realWait(input);
+			};
+			const dispatcher = createReviewModelDispatcher(client as never);
+			const result = await dispatcher.dispatch({
+				directory,
+				agentName: 'mega_reviewer',
+				system: 's',
+				prompt: 'slow prompt',
+				timeoutMs: hangMs,
+			});
+			expect(result.status).toBe('timeout');
+			// Give the still-running prompt promise its finally turn.
+			await new Promise((resolve) => setTimeout(resolve, hangMs * 8));
+			const realId = domain.createdSessions[0]!.id;
+			expect(domain.removedSessions.has(realId)).toBe(true);
+			expect(
+				domain.calls.some(
+					(c) =>
+						c.op === 'interrupt' &&
+						(c.arg as { sessionID?: string } | undefined)?.sessionID === realId,
+				),
+			).toBe(true);
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	}, 10_000);
 });

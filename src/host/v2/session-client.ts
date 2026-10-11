@@ -92,6 +92,17 @@ interface PlaceholderRecord {
 	title?: string;
 	directory: string;
 	realId?: string;
+	/** Set synchronously when a prompt on this placeholder starts. */
+	promptStarted?: boolean;
+	/**
+	 * #3169 Phase 2 review round 1: the caller's teardown (abort/delete) can
+	 * arrive while the prompt is still in flight — before `realId` is bound.
+	 * Those calls park these flags and the prompt's finally honors them once
+	 * the real id exists, so a timed-out dispatch still cleans up its host
+	 * session.
+	 */
+	abortPending?: boolean;
+	deletePending?: boolean;
 }
 
 const placeholderSessions = new Map<string, PlaceholderRecord>();
@@ -538,6 +549,15 @@ async function deferredV2SessionPromptPlaceholder(
 	text: string,
 	signal: AbortSignal | undefined,
 ): Promise<{ data: TranslatedPromptData }> {
+	// Mark in-flight SYNCHRONOUSLY (before the first await): the caller's
+	// abort/delete teardown can arrive while realId is still unbound, and the
+	// pending flags only help when promptStarted is already set.
+	stash.promptStarted = true;
+	// If the caller's signal is already aborted, do not create anything — the
+	// dispatcher's awaitWithAbort would reject this call without cleanup.
+	if (signal?.aborted) {
+		throw new Error('v2 session-client: prompt wait aborted');
+	}
 	const agent = typeof body.agent === 'string' ? body.agent : undefined;
 	const model =
 		body.model &&
@@ -602,6 +622,19 @@ async function deferredV2SessionPromptPlaceholder(
 		if (registration?.dispose) {
 			await registration.dispose().catch(() => undefined);
 		}
+		// #3169 Phase 2 review round 1 (host-session-leak race): the dispatcher's
+		// teardown can arrive while the wait above is still pending (its
+		// awaitWithAbort rejects on timeout/abort without awaiting this
+		// promise), so abort/delete hit the PLACEHOLDER before realId is bound
+		// and no-op. Those calls set the pending flags instead; now that the
+		// real id exists, honor them — best-effort, never throwing.
+		if (stash.abortPending) {
+			await ctx.session.interrupt({ sessionID: realId }).catch(() => undefined);
+		}
+		if (stash.deletePending) {
+			sessionErrors.delete(realId);
+			await ctx.session.remove({ sessionID: realId }).catch(() => undefined);
+		}
 	}
 }
 
@@ -651,6 +684,7 @@ export function createV2SessionClient(
 		'wait',
 		'context',
 		'interrupt',
+		'hook',
 	] as const) {
 		if (typeof session[member] !== 'function') return undefined;
 	}
@@ -669,11 +703,20 @@ export function createV2SessionClient(
 			}): Promise<{ data: TranslatedPromptData | null; error?: unknown }> =>
 				deferredV2SessionPrompt(ctx, args),
 			abort: (args: { path: { id: string } }): Promise<unknown> => {
-				const resolved = resolveSessionId(args?.path?.id);
-				if (resolved === undefined) return Promise.resolve(undefined);
-				return ctx.session
-					.interrupt({ sessionID: resolved })
-					.catch(() => undefined);
+				const id = args?.path?.id;
+				const resolved = resolveSessionId(id);
+				if (resolved !== undefined) {
+					return ctx.session
+						.interrupt({ sessionID: resolved })
+						.catch(() => undefined);
+				}
+				// Prompt in flight but realId not yet bound: park the intent —
+				// the prompt's finally performs the interrupt once the id exists
+				// (review round 1 leak race). A never-prompted placeholder has
+				// no host session, so it stays a no-op.
+				const stash = placeholderSessions.get(id);
+				if (stash?.promptStarted) stash.abortPending = true;
+				return Promise.resolve(undefined);
 			},
 			delete: (args: { path: { id: string } }): Promise<unknown> => {
 				const id = args?.path?.id;
@@ -684,11 +727,17 @@ export function createV2SessionClient(
 				// AFTER this delete and must still resolve to the real id, where
 				// the host reports the removed session as gone.
 				const resolved = resolveSessionId(id);
-				if (resolved === undefined) return Promise.resolve(undefined);
-				sessionErrors.delete(resolved);
-				return ctx.session
-					.remove({ sessionID: resolved })
-					.catch(() => undefined);
+				if (resolved !== undefined) {
+					sessionErrors.delete(resolved);
+					return ctx.session
+						.remove({ sessionID: resolved })
+						.catch(() => undefined);
+				}
+				// Same leak race as abort: park the delete for the prompt's
+				// finally; a never-prompted placeholder deletes nothing.
+				const stash = placeholderSessions.get(id);
+				if (stash?.promptStarted) stash.deletePending = true;
+				return Promise.resolve(undefined);
 			},
 			get: (args: { path: { id: string } }): Promise<{ data: unknown }> => {
 				const resolved = resolveSessionId(args?.path?.id);

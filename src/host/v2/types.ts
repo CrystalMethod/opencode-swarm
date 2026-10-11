@@ -17,9 +17,10 @@
  * Host-tolerance contract for the session/worktree method surface (issue #3169):
  * the members below are REQUIRED to mirror the published `SessionDomain`/`WorktreeDomain`.
  * Since Phase 2 the session-client shim (`src/host/v2/session-client.ts`) is the call
- * site — it feature-detects every member it consumes (`typeof ctx.session.create ===
- * 'function'`) and returns `undefined` when any is missing, so requiredness stays
- * type-level only and a 2.0.2x host lacking a member must never crash the adapter.
+ * site — it feature-detects every member it consumes, including `hook` (`typeof
+ * ctx.session.create === 'function'`), and returns `undefined` when any is missing, so
+ * requiredness stays type-level only and a 2.0.2x host lacking a member must never crash
+ * the adapter.
  *
  * Only the surfaces this adapter consumes are typed. Unknown fields are
  * intentionally left off; the adapter never relies on their absence.
