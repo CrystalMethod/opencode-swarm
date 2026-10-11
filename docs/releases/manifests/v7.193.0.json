@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.193.0",
+  "tagCommit": "bb88fe8f145c55562d531e9c3d6f5f14f9da43be",
+  "targetCommitish": "bb88fe8f145c55562d531e9c3d6f5f14f9da43be",
+  "releaseBodySha256": "c0ff04aa7d6b4b8947e95701184590b082dac469706f1aaf9f6efaaabae4ef6f",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3100-gate-aware-injection-policy.md",
+      "sha256": "be9cdf2747cb6a014c000455c81c4600ef68eeda8afe92749f58181b49e10a21"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/3101-n-of-m-verdict-settlement.md",
+      "sha256": "d8f7dd389961067e467ce94df910c7531638ec59c3830d672f82af9c61b1315c"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3169-epic-v2-phase1-prerequisites.md",
+      "sha256": "1f570322f35b134fa789b04020cbaa5541ae207b269c7aa49a32196c2c9763d0"
+    }
+  ]
+}
