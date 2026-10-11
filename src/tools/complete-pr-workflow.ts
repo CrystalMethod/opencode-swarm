@@ -283,6 +283,7 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport: typeof readPrReviewTerminalCoverageForReport;
 	readPrReviewFinalFindingPolicyForReport: typeof readPrReviewFinalFindingPolicyForReport;
 	settlePresumedStalePrWorkflowLanes: typeof settlePresumedStalePrWorkflowLanes;
+	verdictSettlementSummaryForReportSafe: typeof verdictSettlementSummaryForReportSafe;
 } = {
 	completePrWorkflow,
 	listPendingPrWorkflowCheckoutRestores,
@@ -290,6 +291,7 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport,
 	readPrReviewFinalFindingPolicyForReport,
 	settlePresumedStalePrWorkflowLanes,
+	verdictSettlementSummaryForReportSafe,
 };
 
 /** Issue #3101: additive per-item disclosure echo for admitted N-of-M verdict settlements. */

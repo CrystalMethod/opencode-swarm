@@ -2745,7 +2745,7 @@ function detectPowerShellWrites(command: string): WriteTarget[] {
 	// strip must unwrap it too or the payload is invisible).
 	let innerCommand = trimmed;
 	const cmdMatch = trimmed.match(
-		new RegExp(PS_STRIP_PREFIX.source + '(.*)$', 'i'),
+		new RegExp(`${PS_STRIP_PREFIX.source}(.*)$`, 'i'),
 	);
 	if (cmdMatch) {
 		innerCommand = cmdMatch[1].trim();
@@ -3258,7 +3258,7 @@ function detectCmdWrites(command: string): WriteTarget[] {
 	// Switch-tolerant strip (#3145 PRR-002): `cmd /d /s /c "…"` must unwrap
 	// like bare `cmd /c "…"` or the copy/move matchers never see the verb.
 	const cmdWrapperMatch = trimmed.match(
-		new RegExp(CMD_STRIP_PREFIX.source + '(.*)$', 'i'),
+		new RegExp(`${CMD_STRIP_PREFIX.source}(.*)$`, 'i'),
 	);
 	if (cmdWrapperMatch) {
 		innerCommand = cmdWrapperMatch[1].trim();

@@ -39,3 +39,20 @@ Settlement is item completeness, not lane completeness. A declared lane that
 never completes produces a diagnostic naming the abandoned lane, not an
 automatic block, as long as every item in the inventory already holds a
 successful verdict from some lane.
+
+## N-of-M verdict settlement (issue #3101)
+
+A phase may ALSO settle truthfully over liveness-dead items when admission
+succeeds: every unclaimed item has declared owner lanes in the phase window,
+every owner record carries the controller-written typed liveness class
+(workflowLaneFailureClass: liveness — never lane self-report), and the
+per-item retry budget is exhausted (1 + PR_REVIEW_VERDICT_RETRY_BUDGET
+distinct owner batches per item). Admission then persists a per-phase
+disclosure receipt at .swarm/pr-review/<runId>/verdict-settlement.<phase>.json
+(one structured row per dead item), and the phase settles with those items
+disclosed dead. Consumers verify the receipt identity (run id, PR head, worktree
+revision, path body, and the state-held sha256 anchor) at every read; a
+receipt-covered critic item settles as a writer-derived terminal
+CRITIC_UNAVAILABLE disposition, and the disclosed degradation still forbids
+APPROVE. Silence, empty owner sets, uncertain store reads, and lane
+self-reports never settle anything.

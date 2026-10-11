@@ -1667,30 +1667,41 @@ export async function readPrReviewTerminalCoverageForReport(
 		// Issue #2840: the durable trigger-eval receipt's disclosed coverage
 		// degradations downgrade the verdict matrix the same way the
 		// completion gates enforce (DEGRADED_DISCLOSED never approves).
+		// The verdict-settlement leg is an observation-only echo over phase
+		// composition: a state composed here may predate #3101's mandatory
+		// micro-lane provenance (legacy in-flight runs), and this report read
+		// must degrade to inactive rather than hard-throw where the gate's
+		// dispatch paths keep failing closed.
 		allowedVerdicts: allowedPrReviewReportVerdicts(settlement.kind, [], {
 			disclosedCoverageDegradation:
 				prReviewReceiptHasCoverageDegradations(
 					directory,
 					state.prReviewTriggerEvalPath,
 				) ||
-				verdictSettlementDegradationActive({
-					directory,
-					runId: state.prReviewArtifactRunId ?? state.prReviewReservedRunId,
-					prHeadSha: state.prHeadSha,
-					revisionDigest: ctx.revisionDigest,
-					reviewerUnclaimed: composePrReviewPhaseVerdicts(
-						directory,
-						state,
-						'reviewer',
-						ctx,
-					).unclaimed,
-					criticUnclaimed: composePrReviewPhaseVerdicts(
-						directory,
-						state,
-						'critic',
-						ctx,
-					).unclaimed,
-				}),
+				(() => {
+					try {
+						return verdictSettlementDegradationActive({
+							directory,
+							runId: state.prReviewArtifactRunId ?? state.prReviewReservedRunId,
+							prHeadSha: state.prHeadSha,
+							revisionDigest: ctx.revisionDigest,
+							reviewerUnclaimed: composePrReviewPhaseVerdicts(
+								directory,
+								state,
+								'reviewer',
+								ctx,
+							).unclaimed,
+							criticUnclaimed: composePrReviewPhaseVerdicts(
+								directory,
+								state,
+								'critic',
+								ctx,
+							).unclaimed,
+						});
+					} catch {
+						return false;
+					}
+				})(),
 		}),
 	};
 }

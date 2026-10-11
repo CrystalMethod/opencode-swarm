@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { z } from 'zod';
 import {
@@ -24,9 +25,12 @@ import { writeAtomicJson } from './persistence.js';
  * 3. downgrade-only — the verdict matrix constrains the report to
  *    REQUEST_CHANGES/INCOMPLETE via the existing DEGRADED_DISCLOSED channel
  *    (never APPROVE, never synthesized verdicts);
- * 4. per-item disclosure — an immutable receipt under
+ * 4. per-item disclosure — a durable receipt under
  *    `.swarm/pr-review/<runId>/verdict-settlement.<phase>.json` carries one
- *    structured (lane, disposition, evidence class) row per settled item.
+ *    structured (lane, disposition, evidence class) row per settled item. The
+ *    receipt is rename-overwritten on re-admission (last-writer-wins); every
+ *    consumer re-derives truth from the CURRENT file plus its state identity,
+ *    never from a prior read.
  *
  * This module deliberately mirrors the discovery-phase dead-family admission
  * (`write-pr-review-trigger-eval.ts` + `PR_REVIEW_MICRO_FAMILY_RETRY_BUDGET`)
@@ -39,9 +43,19 @@ export const PR_REVIEW_VERDICT_RETRY_BUDGET = 2;
 
 export const VERDICT_SETTLEMENT_SCHEMA_VERSION = 1;
 
-/** Bounded receipt read: per-item rows are small, but a wide dead set must
- * still never produce an unbounded blocking read. 64 KiB ≈ hundreds of rows. */
-const VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES = 65_536;
+/**
+ * Bounded receipt read: per-item rows are small, but a wide dead set must
+ * still never produce an unbounded blocking read. 64 KiB ≈ hundreds of rows.
+ */
+export const VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES = 65_536;
+
+/**
+ * Writer-side item cap mirroring the byte bound above: 128 rows of
+ * pretty-printed receipt stay well under `VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES`
+ * on every encoding, so the writer can never persist a receipt the bounded
+ * reader would refuse (that would wedge the run into a rewrite loop).
+ */
+export const VERDICT_SETTLEMENT_MAX_RECEIPT_ITEMS = 128;
 
 export const PrReviewVerdictSettlementPhaseSchema = z.enum([
 	'reviewer',
@@ -72,7 +86,10 @@ export const PrReviewVerdictSettlementReceiptSchema = z
 		prHeadSha: z.string().trim().min(1),
 		revisionDigest: z.string().trim().min(1),
 		phase: PrReviewVerdictSettlementPhaseSchema,
-		items: z.array(PrReviewVerdictSettlementItemSchema).min(1),
+		items: z
+			.array(PrReviewVerdictSettlementItemSchema)
+			.min(1)
+			.max(VERDICT_SETTLEMENT_MAX_RECEIPT_ITEMS),
 	})
 	.strict();
 export type PrReviewVerdictSettlementReceipt = z.infer<
@@ -90,8 +107,9 @@ export function verdictSettlementRelativePath(
 /**
  * Mirrors `isLivenessTerminalLaneRecord` (pr-workflow-gate.ts, issue #2585
  * AC13) without importing the gate (which imports this module). Record-state
- * gated only — never time-based. Keep the two predicates in sync; the parity
- * is pinned by tests/unit/pr-review/n-of-m-verdict-settlement.test.ts.
+ * gated only — never time-based. Keep the two predicates in sync by
+ * inspection; no test pins the cross-module structural parity directly (each
+ * side's own suites pin its behavior).
  */
 function isLivenessTerminalLaneRecord(
 	record: BackgroundDelegationRecord,
@@ -129,11 +147,13 @@ export interface VerdictSettlementAdmission {
 /**
  * The admissibility predicate (constraint 1 + 2 + the budget arm).
  *
- * `attempts` counts the distinct window batches that declared ANY lane owning
- * at least one unclaimed item (per-item-family counting mirroring
- * `countFamilyDispatchAttempts`, not a raw phase-level batch count), and the
- * latest such batch must be among them (cited-batch conjunction). Uncertain
- * delegation-store reads fail closed (settlement keeps blocking).
+ * The budget arm is PER ITEM: only the distinct window batches whose owner
+ * lanes declare THAT item count toward it (per-item-family counting mirroring
+ * `countFamilyDispatchAttempts` — never a raw phase-level batch count), and
+ * exhaustion requires `1 + budget` such attempts. The settled row's cited
+ * batch is one of its counted attempts by construction, so the cited-batch
+ * conjunction holds for every admitted row. Uncertain delegation-store reads
+ * fail closed (settlement keeps blocking).
  */
 export function deriveVerdictSettlementAdmission(args: {
 	directory: string;
@@ -142,6 +162,8 @@ export function deriveVerdictSettlementAdmission(args: {
 	/** The phase window batches composition scans (`prReviewPhaseWindow`). */
 	window: readonly VerdictSettlementWindowBatch[];
 	unclaimed: readonly string[];
+	/** Session scoping for delegation-store reads (sibling call-site parity). */
+	parentSessionId?: string;
 }): VerdictSettlementAdmission {
 	const { directory, prHeadSha, phase, window, unclaimed } = args;
 	if (unclaimed.length === 0) {
@@ -153,7 +175,13 @@ export function deriveVerdictSettlementAdmission(args: {
 	}
 	const expectedMode = `swarm-pr-review:${phase}`;
 	const items: PrReviewVerdictSettlementItem[] = [];
-	const attemptBatchIds = new Set<string>();
+	// One delegation-store read per batch id per admission call: the store is
+	// re-parsed on every lookup, so every owner pair sharing a batch shares the
+	// read instead of costing an O(items × owners) full-store re-parse.
+	const batchReads = new Map<
+		string,
+		ReturnType<typeof _internals.findByBatchIdDetailed>
+	>();
 	for (const itemId of unclaimed) {
 		// Owner set = declared lanes in the window whose reviewItemIds contain
 		// the item. Empty owner set keeps blocking (constraint 2).
@@ -169,16 +197,25 @@ export function deriveVerdictSettlementAdmission(args: {
 				items: [],
 			};
 		}
+		// Per-item attempt set (see docstring): sibling items' dispatches never
+		// count toward this item's budget.
+		const itemAttemptBatchIds = new Set<string>();
 		const dead: Array<{
 			batchId: string;
 			laneId: string;
 			status: 'stale' | 'cancelled' | 'error';
 		}> = [];
 		for (const { batch, lane } of owners) {
-			attemptBatchIds.add(batch.batchId);
+			itemAttemptBatchIds.add(batch.batchId);
 			// Decision-time re-read with an exact identity conjunction (the
 			// #3094 TOCTOU discipline). Uncertain reads fail closed.
-			const read = findByBatchIdDetailed(directory, batch.batchId);
+			let read = batchReads.get(batch.batchId);
+			if (!read) {
+				read = _internals.findByBatchIdDetailed(directory, batch.batchId, {
+					parentSessionId: args.parentSessionId,
+				});
+				batchReads.set(batch.batchId, read);
+			}
 			if (read.status === 'uncertain') {
 				return {
 					admitted: false,
@@ -209,6 +246,13 @@ export function deriveVerdictSettlementAdmission(args: {
 						: 'stale',
 			});
 		}
+		if (itemAttemptBatchIds.size < 1 + PR_REVIEW_VERDICT_RETRY_BUDGET) {
+			return {
+				admitted: false,
+				reason: `item ${itemId} verdict retry budget not exhausted (${itemAttemptBatchIds.size} of ${1 + PR_REVIEW_VERDICT_RETRY_BUDGET} required attempts)`,
+				items: [],
+			};
+		}
 		const first = dead[0]!;
 		items.push({
 			itemId,
@@ -218,17 +262,6 @@ export function deriveVerdictSettlementAdmission(args: {
 			evidenceClass: 'liveness',
 			terminalStatus: first.status,
 		});
-	}
-	// Budget arm: every unclaimed item's owner batches count as attempts;
-	// exhaustion = attempts >= 1 + budget. A budget exhausted by lanes that
-	// are not provably dead never reaches this line (the liveness conjunct
-	// above already refused).
-	if (attemptBatchIds.size < 1 + PR_REVIEW_VERDICT_RETRY_BUDGET) {
-		return {
-			admitted: false,
-			reason: `verdict retry budget not exhausted (${attemptBatchIds.size} of ${1 + PR_REVIEW_VERDICT_RETRY_BUDGET} required attempts)`,
-			items: [],
-		};
 	}
 	return { admitted: true, reason: 'admitted', items };
 }
@@ -254,6 +287,23 @@ export async function persistVerdictSettlementReceipt(
 	directory: string,
 	receipt: PrReviewVerdictSettlementReceipt,
 ): Promise<void> {
+	// Writer-side mirror of the reader's bounds: persisting a receipt the
+	// bounded reader would refuse would wedge the run into a rewrite loop
+	// (invalid read → block → re-admit → rewrite). Refuse here instead — both
+	// the byte cap AND the schema item cap (a 129–item receipt can sit under
+	// the byte bound while still failing schema validation at read).
+	if (receipt.items.length > VERDICT_SETTLEMENT_MAX_RECEIPT_ITEMS) {
+		throw new Error(
+			`verdict-settlement receipt exceeds the ${VERDICT_SETTLEMENT_MAX_RECEIPT_ITEMS}-item bounded-reader cap (${receipt.items.length} items); narrow the disclosed dead set before settling`,
+		);
+	}
+	const serialized = JSON.stringify(receipt, null, 2);
+	const serializedBytes = Buffer.byteLength(serialized, 'utf8');
+	if (serializedBytes > VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES) {
+		throw new Error(
+			`verdict-settlement receipt exceeds the ${VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES}-byte bounded-reader cap (${serializedBytes} bytes); narrow the disclosed dead set before settling`,
+		);
+	}
 	const absolute = path.join(
 		directory,
 		'.swarm',
@@ -263,9 +313,138 @@ export async function persistVerdictSettlementReceipt(
 }
 
 export type VerdictSettlementReceiptRead =
-	| { status: 'ok'; receipt: PrReviewVerdictSettlementReceipt }
+	| {
+			status: 'ok';
+			receipt: PrReviewVerdictSettlementReceipt;
+			/** sha256 of the exact file bytes, for consumption-time anchor checks. */
+			rawSha256: string;
+	  }
 	| { status: 'absent' }
 	| { status: 'invalid'; reason: string };
+
+type BoundedBytesRead =
+	| { status: 'ok'; bytes: Buffer }
+	| { status: 'absent' }
+	| { status: 'invalid'; reason: string };
+
+function boundedReadErrno(error: unknown): BoundedBytesRead {
+	if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+		return { status: 'absent' };
+	}
+	const code = (error as NodeJS.ErrnoException)?.code ?? 'unknown';
+	return {
+		status: 'invalid',
+		reason: `receipt is unreadable (${String(code)})`,
+	};
+}
+
+/**
+ * Bounded, symlink-safe, byte-denominated regular-file read (the sync twin of
+ * the gate's `readBoundedSwarmRegularFile`): lstat before open so a symlink
+ * never materializes, realpath containment, identity re-check after open and
+ * after read, and a pre-allocated max+1 buffer so an oversized file is never
+ * fully materialized. `absent` is reserved for ENOENT — every other failure
+ * keeps its errno in the reason.
+ */
+function readBoundedSwarmRegularFileBytes(
+	swarmRoot: string,
+	absolute: string,
+	maxBytes: number,
+): BoundedBytesRead {
+	const rootStat = fs.lstatSync(swarmRoot, {
+		bigint: true,
+		throwIfNoEntry: false,
+	});
+	if (!rootStat) return { status: 'absent' };
+	if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+		return {
+			status: 'invalid',
+			reason: 'receipt root must be a real project .swarm directory',
+		};
+	}
+	const fileStat = fs.lstatSync(absolute, {
+		bigint: true,
+		throwIfNoEntry: false,
+	});
+	if (!fileStat) return { status: 'absent' };
+	if (fileStat.isSymbolicLink() || !fileStat.isFile()) {
+		return {
+			status: 'invalid',
+			reason: 'receipt must be a bounded regular file',
+		};
+	}
+	if (fileStat.size > BigInt(maxBytes)) {
+		return { status: 'invalid', reason: 'receipt exceeds size bound' };
+	}
+	let realRoot: string;
+	let realFile: string;
+	try {
+		realRoot = fs.realpathSync(swarmRoot);
+		realFile = fs.realpathSync(absolute);
+	} catch (error) {
+		return boundedReadErrno(error);
+	}
+	const relative = path.relative(realRoot, realFile);
+	if (
+		relative === '' ||
+		relative === '..' ||
+		relative.startsWith(`..${path.sep}`) ||
+		path.isAbsolute(relative)
+	) {
+		return {
+			status: 'invalid',
+			reason: 'receipt escapes the project .swarm directory',
+		};
+	}
+	let fd: number;
+	try {
+		fd = fs.openSync(realFile, 'r');
+	} catch (error) {
+		return boundedReadErrno(error);
+	}
+	try {
+		const openedStat = fs.fstatSync(fd, { bigint: true });
+		if (
+			!openedStat.isFile() ||
+			openedStat.size > BigInt(maxBytes) ||
+			openedStat.dev !== fileStat.dev ||
+			openedStat.ino !== fileStat.ino
+		) {
+			return {
+				status: 'invalid',
+				reason: 'receipt changed or grew during its bounded read',
+			};
+		}
+		const buffer = Buffer.allocUnsafe(maxBytes + 1);
+		const bytesRead = fs.readSync(fd, buffer, 0, maxBytes + 1, 0);
+		if (bytesRead > maxBytes) {
+			return { status: 'invalid', reason: 'receipt exceeds size bound' };
+		}
+		// Post-read identity re-check: the file on disk must still be the same
+		// non-symlink regular file it was at lstat time.
+		const postStat = fs.lstatSync(absolute, {
+			bigint: true,
+			throwIfNoEntry: false,
+		});
+		if (
+			!postStat ||
+			postStat.isSymbolicLink() ||
+			!postStat.isFile() ||
+			postStat.dev !== fileStat.dev ||
+			postStat.ino !== fileStat.ino
+		) {
+			return {
+				status: 'invalid',
+				reason: 'receipt changed during its bounded read',
+			};
+		}
+		return { status: 'ok', bytes: buffer.subarray(0, bytesRead) };
+	} catch (error) {
+		return boundedReadErrno(error);
+	} finally {
+		fs.closeSync(fd);
+	}
+}
 
 export function readVerdictSettlementReceipt(
 	directory: string,
@@ -274,19 +453,15 @@ export function readVerdictSettlementReceipt(
 ): VerdictSettlementReceiptRead {
 	const relative = verdictSettlementRelativePath(runId, phase);
 	const absolute = path.join(directory, '.swarm', relative);
-	let raw: string;
-	try {
-		const stat = readFileSync(absolute, 'utf-8');
-		if (stat.length > VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES) {
-			return { status: 'invalid', reason: 'receipt exceeds size bound' };
-		}
-		raw = stat;
-	} catch {
-		return { status: 'absent' };
-	}
+	const read = readBoundedSwarmRegularFileBytes(
+		path.join(directory, '.swarm'),
+		absolute,
+		VERDICT_SETTLEMENT_MAX_RECEIPT_BYTES,
+	);
+	if (read.status !== 'ok') return read;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw);
+		parsed = JSON.parse(read.bytes.toString('utf-8'));
 	} catch {
 		return { status: 'invalid', reason: 'receipt is not valid JSON' };
 	}
@@ -294,15 +469,19 @@ export function readVerdictSettlementReceipt(
 	if (!validated.success) {
 		return { status: 'invalid', reason: 'receipt fails schema validation' };
 	}
-	return { status: 'ok', receipt: validated.data };
+	return {
+		status: 'ok',
+		receipt: validated.data,
+		rawSha256: createHash('sha256').update(read.bytes).digest('hex'),
+	};
 }
 
 /**
  * The single shared effective-set helper every consumer uses (constraint 4 +
- * receipt re-verification): the receipt is immutable, but the EFFECTIVE
- * disclosed set is `receipt.items ∩ currentUnclaimed`. An item claimed after
- * the receipt was written drops out; an empty effective set exerts no
- * constraint (no degradation flag, no exemptions).
+ * receipt re-verification): the EFFECTIVE disclosed set is
+ * `receipt.items ∩ currentUnclaimed`. An item claimed after the receipt was
+ * written drops out; an empty effective set exerts no constraint (no
+ * degradation flag, no exemptions).
  */
 export function effectiveVerdictSettlementItems(
 	receipt: PrReviewVerdictSettlementReceipt | undefined,
@@ -318,6 +497,13 @@ export function effectiveVerdictSettlementItems(
  * verdict matrix (the DEGRADED_DISCLOSED channel): true when either phase's
  * receipt identity-verifies AND its EFFECTIVE set (receipt ∩ current
  * unclaimed) is non-empty. An empty effective set exerts no constraint.
+ *
+ * Note the deliberate one-way divergence from the gate's
+ * `settlementCoveringAllUnclaimed` predicate: that one requires FULL cover of
+ * the current unclaimed set before exempting anything, while this one fires
+ * on a non-empty intersection. The divergence is strictly fail-closed —
+ * degradation-on-while-exemptions-off is reachable, exemptions-on-while-
+ * degradation-off is not (full cover implies a non-empty intersection).
  */
 export function verdictSettlementDegradationActive(args: {
 	directory: string;
@@ -349,3 +535,12 @@ export function verdictSettlementDegradationActive(args: {
 	}
 	return false;
 }
+
+/**
+ * Test seam (DI over `mock.module`, repo convention): the delegation lookup is
+ * injectable so admission arms (uncertain store reads) are testable without
+ * corrupting a real store. Restore in `afterEach`.
+ */
+export const _internals: {
+	findByBatchIdDetailed: typeof findByBatchIdDetailed;
+} = { findByBatchIdDetailed };
