@@ -125,6 +125,24 @@ const DECLARED_SITES: DeclaredSite[] = [
 			'and src/config/lane-context.ts pre-resolves permissions for that lane instance.',
 	},
 	{
+		file: 'src/host/v2/session-client.ts',
+		directoryExpr: 'stash.directory',
+		classification: 'same-instance',
+		note:
+			'#3169 Phase 2 v2 session-client shim. stash.directory is the v1 ' +
+			"caller's query.directory, re-issued verbatim as the v2 create's " +
+			'location.directory — every current caller reaches the shim with its own ' +
+			'invoking instance directory (the review/evaluation dispatcher request.directory ' +
+			'is itself declared same-instance above). The one caller class that would pass a ' +
+			'FOREIGN directory (worktree-isolation lane sessions, handle.worktreePath) is ' +
+			'fail-closed BEFORE this site by the shim placement precheck (#3169 Phase 0 C1: ' +
+			'a parented create whose requested directory diverges from the parent session ' +
+			'directory is refused), so a lane directory cannot reach this call. A parentless ' +
+			'create with a foreign directory would inherit the classification of its v1 call ' +
+			'site (each of which is declared in this inventory); v2 permission-partition ' +
+			'behavior is a recorded live-verification item on #3169.',
+	},
+	{
 		file: 'src/hooks/full-auto-intercept.ts',
 		directoryExpr: 'directory',
 		classification: 'same-instance',

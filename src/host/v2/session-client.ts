@@ -566,15 +566,18 @@ async function deferredV2SessionPromptPlaceholder(
 			? { id: body.model.modelID, providerID: body.model.providerID }
 			: undefined;
 	const system = typeof body.system === 'string' ? body.system : undefined;
-	const createInput = {
+	// Inline (not a prebuilt object) so the session.create directory-expression
+	// guardrail (tests/unit/config/session-create-directory-guardrail.test.ts)
+	// can trace `stash.directory` to its origin — the v1 caller's
+	// `query.directory`.
+	const created = await ctx.session.create({
 		...(stash.parentID !== undefined ? { parentID: stash.parentID } : {}),
 		...(stash.title !== undefined ? { title: stash.title } : {}),
 		...(agent !== undefined ? { agent } : {}),
 		...(model !== undefined ? { model } : {}),
 		location: { directory: stash.directory },
 		permissions: readOnlyToolsToV2Permissions(body.tools),
-	};
-	const created = await ctx.session.create(createInput);
+	});
 	const createdRecord = created as {
 		id?: unknown;
 		location?: { directory?: unknown };
