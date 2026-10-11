@@ -36,6 +36,7 @@
 import { recordSessionChatAgent } from '../../models/task-model-routing';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
+import { recordV2SessionErrorFromEnvelope } from './session-client';
 import type { V1HooksSubset, V2EventEnvelope, V2PluginContext } from './types';
 
 const V2_EVENT_BATCH_TIMEOUT_MS = 60_000;
@@ -205,6 +206,10 @@ export function startDeferredEventPump(
 			for await (const envelope of iterable as AsyncIterable<V2EventEnvelope>) {
 				if (stopped) break;
 				seedSessionIdentityFromEnvelope(envelope);
+				// #3169 Phase 2 (C4): v2 surfaces provider errors only via the
+				// event stream (no error text in context()); record them for the
+				// session-client shim's result translation. Sync, bounded, O(1).
+				recordV2SessionErrorFromEnvelope(envelope);
 				const mapped = mapV2EventToV1(envelope);
 				if (mapped === undefined) {
 					const t =

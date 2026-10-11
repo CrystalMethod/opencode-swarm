@@ -60,9 +60,10 @@ issue defines before a v2 session client can exist — plus #3165 §D (was #3156
 ## Why
 
 Issue #3169 Phase 1 "Done when": the delegation gate's Task handling has a v2
-test, and `tsc` sees the v2 session/worktree surface. Epic itself is unchanged;
-its `host-unsupported` refusal on v2 remains until the Phase 2 session client
-lands.
+test, and `tsc` sees the v2 session/worktree surface. Epic itself is unchanged
+in this phase; the `host-unsupported` refusal described above was lifted when
+the Phase 2 session client landed (#3169 Phase 2: the v2 capability guard now
+passes, with the epic entry point still double-gated until Phase 4).
 
 ## Notes
 
