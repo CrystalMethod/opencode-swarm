@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: 86411ce9796f
+swarm-contract-digest: a191a66d5a4d
 ---
 
 # /swarm-pr-review
@@ -1486,7 +1486,7 @@ A finding may still be reported without a runnable command if it is structurally
 
 Route reviewer-confirmed CRITICAL and HIGH findings to a critic always. Route a MEDIUM finding only when its typed risk metadata says so (issue #2383): `risk_impact: "HIGH_IMPACT"`, or any `risk_tags` entry (`SECURITY`, `AUTH_PERMISSIONS`, `STATE_INTEGRITY`, `WRITE_PATH`, `EVIDENCE_INTEGRITY`, `GIT`, `CONFIGURATION`). An ordinary MEDIUM (`risk_impact: "ORDINARY"`, no tags) is NOT critic-routed. `risk_impact: "UNKNOWN"` always routes to critic — never guess impact you could not assess, and never let file paths, dimension names, or prose override the typed `risk_impact`/`risk_tags` the reviewer row carries.
 
-The controller derives critic ownership from the typed reviewer rows through the one shared production predicate; every newly written CONFIRMED finding must supply `risk_impact` and `risk_tags` (the write boundary rejects a CONFIRMED record without them, and unknown tag values fail the row). Completion is blocked until that exact derived inventory has valid critic rows.
+The controller derives critic ownership from the typed reviewer rows through the one shared production predicate; every newly written CONFIRMED finding must supply `risk_impact` and `risk_tags` (the write boundary rejects a CONFIRMED record without them, and unknown tag values fail the row). Completion is blocked until that exact derived inventory has valid critic rows — unless an admitted N-of-M verdict settlement (issue #3101) discloses a liveness-dead critic lane, whose receipt-backed CRITIC_UNAVAILABLE rows count as terminal settlements.
 
 Reviewer and critic settlement MUST compose successful verdicts item by item
 across complementary partial batches. The newest successful claim wins each

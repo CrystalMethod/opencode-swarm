@@ -208,6 +208,16 @@ import type {
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
 import {
+	buildVerdictSettlementReceipt,
+	deriveVerdictSettlementAdmission,
+	effectiveVerdictSettlementItems,
+	type PrReviewVerdictSettlementPhase,
+	type PrReviewVerdictSettlementReceipt,
+	persistVerdictSettlementReceipt,
+	readVerdictSettlementReceipt,
+	verdictSettlementDegradationActive,
+} from '../pr-review/verdict-settlement.js';
+import {
 	canonicalForgePrUrl,
 	type ForgeContext,
 } from '../providers/forge-provider.js';
@@ -817,6 +827,14 @@ type PrReviewArtifactRecord = {
 	 */
 	risk_impact?: PrReviewRiskImpact;
 	risk_tags?: PrReviewRiskTag[];
+	/**
+	 * Model-supplied critic status (issue #3101). Present on post_critic
+	 * records when the caller attests a critic outcome; the records-match
+	 * validator rejects any value on a disclosed-dead critic item (the model
+	 * never authors a critic status there — the writer's settlement injection
+	 * derives it).
+	 */
+	critic_status?: string;
 };
 
 interface PrFeedbackScopeDeclarationRecord {
@@ -986,6 +1004,16 @@ export interface PrWorkflowGateState {
 	prReviewArtifactRunId?: string;
 	prReviewFindingsPath?: string;
 	prReviewArtifactBoundaries?: PrReviewArtifactBoundary[];
+	/**
+	 * Issue #3101: sha256 of each phase's persisted N-of-M verdict-settlement
+	 * receipt (the exact file bytes, recorded at persist time). Consumption
+	 * re-verifies the digest so a receipt rewritten after the fact under the
+	 * same head/digest identity fails closed — the same controller-held anchor
+	 * discipline as `prReviewCoverageDisclosureDigest` (issue #2383).
+	 */
+	prReviewVerdictSettlementDigests?: Partial<
+		Record<PrReviewVerdictSettlementPhase, string>
+	>;
 	prReviewPartialBaseCoverage?: PrReviewPartialBaseCoverageRecord;
 	prReviewCoverageDisclosurePath?: string;
 	prReviewCoverageDisclosureDigest?: string;
@@ -7443,6 +7471,9 @@ export async function assertPrReviewValidationSettled(
 	gateContext?: PrReviewGateContext,
 ): Promise<PrWorkflowGateState> {
 	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	// Returned state: the N-of-M settlement branch persists a receipt + anchor
+	// digest, and callers must observe that state (issue #3101).
+	let stateOut: PrWorkflowGateState = state;
 	const ctx =
 		gateContext ?? (await createPrReviewGateContext(directory, state));
 	const declaredPhases = new Set(
@@ -7507,14 +7538,93 @@ export async function assertPrReviewValidationSettled(
 			ctx,
 		);
 		if (composed.unclaimed.length > 0) {
-			const named = composed.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
-			const overflow = composed.unclaimed.length - named.length;
-			throw new Error(
-				`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
-					(overflow > 0 ? ` (+${overflow} more)` : '') +
-					(composed.diagnostics.length > 0
-						? `; diagnostics: ${composed.diagnostics.join(' | ')}`
-						: ''),
+			// Issue #3101: N-of-M truthful verdict settlement. Before blocking,
+			// derive admissibility from durable controller-written terminality
+			// evidence (typed liveness class on the delegation records of every
+			// unclaimed item's owner lanes) plus an exhausted item-scoped retry
+			// budget. Silence, self-report, and empty owner sets keep blocking.
+			const boundPrHeadSha = state.prHeadSha;
+			if (!boundPrHeadSha) {
+				throw new Error(
+					'BLOCKED: PR_REVIEW settlement requires a bound PR head SHA',
+				);
+			}
+			const admission = deriveVerdictSettlementAdmission({
+				directory,
+				prHeadSha: boundPrHeadSha,
+				phase: requiredPhase,
+				window: prReviewPhaseWindow(state, requiredPhase),
+				unclaimed: composed.unclaimed,
+				parentSessionId: state.sessionID,
+			});
+			if (!admission.admitted) {
+				const named = composed.unclaimed.slice(
+					0,
+					MAX_UNCLAIMED_ITEMS_IN_MESSAGE,
+				);
+				const overflow = composed.unclaimed.length - named.length;
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
+						(overflow > 0 ? ` (+${overflow} more)` : '') +
+						(composed.diagnostics.length > 0
+							? `; diagnostics: ${composed.diagnostics.join(' | ')}`
+							: '') +
+						`; N-of-M settlement not admissible (${admission.reason}); re-dispatch the unclaimed items to exhaust the retry budget with controller-observed liveness evidence, or complete downgrade-only once admissible`,
+				);
+			}
+			const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
+			if (!runId) {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} N-of-M settlement requires a reserved pr-review run id to persist its disclosure receipt`,
+				);
+			}
+			const receipt = buildVerdictSettlementReceipt({
+				runId,
+				prHeadSha: boundPrHeadSha,
+				revisionDigest: ctx.revisionDigest,
+				phase: requiredPhase,
+				items: admission.items,
+			});
+			await persistVerdictSettlementReceipt(directory, receipt);
+			// Round-trip + anchor (issue #3101): the file just persisted must
+			// read back as a clean bounded file, and its sha256 becomes the
+			// durable consumption anchor — a receipt rewritten afterwards under
+			// the same head/revision identity fails closed at
+			// `admittedVerdictSettlementReceipt` (the #2383 disclosure-digest
+			// discipline applied to this artifact).
+			const persistedRead = readVerdictSettlementReceipt(
+				directory,
+				runId,
+				requiredPhase,
+			);
+			if (persistedRead.status !== 'ok') {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} verdict-settlement receipt failed to persist as a readable bounded file (${persistedRead.status})`,
+				);
+			}
+			// The anchor write must be IDEMPOTENT per state revision: admission
+			// re-runs on every assert call for a settled-with-dead-items phase
+			// (composition still reports those items unclaimed), and persisting
+			// state unconditionally would bump the revision on every call —
+			// tripping the terminal-completion CAS guard. Skip when the digest
+			// already matches (the receipt content is deterministic per state).
+			if (
+				stateOut.prReviewVerdictSettlementDigests?.[requiredPhase] !==
+				persistedRead.rawSha256
+			) {
+				const settledState: PrWorkflowGateState = {
+					...stateOut,
+					updatedAt: isoNow(),
+					prReviewVerdictSettlementDigests: {
+						...(stateOut.prReviewVerdictSettlementDigests ?? {}),
+						[requiredPhase]: persistedRead.rawSha256,
+					},
+				};
+				await persistState(directory, settledState);
+				stateOut = settledState;
+			}
+			warn(
+				`PR_REVIEW ${requiredPhase} settled N-of-M over ${composed.claims.size} claimed item(s); ${admission.items.length} liveness-dead item(s) disclosed in the verdict-settlement receipt`,
 			);
 		}
 		// B1 (issue #1968): reaching here means this phase is now *treated as
@@ -7538,7 +7648,7 @@ export async function assertPrReviewValidationSettled(
 			);
 		}
 	}
-	return state;
+	return stateOut;
 }
 
 export async function declarePrFeedbackInventory(
@@ -10454,14 +10564,30 @@ export async function assertPrReviewArtifactBoundary(
 		state,
 		ctx,
 	);
-	const normalizedFindingIds = [...new Set(findingIds)].sort();
+	// Issue #3101: items disclosed dead by an admitted N-of-M reviewer
+	// settlement are exempt from exact-cover ONLY — the architect cannot
+	// produce a verdict for them, so no record is required (a record for a
+	// dead item is a named violation in the records-match gate below).
+	const reviewerDeadForCover = verdictSettlementEffectiveIdsForGate(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const coverableExpected = expectedFindingIds.filter(
+		(id) => !reviewerDeadForCover.has(id),
+	);
+	const nonDeadFindingIds = findingIds.filter(
+		(id) => !reviewerDeadForCover.has(id),
+	);
+	const normalizedFindingIds = [...new Set(nonDeadFindingIds)].sort();
 	if (
-		normalizedFindingIds.length !== findingIds.length ||
+		normalizedFindingIds.length !== nonDeadFindingIds.length ||
 		JSON.stringify(normalizedFindingIds) !==
-			JSON.stringify([...expectedFindingIds].sort())
+			JSON.stringify([...coverableExpected].sort())
 	) {
 		const actualSet = new Set(normalizedFindingIds);
-		const expectedSet = new Set(expectedFindingIds);
+		const expectedSet = new Set(coverableExpected);
 		const missing = [...expectedSet].filter((id) => !actualSet.has(id));
 		const extra = [...actualSet].filter((id) => !expectedSet.has(id));
 		const duplicates = [
@@ -10643,7 +10769,37 @@ export async function assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(
 						`assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(${boundary})`,
 					)
 				: undefined;
+		// Issue #3101: the disclosed-dead reviewer items (admitted N-of-M
+		// settlement, effective set) live only in the settlement receipt — a
+		// verdict-bearing record for them is a named violation, never an
+		// unvalidated entry in the findings ledger.
+		const reviewerDeadForMatch = verdictSettlementEffectiveIdsForGate(
+			directory,
+			state,
+			'reviewer',
+			ctx,
+		);
+		// Issue #3101 (critic-phase twin, PRR-003): a disclosed-dead CRITIC item
+		// is REQUIRED by exact-cover (it stays in the inventory) but settles as
+		// a writer-derived terminal CRITIC_UNAVAILABLE, never as a critic
+		// verdict — deriveLatestPrReviewCriticVerdicts returns nothing for it by
+		// construction, and the writer's settlement injection runs after this
+		// check. Without this arm the post_critic artifact is unwritable and the
+		// run can never reach terminal state for exactly the critic-dead
+		// population the settlement exists to serve.
+		const criticDeadForMatch =
+			boundary === 'post_critic'
+				? verdictSettlementEffectiveIdsForGate(directory, state, 'critic', ctx)
+				: new Set<string>();
 		for (const record of records) {
+			if (reviewerDeadForMatch.has(record.finding_id)) {
+				violations.push({
+					findingId: record.finding_id,
+					detail:
+						'disclosed-dead items carry no verdict-bearing record; they live only in the verdict-settlement receipt',
+				});
+				continue;
+			}
 			const reviewer = reviewerVerdicts.get(record.finding_id);
 			if (!reviewer) {
 				violations.push({
@@ -10663,6 +10819,37 @@ export async function assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(
 				reviewer.classification === 'UNVERIFIED'
 					? 'PENDING'
 					: reviewer.classification;
+			if (
+				boundary === 'post_critic' &&
+				criticDeadForMatch.has(record.finding_id)
+			) {
+				// Disclosed-dead critic item: the record must carry no
+				// model-authored critic attestation and must keep the reviewer's
+				// final disposition (the CRITIC_UNAVAILABLE settlement preserves
+				// it verbatim). The writer's settlement injection validates the
+				// same shape one layer later; keeping severity anchored to the
+				// reviewer row means a fabricated downgrade/upgrade cannot ride
+				// the settlement.
+				if (record.critic_status !== undefined) {
+					report(
+						record.finding_id,
+						'critic_status',
+						'(absent — the model never authors a critic status on a disclosed-dead critic item)',
+						`"${record.critic_status}"`,
+					);
+				}
+				if (record.status !== expectedStatus) {
+					report(
+						record.finding_id,
+						'status',
+						`"${expectedStatus}"`,
+						`"${record.status}"`,
+					);
+				}
+				reportSeverity(record, reviewer.severity);
+				reportRiskMetadata(record, reviewer);
+				continue;
+			}
 			if (boundary === 'post_reviewer') {
 				if (record.status !== expectedStatus) {
 					report(
@@ -11335,6 +11522,7 @@ const PrReviewCriticSettlementEvidenceSchema = z
 			'DOWNGRADED',
 			'DISPROVED',
 			'NEEDS_MORE_EVIDENCE',
+			'CRITIC_UNAVAILABLE',
 		]),
 	})
 	.passthrough();
@@ -11441,9 +11629,17 @@ async function readAuthoritativeFindingPolicy(
 		'PR_REVIEW final findings artifact',
 	);
 	const findingsDigest = createHash('sha256').update(raw, 'utf8').digest('hex');
+	// Version mismatch gets its OWN message (issue #3101): a sidecar written by
+	// a different plugin version (rollback or stale-cache read) must not be
+	// misdiagnosed as a generic stale artifact — the version numbers name the
+	// actual mismatch. Still fail-closed in every direction.
+	if (receipt.version !== FINDING_POLICY_VERSION) {
+		throw new Error(
+			`BLOCKED: PR_REVIEW finding-policy route receipt version ${String(receipt.version)} does not match the current finding-policy version ${FINDING_POLICY_VERSION}; the sidecar was written by a different plugin version and cannot be trusted at this one`,
+		);
+	}
 	if (
 		receipt.kind !== 'pr_review_finding_policy' ||
-		receipt.version !== FINDING_POLICY_VERSION ||
 		receipt.sessionId !== state.sessionID ||
 		receipt.taskId !== runId ||
 		receipt.boundary !== 'post_critic' ||
@@ -11493,11 +11689,16 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	const findings = authority.policyFindings;
 	// Issue #2840: the report projection must carry the same degradation
 	// downgrade the completion gates enforce — a disclosed coverage degradation
-	// (dead family) excludes APPROVE from the reported permitted verdicts.
-	const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
-		directory,
-		state.prReviewTriggerEvalPath,
-	);
+	// (dead family or dead verdict lane) excludes APPROVE from the reported
+	// permitted verdicts.
+	const disclosedDegradation =
+		prReviewReceiptHasCoverageDegradations(
+			directory,
+			state.prReviewTriggerEvalPath,
+			// Thread the memoized gate context: a fresh context here resolves the
+			// revision digest a second time and breaks the one-digest-per-pass
+			// threading contract pinned by pr-workflow-gate-digest-threading.
+		) || (await verdictSettlementDegradesReport(directory, state, ctx));
 	const permittedVerdicts = allowedPrReviewReportVerdicts(
 		settlement.kind,
 		findings,
@@ -11705,17 +11906,24 @@ async function assertPrReviewTerminalReady(
 				`BLOCKED: PR_REVIEW reviewer verdicts require critic coverage for: ${criticInventory.join(', ')}`,
 			);
 		}
+		// Ordering is load-bearing (issue #3101 PRR-018): the settlement assert
+		// above this comment persists the N-of-M disclosure receipt when the
+		// critic phase settles through admission. Deriving the authoritative
+		// settlements BEFORE that persist projected every receipt-covered item
+		// as nonterminal on the first invocation (CRITIC_RECEIPT_MISSING /
+		// CRITIC_SETTLEMENT_INCOMPLETE) while the same pass logged "settled
+		// N-of-M" — a false block that only self-healed on a second invocation.
+		// Preserve the phase-level diagnostic for a declared critic batch whose
+		// attempted rows are still nonterminal (for example,
+		// NEEDS_MORE_EVIDENCE). The no-batch case above intentionally remains the
+		// distinct critic-coverage diagnostic.
+		await assertPrReviewValidationSettled(directory, sessionID, 'critic', ctx);
 		authoritativeCriticSettlements = deriveAuthoritativeCriticSettlements(
 			directory,
 			state,
 			ctx,
 			criticInventory,
 		);
-		// Preserve the phase-level diagnostic for a declared critic batch whose
-		// attempted rows are still nonterminal (for example,
-		// NEEDS_MORE_EVIDENCE). The no-batch case above intentionally remains the
-		// distinct critic-coverage diagnostic.
-		await assertPrReviewValidationSettled(directory, sessionID, 'critic', ctx);
 		// Issue #2512: critic settlement is REDUCER-OWNED — the adapter derives
 		// valid settled receipts (UPHELD / DOWNGRADED / DISPROVED, each bound
 		// to the current authoritative reviewer row digest via
@@ -11750,9 +11958,22 @@ async function assertPrReviewTerminalReady(
 				reviewerRowDigest,
 			});
 		}
+		// Issue #3101: under an admitted critic-phase N-of-M settlement, the
+		// receipt-covered items are disclosed CRITIC_UNAVAILABLE (no critic
+		// receipt exists or is required for them) — narrow the reducer's
+		// required set to the surviving items so the disclosed death does not
+		// read as an unfulfilled critic obligation.
+		const criticSettlementEffective = verdictSettlementEffectiveIdsForGate(
+			directory,
+			state,
+			'critic',
+			ctx,
+		);
 		const criticOutcome = reducePrReviewEvent(state, {
 			type: 'critic_result_recorded',
-			criticRequiredFindingIds: criticInventory,
+			criticRequiredFindingIds: criticInventory.filter(
+				(itemId) => !criticSettlementEffective.has(itemId),
+			),
 			criticSettledReceipts: settledReceipts,
 		});
 		if (criticOutcome.status === 'rejected') {
@@ -12905,10 +13126,13 @@ export async function completePrWorkflow(
 		// it for COMPLETE only; every other kind is provably false.
 		let disclosedDegradation =
 			settlement.kind === 'COMPLETE' &&
-			prReviewReceiptHasCoverageDegradations(
+			(prReviewReceiptHasCoverageDegradations(
 				directory,
 				state.prReviewTriggerEvalPath,
-			);
+			) ||
+				// Thread the memoized ctx — a fresh gate context here resolves the
+				// digest again and breaks the one-digest-per-pass contract.
+				(await verdictSettlementDegradesReport(directory, state, ctx)));
 		// Issue #2512: coverage finalization is REDUCER-OWNED — the adapter
 		// dispatches `coverage_finalization_requested` and maps the typed
 		// rejections to the operator-facing BLOCKED messages the inline checks
@@ -12951,7 +13175,7 @@ export async function completePrWorkflow(
 			// rejections whose vocabulary the coverage kind alone explains.
 			if (code === 'degraded_disclosure_cannot_approve') {
 				throw new Error(
-					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
+					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family or dead verdict lane) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
 				);
 			}
 			const allowedList = allowedPrReviewReportVerdicts(
@@ -13119,10 +13343,11 @@ export async function completePrWorkflow(
 			// preflight keep its own capture — an illegal verdict must fail fast
 			// before the expensive ladder).
 			if (ready.settlement.kind === 'COMPLETE') {
-				disclosedDegradation = prReviewReceiptHasCoverageDegradations(
-					directory,
-					readyState.prReviewTriggerEvalPath,
-				);
+				disclosedDegradation =
+					prReviewReceiptHasCoverageDegradations(
+						directory,
+						readyState.prReviewTriggerEvalPath,
+					) || (await verdictSettlementDegradesReport(directory, readyState));
 			}
 			dispatchCoverageFinalization(ready.settlement);
 			const finalFindingAuthority = await readAuthoritativeFindingPolicy(
@@ -16012,9 +16237,129 @@ function batchMayContributeClaims(
 }
 
 /**
- * Reviewer claims only when the reviewer phase is item-complete. Preserves the
- * pre-existing fail-closed "empty map" semantics for an unsettled reviewer
- * phase, now derived from the same computation settlement uses.
+ * Issue #3101: read + identity-verify a durable N-of-M verdict-settlement
+ * receipt for a phase. Returns undefined on absent/invalid receipts, any
+ * identity mismatch (wrong run, wrong PR head, wrong worktree revision, body
+ * fields that disagree with the path-derived run/phase), or a sha256 anchor
+ * mismatch against the digest recorded in durable state at persist time —
+ * readers then keep the pre-existing fail-closed semantics.
+ */
+function admittedVerdictSettlementReceipt(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	expectedRevisionDigest: string,
+): PrReviewVerdictSettlementReceipt | undefined {
+	const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
+	if (!runId) return undefined;
+	const read = readVerdictSettlementReceipt(directory, runId, phase);
+	if (read.status !== 'ok') return undefined;
+	if (read.receipt.runId !== runId || read.receipt.phase !== phase) {
+		return undefined;
+	}
+	if (read.receipt.prHeadSha !== state.prHeadSha) return undefined;
+	if (read.receipt.revisionDigest !== expectedRevisionDigest) {
+		return undefined;
+	}
+	const anchoredDigest = state.prReviewVerdictSettlementDigests?.[phase];
+	if (!anchoredDigest || anchoredDigest !== read.rawSha256) {
+		return undefined;
+	}
+	return read.receipt;
+}
+
+/**
+ * The receipt only settles a phase when its EFFECTIVE set still covers EVERY
+ * currently-unclaimed item (an item claimed after the receipt was written, or
+ * a new unclaimed item, re-arms the fail-closed path rather than silently
+ * shrinking coverage).
+ */
+function settlementCoveringAllUnclaimed(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	unclaimed: readonly string[],
+	expectedRevisionDigest: string,
+): PrReviewVerdictSettlementReceipt | undefined {
+	if (unclaimed.length === 0) return undefined;
+	const receipt = admittedVerdictSettlementReceipt(
+		directory,
+		state,
+		phase,
+		expectedRevisionDigest,
+	);
+	if (!receipt) return undefined;
+	return effectiveVerdictSettlementItems(receipt, unclaimed).length ===
+		unclaimed.length
+		? receipt
+		: undefined;
+}
+
+/**
+ * The effective (receipt ∩ current-unclaimed) item ids of an admitted N-of-M
+ * verdict settlement for a phase, with exactly ONE receipt read per call site
+ * (the earlier inline pattern read the receipt twice per site). Empty when no
+ * settlement covers every currently-unclaimed item — the fail-closed default.
+ */
+function verdictSettlementEffectiveIdsForGate(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	ctx: PrReviewGateContext,
+): Set<string> {
+	const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+	const receipt = settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		phase,
+		composed.unclaimed,
+		ctx.revisionDigest,
+	);
+	if (!receipt) return new Set<string>();
+	return new Set(
+		effectiveVerdictSettlementItems(receipt, composed.unclaimed).map(
+			(item) => item.itemId,
+		),
+	);
+}
+
+/**
+ * Issue #3101: whether an admitted N-of-M verdict settlement currently
+ * downgrades the verdict matrix — OR-ed into the same
+ * `disclosedCoverageDegradation` boolean the reducer and the policy matrix
+ * consume (DEGRADED_DISCLOSED never approves).
+ */
+async function verdictSettlementDegradesReport(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx?: PrReviewGateContext,
+): Promise<boolean> {
+	const gateCtx = ctx ?? (await createPrReviewGateContext(directory, state));
+	return verdictSettlementDegradationActive({
+		directory,
+		runId: state.prReviewArtifactRunId ?? state.prReviewReservedRunId,
+		prHeadSha: state.prHeadSha,
+		revisionDigest: gateCtx.revisionDigest,
+		reviewerUnclaimed: composePrReviewPhaseVerdicts(
+			directory,
+			state,
+			'reviewer',
+			gateCtx,
+		).unclaimed,
+		criticUnclaimed: composePrReviewPhaseVerdicts(
+			directory,
+			state,
+			'critic',
+			gateCtx,
+		).unclaimed,
+	});
+}
+
+/**
+ * Reviewer claims only when the reviewer phase is item-complete — or settled
+ * N-of-M under an admitted, receipt-backed settlement whose effective set
+ * still covers every unclaimed item (issue #3101). Every other unsettled
+ * shape keeps the fail-closed empty map.
  */
 function authoritativeReviewerClaims(
 	directory: string,
@@ -16027,7 +16372,16 @@ function authoritativeReviewerClaims(
 		'reviewer',
 		ctx,
 	);
-	return composed.unclaimed.length === 0 ? composed.claims : new Map();
+	if (composed.unclaimed.length === 0) return composed.claims;
+	return settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		'reviewer',
+		composed.unclaimed,
+		ctx.revisionDigest,
+	)
+		? composed.claims
+		: new Map();
 }
 
 /**
@@ -16105,7 +16459,11 @@ function derivePrReviewCriticInventory(
 		.sort();
 }
 
-/** Thin projection of the composed critic phase. Empty unless item-complete. */
+/**
+ * Thin projection of the composed critic phase. Empty unless item-complete —
+ * or settled N-of-M under an admitted, receipt-backed settlement covering
+ * every unclaimed critic item (issue #3101).
+ */
 function deriveLatestPrReviewCriticVerdicts(
 	directory: string,
 	state: PrWorkflowGateState,
@@ -16117,7 +16475,18 @@ function deriveLatestPrReviewCriticVerdicts(
 		'critic',
 		ctx,
 	);
-	if (composed.unclaimed.length > 0) return new Map();
+	if (
+		composed.unclaimed.length > 0 &&
+		!settlementCoveringAllUnclaimed(
+			directory,
+			state,
+			'critic',
+			composed.unclaimed,
+			ctx.revisionDigest,
+		)
+	) {
+		return new Map();
+	}
 	return new Map(
 		[...composed.claims].map(([itemId, claim]) => [
 			itemId,
@@ -16139,8 +16508,29 @@ function deriveAuthoritativeCriticSettlements(
 	criticInventory: readonly string[],
 ): Array<{ findingId: string; terminal: boolean; status: CriticOutcome }> {
 	const verdicts = deriveLatestPrReviewCriticVerdicts(directory, state, ctx);
+	// Issue #3101: under an admitted critic-phase N-of-M settlement, a
+	// receipt-covered item with no critic verdict projects to a terminal,
+	// disclosed CRITIC_UNAVAILABLE disposition (the finding keeps its reviewer
+	// verdict; it is never a synthesized UPHELD/DOWNGRADED/DISPROVED).
+	const criticSettlement = verdictSettlementEffectiveIdsForGate(
+		directory,
+		state,
+		'critic',
+		ctx,
+	);
+	const unavailableIds = criticSettlement;
 	return criticInventory.map((findingId) => {
 		const verdict = verdicts.get(findingId);
+		if (
+			unavailableIds.has(findingId) &&
+			(!verdict || verdict.status === 'NEEDS_MORE_EVIDENCE')
+		) {
+			return {
+				findingId,
+				terminal: true,
+				status: 'CRITIC_UNAVAILABLE' as CriticOutcome,
+			};
+		}
 		if (!verdict || verdict.status === 'NEEDS_MORE_EVIDENCE') {
 			return {
 				findingId,
@@ -16161,6 +16551,82 @@ function deriveAuthoritativeCriticSettlements(
 			status: 'NEEDS_MORE_EVIDENCE',
 		};
 	});
+}
+
+/**
+ * Issue #3101: the per-item disclosure rows of admitted N-of-M verdict
+ * settlements (both phases, effective sets), for additive tool-response echoes.
+ */
+export async function readPrReviewVerdictSettlementReceiptItems(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}>
+> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const rows: Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}> = [];
+	for (const phase of ['reviewer', 'critic'] as const) {
+		const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+		const receipt = settlementCoveringAllUnclaimed(
+			directory,
+			state,
+			phase,
+			composed.unclaimed,
+			ctx.revisionDigest,
+		);
+		if (!receipt) continue;
+		for (const item of effectiveVerdictSettlementItems(
+			receipt,
+			composed.unclaimed,
+		)) {
+			rows.push({ ...item });
+		}
+	}
+	return rows;
+}
+
+/**
+ * Issue #3101: the effective (receipt ∩ current-unclaimed) item ids of an
+ * admitted N-of-M verdict settlement for a phase; empty when no covering
+ * settlement exists. Consumers: the artifact writer's critic-settlement
+ * injection, the exact-cover exemption, and the tool-response echoes.
+ */
+export async function readPrReviewVerdictSettlementEffectiveIds(
+	directory: string,
+	sessionID: string,
+	phase: PrReviewVerdictSettlementPhase,
+): Promise<ReadonlySet<string>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+	const receipt = settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		phase,
+		composed.unclaimed,
+		ctx.revisionDigest,
+	);
+	if (!receipt) return new Set<string>();
+	return new Set(
+		effectiveVerdictSettlementItems(receipt, composed.unclaimed).map(
+			(item) => item.itemId,
+		),
+	);
 }
 
 /** Read the durable critic settlement projection used by terminal readiness. */
@@ -16215,13 +16681,16 @@ function deriveLatestPrReviewReviewerVerdicts(
  * unchallenged, with the only surface symptom a downstream
  * `no authoritative reviewer verdict` that names a consequence, not the cause.
  *
- * Composition currently makes this unreachable by construction: settlement *is*
+ * Under plain composition this is unreachable by construction: settlement *is*
  * `unclaimed.length === 0` over the very map derivation projects, and claims are
  * filtered to `requiredInventory`, so `unclaimed === []` implies the map covers
- * every required item. This assertion deliberately does **not** rely on that
- * adjacency. It states the property directly so a future refactor that re-splits
- * settlement from derivation fails loudly at the gate instead of silently
- * skipping the critic phase.
+ * every required item. Under an admitted N-of-M verdict settlement (issue
+ * #3101) a settled phase can still carry unclaimed items, and this guard
+ * early-returns for them — on that path the settlement receipt, not this
+ * assertion, is the coverage proof. The property check still stands for every
+ * plain-composition settle so a future refactor that re-splits settlement from
+ * derivation fails loudly at the gate instead of silently skipping the critic
+ * phase.
  *
  * Fail-closed and always on; never downgraded to a warning, because the failure
  * it catches is invisible in the passing direction. Pure over values the caller
@@ -16355,14 +16824,28 @@ function derivePrReviewCriticInventoryForCoverageGate(
 		ctx,
 	);
 	if (reviewer.unclaimed.length > 0) {
-		const named = reviewer.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
-		const overflow = reviewer.unclaimed.length - named.length;
-		throw new Error(
-			`BLOCKED: PR_REVIEW internal invariant violated at ${origin}: the critic-coverage decision requires a settled reviewer phase, ` +
-				`but ${reviewer.unclaimed.length} reviewer item(s) lack an authenticated verdict; an unsettled reviewer phase derives an empty ` +
-				`critic inventory, which would skip critic coverage instead of demanding it; unsettled reviewer items: ${named.join(', ')}` +
-				(overflow > 0 ? ` (+${overflow} more)` : ''),
-		);
+		// Issue #3101: an admitted, receipt-backed N-of-M reviewer settlement
+		// whose effective set still covers every unclaimed item settles the
+		// phase truthfully — the partial reviewer map still derives the critic
+		// inventory over the surviving items. Anything else keeps blocking.
+		if (
+			!settlementCoveringAllUnclaimed(
+				directory,
+				state,
+				'reviewer',
+				reviewer.unclaimed,
+				ctx.revisionDigest,
+			)
+		) {
+			const named = reviewer.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
+			const overflow = reviewer.unclaimed.length - named.length;
+			throw new Error(
+				`BLOCKED: PR_REVIEW internal invariant violated at ${origin}: the critic-coverage decision requires a settled reviewer phase, ` +
+					`but ${reviewer.unclaimed.length} reviewer item(s) lack an authenticated verdict; an unsettled reviewer phase derives an empty ` +
+					`critic inventory, which would skip critic coverage instead of demanding it; unsettled reviewer items: ${named.join(', ')}` +
+					(overflow > 0 ? ` (+${overflow} more)` : ''),
+			);
+		}
 	}
 	return derivePrReviewCriticInventory(directory, state, ctx);
 }

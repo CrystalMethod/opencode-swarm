@@ -159,7 +159,7 @@ export function dcStripOneWrapper(cmd: string): string | null {
 	// must unwrap like bare `cmd /c "…"` or switch-form writes slip past
 	// every destructive matcher.
 	const cmdExeMatch = new RegExp(
-		CMD_STRIP_PREFIX.source + '"?(.*?)"?\\s*$',
+		`${CMD_STRIP_PREFIX.source}"?(.*?)"?\\s*$`,
 		'is',
 	).exec(t);
 	if (cmdExeMatch) return cmdExeMatch[1].trim();
@@ -169,7 +169,7 @@ export function dcStripOneWrapper(cmd: string): string | null {
 	// -NoProfile -Command "…"` must unwrap like the bare form or the
 	// destructive matchers never see the payload.
 	const psCommandMatch = new RegExp(
-		PS_STRIP_PREFIX.source + '(.+)$',
+		`${PS_STRIP_PREFIX.source}(.+)$`,
 		'is',
 	).exec(t);
 	if (psCommandMatch)

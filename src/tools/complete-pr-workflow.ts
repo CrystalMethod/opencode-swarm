@@ -196,6 +196,10 @@ export async function executeCompletePrWorkflow(
 							}
 						: {}),
 					report_verdict: parsed.data.report_verdict,
+					verdict_settlement: await verdictSettlementSummaryForReportSafe(
+						directory,
+						context.sessionID,
+					),
 				};
 			}
 		}
@@ -279,6 +283,7 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport: typeof readPrReviewTerminalCoverageForReport;
 	readPrReviewFinalFindingPolicyForReport: typeof readPrReviewFinalFindingPolicyForReport;
 	settlePresumedStalePrWorkflowLanes: typeof settlePresumedStalePrWorkflowLanes;
+	verdictSettlementSummaryForReportSafe: typeof verdictSettlementSummaryForReportSafe;
 } = {
 	completePrWorkflow,
 	listPendingPrWorkflowCheckoutRestores,
@@ -286,4 +291,39 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport,
 	readPrReviewFinalFindingPolicyForReport,
 	settlePresumedStalePrWorkflowLanes,
+	verdictSettlementSummaryForReportSafe,
 };
+
+/** Issue #3101: additive per-item disclosure echo for admitted N-of-M verdict settlements. */
+async function verdictSettlementSummaryForReport(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}>
+> {
+	const { readPrReviewVerdictSettlementReceiptItems } = await import(
+		'../hooks/pr-workflow-gate.js'
+	);
+	return readPrReviewVerdictSettlementReceiptItems(directory, sessionID);
+}
+
+/** Observation-only echo: a read failure degrades to an absent echo (the
+ * sibling observation-only reads above follow the same guard pattern) rather
+ * than failing the completion report itself. */
+async function verdictSettlementSummaryForReportSafe(
+	directory: string,
+	sessionID: string,
+) {
+	try {
+		return await verdictSettlementSummaryForReport(directory, sessionID);
+	} catch {
+		return undefined;
+	}
+}
