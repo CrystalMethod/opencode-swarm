@@ -16,55 +16,6 @@
 			"note": "Pre-existing debt, not approved drift: \"validateAndRecordAttestation\" exists in src/hooks/guardrails/file-authority.ts but not inside :136 (attestations.writerCitations[0])."
 		},
 		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "listDelegationFallbacks",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"listDelegationFallbacks\" exists in src/background/pending-delegations.ts but not inside :5723 (background-delegations-fallback.readerCitations[0])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "readDelegationFallback",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"readDelegationFallback\" exists in src/background/pending-delegations.ts but not inside src/background/pending-delegations.ts:5711 (background-delegations-fallback.readerCitations[0])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "removeDelegationFallback",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"removeDelegationFallback\" exists in src/background/pending-delegations.ts but not inside :5907 (background-delegations-fallback.writerCitations[0])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "scanBackgroundCoderReservationsForAdmission",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"scanBackgroundCoderReservationsForAdmission\" exists in src/background/pending-delegations.ts but not inside src/background/pending-delegations.ts:6336 (background-delegations-fallback.readerCitations[1])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "scanDelegationFallbacksForRecovery",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"scanDelegationFallbacksForRecovery\" exists in src/background/pending-delegations.ts but not inside :5757 (background-delegations-fallback.readerCitations[0])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "writeBackgroundCoderReservations",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"writeBackgroundCoderReservations\" exists in src/background/pending-delegations.ts but not inside src/background/pending-delegations.ts:6358 (background-delegations-fallback.writerCitations[1])."
-		},
-		{
-			"rowId": "background-delegations-fallback",
-			"file": "src/background/pending-delegations.ts",
-			"identifier": "writeDelegationFallback",
-			"kind": "out-of-range",
-			"note": "Pre-existing debt, not approved drift: \"writeDelegationFallback\" exists in src/background/pending-delegations.ts but not inside src/background/pending-delegations.ts:5856 (background-delegations-fallback.writerCitations[0])."
-		},
-		{
 			"rowId": "close-session-outputs",
 			"file": "src/hooks/agent-activity.ts",
 			"identifier": "doFlush",
