@@ -617,9 +617,11 @@ async function buildPrReviewProjection(
 				const receipt = recordedPrReviewResultReceipt(record);
 				if (!receipt) continue;
 				const key = `${batchId}\0${record.laneId}`;
-				// First receipt-bearing match wins: publication enforces one
-				// receipt per (batch, lane), so this is a deterministic
-				// tie-break, not a content choice.
+				// First receipt-bearing match in store order wins. Publication
+				// enforces one receipt per (parent, child, batch, lane), so two
+				// records can still match one (batch, lane) only across different
+				// children (e.g. a retry); stable store iteration order makes the
+				// pick deterministic either way.
 				if (!receiptsByLane.has(key)) receiptsByLane.set(key, receipt);
 			}
 		} catch {

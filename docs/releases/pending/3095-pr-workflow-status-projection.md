@@ -18,4 +18,4 @@ When a PR_REVIEW workflow is active, `pr_workflow_status` now includes a bounded
 
 - Uncertain delegation-store reads surface as `receipt-uncertain` rows rather than `no-receipt` — the store's epistemic contract forbids reporting an unreadable store as an empty batch, mirroring the derivation's own "UNKNOWN, not absent" stance.
 - `recordedPrReviewResultReceipt` is now exported from the delegation store so the status tool reads receipts through the same accessor the store's writers use.
-- Existing `pr_workflow_status` fields and suites are unchanged (PRESERVING check green at base and head).
+- Existing `pr_workflow_status` fields are unchanged: the three pre-existing test suites pass identically before and after this change.
