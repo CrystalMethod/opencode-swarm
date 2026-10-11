@@ -729,7 +729,7 @@ export const TOOL_METADATA = {
 	},
 	pr_workflow_status: {
 		description:
-			'Read-only architect observation of local git state (HEAD, branch, clean/dirty with a bounded changed-file list, remotes) plus a session-pinned PR workflow gate summary and the PR_FEEDBACK publication-generation section (state, attempts, invalidation reason, recovery guidance). Use to observe state under the fail-closed PR_REVIEW/PR_FEEDBACK gate. Never executes PR-controlled scripts and never reads another session gate.',
+			'Read-only architect observation of local git state (HEAD, branch, clean/dirty with a bounded changed-file list, remotes) plus a session-pinned PR workflow gate summary and the PR_FEEDBACK publication-generation section (state, attempts, invalidation reason, recovery guidance). For an active PR_REVIEW gate it also projects that derived state read-only: per-boundary settlement (post_explorer / post_reviewer / post_critic), per-lane coverage (accepted, rejected, one-line latest finding), and the bounded candidate inventory, each degrading to a typed unavailable state rather than an absence claim. Use to observe state under the fail-closed PR_REVIEW/PR_FEEDBACK gate. Never executes PR-controlled scripts and never reads another session gate.',
 		agents: ['architect'],
 		prWorkflow: {
 			modes: ['PR_REVIEW', 'PR_FEEDBACK'],
