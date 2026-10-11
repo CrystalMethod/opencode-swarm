@@ -1,5 +1,21 @@
 # Changelog
 
+## [7.193.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.192.4...v7.193.0) (2026-10-11)
+
+
+### Features
+
+* **hooks:** shared gate-aware injection policy for session-state channels ([#3100](https://github.com/ZaxbyHub/opencode-swarm/issues/3100)) ([2f25603](https://github.com/ZaxbyHub/opencode-swarm/commit/2f25603078e998e6b57d4cd51d345f49b9b6e993))
+* **host/v2:** map subagent tool identity for OpenCode 2; vendor 2.0.26 types; epic human-only ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169) Phase 1) ([a69d1a9](https://github.com/ZaxbyHub/opencode-swarm/commit/a69d1a91fd44bd686e2e459a95726820c1972663))
+* **pr-review:** N-of-M truthful verdict settlement for liveness-dead verdict lanes ([#3101](https://github.com/ZaxbyHub/opencode-swarm/issues/3101)) ([4ef76b6](https://github.com/ZaxbyHub/opencode-swarm/commit/4ef76b6632a351bfc10a337be7fdc7157c42c924))
+
+
+### Bug Fixes
+
+* **pr-review:** close swarm-review findings on N-of-M verdict settlement ([65ffb8f](https://github.com/ZaxbyHub/opencode-swarm/commit/65ffb8fc9712e9159aaa93cc3d3b678c3a7fa6ca))
+* **review:** address PR [#3181](https://github.com/ZaxbyHub/opencode-swarm/issues/3181) swarm-pr-review findings ([31e5171](https://github.com/ZaxbyHub/opencode-swarm/commit/31e5171951d050cde31c3d0cd53da8c23f6e0104))
+* **v2:** close PR review feedback FB-001..FB-011 ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169)) ([477a28e](https://github.com/ZaxbyHub/opencode-swarm/commit/477a28eb2368d27bf8bf39218c4b887a4a57829d))
+
 ## [7.192.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.192.3...v7.192.4) (2026-10-09)
 
 
