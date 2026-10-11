@@ -341,23 +341,26 @@ describe('v2 session-client shim (issue #3169 Phase 2)', () => {
 		});
 	});
 
-	test('AC3 case-differing identical directories succeed on win32 (lexical key)', async () => {
-		const directory = canonicalMkdtemp('swarm-v2-case-');
-		try {
-			const session = makeFakeSessionDomain(directory);
-			session.sessionInfos.set('ses_parent', {
-				location: { directory: flipOneLetterCase(directory) },
-			});
-			const client = createV2SessionClient(makeFakeCtx(directory, session))!;
-			const result = await client.session.create({
-				body: { parentID: 'ses_parent' },
-				query: { directory },
-			});
-			expect(result.data?.id).toMatch(/^v2shim-/);
-		} finally {
-			rmSync(directory, { recursive: true, force: true });
-		}
-	});
+	test.skipIf(process.platform !== 'win32')(
+		'AC3 case-differing identical directories succeed on win32 (lexical key)',
+		async () => {
+			const directory = canonicalMkdtemp('swarm-v2-case-');
+			try {
+				const session = makeFakeSessionDomain(directory);
+				session.sessionInfos.set('ses_parent', {
+					location: { directory: flipOneLetterCase(directory) },
+				});
+				const client = createV2SessionClient(makeFakeCtx(directory, session))!;
+				const result = await client.session.create({
+					body: { parentID: 'ses_parent' },
+					query: { directory },
+				});
+				expect(result.data?.id).toMatch(/^v2shim-/);
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
+		},
+	);
 
 	test('AC4 prompt translation: deferred create carries agent/model/permissions, hook replaces system fence-aware and deletes denied tools', async () => {
 		await withDir(async (directory) => {

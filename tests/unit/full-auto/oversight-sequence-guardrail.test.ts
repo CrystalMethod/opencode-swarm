@@ -58,6 +58,8 @@ const MODULE_COUNTER_RE =
  *   shadow    — test-only in-memory shadow synced FROM the durable allocator
  */
 const CLASSIFIED: Record<string, string> = {
+	'src/host/v2/session-client.ts':
+		'ordering: placeholderCounter only makes in-session placeholder ids unique; durable identity is the host-minted session id',
 	'src/telemetry.ts': 'metrics: _emitCount (emit budget telemetry)',
 	'src/index.ts':
 		'metrics: instanceExitCleanupCounter / serverInitInvocations (init telemetry)',
