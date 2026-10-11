@@ -1,7 +1,12 @@
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import type { ToolContext } from '@opencode-ai/plugin';
-import { readDelegationsDetailed } from '../background/pending-delegations';
+import {
+	findByBatchIdDetailed,
+	readDelegationsDetailed,
+	recordedPrReviewResultReceipt,
+} from '../background/pending-delegations';
+import type { PrReviewResultReceipt } from '../background/pr-review-contract';
 import {
 	resolveCurrentGitHeadAsync,
 	resolveIsWorkingTreeCleanAsync,
@@ -12,6 +17,7 @@ import {
 } from '../git/pr-workflow-state';
 import { isPrWorkflowAutoWakeSuppressed } from '../hooks/pr-workflow-auto-wake';
 import {
+	derivePrReviewCandidateInventoryForStatus,
 	describePrWorkflowPublicationSection,
 	type PrFeedbackInventoryAmendmentRecord,
 	type PrWorkflowGateRecoveryRead,
@@ -32,6 +38,15 @@ const MAX_REMOTES = 20;
 const MAX_REMOTE_URL_LEN = 200;
 const MAX_FIELD_LEN = 240;
 const MAX_RECOVERY_REASON_CODE_LEN = 120;
+/**
+ * Read-side bounds for the PR_REVIEW status projection (issue #3095). The
+ * write-time caps (MAX_WORKFLOW_BATCHES = 128 lanes per batch array) bound
+ * STATE, not OUTPUT — the projection truncates instead of unrolling so status
+ * stays bounded on large runs.
+ */
+const PR_REVIEW_STATUS_LANE_ROWS_CAP = 30;
+const PR_REVIEW_STATUS_INVENTORY_CAP = 40;
+const PR_REVIEW_STATUS_FINDING_LINE_MAX = 240;
 const RECEIPT_DIR = 'pr-workflow-checkouts';
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
@@ -100,6 +115,72 @@ interface PrWorkflowStatusGateSummary {
 	 * its first declaration. Present only when at least one amendment exists.
 	 */
 	inventoryAmendments?: PrFeedbackInventoryAmendmentRecord[];
+	/**
+	 * Issue #3095: bounded read-only PR_REVIEW projection (boundary settlement,
+	 * per-lane coverage, derived candidate inventory). The key is present ONLY
+	 * when the gate is active AND the mode is PR_REVIEW — never null, simply
+	 * absent for PR_FEEDBACK and inactive gates so no PR_REVIEW content leaks
+	 * into another mode's payload.
+	 */
+	prReviewProjection?: PrReviewStatusProjection;
+}
+
+/** Fixed boundary order for {@link PrReviewStatusProjection.boundaries}. */
+const PR_REVIEW_BOUNDARY_ORDER = [
+	'post_explorer',
+	'post_reviewer',
+	'post_critic',
+] as const;
+
+/**
+ * settlementDigest mapping: the persisted per-phase verdict-settlement receipt
+ * digest exists only for the reviewer and critic phases
+ * (`PrReviewVerdictSettlementPhase`), so post_explorer maps to none.
+ */
+const PR_REVIEW_BOUNDARY_SETTLEMENT_PHASE: Partial<
+	Record<(typeof PR_REVIEW_BOUNDARY_ORDER)[number], 'reviewer' | 'critic'>
+> = {
+	post_reviewer: 'reviewer',
+	post_critic: 'critic',
+};
+
+/** One per-boundary settlement row (issue #3095 AC1). */
+interface PrReviewStatusBoundaryRow {
+	phase: (typeof PR_REVIEW_BOUNDARY_ORDER)[number];
+	status: 'settled' | 'pending';
+	runId: string | null;
+	findingsPath: string | null;
+	settlementDigest: string | null;
+}
+
+/** One per-lane coverage row (issue #3095 AC2). */
+interface PrReviewStatusLaneRow {
+	laneId: string;
+	workflowLane: string;
+	batchId: string;
+	accepted: number;
+	rejected: number;
+	latestFinding: string;
+}
+
+/** The bounded derived-inventory projection (issue #3095 AC3). */
+interface PrReviewStatusInventory {
+	ids: string[];
+	truncated: boolean;
+	total: number;
+	cap: number;
+}
+
+/**
+ * The whole PR_REVIEW projection. `inventory` is null when the derivation
+ * could not run (unbound head, unreadable revision digest) — degraded, never
+ * fabricated.
+ */
+interface PrReviewStatusProjection {
+	boundaries: PrReviewStatusBoundaryRow[];
+	laneCoverage: PrReviewStatusLaneRow[];
+	laneCoverageTruncated: boolean;
+	inventory: PrReviewStatusInventory | null;
 }
 
 interface PrWorkflowStatusResult {
@@ -426,6 +507,175 @@ function summarizeGate(
 }
 
 /**
+ * Bound a one-line finding summary to the char cap without splitting a
+ * surrogate pair (code-point-aware, unlike a bare `slice`).
+ */
+function boundFindingLine(line: string): string {
+	const chars = Array.from(line);
+	if (chars.length <= PR_REVIEW_STATUS_FINDING_LINE_MAX) return line;
+	return `${chars.slice(0, PR_REVIEW_STATUS_FINDING_LINE_MAX - 1).join('')}…`;
+}
+
+/**
+ * Issue #3095: build the bounded, read-only PR_REVIEW projection over the
+ * state this tool already resolved. Everything here is derived at READ time
+ * from persisted gate state and retained receipt envelopes — nothing is
+ * written and nothing is duplicated to disk (AC4).
+ */
+async function buildPrReviewProjection(
+	directory: string,
+	state: PrWorkflowGateState,
+): Promise<PrReviewStatusProjection> {
+	// AC1 — per-boundary settlement phase with the persisted checkpoint
+	// reference. Boundary settlement lives as the boundary-name set plus the
+	// shared run-level artifact reference; the digest anchor exists only for
+	// the reviewer/critic verdict-settlement phases and is surfaced only on
+	// SETTLED rows (a pending boundary never cites a digest even when the
+	// state already carries one).
+	const settledPhases = new Set(state.prReviewArtifactBoundaries ?? []);
+	const runId = state.prReviewArtifactRunId ?? null;
+	const findingsPath = state.prReviewFindingsPath ?? null;
+	const digests = state.prReviewVerdictSettlementDigests ?? {};
+	const boundaries: PrReviewStatusBoundaryRow[] = PR_REVIEW_BOUNDARY_ORDER.map(
+		(phase) => {
+			const settlementPhase = PR_REVIEW_BOUNDARY_SETTLEMENT_PHASE[phase];
+			const settled = settledPhases.has(phase);
+			return {
+				phase,
+				status: settled ? ('settled' as const) : ('pending' as const),
+				runId,
+				findingsPath,
+				settlementDigest:
+					settled && settlementPhase
+						? (digests[settlementPhase] ?? null)
+						: null,
+			};
+		},
+	);
+
+	// AC2 — one row per lane declared by the base dispatches, in declaration
+	// order, capped so a 128-batch state cannot unroll into the output.
+	const declaredLanes: Array<{
+		laneId: string;
+		workflowLane: string;
+		batchId: string;
+	}> = [];
+	for (const batch of state.prReviewBaseDispatches ?? []) {
+		for (const lane of batch.lanes ?? []) {
+			declaredLanes.push({
+				laneId: lane.laneId,
+				workflowLane: lane.workflowLane,
+				batchId: batch.batchId,
+			});
+		}
+	}
+	const laneCoverageTruncated =
+		declaredLanes.length > PR_REVIEW_STATUS_LANE_ROWS_CAP;
+	const emittedLanes = declaredLanes.slice(0, PR_REVIEW_STATUS_LANE_ROWS_CAP);
+
+	const rejectionCounts = new Map<string, number>();
+	for (const entry of state.prReviewSubmitRejections ?? []) {
+		if (!entry.laneId) continue;
+		rejectionCounts.set(
+			entry.laneId,
+			(rejectionCounts.get(entry.laneId) ?? 0) + 1,
+		);
+	}
+
+	// Receipt lookup, one store read per emitted batch (gate-owner session —
+	// never the raw caller). The store's epistemic contract
+	// (findByBatchIdDetailed's docstring) forbids treating an unreadable store
+	// as an empty batch, mirroring the derivation's own "UNKNOWN, not absent"
+	// stance: an uncertain read — or an unexpected throw, guarded with the same
+	// defensiveness as describeDelegationRead — marks that batch's rows
+	// 'receipt-uncertain' instead of claiming 'no-receipt'.
+	const receiptsByLane = new Map<string, PrReviewResultReceipt>();
+	const uncertainBatches = new Set<string>();
+	const headSha = state.prHeadSha;
+	for (const batchId of new Set(emittedLanes.map((lane) => lane.batchId))) {
+		try {
+			const outcome = findByBatchIdDetailed(directory, batchId, {
+				parentSessionId: state.sessionID,
+			});
+			if (outcome.status === 'uncertain') {
+				uncertainBatches.add(batchId);
+				continue;
+			}
+			for (const record of outcome.value) {
+				if (record.laneId == null || record.mode !== 'swarm-pr-review:base') {
+					continue;
+				}
+				// Dual-head identity, mirroring the derivation's canonical filter:
+				// the record's workspace must be bound to this gate's PR head on
+				// BOTH prHeadSha and gitHead before its receipt speaks for a lane.
+				if (
+					record.workspace?.prHeadSha !== headSha ||
+					record.workspace?.gitHead !== headSha
+				) {
+					continue;
+				}
+				const receipt = recordedPrReviewResultReceipt(record);
+				if (!receipt) continue;
+				const key = `${batchId}\0${record.laneId}`;
+				// First receipt-bearing match wins: publication enforces one
+				// receipt per (batch, lane), so this is a deterministic
+				// tie-break, not a content choice.
+				if (!receiptsByLane.has(key)) receiptsByLane.set(key, receipt);
+			}
+		} catch {
+			uncertainBatches.add(batchId);
+		}
+	}
+
+	const laneCoverage: PrReviewStatusLaneRow[] = emittedLanes.map((lane) => {
+		const uncertain = uncertainBatches.has(lane.batchId);
+		const receipt = uncertain
+			? undefined
+			: receiptsByLane.get(`${lane.batchId}\0${lane.laneId}`);
+		const findings = receipt?.envelope.findings ?? [];
+		const lastFinding = findings[findings.length - 1];
+		const latestFinding = uncertain
+			? 'receipt-uncertain'
+			: receipt
+				? lastFinding
+					? boundFindingLine(
+							`${lastFinding.severity} ${lastFinding.id}: ${lastFinding.title}`,
+						)
+					: receipt.envelope.outcome === 'CLEAN'
+						? 'clean'
+						: 'incomplete'
+				: 'no-receipt';
+		return {
+			laneId: lane.laneId,
+			workflowLane: lane.workflowLane,
+			batchId: lane.batchId,
+			accepted: findings.length,
+			rejected: rejectionCounts.get(lane.laneId) ?? 0,
+			latestFinding,
+		};
+	});
+
+	// AC3 — the derived candidate inventory, reused (not reimplemented) from
+	// the gate and bounded here. `null` means the derivation could not run
+	// (unbound head, unreadable revision digest): degraded, never fabricated.
+	const derived = await derivePrReviewCandidateInventoryForStatus(
+		directory,
+		state,
+	);
+	const inventory: PrReviewStatusInventory | null =
+		derived === null
+			? null
+			: {
+					ids: derived.slice(0, PR_REVIEW_STATUS_INVENTORY_CAP),
+					truncated: derived.length > PR_REVIEW_STATUS_INVENTORY_CAP,
+					total: derived.length,
+					cap: PR_REVIEW_STATUS_INVENTORY_CAP,
+				};
+
+	return { boundaries, laneCoverage, laneCoverageTruncated, inventory };
+}
+
+/**
  * Resolve a lane's own session to the nearest ancestor with a durable gate.
  * This follows only the authenticated caller's delegation chain; it never
  * enumerates sibling gate files. The index hook performs the same resolution
@@ -537,6 +787,14 @@ async function executePrWorkflowStatus(
 				? { salvaged: recovery.salvaged, disclosure: recovery.disclosure }
 				: undefined,
 		);
+		// Issue #3095: the PR_REVIEW-only projection. The key is set ONLY here —
+		// inactive gates and PR_FEEDBACK gates serialize without it entirely.
+		if (activeState?.mode === 'PR_REVIEW') {
+			gate.prReviewProjection = await buildPrReviewProjection(
+				directory,
+				activeState,
+			);
+		}
 	}
 	const recovery = activeState?.checkoutRecovery;
 	const checkout: PrWorkflowGitState = recovery

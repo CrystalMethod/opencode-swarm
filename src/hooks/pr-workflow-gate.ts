@@ -15929,6 +15929,31 @@ function derivePrReviewCandidateInventory(
 }
 
 /**
+ * Read-surface reuse of the derivation above for `pr_workflow_status`
+ * (issue #3095). The derivation itself stays single-sourced: every production
+ * caller is a validation/enforcement path that must keep throwing, so this
+ * wrapper exists only to thread the SAME result to a read-only status tool
+ * and to degrade fail-soft instead of blocking an observation. A status read
+ * must never fail the whole tool for an unbound head or an unreadable
+ * revision digest — the caller renders `null` as a degraded inventory and
+ * still projects boundaries and lane coverage.
+ *
+ * Read-only by construction: it performs no writes and mutates no state.
+ */
+export async function derivePrReviewCandidateInventoryForStatus(
+	directory: string,
+	state: PrWorkflowGateState,
+): Promise<string[] | null> {
+	if (!state.prHeadSha) return null;
+	try {
+		const ctx = await createPrReviewGateContext(directory, state);
+		return derivePrReviewCandidateInventory(directory, state, ctx);
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Extract candidate ids from a discovery artifact's [CANDIDATE] rows. When
  * `scopeToLanes` is given (base-dimension sources credited for only a subset
  * of their owned dimensions), rows whose `lane` field is outside that set are
