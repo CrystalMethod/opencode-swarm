@@ -14,11 +14,12 @@
  *
  * Drift guard: DEFERRED to the #2910 follow-up PR (a check-host-contract v2 digest leg over this corpus, plus the dual-host CI lane); until it lands, type truth rests on this provenance pin (now 2.0.26) and the live-host smoke. See docs/host/v2-hook-inventory.md for the full v1-to-v2 map.
  *
- * Host-tolerance contract for the session/worktree method surface (issue #3169 Phase 1):
- * the members below are REQUIRED to mirror the published `SessionDomain`/`WorktreeDomain`,
- * but nothing in Phase 1 calls them. Phase 2 call sites MUST feature-detect
- * (`typeof ctx.session.create === 'function'`) and degrade — requiredness is type-level
- * only and a 2.0.2x host lacking a member must never crash the adapter.
+ * Host-tolerance contract for the session/worktree method surface (issue #3169):
+ * the members below are REQUIRED to mirror the published `SessionDomain`/`WorktreeDomain`.
+ * Since Phase 2 the session-client shim (`src/host/v2/session-client.ts`) is the call
+ * site — it feature-detects every member it consumes (`typeof ctx.session.create ===
+ * 'function'`) and returns `undefined` when any is missing, so requiredness stays
+ * type-level only and a 2.0.2x host lacking a member must never crash the adapter.
  *
  * Only the surfaces this adapter consumes are typed. Unknown fields are
  * intentionally left off; the adapter never relies on their absence.
