@@ -47,6 +47,18 @@ const MAX_RECOVERY_REASON_CODE_LEN = 120;
 const PR_REVIEW_STATUS_LANE_ROWS_CAP = 30;
 const PR_REVIEW_STATUS_INVENTORY_CAP = 40;
 const PR_REVIEW_STATUS_FINDING_LINE_MAX = 240;
+/** Per-lane finding-summary rows (issue #3095 AC2; #3188 parity cap of 5). */
+const PR_REVIEW_STATUS_FINDINGS_PER_LANE = 5;
+/** Bounds for structured finding-summary fields (id/severity/title). */
+const PR_REVIEW_STATUS_FINDING_ID_MAX = 128;
+const PR_REVIEW_STATUS_FINDING_SEVERITY_MAX = 32;
+/**
+ * F-04 degraded-source reason, used verbatim for the boundaries/laneCoverage
+ * sources and the inventory arm when the recovery reader salvaged the gate
+ * state and dropped every `prReview*` field.
+ */
+const SALVAGED_PROJECTION_REASON =
+	'gate state was salvaged after schema validation failed; PR-review projection fields were dropped and their absence proves nothing';
 const RECEIPT_DIR = 'pr-workflow-checkouts';
 const utf8Encoder = new TextEncoder();
 const utf8Decoder = new TextDecoder('utf-8', { fatal: false });
@@ -153,6 +165,13 @@ interface PrReviewStatusBoundaryRow {
 	settlementDigest: string | null;
 }
 
+/** One bounded finding-summary entry on a lane row (issue #3095 AC2). */
+interface PrReviewStatusFindingSummary {
+	id: string;
+	severity: string;
+	title: string;
+}
+
 /** One per-lane coverage row (issue #3095 AC2). */
 interface PrReviewStatusLaneRow {
 	laneId: string;
@@ -161,26 +180,78 @@ interface PrReviewStatusLaneRow {
 	accepted: number;
 	rejected: number;
 	latestFinding: string;
-}
-
-/** The bounded derived-inventory projection (issue #3095 AC3). */
-interface PrReviewStatusInventory {
-	ids: string[];
-	truncated: boolean;
-	total: number;
-	cap: number;
+	/** Bounded finding summaries (first 5 of the receipt envelope, in envelope order). */
+	findings: PrReviewStatusFindingSummary[];
+	/** True when the receipt carried more findings than the cap above. */
+	findingsTruncated: boolean;
 }
 
 /**
- * The whole PR_REVIEW projection. `inventory` is null when the derivation
- * could not run (unbound head, unreadable revision digest) — degraded, never
- * fabricated.
+ * The bounded derived-inventory projection (issue #3095 AC3). The
+ * `unavailable` arm carries a bounded, sanitized reason — the derivation
+ * degraded, it did not run and find nothing.
+ */
+type PrReviewStatusInventory =
+	| {
+			state: 'available';
+			/** Sanitized DISPLAY copies of the first `cap` derived ids. */
+			ids: string[];
+			truncated: boolean;
+			total: number;
+			cap: number;
+	  }
+	| { state: 'unavailable'; reason: string };
+
+/**
+ * Typed read-health disclosure for a projection section (issue #3095, F-04):
+ * an `unavailable` source must be visible as unavailable, never as a
+ * healthy-but-empty section.
+ */
+type PrReviewStatusSourceHealth =
+	| { state: 'ok' }
+	| { state: 'unavailable'; reason: string };
+
+/**
+ * The whole PR_REVIEW projection. `inventory`'s `unavailable` arm means the
+ * derivation could not run (unbound head, unreadable revision digest) —
+ * degraded, never fabricated.
  */
 interface PrReviewStatusProjection {
 	boundaries: PrReviewStatusBoundaryRow[];
+	/**
+	 * Honest labelling of the checkpoint reference every boundary row carries:
+	 * the gate persists NO per-boundary checkpoint — `prReviewArtifactBoundaries`
+	 * is a flat enum array and `prReviewArtifactRunId`/`prReviewFindingsPath`
+	 * are shared, last-write-wins fields — so a consumer must not read the
+	 * per-row reference as per-boundary evidence (issue #3095 AC1; ported from
+	 * the #3188 projection).
+	 */
+	checkpointScope: 'shared-last-write-wins';
 	laneCoverage: PrReviewStatusLaneRow[];
 	laneCoverageTruncated: boolean;
-	inventory: PrReviewStatusInventory | null;
+	/**
+	 * Receipt-evidence admission disclosure (issue #3095, F-07). This
+	 * observation surface admits receipts on (batch, lane, mode, dual-head)
+	 * identity ONLY; the gate's enforcement admission additionally applies
+	 * artifact-integrity checks (revision digest, source, digest, chars), the
+	 * credited-lanes filter, and supersession. The value is
+	 * `'lane-record-only'` today — the field exists so the weaker admission is
+	 * visible rather than implied, and so a future gate-parity implementation
+	 * can flip it without a shape change.
+	 */
+	laneCoverageAdmission: 'gate-parity' | 'lane-record-only';
+	inventory: PrReviewStatusInventory;
+	/**
+	 * Per-section read health (issue #3095, F-04). `boundaries` and
+	 * `laneCoverage` degrade to `unavailable` when the recovery reader
+	 * salvaged the gate state and dropped every `prReview*` field — the rows
+	 * are still emitted (shape stability), but no consumer may read them as
+	 * authoritative coverage.
+	 */
+	sources: {
+		boundaries: PrReviewStatusSourceHealth;
+		laneCoverage: PrReviewStatusSourceHealth;
+	};
 }
 
 interface PrWorkflowStatusResult {
@@ -507,12 +578,21 @@ function summarizeGate(
 }
 
 /**
- * Bound a one-line finding summary to the char cap without splitting a
- * surrogate pair (code-point-aware, unlike a bare `slice`).
+ * Bound a one-line finding summary for display: strip control characters and
+ * the markdown/HTML metacharacters (same character classes as
+ * {@link boundUntrusted} — receipt fields are lane-agent-authored text and a
+ * schema cap bounds length, not content), collapse whitespace, then cap to
+ * the char limit without splitting a surrogate pair (code-point-aware, unlike
+ * a bare `slice`).
  */
 function boundFindingLine(line: string): string {
-	const chars = Array.from(line);
-	if (chars.length <= PR_REVIEW_STATUS_FINDING_LINE_MAX) return line;
+	const cleaned = line
+		.replace(/[\p{Cc}]/gu, ' ')
+		.replace(/[`<>]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	const chars = Array.from(cleaned);
+	if (chars.length <= PR_REVIEW_STATUS_FINDING_LINE_MAX) return cleaned;
 	return `${chars.slice(0, PR_REVIEW_STATUS_FINDING_LINE_MAX - 1).join('')}…`;
 }
 
@@ -520,11 +600,26 @@ function boundFindingLine(line: string): string {
  * Issue #3095: build the bounded, read-only PR_REVIEW projection over the
  * state this tool already resolved. Everything here is derived at READ time
  * from persisted gate state and retained receipt envelopes — nothing is
- * written and nothing is duplicated to disk (AC4).
+ * duplicated to disk (AC4).
+ *
+ * COST DISCLOSURE (this projection is not spawn-free): the AC3 inventory
+ * read runs the gate's revision-digest computation (three bounded git
+ * processes plus changed-file hashing) on every bound PR_REVIEW call, and
+ * the AC2 receipt lookup performs one delegation-store read per DISTINCT
+ * emitted batch on top of the recovery section's own read. On a degraded
+ * store each of those reads retries once (25 ms) and appends to the durable
+ * delegation-health ledger — a read can observably write. The healthy-path
+ * no-write pin lives in the lane-coverage suite.
+ *
+ * `projectionDropped` marks a recovery read that salvaged the gate state and
+ * dropped every `prReview*` field: the boundary/lane sections still project
+ * their (degenerate) shape but their sources are marked `unavailable` —
+ * healthy-but-empty would be a fabrication (F-04).
  */
 async function buildPrReviewProjection(
 	directory: string,
 	state: PrWorkflowGateState,
+	projectionDropped: boolean,
 ): Promise<PrReviewStatusProjection> {
 	// AC1 — per-boundary settlement phase with the persisted checkpoint
 	// reference. Boundary settlement lives as the boundary-name set plus the
@@ -594,7 +689,7 @@ async function buildPrReviewProjection(
 	const headSha = state.prHeadSha;
 	for (const batchId of new Set(emittedLanes.map((lane) => lane.batchId))) {
 		try {
-			const outcome = findByBatchIdDetailed(directory, batchId, {
+			const outcome = _internals.findByBatchIdDetailed(directory, batchId, {
 				parentSessionId: state.sessionID,
 			});
 			if (outcome.status === 'uncertain') {
@@ -647,6 +742,23 @@ async function buildPrReviewProjection(
 						? 'clean'
 						: 'incomplete'
 				: 'no-receipt';
+		// Bounded finding summaries (ported from the #3188 projection): the
+		// first PR_REVIEW_STATUS_FINDINGS_PER_LANE findings in envelope order,
+		// each field sanitized as a display copy — the identity keys on the row
+		// (laneId/batchId) stay raw so consumers can join against gate state.
+		// An uncertain batch has no admitted receipt, hence no findings.
+		const findingsTruncated =
+			findings.length > PR_REVIEW_STATUS_FINDINGS_PER_LANE;
+		const findingSummaries: PrReviewStatusFindingSummary[] = findings
+			.slice(0, PR_REVIEW_STATUS_FINDINGS_PER_LANE)
+			.map((finding) => ({
+				id: boundUntrusted(finding.id, PR_REVIEW_STATUS_FINDING_ID_MAX),
+				severity: boundUntrusted(
+					finding.severity,
+					PR_REVIEW_STATUS_FINDING_SEVERITY_MAX,
+				),
+				title: boundUntrusted(finding.title, PR_REVIEW_STATUS_FINDING_LINE_MAX),
+			}));
 		return {
 			laneId: lane.laneId,
 			workflowLane: lane.workflowLane,
@@ -654,27 +766,72 @@ async function buildPrReviewProjection(
 			accepted: findings.length,
 			rejected: rejectionCounts.get(lane.laneId) ?? 0,
 			latestFinding,
+			findings: findingSummaries,
+			findingsTruncated,
 		};
 	});
 
 	// AC3 — the derived candidate inventory, reused (not reimplemented) from
-	// the gate and bounded here. `null` means the derivation could not run
-	// (unbound head, unreadable revision digest): degraded, never fabricated.
-	const derived = await derivePrReviewCandidateInventoryForStatus(
-		directory,
-		state,
-	);
-	const inventory: PrReviewStatusInventory | null =
-		derived === null
-			? null
-			: {
-					ids: derived.slice(0, PR_REVIEW_STATUS_INVENTORY_CAP),
-					truncated: derived.length > PR_REVIEW_STATUS_INVENTORY_CAP,
-					total: derived.length,
+	// the gate and bounded here. The `unavailable` arm carries the gate's
+	// bounded, sanitized reason: degraded, never fabricated. A salvage-dropped
+	// state skips the derivation entirely — running it over a state whose
+	// discovery sources were dropped would fabricate the CLEAN-REVIEW sentinel
+	// (absence claimed from dropped evidence, the inventory flavor of F-04).
+	const inventory: PrReviewStatusInventory = projectionDropped
+		? {
+				state: 'unavailable',
+				reason: SALVAGED_PROJECTION_REASON,
+			}
+		: await (async (): Promise<PrReviewStatusInventory> => {
+				const derived = await derivePrReviewCandidateInventoryForStatus(
+					directory,
+					state,
+				);
+				if (derived.state === 'unavailable') {
+					return {
+						state: 'unavailable',
+						reason: boundUntrusted(
+							derived.reason,
+							PR_REVIEW_STATUS_FINDING_LINE_MAX,
+						),
+					};
+				}
+				return {
+					state: 'available',
+					// Sanitized DISPLAY copies: the derivation validates row shape
+					// but not id content, so a lane-authored candidate id can carry
+					// markdown/HTML metacharacters or run to thousands of chars.
+					// `total` counts the unsanitized derivation so truncation
+					// arithmetic stays honest.
+					ids: derived.inventory
+						.slice(0, PR_REVIEW_STATUS_INVENTORY_CAP)
+						.map((id) => boundUntrusted(id, PR_REVIEW_STATUS_FINDING_ID_MAX)),
+					truncated: derived.inventory.length > PR_REVIEW_STATUS_INVENTORY_CAP,
+					total: derived.inventory.length,
 					cap: PR_REVIEW_STATUS_INVENTORY_CAP,
 				};
+			})();
 
-	return { boundaries, laneCoverage, laneCoverageTruncated, inventory };
+	// F-04: a salvaged read that dropped every prReview* field cannot vouch
+	// for absence — mark the derived sections unavailable with a bounded
+	// reason instead of projecting healthy-but-empty.
+	const salvagedSource = (): PrReviewStatusSourceHealth =>
+		projectionDropped
+			? { state: 'unavailable', reason: SALVAGED_PROJECTION_REASON }
+			: { state: 'ok' };
+
+	return {
+		boundaries,
+		checkpointScope: 'shared-last-write-wins',
+		laneCoverage,
+		laneCoverageTruncated,
+		laneCoverageAdmission: 'lane-record-only',
+		inventory,
+		sources: {
+			boundaries: salvagedSource(),
+			laneCoverage: salvagedSource(),
+		},
+	};
 }
 
 /**
@@ -791,10 +948,14 @@ async function executePrWorkflowStatus(
 		);
 		// Issue #3095: the PR_REVIEW-only projection. The key is set ONLY here —
 		// inactive gates and PR_FEEDBACK gates serialize without it entirely.
+		// A schema-invalid gate state that was SALVAGED by the recovery reader
+		// drops every prReview* field; the projection still runs (shape
+		// stability) but flags its derived sections unavailable (F-04).
 		if (activeState?.mode === 'PR_REVIEW') {
 			gate.prReviewProjection = await buildPrReviewProjection(
 				directory,
 				activeState,
+				recovery?.prReviewProjectionDropped ?? false,
 			);
 		}
 	}
@@ -857,7 +1018,7 @@ async function executePrWorkflowStatus(
 export const pr_workflow_status: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		description:
-			'Read-only architect observation of local git state (HEAD, branch, clean/dirty with a bounded changed-file list, remotes) plus a session-pinned PR workflow gate summary (mode, bound PR head, base ref/sha, depth tier, dispatch/validation batch counts). Use to observe state under the fail-closed PR_REVIEW/PR_FEEDBACK gate. Never executes PR-controlled scripts and never reads another session gate.',
+			'Read-only architect observation of local git state (HEAD, branch, clean/dirty with a bounded changed-file list, remotes) plus a session-pinned PR workflow gate summary (mode, bound PR head, base ref/sha, depth tier, dispatch/validation batch counts) and, for an active PR_REVIEW gate, a bounded projection of boundary settlement, per-lane coverage, and the derived candidate inventory. Use to observe state under the fail-closed PR_REVIEW/PR_FEEDBACK gate. Never executes PR-controlled scripts and never reads another session gate.',
 		args: {},
 		execute: async (_args: unknown, directory: string, ctx?: ToolContext) =>
 			executePrWorkflowStatus(directory, ctx?.sessionID),
@@ -875,6 +1036,11 @@ export const _internals: {
 	classifyGitState: typeof classifyPrWorkflowGitState;
 	truncateToByteBudget: typeof truncateToByteBudget;
 	resolveWorkflowGateSession: typeof resolveWorkflowGateSession;
+	/** Batch receipt lookup for the lane-coverage projection (F-01 test seam). */
+	findByBatchIdDetailed: typeof findByBatchIdDetailed;
+	/** Pure field sanitizers (direct hostile-input unit suites). */
+	boundUntrusted: typeof boundUntrusted;
+	boundFindingLine: typeof boundFindingLine;
 } = {
 	readPrWorkflowGateStateForRecovery,
 	readDelegationsDetailed,
@@ -886,4 +1052,7 @@ export const _internals: {
 	classifyGitState: classifyPrWorkflowGitState,
 	truncateToByteBudget,
 	resolveWorkflowGateSession,
+	findByBatchIdDetailed,
+	boundUntrusted,
+	boundFindingLine,
 };

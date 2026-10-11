@@ -88,6 +88,11 @@ describe('pr_workflow_status — prReviewProjection.laneCoverage (AC2)', () => {
 				accepted: 2,
 				rejected: 1,
 				latestFinding: 'HIGH F-002: second finding title',
+				findings: [
+					{ id: 'F-001', severity: 'LOW', title: 'first finding title' },
+					{ id: 'F-002', severity: 'HIGH', title: 'second finding title' },
+				],
+				findingsTruncated: false,
 			},
 			{
 				laneId: 'lane-corr',
@@ -96,6 +101,8 @@ describe('pr_workflow_status — prReviewProjection.laneCoverage (AC2)', () => {
 				accepted: 0,
 				rejected: 0,
 				latestFinding: 'clean',
+				findings: [],
+				findingsTruncated: false,
 			},
 			{
 				laneId: 'lane-x',
@@ -104,6 +111,8 @@ describe('pr_workflow_status — prReviewProjection.laneCoverage (AC2)', () => {
 				accepted: 0,
 				rejected: 0,
 				latestFinding: 'no-receipt',
+				findings: [],
+				findingsTruncated: false,
 			},
 		]);
 		// Receipt body prose never reaches the projection (AC4 one-line rule).
@@ -145,6 +154,54 @@ describe('pr_workflow_status — prReviewProjection.laneCoverage (AC2)', () => {
 		expect(rows).toHaveLength(LANE_ROWS_CAP);
 		expect(projection.laneCoverageTruncated).toBe(true);
 		expect(rows[0]).toMatchObject({ laneId: 'lane-0', batchId: 'base-wide' });
+	});
+
+	test('per-lane finding summaries cap at 5 with findingsTruncated, latestFinding still the last', async () => {
+		installProjectionGateState({
+			workflowInstanceId: PROJECTION_WFI,
+			prReviewBaseDispatches: [
+				{
+					batchId: 'base-many',
+					lanes: [{ laneId: 'lane-many', workflowLane: 'security-trust' }],
+					validatedAt: '2026-01-01T00:00:00.000Z',
+				},
+			],
+		});
+		await placeReceiptLane({
+			batchId: 'base-many',
+			laneId: 'lane-many',
+			workflowLane: 'security-trust',
+			outcome: 'FINDINGS',
+			findings: Array.from({ length: 7 }, (_v, i) => ({
+				id: `F-${String(i + 1).padStart(3, '0')}`,
+				severity: 'LOW',
+				title: `finding ${i + 1}`,
+			})),
+			childSessionId: 'child-many',
+		});
+
+		const parsed = await runProjectionTool(tempDir, SESSION_ID);
+		const row = (
+			(parsed.gate as Record<string, unknown>).prReviewProjection as Record<
+				string,
+				unknown
+			>
+		).laneCoverage as Array<Record<string, unknown>>;
+		expect(row).toHaveLength(1);
+		const summaries = row[0].findings as Array<Record<string, string>>;
+		// First 5 in envelope order (ported #3188 cap); the count stays honest.
+		expect(summaries.map((entry) => entry.id)).toEqual([
+			'F-001',
+			'F-002',
+			'F-003',
+			'F-004',
+			'F-005',
+		]);
+		expect(row[0].findingsTruncated).toBe(true);
+		expect(row[0].accepted).toBe(7);
+		// latestFinding is literally AC2's one-line latest-finding: the LAST
+		// finding, not the last SHOWN one.
+		expect(row[0].latestFinding).toBe('LOW F-007: finding 7');
 	});
 });
 
@@ -194,6 +251,10 @@ describe('pr_workflow_status — projection writes nothing (AC4)', () => {
 				accepted: 1,
 				rejected: 0,
 				latestFinding: 'HIGH F-772: receipt-only title',
+				findings: [
+					{ id: 'F-772', severity: 'HIGH', title: 'receipt-only title' },
+				],
+				findingsTruncated: false,
 			},
 		]);
 

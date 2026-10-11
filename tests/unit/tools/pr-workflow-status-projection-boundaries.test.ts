@@ -46,6 +46,15 @@ describe('pr_workflow_status — prReviewProjection.boundaries (AC1)', () => {
 		expect(gate.active).toBe(true);
 		const projection = gate.prReviewProjection as Record<string, unknown>;
 		expect(projection).toBeDefined();
+		// Honest checkpoint labelling (ported from #3188): the runId/findingsPath
+		// each row carries is a SHARED last-write-wins reference, never
+		// per-boundary evidence.
+		expect(projection.checkpointScope).toBe('shared-last-write-wins');
+		expect(projection.sources).toEqual({
+			boundaries: { state: 'ok' },
+			laneCoverage: { state: 'ok' },
+		});
+		expect(projection.laneCoverageAdmission).toBe('lane-record-only');
 		expect(projection.boundaries).toEqual([
 			{
 				phase: 'post_explorer',
@@ -101,6 +110,7 @@ describe('pr_workflow_status — prReviewProjection.inventory (AC3)', () => {
 		const projection = (parsed.gate as Record<string, unknown>)
 			.prReviewProjection as Record<string, unknown>;
 		expect(projection.inventory).toEqual({
+			state: 'available',
 			ids: ['CLEAN-REVIEW'],
 			truncated: false,
 			total: 1,
@@ -147,13 +157,18 @@ describe('pr_workflow_status — prReviewProjection.inventory (AC3)', () => {
 		expect(JSON.stringify(parsed)).not.toContain('C-042');
 	});
 
-	test('unbound head degrades the inventory to null without failing the tool', async () => {
+	test('unbound head degrades the inventory with a typed unavailable reason', async () => {
 		installProjectionGateState({ prHeadSha: undefined });
 		const parsed = await runProjectionTool(tempDir, SESSION_ID);
 		const gate = parsed.gate as Record<string, unknown>;
 		expect(gate.active).toBe(true);
 		const projection = gate.prReviewProjection as Record<string, unknown>;
-		expect(projection.inventory).toBeNull();
+		// Degraded, never fabricated: the unavailable arm carries a bounded
+		// reason instead of a bare null, and the other sections still project.
+		expect(projection.inventory).toEqual({
+			state: 'unavailable',
+			reason: 'active PR_REVIEW workflow is not bound to a PR head',
+		});
 		expect(projection.boundaries).toHaveLength(3);
 		expect(projection.laneCoverage).toEqual([]);
 	});

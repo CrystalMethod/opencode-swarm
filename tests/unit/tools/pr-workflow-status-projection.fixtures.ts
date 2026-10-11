@@ -47,6 +47,7 @@ const realHead = _internals.resolveCurrentGitHeadAsync;
 const realClean = _internals.resolveIsWorkingTreeCleanAsync;
 const realRunGit = _internals.runGitCapture;
 const realClassify = _internals.classifyGitState;
+const realFindByBatchId = _internals.findByBatchIdDetailed;
 
 /** Per-file beforeEach: shared gate fixtures + deterministic git stubs. */
 export function installProjectionTestEnv(): void {
@@ -84,6 +85,7 @@ export async function restoreProjectionTestEnv(): Promise<void> {
 	_internals.resolveIsWorkingTreeCleanAsync = realClean;
 	_internals.runGitCapture = realRunGit;
 	_internals.classifyGitState = realClassify;
+	_internals.findByBatchIdDetailed = realFindByBatchId;
 	await teardownPrWorkflowGateFixtures();
 }
 

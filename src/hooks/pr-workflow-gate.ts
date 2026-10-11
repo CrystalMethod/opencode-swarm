@@ -15929,27 +15929,68 @@ function derivePrReviewCandidateInventory(
 }
 
 /**
- * Read-surface reuse of the derivation above for `pr_workflow_status`
- * (issue #3095). The derivation itself stays single-sourced: every production
- * caller is a validation/enforcement path that must keep throwing, so this
- * wrapper exists only to thread the SAME result to a read-only status tool
- * and to degrade fail-soft instead of blocking an observation. A status read
- * must never fail the whole tool for an unbound head or an unreadable
- * revision digest — the caller renders `null` as a degraded inventory and
- * still projects boundaries and lane coverage.
+ * Issue #3095: read-surface reuse of the derivation above for
+ * `pr_workflow_status`. The derivation itself stays single-sourced: every
+ * production caller is a validation/enforcement path that must keep throwing,
+ * so this wrapper exists only to thread the SAME result to a read-only status
+ * tool and to degrade fail-soft instead of blocking an observation. A status
+ * read must never fail the whole tool for an unbound head or an unreadable
+ * revision digest — the caller renders the `unavailable` arm (with the
+ * bounded reason) and still projects boundaries and lane coverage.
  *
  * Read-only by construction: it performs no writes and mutates no state.
+ * COST DISCLOSURE (not free): resolving the derivation context runs the
+ * revision-digest computation on every bound PR_REVIEW call — three bounded
+ * git processes plus a re-read/hash of every changed file
+ * (`createPrReviewGateContext` → `resolvePrWorkflowRevisionDigestForGate` →
+ * the workspace-snapshot digest path). An observation surface pays the same
+ * digest price an enforcement call would.
  */
+export type PrReviewCandidateInventoryForStatus =
+	| { state: 'available'; inventory: string[] }
+	| { state: 'unavailable'; reason: string };
+
+const PR_REVIEW_STATUS_REASON_MAX_CHARS = 240;
+
+/**
+ * Bound an `unavailable`-arm reason before it leaves the gate. Error
+ * messages interpolate repository-controlled text (paths, refs, ids), so this
+ * strips the same character classes every status-side sanitizer strips —
+ * control characters, markdown backticks, and angle brackets — before the
+ * length cap. A reason that survives un-sanitized would let repository text
+ * inject markup into the operator-facing status payload.
+ */
+function boundPrReviewStatusReason(error: unknown): string {
+	const message =
+		error instanceof Error ? error.message : String(error ?? 'unknown error');
+	const cleaned = message
+		.replace(/[\p{Cc}]/gu, ' ')
+		.replace(/[`<>]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return cleaned.length > PR_REVIEW_STATUS_REASON_MAX_CHARS
+		? `${cleaned.slice(0, PR_REVIEW_STATUS_REASON_MAX_CHARS)}…`
+		: cleaned;
+}
+
 export async function derivePrReviewCandidateInventoryForStatus(
 	directory: string,
 	state: PrWorkflowGateState,
-): Promise<string[] | null> {
-	if (!state.prHeadSha) return null;
+): Promise<PrReviewCandidateInventoryForStatus> {
+	if (!state.prHeadSha) {
+		return {
+			state: 'unavailable',
+			reason: 'active PR_REVIEW workflow is not bound to a PR head',
+		};
+	}
 	try {
 		const ctx = await createPrReviewGateContext(directory, state);
-		return derivePrReviewCandidateInventory(directory, state, ctx);
-	} catch {
-		return null;
+		return {
+			state: 'available',
+			inventory: derivePrReviewCandidateInventory(directory, state, ctx),
+		};
+	} catch (error) {
+		return { state: 'unavailable', reason: boundPrReviewStatusReason(error) };
 	}
 }
 
@@ -18706,6 +18747,17 @@ export interface PrWorkflowGateRecoveryRead {
 	 * availability one.
 	 */
 	armedShapeUnreadable: boolean;
+	/**
+	 * true when the salvage reconstructed ONLY the abort-relevant fields and
+	 * every `prReview*` projection field (base dispatches, artifact
+	 * boundaries, run id, findings path, settlement digests) was dropped
+	 * because the shadow bytes failed schema validation. The status tool uses
+	 * this to mark its derived PR_REVIEW sections `unavailable` instead of
+	 * reporting healthy-but-empty coverage — an absent field on a salvaged
+	 * state proves nothing about the workflow. Present only when true; a
+	 * schema-valid shadow (or an ordinary healthy read) keeps full fidelity.
+	 */
+	prReviewProjectionDropped?: boolean;
 }
 
 /**
@@ -18933,5 +18985,8 @@ export async function readPrWorkflowGateStateForRecovery(
 		disclosure,
 		revisionSalvageable: salvagedRevision.success,
 		armedShapeUnreadable,
+		// Every prReview* field was dropped by this minimal reconstruction; the
+		// status projection must not read their absence as "no dispatches yet".
+		prReviewProjectionDropped: true,
 	};
 }
