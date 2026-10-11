@@ -98,8 +98,19 @@ function mapV1TaskArgsToV2(args: unknown): unknown {
 	return mapped;
 }
 
+/**
+ * Anchored to the opening tag only — tolerant of arbitrary body and of
+ * additional trailing attributes (the completion pump renders a
+ * three-attribute wrapper; session/subagent-completion.ts on host 2.0.26) —
+ * mirroring `TASK_ENVELOPE_RE`'s discipline in `src/background/task-envelope.ts`.
+ * `state` stays constrained so unrelated `<subagent …>` text cannot masquerade
+ * as a wrapper.
+ */
 const V2_SUBAGENT_WRAPPER_RE =
-	/^<subagent\s+sessionID="([^"]+)"\s+state="(running|completed|error|cancelled|canceled)"\s*>([\s\S]*)<\/subagent>$/;
+	/<subagent\s+sessionID="([^"]+)"\s+state="(running|completed|error|cancelled|canceled)"[^>]*>/;
+
+/** Matches `MAX_TASK_ENVELOPE_TEXT_CHARS` in task-envelope.ts (same bound class). */
+const MAX_V2_WRAPPER_INNER_CHARS = 20_000;
 
 interface V2SubagentWrapper {
 	sessionID: string;
@@ -112,16 +123,38 @@ function parseV2SubagentWrapper(content: unknown): V2SubagentWrapper | null {
 	if (typeof content !== 'string') return null;
 	const match = content.match(V2_SUBAGENT_WRAPPER_RE);
 	if (!match) return null;
+	const sessionID = match[1];
+	// Charset guard: the sessionID is interpolated into the re-rendered v1
+	// envelope attributes verbatim, so markup characters would corrupt the
+	// envelope shape the v1 parser reads.
+	if (sessionID.includes('<') || sessionID.includes('>')) return null;
 	const rawState = match[2];
+	// inner is everything after the (tolerant) opening tag; strip a trailing
+	// closing tag so canonical wrappers re-render byte-equivalent envelopes
+	// to v1, while truncated/drifted bodies still parse.
+	const matchStart = match.index ?? 0;
+	const inner = content
+		.slice(matchStart + match[0].length)
+		.replace(/\s*<\/subagent>\s*$/, '');
 	return {
-		sessionID: match[1],
+		sessionID,
 		state:
 			rawState === 'canceled'
 				? 'cancelled'
 				: (rawState as V2SubagentWrapper['state']),
-		inner: match[3],
+		inner,
 	};
 }
+
+/**
+ * Matches the tag sequences `parseTaskEnvelope` gives structural meaning
+ * (result/error/summary open+close). Inside the re-rendered envelope these
+ * must only exist where WE put them, or the non-greedy extraction truncates
+ * and the task_error-over-result preference can be hijacked by crafted inner
+ * text. Neutralized forms stay readable (display-only corruption of the tag
+ * token; model content preserved verbatim otherwise).
+ */
+const V2_WRAPPER_STRUCTURAL_TAG_RE = /<\/?(?:task_result|task_error|summary)>/g;
 
 /**
  * Re-render the v2 wrapper as the v1 task envelope so every tool.execute.after
@@ -130,7 +163,17 @@ function parseV2SubagentWrapper(content: unknown): V2SubagentWrapper | null {
  * (same discipline as `src/background/task-envelope.ts`).
  */
 function renderV1TaskEnvelopeFromV2(wrapper: V2SubagentWrapper): string {
-	return `<task id="${wrapper.sessionID}" state="${wrapper.state}"><task_result>${wrapper.inner}</task_result></task>`;
+	// Length-bounded at the render site: the raw inner is otherwise copied
+	// ~3x (parse match, this template, the downstream envelope re-parse).
+	let inner = wrapper.inner;
+	if (inner.length > MAX_V2_WRAPPER_INNER_CHARS) {
+		const omitted = inner.length - MAX_V2_WRAPPER_INNER_CHARS;
+		inner = `${inner.slice(0, MAX_V2_WRAPPER_INNER_CHARS)}\n[... ${omitted} chars truncated by v2 task translation ...]`;
+	}
+	inner = inner.replace(V2_WRAPPER_STRUCTURAL_TAG_RE, (tag) =>
+		tag.replace('<', '<\\'),
+	);
+	return `<task id="${wrapper.sessionID}" state="${wrapper.state}"><task_result>${inner}</task_result></task>`;
 }
 
 /** adapter for tool.execute.before */
@@ -221,7 +264,7 @@ function translateV2ResultToV1Output(
 	isSubagent: boolean,
 ): {
 	title: string;
-	state: 'running' | 'error' | 'completed';
+	state: 'running' | 'error' | 'completed' | 'cancelled';
 	output: string;
 	metadata: Record<string, unknown>;
 } {
@@ -250,18 +293,32 @@ function translateV2ResultToV1Output(
 	if (isSubagent) {
 		const wrapper = parseV2SubagentWrapper(content);
 		if (wrapper) {
-			const structuredState: 'running' | 'completed' | 'error' =
+			// 'cancelled' keeps its own structured state (v1 parity): the
+			// spawn-failure circuit counts only state === 'error'
+			// (index.ts), and delegation-gate's terminal-failure predicate
+			// already treats 'cancelled' as the distinct neutral terminal.
+			const structuredState: 'running' | 'completed' | 'error' | 'cancelled' =
 				wrapper.state === 'running'
 					? 'running'
 					: wrapper.state === 'completed'
 						? 'completed'
-						: 'error';
+						: wrapper.state === 'error'
+							? 'error'
+							: 'cancelled';
 			return {
 				title: '',
 				state: structuredState,
 				output: renderV1TaskEnvelopeFromV2(wrapper),
 				metadata: (result?.metadata as Record<string, unknown>) ?? {},
 			};
+		}
+		if (content.includes('<subagent')) {
+			// The text looks like the wrapper but did not parse (attribute
+			// drift). Bounded debug note — never chat-visible noise — instead
+			// of a silent completed classification.
+			log('v2 subagent wrapper not recognized; passing result text through', {
+				chars: content.length,
+			});
 		}
 	}
 	return {

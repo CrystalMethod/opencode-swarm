@@ -56,9 +56,14 @@ function toolHookCapture(hooks: V1HooksSubset) {
 	};
 }
 
+/** Temp dirs created by registerAndCapture; cleaned in afterEach (no process.cwd()). */
+const tempDirs: string[] = [];
+
 async function registerAndCapture(hooks: V1HooksSubset) {
 	const capture = toolHookCapture(hooks);
-	await registerV2ToolHooks(capture as never, capture.hooks, process.cwd(), []);
+	const directory = canonicalMkdtemp('v2-task-rename');
+	tempDirs.push(directory);
+	await registerV2ToolHooks(capture as never, capture.hooks, directory, []);
 	return capture;
 }
 
@@ -95,6 +100,10 @@ describe('task-tool-rename-3169', () => {
 
 	afterEach(() => {
 		resetSwarmState();
+		for (const dir of tempDirs) {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+		tempDirs.length = 0;
 	});
 
 	test('AC1 before-event: v1 handler sees task + subagent_type/task_id from v2 agent/sessionID', async () => {

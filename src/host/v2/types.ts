@@ -206,18 +206,27 @@ export interface V2SessionCreateInput {
 	readonly permissions?: ReadonlyArray<V2SessionPermission> | null;
 }
 
-/** `SessionPromptInput` — `sessionID` plus the prompt body (`text` et al.). */
+/**
+ * `SessionPromptInput` (`@opencode/client@2.0.26` generated, flattened):
+ * `sessionID` and `text` are required; `command`/`args` are NOT members of
+ * this input (the command shape is `name` + `text` on `SessionCommandInput` —
+ * the earlier fabricated members were removed in the PR-review feedback pass).
+ * Attachment members are abbreviated structural shapes.
+ */
 export interface V2SessionPromptCallInput {
 	readonly sessionID: string;
-	readonly text?: string;
-	readonly command?: string;
-	readonly args?: unknown;
-	readonly files?: unknown[] | null;
-	readonly agents?: unknown[] | null;
-	readonly skills?: unknown[] | null;
-	readonly delivery?: 'steer' | 'queue';
-	readonly resume?: boolean;
-	readonly metadata?: Record<string, unknown> | null;
+	readonly text: string;
+	readonly id?: string | null;
+	readonly files?: ReadonlyArray<{
+		readonly uri: string;
+		readonly name?: string;
+		readonly description?: string;
+	}>;
+	readonly agents?: ReadonlyArray<{ readonly name: string }>;
+	readonly skills?: ReadonlyArray<{ readonly id: string }>;
+	readonly metadata?: Readonly<Record<string, unknown>>;
+	readonly delivery?: 'steer' | 'queue' | null;
+	readonly resume?: boolean | null;
 	[key: string]: unknown;
 }
 
@@ -320,44 +329,77 @@ export interface V2SessionDomain {
 }
 
 /**
- * v2 worktree call input types (`@opencode/client@2.0.26` generated, flattened) and the
- * plugin-side `WorktreeDefinition` (dist/promise/worktree.d.ts 2.0.26).
+ * v2 worktree types (`@opencode/plugin@2.0.26` + `@opencode/client@2.0.26`).
+ * The host publishes TWO distinct flavors — the client `WorktreeApi` inputs
+ * (project-id keyed) and the plugin `WorktreeDefinition` callback inputs
+ * (source-directory keyed) — and they must not be merged (PR-review feedback
+ * FB-003): a caller against either flavor would compile and then fail
+ * host-side at runtime.
  */
 
-/** `WorktreeCreateInput`. */
+/** Client `WorktreeListInput` / `WorktreeRefreshInput` (project-id keyed). */
+export interface V2WorktreeProjectInput {
+	readonly projectID: string;
+}
+
+/** Client `WorktreeCreateInput`. */
 export interface V2WorktreeCreateInput {
-	readonly projectID?: string | null;
-	readonly from?: string | null;
-	readonly branch?: string | null;
-	readonly directory?: string | null;
-	readonly name?: string | null;
-	[key: string]: unknown;
-}
-
-/** `WorktreeRemoveInput` / `WorktreeRefreshInput` / `WorktreeListInput` (session-id-keyed or empty). */
-export interface V2WorktreeScopedInput {
+	readonly projectID: string;
+	readonly from?: string;
+	readonly branch?: string;
 	readonly directory?: string;
 	readonly name?: string;
 	[key: string]: unknown;
 }
 
-/** `WorktreeInfo` / `WorktreeEntry` — structural; consumers read identity + directory. */
-export interface V2WorktreeEntry {
-	readonly name?: string;
-	readonly directory?: string;
+/** Client `WorktreeRemoveInput`. */
+export interface V2WorktreeRemoveInput {
+	readonly projectID: string;
+	readonly directory: string;
+	readonly force: boolean;
+}
+
+/** Client `WorktreeInfo` (create result; `directory` is the only published member). */
+export interface V2WorktreeInfo {
+	readonly directory: string;
+	[key: string]: unknown;
+}
+
+/** Plugin `WorktreeCreateInput` (the `../worktree.js` flavor — distinct from the client's). */
+export interface V2PluginWorktreeCreateInput {
+	readonly sourceDirectory: string;
+	readonly directory: string;
 	readonly branch?: string;
 	[key: string]: unknown;
 }
+
+/** Plugin `WorktreeRemoveInput`. */
+export interface V2PluginWorktreeRemoveInput {
+	readonly directory: string;
+	readonly force: boolean;
+}
+
+/** Plugin `WorktreeResult` (create return). */
+export interface V2WorktreeResult {
+	readonly directory: string;
+	[key: string]: unknown;
+}
+
+/**
+ * Plugin `WorktreeEntry` (list item). Only `directory` is published-verified
+ * here; the structural index keeps the remaining fields without inventing shapes.
+ */
+export interface V2WorktreeEntry extends V2WorktreeResult {}
 
 /** Plugin-side `WorktreeDefinition` (registers an implementation via transform). */
 export interface V2WorktreeDefinition {
 	readonly id: string;
 	readonly create: (
-		input: V2WorktreeCreateInput,
+		input: V2PluginWorktreeCreateInput,
 		context: { readonly signal: AbortSignal },
-	) => Promise<V2WorktreeEntry>;
+	) => Promise<V2WorktreeResult>;
 	readonly remove: (
-		input: V2WorktreeScopedInput,
+		input: V2PluginWorktreeRemoveInput,
 		context: { readonly signal: AbortSignal },
 	) => Promise<void>;
 	readonly list: (
@@ -373,17 +415,18 @@ export interface V2WorktreeEditor {
 }
 
 /**
- * v2 `WorktreeDomain` (dist/promise/worktree.d.ts 2.0.26): `WorktreeApi`
- * (`list`/`create`/`remove`/`refresh`) plus `transform` and `reload`.
- * Consumed by no Phase 1 code path; typed so Phase 2+ (issue #3169) sees the surface.
+ * v2 `WorktreeDomain` (dist/promise/worktree.d.ts 2.0.26): the client
+ * `WorktreeApi` (`list`/`create`/`remove`/`refresh`) plus `transform` and
+ * `reload`. Consumed by no Phase 1 code path; typed so Phase 2+ (issue #3169)
+ * sees the surface with the published requiredness intact.
  */
 export interface V2WorktreeDomain {
 	readonly list: (
-		input?: V2WorktreeScopedInput,
-	) => Promise<readonly V2WorktreeEntry[]>;
-	readonly create: (input: V2WorktreeCreateInput) => Promise<V2WorktreeEntry>;
-	readonly remove: (input: V2WorktreeScopedInput) => Promise<void>;
-	readonly refresh: (input: V2WorktreeScopedInput) => Promise<void>;
+		input: V2WorktreeProjectInput,
+	) => Promise<readonly V2WorktreeInfo[]>;
+	readonly create: (input: V2WorktreeCreateInput) => Promise<V2WorktreeInfo>;
+	readonly remove: (input: V2WorktreeRemoveInput) => Promise<void>;
+	readonly refresh: (input: V2WorktreeProjectInput) => Promise<void>;
 	readonly reload: () => Promise<void>;
 	readonly transform: (
 		callback: (editor: V2WorktreeEditor) => void,
