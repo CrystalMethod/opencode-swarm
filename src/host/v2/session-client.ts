@@ -558,6 +558,23 @@ async function deferredV2SessionPromptPlaceholder(
 	if (signal?.aborted) {
 		throw new Error('v2 session-client: prompt wait aborted');
 	}
+	// #3186 review PRR-002: a placeholder id is legitimately re-prompted across
+	// a caller's retry/fallback chain (curator, skill-improver, mutation
+	// generator re-prompt the SAME session id per model attempt). Minting a
+	// second host session would orphan the first — teardown can only ever
+	// reach the newest realId. Retire the superseded session before minting
+	// (its result was already consumed, so v1-accumulated context from a
+	// failed attempt is not preserved), and reset the previous dispatch's
+	// parked flags so they cannot fire against the fresh session.
+	const previousRealId = stash.realId;
+	if (previousRealId !== undefined) {
+		stash.realId = undefined;
+		stash.abortPending = false;
+		stash.deletePending = false;
+		await ctx.session
+			.remove({ sessionID: previousRealId })
+			.catch(() => undefined);
+	}
 	const agent = typeof body.agent === 'string' ? body.agent : undefined;
 	const model =
 		body.model &&
@@ -742,12 +759,23 @@ export function createV2SessionClient(
 				if (stash?.promptStarted) stash.deletePending = true;
 				return Promise.resolve(undefined);
 			},
-			get: (args: { path: { id: string } }): Promise<{ data: unknown }> => {
+			get: (args: {
+				path: { id: string };
+			}): Promise<{ data: unknown; error?: unknown }> => {
 				const resolved = resolveSessionId(args?.path?.id);
 				if (resolved === undefined) return Promise.resolve({ data: null });
-				return ctx.session
-					.get({ sessionID: resolved })
-					.then((info) => ({ data: info }));
+				return (
+					ctx.session
+						.get({ sessionID: resolved })
+						.then((info) => ({ data: info }))
+						// #3186 review PRR-006: v1 SDK clients resolve error responses
+						// to `{error}` envelopes instead of rejecting, so consumers
+						// branch on `result.error` or wrap their own try/catch
+						// (pr-workflow-session-resolver is awaited bare in the
+						// fail-closed tool-before chain). Forwarding the rejection
+						// verbatim would surface it there and block every tool call.
+						.catch((error: unknown) => ({ data: null, error }))
+				);
 			},
 		},
 	};

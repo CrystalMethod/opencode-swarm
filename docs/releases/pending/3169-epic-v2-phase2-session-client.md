@@ -28,6 +28,14 @@ Phase 2, per the tracking issue's phased plan).
   bounded store the shim's translation reads; failures surface as the v1 `info.error`
   shape with the same category v1 produces, and a failed outcome without recorded detail
   yields a bounded `provider.unknown` error instead of a silent empty success.
+- **Review round (#3186): fallback re-prompts no longer orphan host sessions.** A
+  re-prompt on the same placeholder session id (curator / skill-improver / mutation
+  generator model-fallback chains) now removes the superseded v2 host session before
+  minting the next, so a fallback chain leaks zero idle sessions, and the shim's
+  `session.get` resolves host rejections to the v1 `{data, error}` envelope instead of
+  rejecting — matching the contract every v1 consumer was written against (a raw
+  rejection previously reached the fail-closed tool-before chain, which would block
+  every tool call for the session).
 - **Placement fail-closed (live finding C1)**: v2 child sessions inherit the parent's
   directory and ignore the requested one, so a parented create whose requested directory
   diverges from the parent's — or whose placement cannot be verified — fails closed with

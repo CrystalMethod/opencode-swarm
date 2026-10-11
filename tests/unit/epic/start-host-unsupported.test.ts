@@ -1,7 +1,9 @@
 /**
  * `/swarm epic start` refuses on a host that gives the plugin no OpenCode SDK
- * client (OpenCode 2's adapter initializes with `client: undefined`): Epic's
- * worktree-isolated coders and its phase review both need that client.
+ * client: Epic's worktree-isolated coders and its phase review both need that
+ * client. (The OpenCode 2 v2 adapter now ships a session-capable client, so
+ * the refusal no longer fires there — this suite pins the genuinely
+ * client-less hosts.)
  *
  * The check reads `swarmState.opencodeClient` directly, so these tests set it
  * and restore the original value; `undefined` = initialized on a client-less

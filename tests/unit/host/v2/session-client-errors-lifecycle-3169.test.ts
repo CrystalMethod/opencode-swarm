@@ -341,9 +341,11 @@ describe('v2 session-client errors + lifecycle (issue #3169 Phase 2)', () => {
 			await session.delete({ path: { id: placeholderId } });
 			expect(domain.calls.find((c) => c.op === 'remove')?.arg).toBe(realId);
 			expect(domain.removedSessions.has(realId)).toBe(true);
-			await expect(
-				session.get({ path: { id: placeholderId } }),
-			).rejects.toThrow('no such session');
+			// PRR-006 (#3186 review): the shim get normalizes host rejections to
+			// the v1 {data, error} envelope instead of rejecting.
+			const postDelete = await session.get({ path: { id: placeholderId } });
+			expect(postDelete.data).toBeNull();
+			expect(postDelete.error).toBeInstanceOf(Error);
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
