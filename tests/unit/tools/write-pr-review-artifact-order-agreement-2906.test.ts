@@ -141,16 +141,19 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		await establishPrReviewPrerequisites(directory, 'oa-run');
 		const runId = await resolvePrReviewWriterRunId(directory, SESSION_ID);
 		expect(runId).toBe('oa-run');
-		// Pass A: everything HIGH. Pass B: C-0 flips to MEDIUM (order-unstable),
-		// everything else HIGH (order-stable).
-		await reviewerPass('oa-w-a', {});
-		await reviewerPass('oa-w-b', { 'C-0': 'MEDIUM' });
+		// Ladder order: the explorer boundary is written BEFORE any reviewer
+		// pass exists, so there is no composed order authority yet and an
+		// unlabelled pre-reviewer row is legal (the legacy shape).
 		const explorerWrite = await writeBoundary(
 			runId,
 			'post_explorer',
 			INVENTORY.map(explorerRecord),
 		);
 		expect(explorerWrite).toContain('"success": true');
+		// Pass A: everything HIGH. Pass B: C-0 flips to MEDIUM (order-unstable),
+		// everything else HIGH (order-stable).
+		await reviewerPass('oa-w-a', {});
+		await reviewerPass('oa-w-b', { 'C-0': 'MEDIUM' });
 		// post_reviewer must exactly cover the discovered inventory; C-0's
 		// composed severity is MEDIUM (severity-dependent disposition: a MEDIUM
 		// finding reports, only HIGH/CRITICAL route to the critic).
@@ -185,10 +188,19 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		expect(wrongSingle).toContain('order_agreement for C-0');
 		expect(wrongSingle).toContain('disagree');
 
-		// Correct labels: C-0 disagree, siblings agree — accepted. (An
-		// absent-label write cannot follow: the committed boundary admits
-		// exact replays only; that arm lives in the second test's uncommitted
-		// world.)
+		// Review finding F-01: OMITTING the label on a composed 'disagree'
+		// finding is the spoof that let the order-unstable marker and its
+		// count be suppressed. An absent label is now a contradiction against
+		// composed 'disagree', exactly like a contradicting value.
+		const omitted = await writeBoundary(
+			runId,
+			'post_reviewer',
+			fullCoverage({}, false),
+		);
+		expect(omitted).toContain('order_agreement for C-0');
+		expect(omitted).toContain('disagree');
+
+		// Correct labels: C-0 disagree, siblings agree — accepted.
 		const correct = await writeBoundary(
 			runId,
 			'post_reviewer',
@@ -206,13 +218,8 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		// the real writer (exact-cover + records-match reject foreign ids
 		// first), so the reachable spoof is an affirmative 'agree' against
 		// 'single' authority.
+		await writeBoundary(runId, 'post_explorer', INVENTORY.map(explorerRecord));
 		await reviewerPass('oa-w2-a', {});
-		const explorerWrite = await writeBoundary(
-			runId,
-			'post_explorer',
-			INVENTORY.map(explorerRecord),
-		);
-		expect(explorerWrite).toContain('"success": true');
 		const spoof = await writeBoundary(
 			runId,
 			'post_reviewer',
@@ -269,9 +276,9 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		// that boundary fails closed too.
 		await establishPrReviewPrerequisites(directory, 'oa-run-4');
 		const runId = await resolvePrReviewWriterRunId(directory, SESSION_ID);
+		await writeBoundary(runId, 'post_explorer', INVENTORY.map(explorerRecord));
 		await reviewerPass('oa-w4-a', {});
 		await reviewerPass('oa-w4-b', { 'C-0': 'MEDIUM' });
-		await writeBoundary(runId, 'post_explorer', INVENTORY.map(explorerRecord));
 		const reviewerWrite = await writeBoundary(runId, 'post_reviewer', [
 			reviewerRecord('C-0', {
 				severity: 'MEDIUM' as const,

@@ -717,37 +717,68 @@ export async function executeWritePrReviewArtifact(
 		// supplied value is cross-checked against the composed reviewer claims
 		// (the same reader shape as the critic_status precedent): a value that
 		// contradicts the composed one, or an affirmative 'agree'/'disagree'
-		// with no composed authority, fails closed. 'single' and absent pass.
-		if (findingsInput.records.some((record) => record.order_agreement)) {
-			try {
-				const authoritativeOrderAgreement =
-					await readAuthoritativePrReviewOrderAgreement(directory, sessionID);
-				for (const record of findingsInput.records) {
-					if (record.order_agreement === undefined) continue;
-					const authoritative = authoritativeOrderAgreement.get(
-						record.finding_id,
-					);
-					if (authoritative && authoritative !== record.order_agreement) {
-						throw new Error(
-							`order_agreement for ${record.finding_id} is "${record.order_agreement}" but the composed reviewer verdicts say "${authoritative}"`,
-						);
-					}
-					if (!authoritative && record.order_agreement !== 'single') {
-						throw new Error(
-							`order_agreement for ${record.finding_id} asserts "${record.order_agreement}" with no composed reviewer authority for that finding`,
-						);
-					}
-				}
-			} catch (error) {
-				return withPartialAdmissionRollback(
-					operationFailure(
-						'validate',
-						relativeFindingsPath.split(path.sep).join('/'),
-						'an authoritative order-agreement map matching the composed reviewer verdicts',
-						error,
-					),
+		// with no composed authority, fails closed.
+		//
+		// The check runs on every boundary with a non-empty composed authority
+		// map — there is deliberately NO "some record supplied the field"
+		// short-circuit, because that let a model omit order_agreement on a
+		// finding the composed verdicts label 'disagree' and publish with the
+		// order-unstable marker and count both suppressed. An ABSENT label
+		// against composed 'disagree' therefore fails closed, exactly like a
+		// contradicting value. 'single' and absent against every other
+		// composed value stay legal (legacy shape and the pre-#2906 flows that
+		// never label at all).
+		//
+		// The label is never stamped automatically: order_agreement is part of
+		// the replay-identity key, so stamping would stop an unlabelled
+		// re-submission from matching.
+		try {
+			const authoritativeOrderAgreement =
+				await readAuthoritativePrReviewOrderAgreement(directory, sessionID);
+			for (const record of findingsInput.records) {
+				const authoritative = authoritativeOrderAgreement.get(
+					record.finding_id,
 				);
+				if (
+					record.order_agreement !== undefined &&
+					record.order_agreement !== 'single' &&
+					authoritative === undefined
+				) {
+					throw new Error(
+						`order_agreement for ${record.finding_id} asserts "${record.order_agreement}" with no composed reviewer authority for that finding`,
+					);
+				}
+				if (
+					record.order_agreement !== undefined &&
+					authoritative !== undefined &&
+					authoritative !== record.order_agreement
+				) {
+					throw new Error(
+						`order_agreement for ${record.finding_id} is "${record.order_agreement}" but the composed reviewer verdicts say "${authoritative}"`,
+					);
+				}
+				// An ABSENT label is legal against 'agree' and 'single' (legacy
+				// shape and the pre-#2906 flows), but not against 'disagree' —
+				// an omitted label there would suppress the order-unstable
+				// marker and its count on exactly the flips worth reading.
+				if (
+					authoritative === 'disagree' &&
+					record.order_agreement === undefined
+				) {
+					throw new Error(
+						`order_agreement for ${record.finding_id} is required: the composed reviewer verdicts label this finding "disagree" (order-unstable), so omitting the label would suppress the order-unstable marker`,
+					);
+				}
 			}
+		} catch (error) {
+			return withPartialAdmissionRollback(
+				operationFailure(
+					'validate',
+					relativeFindingsPath.split(path.sep).join('/'),
+					'an authoritative order-agreement map matching the composed reviewer verdicts',
+					error,
+				),
+			);
 		}
 		const recordedAt = new Date().toISOString();
 		const appended: PersistedFinding[] = isExactReplay

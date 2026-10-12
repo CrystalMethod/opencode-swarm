@@ -51,6 +51,15 @@ export interface RenderReviewBodyInput {
 	base_verification?: string;
 	coverage: RendererCoverage;
 	findings: RendererFinding[];
+	/**
+	 * Issue #2906: order-unstable findings whose FINAL settled status keeps
+	 * them out of `findings` (a DISPROVED row is not a finding and is never
+	 * published as one). They are still order-unstable — the reviewer verdict
+	 * flipped with presentation order — so they get their own section and are
+	 * counted. Suppressing them entirely hid exactly the signal the
+	 * counterbalancing control exists to produce.
+	 */
+	order_unstable_suppressed?: RendererFinding[];
 	/** Previously posted comment/review bodies; findings whose rendered marker already appears are skipped (AC4 dedupe). */
 	existingComments?: string[];
 }
@@ -230,6 +239,33 @@ export function renderPrReviewSubmissionBody(
 		}
 	}
 	if (orderUnstableCount > 0) {
+		lines.push('');
+		lines.push(
+			`> ${orderUnstableCount} finding(s) order-unstable across counterbalanced reviewer passes (verdict flipped with presentation order).`,
+		);
+	}
+	// Issue #2906: an order-unstable finding whose settled status is DISPROVED
+	// is never published as a finding (a disproved row is not a finding), but
+	// suppressing it would drop the counterbalancing signal on exactly the
+	// flips most worth reading. It is listed here with its final status.
+	const suppressedUnstable = (input.order_unstable_suppressed ?? []).filter(
+		(finding) => finding.order_agreement === 'disagree',
+	);
+	if (suppressedUnstable.length > 0) {
+		orderUnstableCount += suppressedUnstable.length;
+		lines.push('');
+		lines.push('## Order-unstable (not published as findings)');
+		lines.push(
+			'These items flipped verdict between the counterbalanced presentation orders and did not survive as findings. They are listed for order-effect review only.',
+		);
+		for (const finding of suppressedUnstable) {
+			const id = singleLine(finding.finding_id ?? '', 128);
+			const location = singleLine(finding.file_line ?? '', 200);
+			const status = singleLine(finding.status ?? '', 64).toLowerCase();
+			lines.push(
+				`- [${id}] (order-unstable, ${status}) ${location} — ${singleLine(finding.evidence ?? '', 400)}`,
+			);
+		}
 		lines.push('');
 		lines.push(
 			`> ${orderUnstableCount} finding(s) order-unstable across counterbalanced reviewer passes (verdict flipped with presentation order).`,

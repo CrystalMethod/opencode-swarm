@@ -668,10 +668,36 @@ export async function executePrReviewSubmission(
 			record.boundary === 'post_critic' && record.status !== 'DISPROVED',
 	);
 
+	// Issue #2906: a DISPROVED record is not published as a finding, but an
+	// ORDER-UNSTABLE one still carries the counterbalancing signal (the
+	// reviewer verdict flipped with presentation order) and must not vanish
+	// with the drop. Those rows ride a separate renderer input so they are
+	// listed and counted without entering the findings list or the derived
+	// review event.
+	const suppressedOrderUnstable = records.filter(
+		(record) =>
+			record.boundary === 'post_critic' &&
+			record.status === 'DISPROVED' &&
+			record.order_agreement === 'disagree',
+	);
+
 	const derived = deriveCoverage(directory, runId, receipt);
 	if ('refusal' in derived) return derived.refusal;
 	const coverage = derived.coverage;
 	const event = reviewEventFor(settledRecords);
+	const toRendererFinding = (record: (typeof records)[number]) => ({
+		finding_id: typeof record.finding_id === 'string' ? record.finding_id : '',
+		status: typeof record.status === 'string' ? record.status : '',
+		file_line: typeof record.file_line === 'string' ? record.file_line : '',
+		evidence: typeof record.evidence === 'string' ? record.evidence : '',
+		next_action:
+			typeof record.next_action === 'string' ? record.next_action : '',
+		severity: typeof record.severity === 'string' ? record.severity : undefined,
+		order_agreement:
+			typeof record.order_agreement === 'string'
+				? record.order_agreement
+				: undefined,
+	});
 	const rendererInput: RenderReviewBodyInput = {
 		run_id: runId,
 		pr_head_sha: headSha,
@@ -681,6 +707,7 @@ export async function executePrReviewSubmission(
 				? receipt.base_verification
 				: undefined,
 		coverage,
+		order_unstable_suppressed: suppressedOrderUnstable.map(toRendererFinding),
 		findings: settledRecords.map((record) => ({
 			finding_id:
 				typeof record.finding_id === 'string' ? record.finding_id : '',
