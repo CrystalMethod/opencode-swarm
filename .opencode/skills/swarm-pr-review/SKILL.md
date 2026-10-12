@@ -2022,3 +2022,11 @@ and preferred whenever it can proceed.
 On Profiles B/C there is no durable gate or auto-resume loop to clear: if the
 head bind is genuinely unreachable or bounded lane recovery is exhausted,
 report the blocker to the user and stop.
+
+## Contract addendum (2026-10-12)
+
+- **Candidate rows are defect claims only.** Never emit verification notes,
+  confirmations, or coverage observations as CANDIDATE rows, and no
+  INFO-severity candidates — confirmations belong in the lane's
+  attestation/CLEAN row. A misattributed or confirmatory candidate inflates
+  reviewer adjudication for zero signal.
