@@ -47,17 +47,17 @@ describe('issue #2677 required-check contract evidence', () => {
 		).workflowRunsByWorkflow;
 
 		expect(evidence.captureSha).toBe(
-			'b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f',
+			'012c4e40db4a63dd9b771cb99d57c565949d2931',
 		);
 		expect(
 			captured['.github/workflows/drift-check.yml'].contentsEndpoint,
-		).toContain('?ref=b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f');
+		).toContain('?ref=012c4e40db4a63dd9b771cb99d57c565949d2931');
 		expect(captured['.github/workflows/drift-check.yml'].blobSha).toBe(
-			'33eae23dd213bd91caa55d951ab98cdd1af8101e',
+			'f26ac3b1ab1121ad3947c25024f4d7bc258ca972',
 		);
 		expect(local['.github/workflows/drift-check.yml']).toHaveLength(64);
 		expect(runs.map((run) => run.id)).toEqual(
-			expect.arrayContaining([34639685905, 34639685670]),
+			expect.arrayContaining([38204222229, 38204222210]),
 		);
 		expect(runsByWorkflow['.github/workflows/drift-check.yml']).toEqual([]);
 	});
@@ -100,7 +100,7 @@ describe('issue #2677 required-check contract evidence', () => {
 			Record<string, unknown>
 		>;
 		captured['.github/workflows/ci.yml'].contentsEndpoint =
-			'https://api.github.com/repos/other/repo/contents/.github/workflows/ci.yml?ref=b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f';
+			'https://api.github.com/repos/other/repo/contents/.github/workflows/ci.yml?ref=012c4e40db4a63dd9b771cb99d57c565949d2931';
 		const observedRuns = (evidence.mergeGroup as Record<string, unknown>)
 			.observedRuns as Array<Record<string, unknown>>;
 		observedRuns[0].endpoint =

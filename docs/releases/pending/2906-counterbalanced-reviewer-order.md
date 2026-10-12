@@ -45,9 +45,7 @@ presentation-order derivation applies the same pure prune as the record
 guard, so at the cap the derived ordinal already reflects the post-prune
 window and the derive/record parity guard cannot wedge — a dispatch that
 still diverges (state changed between derivation and recording) fails closed
-and a re-derived re-dispatch recovers; an older plugin reading a new receipt
-footer is simply receipt-less for that lane (verdict composition is
-receipt-independent).
+and a re-derived re-dispatch recovers.
 
 Requirement deviations and operational notes:
 
@@ -67,5 +65,10 @@ Requirement deviations and operational notes:
   second marked pass, so a single-pass run labels everything `single` and the
   report is silent that no counterbalanced comparison happened.
 - The collection-receipt payload is `.passthrough()`, matching the coherence
-  record, so an older build reading a new footer ignores the unknown key
-  instead of losing the accepted/rejected id partitions.
+  record, so an older build reading a new footer IGNORES the unknown key
+  instead of discarding the whole receipt: the accepted/rejected id
+  partitions survive. Verdict composition is receipt-independent either way.
+- `order_agreement` is optional on a findings row, but NOT omissible on a row
+  whose composed reviewer label is `disagree` — the write fails closed rather
+  than letting a flip lose its order-unstable marker. See
+  `references/findings-persistence-contract.md`.
