@@ -151,6 +151,21 @@ export interface PrReviewTranscriptFeedbackVerification {
 }
 
 /**
+ * One journaled `write_pr_review_artifact` rejection (issue #3098 — the
+ * verdict-lane mirror of the #2859 submit-rejection journal). Structural twin
+ * of the gate's `PrReviewVerdictRejectionRecord`; declared locally because the
+ * adapter cannot import the gate.
+ */
+export interface PrReviewVerdictRejectionEntry {
+	sessionId: string;
+	laneId?: string;
+	workflowLane?: string;
+	boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	at: number;
+	message: string;
+}
+
+/**
  * The PR-review slice of the owning gate's `PrWorkflowGateState`: exactly the
  * fields the moved conversion/composition machinery reads directly. The gate's
  * full state type satisfies this structurally.
@@ -159,6 +174,7 @@ export interface PrReviewTranscriptState {
 	sessionID: string;
 	prReviewBatchCoherence?: Record<string, PrReviewTranscriptBatchCoherence>;
 	prFeedbackVerifications?: PrReviewTranscriptFeedbackVerification[];
+	prReviewVerdictRejections?: PrReviewVerdictRejectionEntry[];
 }
 
 /** The gate-context surface the transcript composition consumes (full ctx is gate-owned). */
@@ -236,6 +252,19 @@ export interface PrReviewTranscriptGateHelpers {
 		expectedRevisionDigest: string,
 		diagnostics?: string[],
 	): LaneOutputArtifact | null;
+	/**
+	 * Issue #3098: newest journaled `write_pr_review_artifact` rejection
+	 * attributable to a lane (workflowLane/laneId join keys). Bound by the
+	 * gate, which owns the journal's reader.
+	 */
+	latestPrReviewVerdictRejectionForLane(
+		state: PrReviewTranscriptState,
+		matchers: {
+			workflowLane?: string;
+			laneIds?: readonly string[];
+			boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+		},
+	): string | undefined;
 }
 
 let gateHelpers: PrReviewTranscriptGateHelpers | undefined;
@@ -535,6 +564,13 @@ export function composePrReviewPhaseVerdicts(
 	const diagnostics: string[] = [];
 	const satisfiedObligations = new Set<string>();
 	const scannedBatches: PrReviewTranscriptBatch[] = [];
+	// Issue #3098: formatted artifact-integrity failure per declared obligation.
+	// Populated only from loadArtifactPassingLaneIntegrity (which fires only
+	// for lanes that ran and produced a failing artifact); record-level
+	// failures are deliberately NOT captured — a declared-but-never-run lane
+	// has no failure evidence, and its diagnostic must stay the plain form
+	// (pinned by pr-workflow-gate-review-item-coherence.test.ts).
+	const laneFailureReasons = new Map<string, string>();
 	// Issue #2906: per-item (classification, severity) observations tagged with
 	// the batch's counterbalanced presentation order. The scan is
 	// reverse-chronological, so the FIRST observation recorded per (item, order)
@@ -614,6 +650,11 @@ export function composePrReviewPhaseVerdicts(
 			true,
 			forbiddenSubagentSessionIds,
 		)) {
+			// Issue #3098: capture the formatted artifact-integrity failure for
+			// this lane via the sink — loadArtifactPassingLaneIntegrity pushes
+			// the formatPrReviewLaneValidationFailure rendering into a
+			// caller-supplied diagnostics array instead of returning it.
+			const integrityDiagnostics: string[] = [];
 			const artifact = loadArtifactPassingLaneIntegrity(
 				directory,
 				state,
@@ -621,8 +662,14 @@ export function composePrReviewPhaseVerdicts(
 				expectedMode,
 				qualified.expectedWorkflowLane,
 				ctx.revisionDigest,
+				integrityDiagnostics,
 			);
-			if (!artifact) continue;
+			if (!artifact) {
+				const reason = integrityDiagnostics.at(-1);
+				if (reason)
+					laneFailureReasons.set(qualified.expectedWorkflowLane, reason);
+				continue;
+			}
 			const declaredItems = qualified.expectedLane.reviewItemIds ?? [];
 			const { markerRows, parsed } = parsePrReviewVerdictRows(
 				artifact.text,
@@ -773,9 +820,42 @@ export function composePrReviewPhaseVerdicts(
 		),
 	)) {
 		if (satisfiedObligations.has(obligation)) continue;
+		// Issue #3098: enrich the abandoned-lane diagnostic with the lane's
+		// captured artifact-integrity predicate and, when one exists, its last
+		// journaled write_pr_review_artifact rejection — mirroring the #2859
+		// discovery surfacing (`; last rejected submit_pr_review_result: …`).
+		// With neither (the truly-abandoned case) the plain form is emitted
+		// byte-identically.
+		const failureReason = laneFailureReasons.get(obligation);
+		const laneIds = scannedBatches
+			.flatMap((batch) => batch.lanes)
+			.filter((lane) => lane.workflowLane === obligation)
+			.map((lane) => lane.laneId);
+		const journalMessage = state.prReviewVerdictRejections?.length
+			? requireBoundHelpers().latestPrReviewVerdictRejectionForLane(state, {
+					workflowLane: obligation,
+					laneIds,
+					// Write args name the boundary, never the lane, so an
+					// unattributed entry journalled for this phase's boundary is
+					// the honest fallback attribution.
+					boundary:
+						phase === 'reviewer'
+							? 'post_reviewer'
+							: phase === 'critic'
+								? 'post_critic'
+								: 'post_explorer',
+				})
+			: undefined;
+		// Journal suffix first: the whole line is sliced to the diagnostic char
+		// cap, and the predicate alone can fill it, so a trailing suffix would
+		// be cut exactly when the predicate is most detailed.
 		appendCompositionDiagnostic(
 			diagnostics,
-			`declared ${phase} lane "${obligation}" produced no successful exact artifact`,
+			`declared ${phase} lane "${obligation}" produced no successful exact artifact${
+				journalMessage
+					? `; last rejected write_pr_review_artifact: ${journalMessage}`
+					: ''
+			}${failureReason ? `: ${failureReason}` : ''}`,
 		);
 	}
 

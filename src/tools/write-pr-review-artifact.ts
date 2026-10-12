@@ -26,6 +26,7 @@ import {
 	readAuthoritativePrReviewOrderAgreement,
 	readPrReviewVerdictSettlementEffectiveIds,
 	readPrWorkflowGateState,
+	recordPrReviewVerdictRejection,
 	resolvePrReviewWriterRunId,
 	rollbackPrReviewPartialBaseCoverageAdmission,
 } from '../hooks/pr-workflow-gate.js';
@@ -424,18 +425,46 @@ export async function executeWritePrReviewArtifact(
 	directory: string,
 	context: { sessionID?: string } = {},
 ): Promise<string> {
+	// Issue #3098: durable observability for verdict-write rejections — a
+	// bounded FIFO journal mirroring the #2859 discovery submit-rejection
+	// journal. Fail-open by construction: journaling must never change the
+	// rejection outcome the caller sees.
+	let journalBoundary:
+		| 'post_explorer'
+		| 'post_reviewer'
+		| 'post_critic'
+		| undefined;
+	const reject = async (message: string): Promise<string> => {
+		const session = context.sessionID?.trim();
+		if (session) {
+			try {
+				await recordPrReviewVerdictRejection(
+					directory,
+					session,
+					message,
+					journalBoundary ? { boundary: journalBoundary } : undefined,
+				);
+			} catch {
+				// Fail-open observability: see the comment on reject.
+			}
+		}
+		return failure(message);
+	};
 	const parsed = WritePrReviewArtifactArgsSchema.safeParse(args);
 	if (!parsed.success) {
-		return failure(
+		return await reject(
 			`Invalid PR-review artifact: ${formatPrReviewValidationIssues(
 				parsed.error.issues,
 				args,
 			).join('; ')}`,
 		);
 	}
+	if (parsed.data.kind === 'findings') {
+		journalBoundary = parsed.data.boundary;
+	}
 	const sessionID = context.sessionID?.trim();
 	if (!sessionID)
-		return failure(
+		return await reject(
 			formatPrReviewRuntimeFieldError(
 				'session_id',
 				'a non-empty active session identifier',
@@ -454,7 +483,7 @@ export async function executeWritePrReviewArtifact(
 		);
 	}
 	if (state?.mode !== 'PR_REVIEW' || !state.prHeadSha) {
-		return failure(
+		return await reject(
 			formatPrReviewRuntimeFieldError(
 				'workflow.mode',
 				'an active head-bound "PR_REVIEW" workflow',
@@ -463,7 +492,7 @@ export async function executeWritePrReviewArtifact(
 		);
 	}
 	if (state.prHeadSha !== parsed.data.pr_head_sha.toLowerCase()) {
-		return failure(
+		return await reject(
 			formatPrReviewRuntimeFieldError(
 				'pr_head_sha',
 				`"${state.prHeadSha}"`,
@@ -481,7 +510,7 @@ export async function executeWritePrReviewArtifact(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return message.startsWith('BLOCKED: field ')
-			? failure(message)
+			? await reject(message)
 			: operationFailure(
 					'reserve',
 					`pr-review/${parsed.data.run_id ?? '<generated-run-id>'}/run-reservation.json`,
@@ -510,7 +539,7 @@ export async function executeWritePrReviewArtifact(
 	try {
 		existing = await readFindings(findingsPath);
 	} catch (error) {
-		return failure(
+		return await reject(
 			`operation read path "${relativeFindingsPath.split(path.sep).join('/')}": expected bounded JSONL matching the persisted findings schema, got ${error instanceof Error ? error.message : String(error)}`,
 		);
 	}
@@ -570,9 +599,10 @@ export async function executeWritePrReviewArtifact(
 			if (!rollbackError) return result;
 			try {
 				const decoded = JSON.parse(result) as { message?: unknown };
-				return typeof decoded.message === 'string'
-					? failure(`${decoded.message}; ${rollbackError}`)
-					: result;
+				if (typeof decoded.message !== 'string') return result;
+				// Journal the rollback-suffixed text too: the entry the caller
+				// reads must be the one that was actually returned.
+				return await reject(`${decoded.message}; ${rollbackError}`);
 			} catch {
 				return result;
 			}
@@ -601,7 +631,7 @@ export async function executeWritePrReviewArtifact(
 				);
 			} catch (error) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							findingsInput.partial_base_coverage
 								? 'partial_base_coverage'
@@ -623,7 +653,7 @@ export async function executeWritePrReviewArtifact(
 				findingsInput.records,
 			);
 		} catch (error) {
-			return failure(
+			return await reject(
 				formatPrReviewRuntimeFieldError(
 					'records',
 					`records exactly matching authoritative ${findingsInput.boundary} verdicts and disposition rules`,
@@ -637,7 +667,7 @@ export async function executeWritePrReviewArtifact(
 			!isExactReplay &&
 			!isPostExplorerSupersession
 		) {
-			return failure(
+			return await reject(
 				formatPrReviewRuntimeFieldError(
 					'records',
 					`an exact replay of the already-persisted "${findingsInput.boundary}" boundary`,
@@ -696,7 +726,7 @@ export async function executeWritePrReviewArtifact(
 				}
 			} catch (error) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							findingsInput.partial_base_coverage
 								? 'partial_base_coverage'
@@ -820,12 +850,16 @@ export async function executeWritePrReviewArtifact(
 					criticUnavailableIds,
 				);
 			} catch (error) {
+				// A critic-settlement mismatch is a CONTRACT rejection, not an
+				// environmental one: journal it like the other record-shape
+				// rejections so the orchestrator can see why the write failed.
 				return withPartialAdmissionRollback(
-					operationFailure(
-						'validate',
-						relativeFindingsPath.split(path.sep).join('/'),
-						'an authoritative critic settlement matching the authenticated critic verdict map',
-						error,
+					await reject(
+						formatPrReviewRuntimeFieldError(
+							'critic_settlements',
+							'an authoritative critic settlement matching the authenticated critic verdict map',
+							error instanceof Error ? error.message : String(error),
+						),
 					),
 				);
 			}
@@ -834,7 +868,7 @@ export async function executeWritePrReviewArtifact(
 			const serializedBytes = Buffer.byteLength(serializedFindings, 'utf8');
 			if (serializedBytes > PR_REVIEW_FINDINGS_MAX_BYTES) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							'records',
 							`a complete findings artifact at most ${PR_REVIEW_FINDINGS_MAX_BYTES} UTF-8 bytes`,
@@ -957,7 +991,7 @@ export async function executeWritePrReviewArtifact(
 		actionableIds.length === 0 ||
 		JSON.stringify(actionableIds) !== JSON.stringify(requestedIds)
 	) {
-		return failure(
+		return await reject(
 			`field handoff.finding_ids: expected authoritative actionable set [${actionableIds.join(', ') || '(none)'}], got requested [${requestedIds.join(', ') || '(none)'}]`,
 		);
 	}
@@ -1023,14 +1057,14 @@ export async function executeWritePrReviewArtifact(
 		existingHandoff = await readPersistedHandoff();
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-			return failure(
+			return await reject(
 				`operation read path "${relativeHandoffPath.split(path.sep).join('/')}": expected bounded JSON matching the persisted handoff schema, got ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 	}
 	if (existingHandoff) {
 		if (!handoffsMatch(existingHandoff)) {
-			return failure(
+			return await reject(
 				'field handoff: expected an exact retry of the persisted handoff, got conflicting handoff content',
 			);
 		}
@@ -1038,7 +1072,7 @@ export async function executeWritePrReviewArtifact(
 		const serializedHandoff = `${JSON.stringify(handoffRecord, null, 2)}\n`;
 		const serializedHandoffBytes = Buffer.byteLength(serializedHandoff, 'utf8');
 		if (serializedHandoffBytes > PR_REVIEW_HANDOFF_MAX_BYTES) {
-			return failure(
+			return await reject(
 				formatPrReviewRuntimeFieldError(
 					'handoff',
 					`a persisted handoff artifact at most ${PR_REVIEW_HANDOFF_MAX_BYTES} UTF-8 bytes`,
@@ -1062,12 +1096,12 @@ export async function executeWritePrReviewArtifact(
 			try {
 				raced = await readPersistedHandoff();
 			} catch (error) {
-				return failure(
+				return await reject(
 					`operation read path "${relativeHandoffPath.split(path.sep).join('/')}": expected the concurrently persisted handoff schema, got ${error instanceof Error ? error.message : String(error)}`,
 				);
 			}
 			if (!handoffsMatch(raced)) {
-				return failure(
+				return await reject(
 					'field handoff: expected an exact retry of the persisted handoff, got conflicting concurrent handoff content',
 				);
 			}
@@ -1108,7 +1142,7 @@ export const write_pr_review_artifact: ReturnType<typeof createSwarmTool> =
 	createSwarmTool({
 		allowWorkingDirectoryOverride: true,
 		description:
-			'Persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run.',
+			'Persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run. Reviewer verdicts marked `UNVERIFIED` persist to the findings ledger as `PENDING` records routed back to the reviewer — do not resubmit a row whose verdict is already recorded.',
 		args: {
 			kind: z.enum(['findings', 'handoff']),
 			run_id: PrReviewRunIdSchema.optional(),
