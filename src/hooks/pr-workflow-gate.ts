@@ -17034,18 +17034,23 @@ export async function derivePrReviewOrderUnstableItems(
 		'reviewer',
 		ctx,
 	);
-	// The newest reviewer batch's coherence record already carries the
-	// order-unstable ids STAMPED AT RECORD TIME — the same snapshot the record
-	// guard validated. Prefer that stamped set (it is the receipt-of-record for
-	// what a critic dispatch is about to be told) and recompute from the
-	// composed claims only when the newest batch predates the stamping
-	// (legacy or unmarked batches).
-	const newestReviewerBatchId = [...(state.prReviewValidationBatches ?? [])]
-		.filter((batch) => batch.phase === 'reviewer')
-		.at(-1)?.batchId;
-	const stamped = newestReviewerBatchId
-		? state.prReviewBatchCoherence?.[newestReviewerBatchId]
-				?.orderUnstableItemIds
+	// The order-unstable ids are STAMPED AT RECORD TIME onto the CRITIC batch's
+	// coherence record (the critic record is the only writer — see
+	// recordPrReviewValidationBatch), so that stamp is the receipt-of-record
+	// for what a critic dispatch is about to be told. Prefer the newest
+	// critic-phase stamp, and recompute from the composed claims only when no
+	// stamped set exists yet (pre-stamping batches, or a critic dispatch that
+	// precedes its own record). Reading the stamp is therefore never stale
+	// relative to the composition: both derive from the same window.
+	const newestStampedBatchId = [...(state.prReviewValidationBatches ?? [])]
+		.reverse()
+		.find(
+			(batch) =>
+				(state.prReviewBatchCoherence?.[batch.batchId]?.orderUnstableItemIds
+					?.length ?? 0) > 0,
+		)?.batchId;
+	const stamped = newestStampedBatchId
+		? state.prReviewBatchCoherence?.[newestStampedBatchId]?.orderUnstableItemIds
 		: undefined;
 	if (stamped && stamped.length > 0) return [...new Set(stamped)].sort();
 	return [...composition.claims.entries()]

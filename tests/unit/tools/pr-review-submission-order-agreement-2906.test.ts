@@ -66,6 +66,21 @@ async function seedSettledOrderUnstableRun(): Promise<void> {
 			pr_head_sha: PR_ARTIFACT_HEAD_SHA,
 			recorded_at: '2026-10-12T01:00:00.000Z',
 		},
+		// Review F-02: a flip whose NEWEST pass DISPROVED it. It is not a
+		// finding (so it must not reach the findings list or the review
+		// event) but it IS order-unstable, so it must be listed and counted.
+		{
+			finding_id: 'ORD-3',
+			status: 'DISPROVED',
+			file_line: 'src/ord.ts:30',
+			evidence: 'disproved on the second pass',
+			next_action: 'report',
+			severity: 'NONE',
+			order_agreement: 'disagree',
+			boundary: 'post_critic',
+			pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+			recorded_at: '2026-10-12T01:00:00.000Z',
+		},
 	];
 	await fs.writeFile(
 		join(runDir, 'findings.jsonl'),
@@ -153,5 +168,42 @@ describe('submission order_agreement passthrough (issue #2906)', () => {
 					!line.includes('[ORD-'),
 			),
 		).toBe(true);
+	});
+
+	test('a DISPROVED order-unstable row is listed and counted without becoming a finding', async () => {
+		await seedSettledOrderUnstableRun();
+		const payloadPath = join(directory, '.swarm', 'pr-review', RUN_ID);
+		const result = await executePrReviewSubmission(
+			{
+				pr_head_sha: PR_ARTIFACT_HEAD_SHA,
+				pr_number: 929,
+				repo: 'example/example-repo',
+				run_id: RUN_ID,
+			},
+			directory,
+			{ sessionID: PR_ARTIFACT_SESSION_ID },
+		);
+		expect(result).toContain('"success": true');
+		const payload = JSON.parse(
+			await fs.readFile(join(payloadPath, 'submission-payload.json'), 'utf-8'),
+		) as { body: string };
+		const body = payload.body;
+		// ORD-3 is DISPROVED: it must NOT appear in the findings list...
+		const findingsSection = body.slice(
+			body.indexOf('## Findings'),
+			body.indexOf('## Order-unstable'),
+		);
+		expect(findingsSection).not.toContain('ORD-3');
+		// ...but it IS order-unstable, so it must be listed with its final
+		// status and counted. Two unstable rows total: ORD-1 and ORD-3.
+		expect(body).toContain('## Order-unstable (not published as findings)');
+		const ord3 = body.split('\n').find((line) => line.includes('[ORD-3]'));
+		expect(ord3 ?? '').toContain('order-unstable');
+		expect(ord3 ?? '').toContain('disproved');
+		expect(body).toContain('2 finding(s) order-unstable');
+		// Exactly one summary sentence, whatever the mix.
+		expect(
+			body.split('\n').filter((line) => line.includes('order-unstable across')),
+		).toHaveLength(1);
 	});
 });

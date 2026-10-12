@@ -238,12 +238,6 @@ export function renderPrReviewSubmissionBody(
 			);
 		}
 	}
-	if (orderUnstableCount > 0) {
-		lines.push('');
-		lines.push(
-			`> ${orderUnstableCount} finding(s) order-unstable across counterbalanced reviewer passes (verdict flipped with presentation order).`,
-		);
-	}
 	// Issue #2906: an order-unstable finding whose settled status is DISPROVED
 	// is never published as a finding (a disproved row is not a finding), but
 	// suppressing it would drop the counterbalancing signal on exactly the
@@ -266,6 +260,11 @@ export function renderPrReviewSubmissionBody(
 				`- [${id}] (order-unstable, ${status}) ${location} — ${singleLine(finding.evidence ?? '', 400)}`,
 			);
 		}
+	}
+	// ONE summary sentence carries the TOTAL across the findings list and the
+	// suppressed section, whatever the mix (two summaries with different
+	// totals read as a contradiction).
+	if (orderUnstableCount > 0) {
 		lines.push('');
 		lines.push(
 			`> ${orderUnstableCount} finding(s) order-unstable across counterbalanced reviewer passes (verdict flipped with presentation order).`,
