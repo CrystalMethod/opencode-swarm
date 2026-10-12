@@ -1,5 +1,22 @@
 # Changelog
 
+## [7.194.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.193.0...v7.194.0) (2026-10-11)
+
+
+### Features
+
+* **pr-review:** enrich the status projection and close the review findings ([f77ecde](https://github.com/ZaxbyHub/opencode-swarm/commit/f77ecde801673c4132ec4d3144d95ed1a927ca3a)), closes [#3095](https://github.com/ZaxbyHub/opencode-swarm/issues/3095)
+* **tools:** pr_workflow_status exposes PR-review boundaries, lane coverage, and the candidate inventory ([8baff96](https://github.com/ZaxbyHub/opencode-swarm/commit/8baff96d3c1b3d229c2069f26dd9976f767691c3))
+* **tools:** pr_workflow_status exposes PR-review boundaries, lane coverage, and the candidate inventory ([#3095](https://github.com/ZaxbyHub/opencode-swarm/issues/3095)) ([86f1690](https://github.com/ZaxbyHub/opencode-swarm/commit/86f1690103377846c097d43588af97d390e7e15e))
+* **v2:** session client shim bridges Epic's review dispatch on OpenCode 2 ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169) Phase 2) ([c7783f9](https://github.com/ZaxbyHub/opencode-swarm/commit/c7783f9fbde81053d25122f9593fbac9045fe411))
+
+
+### Bug Fixes
+
+* **host/v2:** close PR [#3186](https://github.com/ZaxbyHub/opencode-swarm/issues/3186) review must-fixes (re-prompt orphan, get envelope, stale Epic-v2 docs) ([b8b2a6c](https://github.com/ZaxbyHub/opencode-swarm/commit/b8b2a6c76614b64d0fe760e30c55b1c3cd1bd320))
+* **registry:** bump remaining 5779-&gt;5786 continuation anchors in background-delegations-fallback row ([#3095](https://github.com/ZaxbyHub/opencode-swarm/issues/3095) review) ([b7cd349](https://github.com/ZaxbyHub/opencode-swarm/commit/b7cd34952c3384c6cc310a90e4b029203e5bc35d))
+* **registry:** repair pending-delegations citation anchors at source; revert baseline re-pin ([#3095](https://github.com/ZaxbyHub/opencode-swarm/issues/3095)) ([b17110c](https://github.com/ZaxbyHub/opencode-swarm/commit/b17110c92ad3400f75fd43e3035662e2b64be3fd))
+
 ## [7.193.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.192.4...v7.193.0) (2026-10-11)
 
 
