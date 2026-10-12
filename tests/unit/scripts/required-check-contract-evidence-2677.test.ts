@@ -47,17 +47,17 @@ describe('issue #2677 required-check contract evidence', () => {
 		).workflowRunsByWorkflow;
 
 		expect(evidence.captureSha).toBe(
-			'b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f',
+			'012c4e40db4a63dd9b771cb99d57c565949d2931',
 		);
 		expect(
 			captured['.github/workflows/drift-check.yml'].contentsEndpoint,
-		).toContain('?ref=b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f');
+		).toContain('?ref=012c4e40db4a63dd9b771cb99d57c565949d2931');
 		expect(captured['.github/workflows/drift-check.yml'].blobSha).toBe(
-			'33eae23dd213bd91caa55d951ab98cdd1af8101e',
+			'f26ac3b1ab1121ad3947c25024f4d7bc258ca972',
 		);
 		expect(local['.github/workflows/drift-check.yml']).toHaveLength(64);
 		expect(runs.map((run) => run.id)).toEqual(
-			expect.arrayContaining([34639685905, 34639685670]),
+			expect.arrayContaining([38204222229, 38204222210]),
 		);
 		expect(runsByWorkflow['.github/workflows/drift-check.yml']).toEqual([]);
 	});
@@ -107,7 +107,7 @@ describe('issue #2677 required-check contract evidence', () => {
 			'https://api.github.com/repos/other/repo/actions/runs/34639685905';
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -131,7 +131,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		runMap['.github/workflows/ci.yml'] = [99999999999];
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -152,7 +152,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		observedRuns[0].headSha = '0'.repeat(40);
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -173,7 +173,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		observedRuns[0].conclusion = 'failure';
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -194,7 +194,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		observedRuns[0].workflowPath = '';
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -217,7 +217,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		observedRuns[1].workflowPath = firstPath;
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -238,7 +238,7 @@ describe('issue #2677 required-check contract evidence', () => {
 		observedRuns[1].id = observedRuns[0].id;
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
@@ -256,10 +256,10 @@ describe('issue #2677 required-check contract evidence', () => {
 		const evidence = readEvidence();
 		const runMap = (evidence.mergeGroup as Record<string, unknown>)
 			.workflowRunsByWorkflow as Record<string, unknown[]>;
-		runMap['.github/workflows/pr-standards.yml'] = [34639685905];
+		runMap['.github/workflows/pr-standards.yml'] = [38204222229];
 		const result = evaluateRequiredCheckContract(
 			{ ...contract, evidence },
-			{ strict: true, now: new Date('2026-09-11T22:00:00Z') },
+			{ strict: true, now: new Date('2026-10-12T14:00:00Z') },
 		);
 		expect(result.status).toBe('unknown');
 		expect(result.findings.map((finding) => finding.code)).toContain(
