@@ -506,7 +506,7 @@ export async function executeWritePrReviewArtifact(
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return message.startsWith('BLOCKED: field ')
-			? failure(message)
+			? await reject(message)
 			: operationFailure(
 					'reserve',
 					`pr-review/${parsed.data.run_id ?? '<generated-run-id>'}/run-reservation.json`,
@@ -626,7 +626,7 @@ export async function executeWritePrReviewArtifact(
 				);
 			} catch (error) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							findingsInput.partial_base_coverage
 								? 'partial_base_coverage'
@@ -721,7 +721,7 @@ export async function executeWritePrReviewArtifact(
 				}
 			} catch (error) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							findingsInput.partial_base_coverage
 								? 'partial_base_coverage'
@@ -789,7 +789,7 @@ export async function executeWritePrReviewArtifact(
 			const serializedBytes = Buffer.byteLength(serializedFindings, 'utf8');
 			if (serializedBytes > PR_REVIEW_FINDINGS_MAX_BYTES) {
 				return withPartialAdmissionRollback(
-					failure(
+					await reject(
 						formatPrReviewRuntimeFieldError(
 							'records',
 							`a complete findings artifact at most ${PR_REVIEW_FINDINGS_MAX_BYTES} UTF-8 bytes`,

@@ -199,13 +199,9 @@ export async function executeCompletePrWorkflow(
 					// Issue #3098: bounded findings and degradation summaries, captured
 					// before the terminal clear deletes the gate-state pointer fields
 					// that address this evidence. Both readers are fail-open.
-					findings_summary: (await findingsSummaryForReportSafe(
-						directory,
-						context.sessionID,
-					)) ?? {
-						total: 0,
-						by_severity: {},
-					},
+					...((summary) => (summary ? { findings_summary: summary } : {}))(
+						await findingsSummaryForReportSafe(directory, context.sessionID),
+					),
 					coverage_degradations: await coverageDegradationsForReportSafe(
 						directory,
 						context.sessionID,
@@ -437,8 +433,8 @@ async function coverageDegradationsForReport(
 		.slice(0, MAX_TERMINAL_COVERAGE_DEGRADATIONS)
 		.map((degradation) => ({
 			trigger_id: degradation.trigger_id,
-			source_batch_id: degradation.source_batch_id,
-			source_lane_id: degradation.source_lane_id,
+			source_batch_id: redactTerminalCleanLiteral(degradation.source_batch_id),
+			source_lane_id: redactTerminalCleanLiteral(degradation.source_lane_id),
 			reason: redactTerminalCleanLiteral(
 				degradation.reason.slice(0, MAX_TERMINAL_DEGRADATION_REASON_CHARS),
 			),
