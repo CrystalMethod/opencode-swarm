@@ -1,25 +1,14 @@
 // Issue #2906 review finding F-05: the counterbalancing glue had no
 // production-path test — the 2906 suites call applyPrWorkflowPromptContract,
-// recordPrReviewValidationBatch, and the receipt encoders DIRECTLY, so a
-// dropped wire inside executeDispatchLanesAsync left every suite green. This
-// suite drives the real production entry points end-to-end and pins:
-//   1. two successive reviewer dispatches render assigned_item_ids canonical
-//      (A) then exactly reversed (B), each with the matching
-//      presentation_order line, and stamp the same order into
-//      prReviewBatchCoherence;
-//   2. at the disclosed >=128-batch capacity boundary the PREFLIGHT derivation
-//      applies the same pure capacity prune as the record guard (issue #2906
-//      review finding F-03), so a prune that flips the window parity cannot
-//      wedge the two sides: the prompt renders the post-prune order and the
-//      stamped receipt matches it in the same read-prune-append transaction —
-//      dropping the prune from derivePrReviewPresentationOrder flips this test;
-//   3. a critic dispatch renders order_unstable_item_ids with the composed
-//      cross-pass disagreeing item ids;
-//   4. the collection receipt footer published by the real collect path names
-//      the batch's presentationOrder. Settlement rides the real
-//      executeCollectLaneResults path: transcript mocks feed session.messages,
-//      the transport-recovery validator runs for real, and the production
-//      settle code appends the footer.
+// recordPrReviewValidationBatch, and the receipt encoders DIRECTLY, so a dropped
+// wire inside executeDispatchLanesAsync left every suite green. This suite drives
+// the real production entry points end-to-end and pins: two successive reviewer
+// dispatches render assigned_item_ids canonical (A) then exactly reversed (B)
+// with matching presentation_order lines and stamped coherence; at the disclosed
+// >=128-batch boundary the PREFLIGHT applies the same pure capacity prune as the
+// record guard (F-03) so a parity-flipping prune cannot wedge the two sides; a
+// critic dispatch renders the composed order_unstable_item_ids; and the real
+// collect path publishes a receipt footer naming the batch's presentationOrder.
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { mkdirSync } from 'node:fs';
 import * as fsp from 'node:fs/promises';
