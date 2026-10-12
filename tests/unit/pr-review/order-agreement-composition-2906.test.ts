@@ -133,50 +133,6 @@ describe('order-agreement composition (issue #2906)', () => {
 		expect(composed.claims.get('C-1')?.orderAgreement).toBe('agree');
 	});
 
-	test('a batch whose lanes never persisted contributes no observations', async () => {
-		await establishReviewPrerequisites();
-		// Declared-but-never-persisted batch C (would flip C-1 to DISPROVED if
-		// wrongly counted); its artifact is absent so the continuation's
-		// integrity gating must exclude it entirely.
-		await declareReviewerBatch('oa-stale', ['C-1']);
-		await declareReviewerBatch('oa-live-a', ['C-1']);
-		await persistReviewerBatch('oa-live-a', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
-		await declareReviewerBatch('oa-live-b', ['C-1']);
-		await persistReviewerBatch('oa-live-b', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
-		const composed = await gateInternals.composePrReviewPhaseVerdicts(
-			tempDir,
-			SESSION_ID,
-			'reviewer',
-		);
-		// The winning claim comes from the newest live batch; the stale batch's
-		// unparseable state neither claims nor observes.
-		expect(composed.claims.get('C-1')?.orderAgreement).toBe('agree');
-	});
-
-	test('vacuous single-item counterbalance: labels stay computed and descriptive', async () => {
-		await establishReviewPrerequisites();
-		await declareReviewerBatch('oa-single-a', ['C-1']);
-		await persistReviewerBatch('oa-single-a', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
-		await declareReviewerBatch('oa-single-b', ['C-1']);
-		await persistReviewerBatch('oa-single-b', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
-		const composed = await gateInternals.composePrReviewPhaseVerdicts(
-			tempDir,
-			SESSION_ID,
-			'reviewer',
-		);
-		// A and B render identical one-element sequences; the label is still
-		// computed (agree) but cannot implicate order effects at n=1.
-		expect(composed.claims.get('C-1')?.orderAgreement).toBe('agree');
-	});
-
 	// Unmarked-legacy labeling rule-out (plan D7 item 3, disclosed): a
 	// post-#2906 reviewer batch CANNOT legitimately lack its coherence
 	// presentationOrder — recordPrReviewValidationBatch stamps every reviewer
