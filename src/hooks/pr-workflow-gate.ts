@@ -17034,6 +17034,19 @@ export async function derivePrReviewOrderUnstableItems(
 		'reviewer',
 		ctx,
 	);
+	// The newest reviewer batch's coherence record already carries the
+	// order-unstable ids STAMPED AT RECORD TIME — the same snapshot the record
+	// guard validated. Prefer that stamped set (it is the receipt-of-record for
+	// what a critic dispatch is about to be told) and recompute from the
+	// composed claims only when the newest batch predates the stamping
+	// (legacy or unmarked batches).
+	const newestReviewerBatchId = [...(state.prReviewValidationBatches ?? [])]
+		.filter((batch) => batch.phase === 'reviewer')
+		.at(-1)?.batchId;
+	const stamped = newestReviewerBatchId
+		? state.prReviewBatchCoherence?.[newestReviewerBatchId]?.orderUnstableItemIds
+		: undefined;
+	if (stamped && stamped.length > 0) return [...new Set(stamped)].sort();
 	return [...composition.claims.entries()]
 		.filter(([, claim]) => claim.orderAgreement === 'disagree')
 		.map(([itemId]) => itemId)

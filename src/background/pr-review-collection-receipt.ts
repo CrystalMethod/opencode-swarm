@@ -33,7 +33,14 @@ const PrReviewCollectionReceiptPayloadSchema = z
 		 */
 		presentationOrder: z.enum(['A', 'B']).optional(),
 	})
-	.strict()
+	// Review finding LOW: an older build reading a NEW footer must not lose
+	// the accepted/rejected id partitions. `.strict()` returned null for the
+	// whole receipt once an unknown key appeared, so a footer written by a
+	// later plugin permanently discarded those partitions after compaction.
+	// The per-batch coherence record is already `.passthrough()` for exactly
+	// this reason; the receipt now matches it — unknown keys are ignored,
+	// not fatal.
+	.passthrough()
 	.superRefine((payload, context) => {
 		if (new Set(payload.reviewItemIds).size !== payload.reviewItemIds.length) {
 			context.addIssue({

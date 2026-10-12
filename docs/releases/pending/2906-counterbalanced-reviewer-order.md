@@ -48,3 +48,24 @@ still diverges (state changed between derivation and recording) fails closed
 and a re-derived re-dispatch recovers; an older plugin reading a new receipt
 footer is simply receipt-less for that lane (verdict composition is
 receipt-independent).
+
+Requirement deviations and operational notes:
+
+- The issue asked for an `Order-stable` report COLUMN. The renderer emits an
+  inline `(order-unstable)` marker on `disagree` rows plus a summary count
+  instead, because `agree` and `single` are visually identical in a column
+  that only two of three values would populate; the deviation is deliberate.
+- An order-unstable finding whose settled status is `DISPROVED` is not
+  published as a finding (a disproved row is not a finding), but it is listed
+  under `Order-unstable (not published as findings)` with its final status and
+  counted in the summary, so a flip whose newest pass disproved it does not
+  vanish.
+- Two reviewer dispatches issued in the same turn both derive order A; the
+  second is BLOCKED as an invalid request (`invalid_args`) rather than
+  silently sharing the order. A retry derives the next ordinal and succeeds.
+- Two-batch counterbalancing is instruction-mediated: nothing requires a
+  second marked pass, so a single-pass run labels everything `single` and the
+  report is silent that no counterbalanced comparison happened.
+- The collection-receipt payload is `.passthrough()`, matching the coherence
+  record, so an older build reading a new footer ignores the unknown key
+  instead of losing the accepted/rejected id partitions.

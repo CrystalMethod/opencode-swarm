@@ -489,6 +489,12 @@ function criticClaimIsBoundToCurrentReviewerRow(
  * complete claim set is unbounded blocking I/O for no verdict change — first
  * write wins, and every required item has already been written.
  *
+ * Issue #2906 adds ONE bounded exception: when the claim set completes but
+ * marked presentation orders remain, the scan continues only far enough to
+ * collect the ORDER OBSERVATIONS of the remaining batches, which no later
+ * batch can supply. That remainder is bounded by the same
+ * `MAX_WORKFLOW_BATCHES` window and changes no claim.
+ *
  * `exhaustive` turns the exit off for the batch GC, which prunes a reviewer
  * batch on "it contributed no claim". Being precise about what that buys: with
  * *this* exit condition the two scans yield the same `contributingBatchIds`,
