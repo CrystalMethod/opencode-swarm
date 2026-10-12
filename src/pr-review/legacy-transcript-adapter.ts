@@ -92,6 +92,19 @@ export interface PrReviewPhaseComposition {
 	requiredInventory: string[];
 	unclaimed: string[];
 	contributingBatchIds: string[];
+	/**
+	 * Issue #2906 review finding F-04: reviewer phase only (empty for critic).
+	 * Batch ids that recorded at least one ORDER OBSERVATION the agreement
+	 * labels read — a strictly different contribution than a claim. A batch
+	 * whose newer counterbalanced pass claimed every item contributes no claim
+	 * yet still supplies the second marked order every `agree`/`disagree`
+	 * label is computed from, so a capacity prune that retains only claim
+	 * contributors would silently degrade those labels to `single`. The prune
+	 * retains these ids as well; an older batch whose observations were
+	 * already recorded by a newer batch of the same order is absent (its
+	 * removal cannot change any label).
+	 */
+	orderObservingBatchIds: string[];
 	diagnostics: string[];
 }
 
@@ -527,12 +540,19 @@ export function composePrReviewPhaseVerdicts(
 					Map<'A' | 'B', { classification: string; severity: string }>
 				>()
 			: undefined;
+	// Issue #2906 F-04: batches that actually recorded >= 1 observation. The
+	// return value of recordOrderObservations is the count recorded, so a batch
+	// whose every (item, order) slot was already taken by a newer batch of the
+	// same order is NOT order-observing — its removal cannot change a label.
+	const orderObservingBatchIds = new Set<string>();
 	const recordOrderObservations = (
+		batchId: string,
 		coherence: PrReviewTranscriptBatchCoherence | undefined,
 		parsed: ReadonlyMap<string, { classification: string; severity: string }>,
-	): void => {
+	): number => {
 		const order = coherence?.presentationOrder;
-		if (!order || !orderObservations) return;
+		if (!order || !orderObservations) return 0;
+		let recorded = 0;
 		for (const [itemId, verdict] of parsed) {
 			// Same defense-in-depth membership rule as claims: a batch whose
 			// persisted inventory no longer lists the item contributes nothing.
@@ -549,8 +569,11 @@ export function composePrReviewPhaseVerdicts(
 					classification: verdict.classification,
 					severity: verdict.severity,
 				});
+				recorded += 1;
 			}
 		}
+		if (recorded > 0) orderObservingBatchIds.add(batchId);
+		return recorded;
 	};
 
 	for (const batch of [...window].reverse()) {
@@ -608,7 +631,7 @@ export function composePrReviewPhaseVerdicts(
 				);
 				continue;
 			}
-			recordOrderObservations(coherence, parsed);
+			recordOrderObservations(batch.batchId, coherence, parsed);
 			if (declaredItems.length > 0 && parsed.size === declaredItems.length) {
 				satisfiedObligations.add(qualified.expectedWorkflowLane);
 			}
@@ -702,7 +725,7 @@ export function composePrReviewPhaseVerdicts(
 				if (!verdictRowsContainOnlyAssignedIds(markerRows, declaredItems)) {
 					continue;
 				}
-				recordOrderObservations(coherence, parsed);
+				recordOrderObservations(batch.batchId, coherence, parsed);
 			}
 		}
 	}
@@ -755,6 +778,9 @@ export function composePrReviewPhaseVerdicts(
 		requiredInventory,
 		unclaimed: requiredInventory.filter((itemId) => !claims.has(itemId)),
 		contributingBatchIds,
+		// Empty for the critic phase (order observations are reviewer-only).
+		orderObservingBatchIds:
+			phase === 'reviewer' ? [...orderObservingBatchIds] : [],
 		diagnostics,
 	};
 	// An exhaustive pass is a superset of the memoizable one, but it is computed

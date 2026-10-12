@@ -7018,12 +7018,13 @@ async function prunePrWorkflowBatchesForCapacity(
  *   per *lane* under the tier-L singleton-first precedence, and a reverse
  *   per-batch scan here would not always agree. A superset can only under-prune;
  * - any reviewer batch that contributed at least one claim to the **exhaustive**
- *   composition. Contribution is read from a full-window scan rather than from
- *   the memoized early-exit pass, so this durable decision never rests on the
- *   composition's performance heuristic (issue #1968 MUST-FIX 3 / FIX 5; the two
- *   agree under today's exit condition — see `composePrReviewPhaseVerdicts`).
- *   A non-contributing reviewer batch is provably unable to change any verdict —
- *   composition is
+ *   composition, or (issue #2906 review finding F-04) at least one ORDER
+ *   OBSERVATION the agreement labels read. Contribution is read from a
+ *   full-window scan rather than from the memoized early-exit pass, so this
+ *   durable decision never rests on the composition's performance heuristic
+ *   (issue #1968 MUST-FIX 3 / FIX 5; the two agree under today's exit
+ *   condition — see `composePrReviewPhaseVerdicts`). A non-contributing
+ *   reviewer batch is provably unable to change any verdict — composition is
  *   first-write-wins over a reverse scan, so a batch that claimed nothing at its
  *   own position cannot claim anything once the batches ahead of it are still
  *   there. That is a stronger warrant than inventory inequality and subsumes it:
@@ -7031,6 +7032,10 @@ async function prunePrWorkflowBatchesForCapacity(
  *   The warrant is about the composition as it stands now; if a later inventory
  *   change made a dropped batch eligible again, its claims are simply absent,
  *   which can only leave an item unclaimed and BLOCK — never admit a verdict.
+ *   The order-observation retention is the same argument one level up: the
+ *   observation map is first-write-wins per (item, order) over the same reverse
+ *   scan, so a batch that recorded an observation cannot be inert for the
+ *   labels even when it is inert for the claims.
  *
  * Pruning a reviewer batch would otherwise loosen one fail-closed check —
  * `reviewerSubagentSessionIds`, the ban on a critic lane reusing a reviewer's
@@ -7099,14 +7104,36 @@ function pruneWorkflowBatches(
 	}
 	// Exhaustive on purpose: the hot path stops as soon as every item is claimed,
 	// and "was not reached before the early exit" is not evidence of inertness.
+	const exhaustiveReviewerComposition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+		true,
+	);
 	const contributingReviewerBatchIds = new Set(
-		composePrReviewPhaseVerdicts(directory, state, 'reviewer', ctx, true)
-			.contributingBatchIds,
+		exhaustiveReviewerComposition.contributingBatchIds,
+	);
+	// Issue #2906 review finding F-04: a reviewer batch can be claim-inert yet
+	// still load-bearing — when the newer counterbalanced pass claims every
+	// item, the older pass contributes no claim but supplies the second marked
+	// order every agree/disagree label is computed from (the #2906
+	// agreement-only continuation in the adapter reads exactly that batch).
+	// Dropping it would degrade those labels to `single` while the prune's
+	// inventory-equality discharge stays green, silently erasing the
+	// order-agreement evidence. Retain every batch that recorded an order
+	// observation; a same-order older pass subsumed by a newer one records
+	// nothing and stays prunable.
+	const orderObservingReviewerBatchIds = new Set(
+		exhaustiveReviewerComposition.orderObservingBatchIds,
 	);
 	const survivingValidation = validationBatches.filter((batch) => {
 		if (batch.phase === 'council' || batch.phase === 'critic') return true;
 		if (newestBatchIdByPhase.get(batch.phase) === batch.batchId) return true;
-		return contributingReviewerBatchIds.has(batch.batchId);
+		return (
+			contributingReviewerBatchIds.has(batch.batchId) ||
+			orderObservingReviewerBatchIds.has(batch.batchId)
+		);
 	});
 
 	if (
@@ -7488,9 +7515,12 @@ export async function recordPrReviewValidationBatch(
 	// Issue #2906: deterministic counterbalancing. The ordinal counts retained
 	// reviewer batches in the window EXCLUDING the batch being recorded —
 	// computed from `retained` before the append below — so it equals the value
-	// `derivePrReviewPresentationOrder` returned while the prompt was built,
-	// except after a capacity prune shifted the window (disclosed bound: the
-	// guard then fails closed and re-derivation on re-dispatch recovers).
+	// `derivePrReviewPresentationOrder` returned while the prompt was built:
+	// that derivation applies the same pure capacity prune under the same
+	// >= cap condition (issue #2906 review finding F-03), so a prune-shifted
+	// window can no longer wedge the two sides. A divergence that still reaches
+	// the guard means real state changed between derivation and recording; it
+	// fails closed and a re-derived dispatch recovers.
 	const retainedState: PrWorkflowGateState = {
 		...state,
 		prReviewValidationBatches: retained,
@@ -16952,13 +16982,38 @@ export async function readAuthoritativePrReviewCriticVerdicts(
  * dispatch tool derives it before prompt assembly and passes the same value to
  * `recordPrReviewValidationBatch` as `expectedPresentationOrder`, which
  * re-derives and fails closed on divergence.
+ *
+ * Issue #2906 review finding F-03: at the `MAX_WORKFLOW_BATCHES` cap the
+ * record guard counts the window of the PRUNED state (its read-prune-append
+ * transaction applies `prunePrWorkflowBatchesForCapacity` before deriving the
+ * stamped ordinal), while this derivation used to count the unpruned persisted
+ * window. When the prune flipped the window parity the guard threw — before
+ * `persistState`, so the prune was never durable — and every retry re-derived
+ * the same divergent value: a permanent liveness wedge that failed closed.
+ * This derivation therefore applies the SAME pure prune under the SAME
+ * >= cap condition, so both sides count the identical window. The prune is
+ * pure with respect to durable state (it reads artifacts and returns a
+ * candidate state; only the record path persists it), so running it here
+ * cannot violate the BL-6 single-transaction rule. Every prune-abort path
+ * (inventory inequality, unreadable delegation store, ledger overflow) returns
+ * the state unchanged here AND inside the record guard, so the two sides agree
+ * on those paths as well; a divergence that still reaches the guard means the
+ * state genuinely changed between derivation and recording, which fails closed
+ * and is recoverable by re-deriving.
  */
 export async function derivePrReviewPresentationOrder(
 	directory: string,
 	sessionID: string,
 ): Promise<'A' | 'B'> {
 	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
-	return prReviewPhaseWindow(state, 'reviewer').length % 2 === 0 ? 'A' : 'B';
+	const previous = state.prReviewValidationBatches ?? [];
+	const effective =
+		previous.length >= MAX_WORKFLOW_BATCHES
+			? await prunePrWorkflowBatchesForCapacity(directory, state, undefined)
+			: state;
+	return prReviewPhaseWindow(effective, 'reviewer').length % 2 === 0
+		? 'A'
+		: 'B';
 }
 
 /**

@@ -51,9 +51,18 @@ implicate order effects at n=1.
 
 - The presentation-order ordinal counts retained reviewer batches in the
   reviewer window (batches after the latest council batch), excluding the
-  batch being recorded. After the rare capacity prune (≥128 retained batches
-  across all phases) the parity of later ordinals can flip; a dispatch whose
-  derived order diverges from its recorded receipt fails closed and is safely
-  re-dispatched.
+  batch being recorded. Both the dispatch-time derivation and the record
+  guard apply the SAME pure capacity prune before counting, so at the
+  ≥128-batch cap the derived ordinal already reflects the post-prune window
+  and the two sides cannot disagree about prune parity. A dispatch whose
+  derived order still diverges from its recorded receipt — state genuinely
+  changed between derivation and recording — fails closed; re-derive and
+  re-dispatch. That retry cannot wedge: the derivation is deterministic over
+  the current state, so it re-derives exactly the value the guard will stamp.
+- The capacity prune never drops a reviewer batch that contributed order
+  observations: an older counterbalanced pass is retained even when the newer
+  pass claimed every item (its observations ride the agreement-only
+  continuation), so `agree`/`disagree` labels survive GC and never silently
+  degrade to `single`.
 - The wire `[REVIEWED]` row grammar is unchanged: presentation order is a
   property of the pass (batch), not of any individual row.

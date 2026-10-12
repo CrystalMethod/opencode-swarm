@@ -7,10 +7,12 @@
 //      (A) then exactly reversed (B), each with the matching
 //      presentation_order line, and stamp the same order into
 //      prReviewBatchCoherence;
-//   2. the record guard fails closed when the record-side window parity
-//      diverges from the preflight derivation (the disclosed >=128-batch
-//      capacity-prune bound) — dropping the expectedPresentationOrder argument
-//      at the recordPrReviewValidationBatch call site flips this test;
+//   2. at the disclosed >=128-batch capacity boundary the PREFLIGHT derivation
+//      applies the same pure capacity prune as the record guard (issue #2906
+//      review finding F-03), so a prune that flips the window parity cannot
+//      wedge the two sides: the prompt renders the post-prune order and the
+//      stamped receipt matches it in the same read-prune-append transaction —
+//      dropping the prune from derivePrReviewPresentationOrder flips this test;
 //   3. a critic dispatch renders order_unstable_item_ids with the composed
 //      cross-pass disagreeing item ids;
 //   4. the collection receipt footer published by the real collect path names
@@ -348,9 +350,10 @@ async function stampedPresentationOrder(batchId: string) {
 
 /**
  * Arrange the disclosed >=128-batch capacity condition: `fillCount`
- * non-contributing reviewer batches before the settled batch, so the preflight
- * window counts an even 128 while the record-side prune drops an odd 127 and
- * re-derives the opposite parity.
+ * non-contributing reviewer batches before the settled batch, so the persisted
+ * window holds an even 128 while the capacity prune drops all 127 fillers and
+ * leaves a 1-batch window — the parity flip both the preflight derivation and
+ * the record guard must now count through the same pure prune (F-03).
  */
 async function injectFillerReviewerBatches(
 	fillCount: number,
@@ -419,25 +422,25 @@ describe('dispatch_lanes_async PR_REVIEW counterbalancing (issue #2906 productio
 		expect(output).toContain('"presentationOrder":"A"');
 	}, 60_000);
 
-	test('record guard fails closed when a capacity prune flips the window parity after the preflight derivation', async () => {
+	test('at the >=128-batch cap the preflight derivation applies the same pure prune as the record guard, so a parity-flipping prune cannot wedge the dispatch', async () => {
 		await establishReviewPrerequisites();
 		await dispatchReviewerBatch('rev-settled');
 		await settleViaCollect('rev-settled', 'A');
 		await injectFillerReviewerBatches(127, 'rev-settled');
 
-		const divergent = await executeDispatchLanesAsync(
+		const atCap = await executeDispatchLanesAsync(
 			{
 				mode: 'swarm-pr-review:reviewer',
 				pr_head_sha: HEAD_SHA,
 				base_sha: BASE_SHA,
 				base_ref: BASE_REF,
-				batch_id: 'rev-diverge',
+				batch_id: 'rev-at-cap',
 				lanes: [
 					{
-						id: 'rev-diverge-lane',
+						id: 'rev-at-cap-lane',
 						agent: 'reviewer',
 						prompt: 'Classify every assigned candidate.',
-						workflow_lane: 'rev-diverge-lane',
+						workflow_lane: 'rev-at-cap-lane',
 						review_item_ids: ['C-0'],
 					},
 				],
@@ -445,17 +448,23 @@ describe('dispatch_lanes_async PR_REVIEW counterbalancing (issue #2906 productio
 			directory,
 			{ sessionID: SESSION_ID },
 		);
-		expect(divergent.success).toBe(false);
-		expect(divergent.message).toContain(
-			'presentation order derives as "B" but the dispatch prompt was built for "A"',
-		);
-		// Side-effect-free: the guard fired before persistState, so no lane was
-		// launched and nothing was recorded for the rejected batch.
+		// Pre-F-03 this failed closed forever: the preflight counted the
+		// UNPRUNED window (128 reviewer batches -> 'A') while the record guard
+		// counted the pruned one (1 retained -> 'B'), and the guard throws
+		// before persistState, so every retry re-derived the same divergent
+		// 'A'. With the derivation applying the same pure prune, the dispatch
+		// succeeds and a retry would re-derive the same 'B'.
+		expect(atCap.success, atCap.message).toBe(true);
+		await awaitPromptCount(2);
+		expect(deliveredPrompts[1]).toContain(ORDER_LINE_B);
+		expect(await stampedPresentationOrder('rev-at-cap')).toBe('B');
+		// The prune became durable in the same transaction as the append: the
+		// 127 inert fillers are gone and the retained window is exactly the
+		// settled batch plus the new record.
+		const state = await readPrWorkflowGateState(directory, SESSION_ID);
 		expect(
-			readDelegations(directory).filter(
-				(record) => record.batchId === 'rev-diverge',
-			),
-		).toEqual([]);
+			(state?.prReviewValidationBatches ?? []).map((batch) => batch.batchId),
+		).toEqual(['rev-settled', 'rev-at-cap']);
 	}, 60_000);
 
 	test('critic dispatch renders order_unstable_item_ids from the composed cross-pass verdicts', async () => {

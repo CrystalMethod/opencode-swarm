@@ -37,7 +37,14 @@ baseline).
 Disclosures: the mechanical reordering covers the controller-owned
 `assigned_item_ids` list — candidate-prose ordering is instruction-mediated
 via the contract line; a single-item inventory renders identical orders and
-its labels are descriptive only; after the rare ≥128-batch capacity prune the
-parity of later ordinals can flip (a divergent dispatch fails closed and is
-safely re-dispatched); an older plugin reading a new receipt footer is simply
-receipt-less for that lane (verdict composition is receipt-independent).
+its labels are descriptive only; the ≥128-batch capacity prune retains every
+reviewer batch that contributed order observations (an older
+counterbalanced pass survives even when the newer pass claimed every item),
+so the order-agreement labels do not degrade after GC, and the
+presentation-order derivation applies the same pure prune as the record
+guard, so at the cap the derived ordinal already reflects the post-prune
+window and the derive/record parity guard cannot wedge — a dispatch that
+still diverges (state changed between derivation and recording) fails closed
+and a re-derived re-dispatch recovers; an older plugin reading a new receipt
+footer is simply receipt-less for that lane (verdict composition is
+receipt-independent).

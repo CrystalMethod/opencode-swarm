@@ -95,10 +95,15 @@ describe('pr-workflow-gate capacity GC ledger overflow', () => {
 		'a reviewer-session ledger overflow keeps every validation batch',
 		async () => {
 			await establishReviewPrerequisites();
-			// The exact scenario the reclaim test proves succeeds: `rv-first` becomes
-			// inert once `rv-winner` lands the same rows, so the GC wants to drop it —
-			// and dropping it means retiring its child session for the critic ban.
-			for (const batchId of ['rv-first', 'rv-winner']) {
+			// The exact scenario the reclaim test proves succeeds: `rv-first`
+			// becomes inert once a newer batch lands the same rows, so the GC
+			// wants to drop it — and dropping it means retiring its child
+			// session for the critic ban. Issue #2906 review finding F-04: a
+			// batch that contributed ORDER OBSERVATIONS is retained, so
+			// `rv-first` ('A') must be subsumed by `rv-superseder` — same order,
+			// one position newer, same rows — while `rv-winner` ('B', position 2)
+			// keeps its own order's observations.
+			for (const batchId of ['rv-first', 'rv-winner', 'rv-superseder']) {
 				await recordPrReviewValidationBatch(
 					tempDir,
 					SESSION_ID,
@@ -113,7 +118,7 @@ describe('pr-workflow-gate capacity GC ledger overflow', () => {
 					{ batchId, prHeadSha: HEAD_SHA },
 				);
 			}
-			for (let index = 2; index < MAX_WORKFLOW_BATCHES; index += 1) {
+			for (let index = 3; index < MAX_WORKFLOW_BATCHES; index += 1) {
 				await recordPrReviewValidationBatch(
 					tempDir,
 					SESSION_ID,
@@ -128,7 +133,7 @@ describe('pr-workflow-gate capacity GC ledger overflow', () => {
 					{ batchId: `rv-${index}`, prHeadSha: HEAD_SHA },
 				);
 			}
-			for (const batchId of ['rv-first', 'rv-winner']) {
+			for (const batchId of ['rv-first', 'rv-winner', 'rv-superseder']) {
 				await persistBatch(
 					batchId,
 					'swarm-pr-review:reviewer',
