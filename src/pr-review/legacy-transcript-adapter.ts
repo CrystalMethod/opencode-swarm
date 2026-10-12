@@ -76,6 +76,14 @@ export interface PrReviewItemClaim {
 	 * Reviewer claims only — this is what a critic batch binds to per item.
 	 */
 	rowDigest?: string;
+	/**
+	 * Issue #2906: reviewer claims only. Whether this item's verdict was stable
+	 * across the counterbalanced presentation orders — 'agree' when both the A
+	 * and B passes produced the same (classification, severity) pair, 'disagree'
+	 * when they flipped, 'single' when fewer than two marked orders observed the
+	 * item. The label describes cross-order evidence, not winner provenance.
+	 */
+	orderAgreement?: 'agree' | 'disagree' | 'single';
 }
 
 export interface PrReviewPhaseComposition {
@@ -84,6 +92,19 @@ export interface PrReviewPhaseComposition {
 	requiredInventory: string[];
 	unclaimed: string[];
 	contributingBatchIds: string[];
+	/**
+	 * Issue #2906 review finding F-04: reviewer phase only (empty for critic).
+	 * Batch ids that recorded at least one ORDER OBSERVATION the agreement
+	 * labels read — a strictly different contribution than a claim. A batch
+	 * whose newer counterbalanced pass claimed every item contributes no claim
+	 * yet still supplies the second marked order every `agree`/`disagree`
+	 * label is computed from, so a capacity prune that retains only claim
+	 * contributors would silently degrade those labels to `single`. The prune
+	 * retains these ids as well; an older batch whose observations were
+	 * already recorded by a newer batch of the same order is absent (its
+	 * removal cannot change any label).
+	 */
+	orderObservingBatchIds: string[];
 	diagnostics: string[];
 }
 
@@ -119,6 +140,8 @@ export interface PrReviewTranscriptBatchCoherence {
 	reviewerItemBindings?: Record<string, string>;
 	/** Key encoding for reviewerItemBindings; absent means legacy raw item IDs. */
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
+	/** Issue #2906: reviewer batches only — the counterbalanced presentation order. */
+	presentationOrder?: 'A' | 'B';
 }
 
 /** Settled PR_FEEDBACK verification batch, as the adapter reads it. */
@@ -466,6 +489,12 @@ function criticClaimIsBoundToCurrentReviewerRow(
  * complete claim set is unbounded blocking I/O for no verdict change — first
  * write wins, and every required item has already been written.
  *
+ * Issue #2906 adds ONE bounded exception: when the claim set completes but
+ * marked presentation orders remain, the scan continues only far enough to
+ * collect the ORDER OBSERVATIONS of the remaining batches, which no later
+ * batch can supply. That remainder is bounded by the same
+ * `MAX_WORKFLOW_BATCHES` window and changes no claim.
+ *
  * `exhaustive` turns the exit off for the batch GC, which prunes a reviewer
  * batch on "it contributed no claim". Being precise about what that buys: with
  * *this* exit condition the two scans yield the same `contributingBatchIds`,
@@ -506,6 +535,52 @@ export function composePrReviewPhaseVerdicts(
 	const diagnostics: string[] = [];
 	const satisfiedObligations = new Set<string>();
 	const scannedBatches: PrReviewTranscriptBatch[] = [];
+	// Issue #2906: per-item (classification, severity) observations tagged with
+	// the batch's counterbalanced presentation order. The scan is
+	// reverse-chronological, so the FIRST observation recorded per (item, order)
+	// is that order's newest verdict — the same newest-wins rule claims follow.
+	const orderObservations =
+		phase === 'reviewer'
+			? new Map<
+					string,
+					Map<'A' | 'B', { classification: string; severity: string }>
+				>()
+			: undefined;
+	// Issue #2906 F-04: batches that actually recorded >= 1 observation. The
+	// return value of recordOrderObservations is the count recorded, so a batch
+	// whose every (item, order) slot was already taken by a newer batch of the
+	// same order is NOT order-observing — its removal cannot change a label.
+	const orderObservingBatchIds = new Set<string>();
+	const recordOrderObservations = (
+		batchId: string,
+		coherence: PrReviewTranscriptBatchCoherence | undefined,
+		parsed: ReadonlyMap<string, { classification: string; severity: string }>,
+	): number => {
+		const order = coherence?.presentationOrder;
+		if (!order || !orderObservations) return 0;
+		let recorded = 0;
+		for (const [itemId, verdict] of parsed) {
+			// Same defense-in-depth membership rule as claims: a batch whose
+			// persisted inventory no longer lists the item contributes nothing.
+			if (coherence && !coherence.validatedInventory.includes(itemId)) {
+				continue;
+			}
+			let perItem = orderObservations.get(itemId);
+			if (!perItem) {
+				perItem = new Map();
+				orderObservations.set(itemId, perItem);
+			}
+			if (!perItem.has(order)) {
+				perItem.set(order, {
+					classification: verdict.classification,
+					severity: verdict.severity,
+				});
+				recorded += 1;
+			}
+		}
+		if (recorded > 0) orderObservingBatchIds.add(batchId);
+		return recorded;
+	};
 
 	for (const batch of [...window].reverse()) {
 		scannedBatches.push(batch);
@@ -562,6 +637,7 @@ export function composePrReviewPhaseVerdicts(
 				);
 				continue;
 			}
+			recordOrderObservations(batch.batchId, coherence, parsed);
 			if (declaredItems.length > 0 && parsed.size === declaredItems.length) {
 				satisfiedObligations.add(qualified.expectedWorkflowLane);
 			}
@@ -598,6 +674,86 @@ export function composePrReviewPhaseVerdicts(
 		if (!exhaustive && claims.size === requiredSet.size) break;
 	}
 
+	// Issue #2906: agreement-only continuation. The main loop early-exits once
+	// every item is claimed, which leaves the OLDER counterbalanced pass
+	// un-scanned exactly when the newest pass claimed everything — the case the
+	// agreement signal exists to observe. Scan the remainder with the IDENTICAL
+	// gating (batch contribution, per-lane integrity, artifact load,
+	// assigned-ids check, inventory membership) and record observations only;
+	// claims are never mutated here. Unmarked batches are skipped: the agreement
+	// label compares marked presentation orders only.
+	if (phase === 'reviewer' && orderObservations) {
+		const scanned = new Set(scannedBatches.map((batch) => batch.batchId));
+		for (const batch of [...window].reverse()) {
+			if (scanned.has(batch.batchId)) continue;
+			if (
+				!batchMayContributeClaims(
+					directory,
+					state,
+					batch,
+					phase,
+					requiredInventory,
+					forbiddenSubagentSessionIds,
+					reviewerClaims,
+					ctx,
+				)
+			) {
+				continue;
+			}
+			const coherence = state.prReviewBatchCoherence?.[batch.batchId];
+			if (!coherence?.presentationOrder) continue;
+			for (const qualified of recordsPassingBatchIntegrity(
+				directory,
+				state,
+				batch.batchId,
+				batch.lanes,
+				expectedMode,
+				batch.validatedAt,
+				true,
+				forbiddenSubagentSessionIds,
+			)) {
+				const artifact = loadArtifactPassingLaneIntegrity(
+					directory,
+					state,
+					qualified.record,
+					expectedMode,
+					qualified.expectedWorkflowLane,
+					ctx.revisionDigest,
+				);
+				if (!artifact) continue;
+				const declaredItems = qualified.expectedLane.reviewItemIds ?? [];
+				const { markerRows, parsed } = parsePrReviewVerdictRows(
+					artifact.text,
+					declaredItems,
+					phase,
+					reviewerClaims,
+				);
+				if (!verdictRowsContainOnlyAssignedIds(markerRows, declaredItems)) {
+					continue;
+				}
+				recordOrderObservations(batch.batchId, coherence, parsed);
+			}
+		}
+	}
+
+	// Issue #2906: stamp the per-claim order agreement. The label describes
+	// cross-order evidence, not winner provenance — an unmarked winning batch
+	// with only one marked order observed still labels 'single'.
+	if (phase === 'reviewer' && orderObservations) {
+		for (const [itemId, claim] of claims) {
+			const perItem = orderObservations.get(itemId);
+			const orderA = perItem?.get('A');
+			const orderB = perItem?.get('B');
+			claim.orderAgreement =
+				orderA && orderB
+					? orderA.classification === orderB.classification &&
+						orderA.severity === orderB.severity
+						? 'agree'
+						: 'disagree'
+					: 'single';
+		}
+	}
+
 	// The lane-level "every declared obligation across every batch in the window
 	// must be settled" requirement was deliberately dropped: it is part of the
 	// all-or-nothing accounting that forces a full re-run for one failed lane,
@@ -628,6 +784,9 @@ export function composePrReviewPhaseVerdicts(
 		requiredInventory,
 		unclaimed: requiredInventory.filter((itemId) => !claims.has(itemId)),
 		contributingBatchIds,
+		// Empty for the critic phase (order observations are reviewer-only).
+		orderObservingBatchIds:
+			phase === 'reviewer' ? [...orderObservingBatchIds] : [],
 		diagnostics,
 	};
 	// An exhaustive pass is a superset of the memoizable one, but it is computed
