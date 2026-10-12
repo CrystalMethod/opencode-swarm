@@ -337,4 +337,41 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		expect(postCriticSpoof).toContain('order_agreement for C-0');
 		expect(postCriticSpoof).toContain('disagree');
 	});
+
+	test('order_agreement participates in the replay-identity key (review F-08c)', async () => {
+		// A re-submission whose ONLY delta is the order_agreement label must NOT
+		// be an exact replay of the already-persisted boundary — the label
+		// changes the published report (order-unstable markers and counts), so
+		// `canonicalFindingRecords` folds it into the identity key. Both label
+		// shapes are individually LEGAL against the single-pass composed
+		// authority ('single': absent is the legacy shape, and 'single' matches
+		// the composed value), so the rejection can only come from the
+		// replay-identity comparison, not from the authority cross-check.
+		await establishPrReviewPrerequisites(directory, 'oa-run-replay');
+		const runId = await resolvePrReviewWriterRunId(directory, SESSION_ID);
+		await writeBoundary(runId, 'post_explorer', INVENTORY.map(explorerRecord));
+		// Single reviewer pass: every item's composed authority is 'single'.
+		await reviewerPass('oa-rp-a', {});
+		const unlabelled = INVENTORY.map((id) => reviewerRecord(id));
+		const first = await writeBoundary(runId, 'post_reviewer', unlabelled);
+		expect(first).toContain('"success": true');
+		// The only delta is the added order_agreement: 'single' label.
+		const relabelled = unlabelled.map((record) => ({
+			...record,
+			order_agreement: 'single' as const,
+		}));
+		const relabelledWrite = await writeBoundary(
+			runId,
+			'post_reviewer',
+			relabelled,
+		);
+		expect(relabelledWrite).toContain('"success": false');
+		expect(relabelledWrite).toContain(
+			'an exact replay of the already-persisted',
+		);
+		// Control: the ORIGINAL records replay exactly and stay idempotent.
+		const control = await writeBoundary(runId, 'post_reviewer', unlabelled);
+		expect(control).toContain('"success": true');
+		expect(control).toContain('"replayed": true');
+	});
 });

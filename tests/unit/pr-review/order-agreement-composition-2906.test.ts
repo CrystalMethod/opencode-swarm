@@ -1,6 +1,6 @@
 // Issue #2906 — order-agreement composition semantics beyond the frozen C3
-// pin: retry-within-order newest-wins, integrity-filtered continuation, and
-// the vacuous single-item counterbalance.
+// pin: retry-within-order newest-wins, integrity-filtered continuation, the
+// vacuous single-item counterbalance, and classification-only flips.
 
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
@@ -49,14 +49,31 @@ async function declareReviewerBatch(
 async function persistReviewerBatch(
 	batchId: string,
 	rows: readonly string[],
+	options: { status?: 'completed' | 'error' } = {},
 ): Promise<void> {
 	await persistBatch(
 		batchId,
 		'swarm-pr-review:reviewer',
 		[{ laneId: `${batchId}-lane`, workflowLane: `${batchId}-lane` }],
-		{ textOverride: rows.join('\n'), subagentSessionId: `${batchId}-lane` },
+		{
+			textOverride: rows.join('\n'),
+			subagentSessionId: `${batchId}-lane`,
+			status: options.status,
+		},
 	);
 }
+
+/**
+ * The full candidate inventory of `establishReviewPrerequisites` (six base
+ * candidates C-0..C-5, micro lanes all CLEAN). Declaring a batch over the FULL
+ * inventory makes the main loop's early exit fire on the newest batch, so the
+ * older batches are reachable ONLY through the #2906 agreement-only
+ * continuation — the code under test.
+ */
+const INVENTORY = ['C-0', 'C-1', 'C-2', 'C-3', 'C-4', 'C-5'];
+
+const rowsFor = (classification: string, severity: string): string[] =>
+	INVENTORY.map((id) => reviewedRow(id, classification, severity));
 
 describe('order-agreement composition (issue #2906)', () => {
 	test('retry within an order resolves to that order newest verdict', async () => {
@@ -89,28 +106,41 @@ describe('order-agreement composition (issue #2906)', () => {
 		expect(claim?.orderAgreement).toBe('disagree');
 	});
 
-	test('a batch whose lanes never persisted contributes no observations', async () => {
+	// F-08(a): the arm must DISCRIMINATE the continuation's integrity gating.
+	// The old shape (a declared batch whose lanes were never persisted) could
+	// not go red under a gating removal: an unpersisted batch has no artifact
+	// anywhere on disk, so even unguarded reads observe nothing from it. The
+	// batch below IS persisted — its artifact carries parseable DISPROVED rows
+	// that would flip every observation — but its delegation record settles in
+	// the error state, so `recordsPassingBatchIntegrity` must reject it in the
+	// continuation. Neutralizing that gating makes this arm red.
+	test('an integrity-failing persisted batch contributes no order observation', async () => {
 		await establishReviewPrerequisites();
-		// Declared-but-never-persisted batch C (would flip C-1 to DISPROVED if
-		// wrongly counted); its artifact is absent so the continuation's
-		// integrity gating must exclude it entirely.
-		await declareReviewerBatch('oa-stale', ['C-1']);
-		await declareReviewerBatch('oa-live-a', ['C-1']);
-		await persistReviewerBatch('oa-live-a', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
-		await declareReviewerBatch('oa-live-b', ['C-1']);
-		await persistReviewerBatch('oa-live-b', [
-			reviewedRow('C-1', 'CONFIRMED', 'HIGH'),
-		]);
+		// Declaration order fixes the counterbalanced orders A,B,A,B. The bad
+		// batch is the NEWEST order-A batch, and the main loop settles on the
+		// newest batch overall (oa2-settle) — so the bad batch is reachable only
+		// through the agreement-only continuation, and only there can its
+		// DISPROVED rows poison the order-A observation slot (first-write-wins
+		// per order, scanned newest-first).
+		await declareReviewerBatch('oa2-good-a', INVENTORY);
+		await persistReviewerBatch('oa2-good-a', rowsFor('CONFIRMED', 'HIGH'));
+		await declareReviewerBatch('oa2-good-b', INVENTORY);
+		await persistReviewerBatch('oa2-good-b', rowsFor('CONFIRMED', 'HIGH'));
+		await declareReviewerBatch('oa2-bad-a', INVENTORY);
+		await persistReviewerBatch('oa2-bad-a', rowsFor('DISPROVED', 'NONE'), {
+			status: 'error',
+		});
+		await declareReviewerBatch('oa2-settle', INVENTORY);
+		await persistReviewerBatch('oa2-settle', rowsFor('CONFIRMED', 'HIGH'));
 		const composed = await gateInternals.composePrReviewPhaseVerdicts(
 			tempDir,
 			SESSION_ID,
 			'reviewer',
 		);
-		// The winning claim comes from the newest live batch; the stale batch's
-		// unparseable state neither claims nor observes.
-		expect(composed.claims.get('C-1')?.orderAgreement).toBe('agree');
+		const claim = composed.claims.get('C-0');
+		expect(claim?.classification).toBe('CONFIRMED');
+		expect(claim?.severity).toBe('HIGH');
+		expect(claim?.orderAgreement).toBe('agree');
 	});
 
 	test('vacuous single-item counterbalance: labels stay computed and descriptive', async () => {
@@ -131,6 +161,28 @@ describe('order-agreement composition (issue #2906)', () => {
 		// A and B render identical one-element sequences; the label is still
 		// computed (agree) but cannot implicate order effects at n=1.
 		expect(composed.claims.get('C-1')?.orderAgreement).toBe('agree');
+	});
+
+	// F-08(b): every earlier disagree fixture flipped severity only, so a
+	// severity-only comparison survived. A classification flip at EQUAL severity
+	// (CONFIRMED/HIGH vs UNVERIFIED/HIGH) is a disagreement that only the
+	// classification comparison can see.
+	test('a classification flip at equal severity labels disagree', async () => {
+		await establishReviewPrerequisites();
+		await declareReviewerBatch('clf-a', INVENTORY);
+		await persistReviewerBatch('clf-a', rowsFor('CONFIRMED', 'HIGH'));
+		await declareReviewerBatch('clf-b', INVENTORY);
+		await persistReviewerBatch('clf-b', rowsFor('UNVERIFIED', 'HIGH'));
+		const composed = await gateInternals.composePrReviewPhaseVerdicts(
+			tempDir,
+			SESSION_ID,
+			'reviewer',
+		);
+		const claim = composed.claims.get('C-0');
+		// The newest pass (B) wins the claim; the label must still disagree.
+		expect(claim?.classification).toBe('UNVERIFIED');
+		expect(claim?.severity).toBe('HIGH');
+		expect(claim?.orderAgreement).toBe('disagree');
 	});
 
 	// Unmarked-legacy labeling rule-out (plan D7 item 3, disclosed): a
