@@ -252,3 +252,14 @@ IMPORTANT: If a finding claims behavior is "new" or "introduced by the PR", you 
   is split before dispatch.
 - The `invocation_envelope` in the parser response provides audit provenance
   for every extracted candidate.
+
+## Reviewer row details (relocated from SKILL.md, issue #2906)
+
+For the mechanically derived `CLEAN-REVIEW` sentinel, use the same exact row
+with `DISPROVED | STRUCTURALLY_PROVEN | NONE | UNKNOWN | N/A` and concrete
+rationale/probe/reviewer fields; the sentinel means the reviewer independently
+found no surviving actionable candidate, not that reviewer validation was
+skipped.
+
+`DISPROVED` reviewer rows must use `NONE` for `final_severity`. `PRE_EXISTING`
+findings must include the base-branch evidence if available.
