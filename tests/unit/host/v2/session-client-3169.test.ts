@@ -304,21 +304,22 @@ describe('v2 session-client shim (issue #3169 Phase 2)', () => {
 		});
 	});
 
-	test('AC3 divergent parent directory fails closed with the typed C1 error', async () => {
+	// #3169 Phase 3 contract flip (full pins in session-client-lane-3169.test.ts).
+	test('AC3 divergent parent directory takes the Phase 3 eager parentless real create', async () => {
 		await withDir(async (directory) => {
 			const laneDirectory = canonicalMkdtemp('swarm-v2-lane-');
 			try {
 				const session = makeFakeSessionDomain(directory);
 				const client = createV2SessionClient(makeFakeCtx(directory, session))!;
-				const result = await client.session.create({
+				await client.session.create({
 					body: { parentID: 'ses_parent' },
 					query: { directory: laneDirectory },
 				});
-				expect(result.data).toBeNull();
-				expect(String((result.error as { message: string }).message)).toContain(
-					'#3169 Phase 0 C1',
-				);
-				expect(session.calls.filter((c) => c.op === 'create')).toHaveLength(0);
+				const createCalls = session.calls.filter((c) => c.op === 'create');
+				expect(createCalls).toHaveLength(1);
+				expect(createCalls[0].arg).toEqual({
+					location: { directory: laneDirectory },
+				});
 			} finally {
 				rmSync(laneDirectory, { recursive: true, force: true });
 			}
