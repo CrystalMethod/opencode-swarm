@@ -45,10 +45,22 @@ function parsePackagesLockJson(content: string): SbomComponent[] {
 			if (!targetDeps || typeof targetDeps !== 'object') continue;
 
 			for (const [pkgSpec, pkgData] of Object.entries(targetDeps)) {
-				if (!pkgSpec.includes('/')) continue;
-
-				const [name, version] = pkgSpec.split('/');
 				const pkg = pkgData as Record<string, unknown>;
+
+				let name: string;
+				let version: string;
+				if (pkgSpec.includes('/')) {
+					// v2 `targets` shape: keys are `Name/Version`
+					const slash = pkgSpec.indexOf('/');
+					name = pkgSpec.slice(0, slash);
+					version = pkgSpec.slice(slash + 1);
+				} else {
+					// v1 `dependencies` fallback shape: keys are bare NuGet IDs
+					// (IDs cannot contain '/'); the resolved version rides in the
+					// entry body.
+					name = pkgSpec;
+					version = (pkg.resolved as string) || (pkg.version as string) || '';
+				}
 
 				if (name && version) {
 					components.push({

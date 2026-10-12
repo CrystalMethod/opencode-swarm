@@ -215,3 +215,41 @@ export function detectComponents(
 
 	return [];
 }
+
+/**
+ * Merge lockfile-sourced and manifest-sourced component lists into one
+ * deduplicated set (issue #2956).
+ *
+ * Lockfile-resolved entries take precedence over manifest declared-base
+ * entries of the same name (a `package.json` declaring `express@^4.18.0`
+ * resolves to `express@4.18.2` in the lockfile — the declared-base twin is
+ * dropped). Exact purls then dedupe (falling back to `name@version` when a
+ * component carries no purl), preserving first-occurrence order.
+ */
+export function dedupeSbomComponents(
+	lockfileComponents: SbomComponent[],
+	manifestComponents: SbomComponent[],
+): SbomComponent[] {
+	const lockfileNames = new Set(
+		lockfileComponents.map((component) => component.name),
+	);
+	const seenKeys = new Set<string>();
+	const merged: SbomComponent[] = [];
+
+	const pushIfNew = (component: SbomComponent): void => {
+		const key = component.purl ?? `${component.name}@${component.version}`;
+		if (seenKeys.has(key)) return;
+		seenKeys.add(key);
+		merged.push(component);
+	};
+
+	for (const component of lockfileComponents) {
+		pushIfNew(component);
+	}
+	for (const component of manifestComponents) {
+		if (lockfileNames.has(component.name)) continue;
+		pushIfNew(component);
+	}
+
+	return merged;
+}

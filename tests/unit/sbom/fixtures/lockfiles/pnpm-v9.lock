@@ -1,0 +1,28 @@
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.0
+        version: 4.18.2
+
+packages:
+
+  express@4.18.2:
+    resolution: {integrity: sha512-aaa}
+
+  '@types/node@20.11.30':
+    resolution: {integrity: sha512-bbb}
+
+  ms@2.1.3:
+    resolution: {integrity: sha512-ccc}
+
+snapshots:
+
+  express@4.18.2:
+    dependencies:
+      ms: 2.1.3
+
+  ms@2.1.3: {}

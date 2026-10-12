@@ -14,6 +14,7 @@ import { saveEvidence } from '../evidence/manager';
 import { generateCycloneDX, serializeCycloneDX } from '../sbom/cyclonedx';
 import {
 	allDetectors,
+	dedupeSbomComponents,
 	detectComponents,
 	type SbomComponent,
 } from '../sbom/detectors/index';
@@ -33,6 +34,15 @@ export const _internals: { loadGateOverrides: typeof loadGateOverrides } = {
 // ============ Constants ============
 
 const DEFAULT_OUTPUT_DIR = '.swarm/evidence/sbom';
+
+/** Lockfiles whose detector output carries RESOLVED versions and transitives;
+ * everything else (e.g. package.json) is manifest-sourced. Matched by basename
+ * because manifest paths are root-relative (issue #2956). */
+const LOCKFILE_FILENAMES = new Set([
+	'package-lock.json',
+	'yarn.lock',
+	'pnpm-lock.yaml',
+]);
 
 // ============ Types ============
 
@@ -370,8 +380,12 @@ export const sbom_generate: ReturnType<typeof tool> = createSwarmTool({
 			return JSON.stringify(result, null, 2);
 		}
 
-		// Extract components from each manifest file
-		const allComponents: SbomComponent[] = [];
+		// Extract components from each manifest file. Lockfile-sourced entries
+		// (resolved versions, transitives) are kept apart from manifest-sourced
+		// entries (declared range bases) so dedupeSbomComponents can let the
+		// resolved entries win (issue #2956).
+		const lockfileComponents: SbomComponent[] = [];
+		const manifestComponents: SbomComponent[] = [];
 		const processedFiles: string[] = [];
 
 		for (const manifestFile of manifestFiles) {
@@ -391,12 +405,21 @@ export const sbom_generate: ReturnType<typeof tool> = createSwarmTool({
 				processedFiles.push(manifestFile);
 
 				if (components.length > 0) {
-					allComponents.push(...components);
+					if (LOCKFILE_FILENAMES.has(path.basename(manifestFile))) {
+						lockfileComponents.push(...components);
+					} else {
+						manifestComponents.push(...components);
+					}
 				}
 			} catch {
 				// Skip files that can't be read
 			}
 		}
+
+		const allComponents = dedupeSbomComponents(
+			lockfileComponents,
+			manifestComponents,
+		);
 
 		// If still no components but have files, still generate (empty BOM is valid)
 		// But if no files with components found, check if we should skip
@@ -418,7 +441,7 @@ export const sbom_generate: ReturnType<typeof tool> = createSwarmTool({
 		invalidateCachedArtifact(outputPath);
 
 		// Determine verdict
-		const verdict = processedFiles.length > 0 ? 'pass' : 'pass';
+		const verdict = processedFiles.length > 0 ? 'pass' : 'skip';
 
 		// Save evidence
 		try {
