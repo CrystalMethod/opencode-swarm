@@ -76,6 +76,14 @@ export interface PrReviewItemClaim {
 	 * Reviewer claims only — this is what a critic batch binds to per item.
 	 */
 	rowDigest?: string;
+	/**
+	 * Issue #2906: reviewer claims only. Whether this item's verdict was stable
+	 * across the counterbalanced presentation orders — 'agree' when both the A
+	 * and B passes produced the same (classification, severity) pair, 'disagree'
+	 * when they flipped, 'single' when fewer than two marked orders observed the
+	 * item. The label describes cross-order evidence, not winner provenance.
+	 */
+	orderAgreement?: 'agree' | 'disagree' | 'single';
 }
 
 export interface PrReviewPhaseComposition {
@@ -119,6 +127,8 @@ export interface PrReviewTranscriptBatchCoherence {
 	reviewerItemBindings?: Record<string, string>;
 	/** Key encoding for reviewerItemBindings; absent means legacy raw item IDs. */
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
+	/** Issue #2906: reviewer batches only — the counterbalanced presentation order. */
+	presentationOrder?: 'A' | 'B';
 }
 
 /** Settled PR_FEEDBACK verification batch, as the adapter reads it. */
@@ -506,6 +516,42 @@ export function composePrReviewPhaseVerdicts(
 	const diagnostics: string[] = [];
 	const satisfiedObligations = new Set<string>();
 	const scannedBatches: PrReviewTranscriptBatch[] = [];
+	// Issue #2906: per-item (classification, severity) observations tagged with
+	// the batch's counterbalanced presentation order. The scan is
+	// reverse-chronological, so the FIRST observation recorded per (item, order)
+	// is that order's newest verdict — the same newest-wins rule claims follow.
+	const orderObservations =
+		phase === 'reviewer'
+			? new Map<
+					string,
+					Map<'A' | 'B', { classification: string; severity: string }>
+				>()
+			: undefined;
+	const recordOrderObservations = (
+		coherence: PrReviewTranscriptBatchCoherence | undefined,
+		parsed: ReadonlyMap<string, { classification: string; severity: string }>,
+	): void => {
+		const order = coherence?.presentationOrder;
+		if (!order || !orderObservations) return;
+		for (const [itemId, verdict] of parsed) {
+			// Same defense-in-depth membership rule as claims: a batch whose
+			// persisted inventory no longer lists the item contributes nothing.
+			if (coherence && !coherence.validatedInventory.includes(itemId)) {
+				continue;
+			}
+			let perItem = orderObservations.get(itemId);
+			if (!perItem) {
+				perItem = new Map();
+				orderObservations.set(itemId, perItem);
+			}
+			if (!perItem.has(order)) {
+				perItem.set(order, {
+					classification: verdict.classification,
+					severity: verdict.severity,
+				});
+			}
+		}
+	};
 
 	for (const batch of [...window].reverse()) {
 		scannedBatches.push(batch);
@@ -562,6 +608,7 @@ export function composePrReviewPhaseVerdicts(
 				);
 				continue;
 			}
+			recordOrderObservations(coherence, parsed);
 			if (declaredItems.length > 0 && parsed.size === declaredItems.length) {
 				satisfiedObligations.add(qualified.expectedWorkflowLane);
 			}
@@ -596,6 +643,86 @@ export function composePrReviewPhaseVerdicts(
 		}
 		if (contributed) contributingBatchIds.push(batch.batchId);
 		if (!exhaustive && claims.size === requiredSet.size) break;
+	}
+
+	// Issue #2906: agreement-only continuation. The main loop early-exits once
+	// every item is claimed, which leaves the OLDER counterbalanced pass
+	// un-scanned exactly when the newest pass claimed everything — the case the
+	// agreement signal exists to observe. Scan the remainder with the IDENTICAL
+	// gating (batch contribution, per-lane integrity, artifact load,
+	// assigned-ids check, inventory membership) and record observations only;
+	// claims are never mutated here. Unmarked batches are skipped: the agreement
+	// label compares marked presentation orders only.
+	if (phase === 'reviewer' && orderObservations) {
+		const scanned = new Set(scannedBatches.map((batch) => batch.batchId));
+		for (const batch of [...window].reverse()) {
+			if (scanned.has(batch.batchId)) continue;
+			if (
+				!batchMayContributeClaims(
+					directory,
+					state,
+					batch,
+					phase,
+					requiredInventory,
+					forbiddenSubagentSessionIds,
+					reviewerClaims,
+					ctx,
+				)
+			) {
+				continue;
+			}
+			const coherence = state.prReviewBatchCoherence?.[batch.batchId];
+			if (!coherence?.presentationOrder) continue;
+			for (const qualified of recordsPassingBatchIntegrity(
+				directory,
+				state,
+				batch.batchId,
+				batch.lanes,
+				expectedMode,
+				batch.validatedAt,
+				true,
+				forbiddenSubagentSessionIds,
+			)) {
+				const artifact = loadArtifactPassingLaneIntegrity(
+					directory,
+					state,
+					qualified.record,
+					expectedMode,
+					qualified.expectedWorkflowLane,
+					ctx.revisionDigest,
+				);
+				if (!artifact) continue;
+				const declaredItems = qualified.expectedLane.reviewItemIds ?? [];
+				const { markerRows, parsed } = parsePrReviewVerdictRows(
+					artifact.text,
+					declaredItems,
+					phase,
+					reviewerClaims,
+				);
+				if (!verdictRowsContainOnlyAssignedIds(markerRows, declaredItems)) {
+					continue;
+				}
+				recordOrderObservations(coherence, parsed);
+			}
+		}
+	}
+
+	// Issue #2906: stamp the per-claim order agreement. The label describes
+	// cross-order evidence, not winner provenance — an unmarked winning batch
+	// with only one marked order observed still labels 'single'.
+	if (phase === 'reviewer' && orderObservations) {
+		for (const [itemId, claim] of claims) {
+			const perItem = orderObservations.get(itemId);
+			const orderA = perItem?.get('A');
+			const orderB = perItem?.get('B');
+			claim.orderAgreement =
+				orderA && orderB
+					? orderA.classification === orderB.classification &&
+						orderA.severity === orderB.severity
+						? 'agree'
+						: 'disagree'
+					: 'single';
+		}
 	}
 
 	// The lane-level "every declared obligation across every batch in the window

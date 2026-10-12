@@ -24,6 +24,14 @@ const PrReviewCollectionReceiptPayloadSchema = z
 			.array(z.string().min(1).max(160))
 			.min(1)
 			.max(MAX_PR_REVIEW_COLLECTION_RECEIPT_ITEM_IDS),
+		/**
+		 * Issue #2906: additive optional — the counterbalanced presentation
+		 * order this reviewer batch's candidates were rendered in. Omitted for
+		 * critic batches, pre-#2906 reviewers, and whenever gate state is
+		 * unreadable at footer time (fail-open; the per-batch coherence record
+		 * stays the authoritative per-pass receipt).
+		 */
+		presentationOrder: z.enum(['A', 'B']).optional(),
 	})
 	.strict()
 	.superRefine((payload, context) => {
@@ -70,6 +78,8 @@ export interface PrReviewCollectionReceiptBinding {
 	correlationId: string;
 	mode?: string;
 	workflowLane?: string;
+	/** Issue #2906: optional presentation order threaded from the batch's coherence record. */
+	presentationOrder?: 'A' | 'B';
 }
 
 export interface PrReviewCollectionReceiptResult {
@@ -143,6 +153,9 @@ function buildPrReviewCollectionReceiptPayload(
 		outputDigest: result.digest,
 		disposition,
 		reviewItemIds: receipt.assignedReviewItemIds,
+		...(binding.presentationOrder
+			? { presentationOrder: binding.presentationOrder }
+			: {}),
 	});
 	if (!parsed.success) return null;
 	return parsed.data;

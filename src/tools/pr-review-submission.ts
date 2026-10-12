@@ -90,6 +90,7 @@ interface PersistedFindingRecord {
 	evidence?: unknown;
 	next_action?: unknown;
 	severity?: unknown;
+	order_agreement?: unknown;
 	boundary?: unknown;
 	pr_head_sha?: unknown;
 	recorded_at?: unknown;
@@ -690,6 +691,10 @@ export async function executePrReviewSubmission(
 				typeof record.next_action === 'string' ? record.next_action : '',
 			severity:
 				typeof record.severity === 'string' ? record.severity : undefined,
+			order_agreement:
+				typeof record.order_agreement === 'string'
+					? record.order_agreement
+					: undefined,
 		})),
 	};
 

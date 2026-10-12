@@ -31,6 +31,12 @@ export interface RendererFinding {
 	evidence: string;
 	next_action: string;
 	severity?: string;
+	/**
+	 * Issue #2906: order-stability of this finding's reviewer verdict across
+	 * counterbalanced presentation orders. Only 'disagree' renders a marker
+	 * (the token `order-unstable`); 'agree'/'single'/absent render nothing.
+	 */
+	order_agreement?: string;
 }
 
 export interface RendererCoverage {
@@ -65,6 +71,11 @@ export interface RenderedReviewBody {
 	truncatedInlineComments: number;
 	/** findings omitted from the body as dismissed (severity NONE at settlement). */
 	dismissedCount: number;
+	/**
+	 * Issue #2906: findings rendered with the order-unstable marker — their
+	 * reviewer verdict flipped across counterbalanced presentation orders.
+	 */
+	orderUnstableCount: number;
 	/** true when the body exceeded PR_REVIEW_BODY_CHAR_CAP and was truncated with a disclosure. */
 	bodyTruncated: boolean;
 }
@@ -186,6 +197,7 @@ export function renderPrReviewSubmissionBody(
 	);
 	lines.push('');
 	lines.push('## Findings');
+	let orderUnstableCount = 0;
 	for (const severity of SEVERITY_ORDER) {
 		if (severity === 'NONE') continue;
 		const group = grouped.filter(
@@ -206,10 +218,22 @@ export function renderPrReviewSubmissionBody(
 				entry.finding.status.toUpperCase() !== 'CONFIRMED'
 					? ` (${singleLine(entry.finding.status, 64).toLowerCase()})`
 					: '';
+			// Issue #2906: only a flipping verdict (order_agreement 'disagree')
+			// renders the order-unstable marker; when nothing is unstable the
+			// token must not appear anywhere in the body.
+			const orderUnstable =
+				entry.finding.order_agreement === 'disagree' ? ' (order-unstable)' : '';
+			if (orderUnstable) orderUnstableCount += 1;
 			lines.push(
-				`- [${id}]${status} ${location} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
+				`- [${id}]${status}${orderUnstable} ${location} — ${singleLine(entry.finding.evidence ?? '', 400)}`,
 			);
 		}
+	}
+	if (orderUnstableCount > 0) {
+		lines.push('');
+		lines.push(
+			`> ${orderUnstableCount} finding(s) order-unstable across counterbalanced reviewer passes (verdict flipped with presentation order).`,
+		);
 	}
 	if (dismissedCount > 0) {
 		lines.push('');
@@ -271,6 +295,7 @@ export function renderPrReviewSubmissionBody(
 		skippedAsPosted,
 		truncatedInlineComments,
 		dismissedCount,
+		orderUnstableCount,
 		bodyTruncated,
 	};
 }

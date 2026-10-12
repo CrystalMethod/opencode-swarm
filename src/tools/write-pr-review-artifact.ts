@@ -23,6 +23,7 @@ import {
 	normalizePrReviewPartialBaseCoverageRecord,
 	prWorkflowSessionFileStem,
 	readAuthoritativePrReviewCriticVerdicts,
+	readAuthoritativePrReviewOrderAgreement,
 	readPrReviewVerdictSettlementEffectiveIds,
 	readPrWorkflowGateState,
 	resolvePrReviewWriterRunId,
@@ -239,10 +240,13 @@ function canonicalFindingRecords(
 				provenance: record.provenance,
 				// Typed risk metadata participates in the replay-identity key
 				// (issue #2383): a record whose routing-relevant metadata
-				// differs is never an exact replay.
+				// differs is never an exact replay. The order-stability label
+				// (issue #2906) joins it — it changes the published report, so
+				// a replay with a different label is not an exact replay.
 				risk_impact: record.risk_impact,
 				risk_tags: record.risk_tags,
 				critic_status: record.critic_status,
+				order_agreement: record.order_agreement,
 			}))
 			.sort((left, right) => left.finding_id.localeCompare(right.finding_id)),
 	);
@@ -702,6 +706,45 @@ export async function executeWritePrReviewArtifact(
 								: `the legal next "${findingsInput.boundary}" checkpoint for run "${resolvedRunId}" with exact inventory [${findingIds.join(', ')}]`,
 							error instanceof Error ? error.message : String(error),
 						),
+					),
+				);
+			}
+		}
+		// Issue #2906: order_agreement is a reviewer-phase signal that lands on
+		// post_reviewer OR post_critic rows, so this authority check lives in
+		// the general findings path — NOT inside the post_critic-only critic
+		// settlement below, which never re-validates earlier rows. Every
+		// supplied value is cross-checked against the composed reviewer claims
+		// (the same reader shape as the critic_status precedent): a value that
+		// contradicts the composed one, or an affirmative 'agree'/'disagree'
+		// with no composed authority, fails closed. 'single' and absent pass.
+		if (findingsInput.records.some((record) => record.order_agreement)) {
+			try {
+				const authoritativeOrderAgreement =
+					await readAuthoritativePrReviewOrderAgreement(directory, sessionID);
+				for (const record of findingsInput.records) {
+					if (record.order_agreement === undefined) continue;
+					const authoritative = authoritativeOrderAgreement.get(
+						record.finding_id,
+					);
+					if (authoritative && authoritative !== record.order_agreement) {
+						throw new Error(
+							`order_agreement for ${record.finding_id} is "${record.order_agreement}" but the composed reviewer verdicts say "${authoritative}"`,
+						);
+					}
+					if (!authoritative && record.order_agreement !== 'single') {
+						throw new Error(
+							`order_agreement for ${record.finding_id} asserts "${record.order_agreement}" with no composed reviewer authority for that finding`,
+						);
+					}
+				}
+			} catch (error) {
+				return withPartialAdmissionRollback(
+					operationFailure(
+						'validate',
+						relativeFindingsPath.split(path.sep).join('/'),
+						'an authoritative order-agreement map matching the composed reviewer verdicts',
+						error,
 					),
 				);
 			}
