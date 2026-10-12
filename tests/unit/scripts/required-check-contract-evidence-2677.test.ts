@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -361,6 +362,136 @@ describe('issue #2677 required-check contract evidence', () => {
 			);
 		} finally {
 			rmSync(tempRoot, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('issue #2677 local workflow hash is line-ending independent', () => {
+	const WORKFLOWS = [
+		'.github/workflows/ci.yml',
+		'.github/workflows/pr-standards.yml',
+		'.github/workflows/drift-check.yml',
+	];
+
+	function git(root: string, ...args: string[]): string {
+		const proc = Bun.spawnSync({
+			cmd: ['git', ...args],
+			cwd: root,
+			stdin: 'ignore',
+			stdout: 'pipe',
+			stderr: 'pipe',
+			timeout: 30_000,
+		});
+		if (proc.exitCode !== 0) {
+			throw new Error(
+				`git ${args.join(' ')} failed: ${proc.stderr.toString()}`,
+			);
+		}
+		return proc.stdout.toString().trim();
+	}
+
+	// Commits the workflows as LF (the blob the Linux runner checks out), then
+	// rewrites the working copy as CRLF exactly the way a Windows checkout with
+	// core.autocrlf=true does. Returns the LF hashes the evidence records.
+	function crlfCheckoutFixture(): {
+		root: string;
+		evidence: Record<string, unknown>;
+	} {
+		const root = realpathSync(
+			mkdtempSync(join(realpathSync(tmpdir()), 'required-check-crlf-')),
+		);
+		git(root, 'init', '-q', '-b', 'main');
+		git(root, 'config', 'user.email', 'test@example.com');
+		git(root, 'config', 'user.name', 'Test');
+		git(root, 'config', 'core.autocrlf', 'false');
+
+		const localWorkflowHashes: Record<string, string> = {};
+		const lfBytes: Record<string, string> = {};
+		for (const file of WORKFLOWS) {
+			const text = readFileSync(resolve(repoRoot, file), 'utf8').replace(
+				/\r\n/g,
+				'\n',
+			);
+			lfBytes[file] = text;
+			localWorkflowHashes[file] = createHash('sha256')
+				.update(text)
+				.digest('hex');
+			const target = join(root, ...file.split('/'));
+			mkdirSync(resolve(target, '..'), { recursive: true });
+			writeFileSync(target, text, 'utf8');
+		}
+		const contractPath = join(root, 'scripts', 'required-check-contract.json');
+		mkdirSync(resolve(contractPath, '..'), { recursive: true });
+		writeFileSync(
+			contractPath,
+			readFileSync(
+				resolve(repoRoot, 'scripts/required-check-contract.json'),
+				'utf8',
+			),
+			'utf8',
+		);
+		const evidence = readEvidence();
+		evidence.localWorkflowHashes = localWorkflowHashes;
+		const evidencePath = join(
+			root,
+			'docs',
+			'ci',
+			'required-check-evidence.json',
+		);
+		mkdirSync(resolve(evidencePath, '..'), { recursive: true });
+		writeFileSync(evidencePath, JSON.stringify(evidence), 'utf8');
+		git(root, 'add', '-A');
+		git(root, 'commit', '-q', '-m', 'capture');
+
+		const captureSha = git(root, 'rev-parse', 'HEAD');
+		evidence.captureSha = captureSha;
+		const captured = evidence.capturedWorkflowFiles as Record<
+			string,
+			{ contentsEndpoint: string; blobSha: string }
+		>;
+		for (const file of WORKFLOWS) {
+			captured[file].blobSha = git(root, 'rev-parse', `${captureSha}:${file}`);
+		}
+		writeFileSync(evidencePath, JSON.stringify(evidence), 'utf8');
+
+		// Now translate the working copy to CRLF, leaving the blob untouched.
+		for (const file of WORKFLOWS) {
+			writeFileSync(
+				join(root, ...file.split('/')),
+				lfBytes[file].replace(/\n/g, '\r\n'),
+				'utf8',
+			);
+		}
+		return { root, evidence };
+	}
+
+	test('a CRLF checkout of unchanged workflows does not trip WORKFLOW_CHANGED_AFTER_CAPTURE', () => {
+		const { root, evidence } = crlfCheckoutFixture();
+		const evidencePath = join(
+			root,
+			'docs',
+			'ci',
+			'required-check-evidence.json',
+		);
+		try {
+			expect(
+				collectRequiredCheckContract(root).findings.map(
+					(finding) => finding.code,
+				),
+			).not.toContain('WORKFLOW_CHANGED_AFTER_CAPTURE');
+			// A REAL content change still fails closed on every platform.
+			evidence.localWorkflowHashes = {
+				...(evidence.localWorkflowHashes as Record<string, string>),
+				'.github/workflows/ci.yml': '0'.repeat(64),
+			};
+			writeFileSync(evidencePath, JSON.stringify(evidence), 'utf8');
+			expect(
+				collectRequiredCheckContract(root).findings.map(
+					(finding) => finding.code,
+				),
+			).toContain('WORKFLOW_CHANGED_AFTER_CAPTURE');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
 		}
 	});
 });
