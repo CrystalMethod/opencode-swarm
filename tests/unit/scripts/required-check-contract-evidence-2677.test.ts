@@ -100,7 +100,7 @@ describe('issue #2677 required-check contract evidence', () => {
 			Record<string, unknown>
 		>;
 		captured['.github/workflows/ci.yml'].contentsEndpoint =
-			'https://api.github.com/repos/other/repo/contents/.github/workflows/ci.yml?ref=b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f';
+			'https://api.github.com/repos/other/repo/contents/.github/workflows/ci.yml?ref=012c4e40db4a63dd9b771cb99d57c565949d2931';
 		const observedRuns = (evidence.mergeGroup as Record<string, unknown>)
 			.observedRuns as Array<Record<string, unknown>>;
 		observedRuns[0].endpoint =
