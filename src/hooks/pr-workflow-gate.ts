@@ -1720,7 +1720,12 @@ const PrWorkflowGateStateSchema = z
 						at: z.number(),
 						message: z.string().min(1).max(300),
 					})
-					.strict(),
+					// Not .strict(): this record is the newest persisted shape and is
+					// the most likely to gain fields. Passthrough keeps a future
+					// field opaque but present through a read-modify-write cycle
+					// instead of bricking a rollback (same rule as the batch
+					// coherence record above). The array cap still bounds growth.
+					.passthrough(),
 			)
 			.max(MAX_PR_REVIEW_VERDICT_REJECTIONS)
 			.optional(),
@@ -2234,7 +2239,11 @@ export async function recordPrReviewVerdictRejection(
 			const newestForSession = prior
 				.filter((entry) => entry.sessionId === session)
 				.at(-1);
-			if (newestForSession?.message === bounded) return;
+			if (
+				newestForSession?.message === bounded &&
+				newestForSession?.boundary === boundary
+			)
+				return;
 			const journal: PrReviewVerdictRejectionRecord[] = [
 				...prior,
 				{
@@ -2259,10 +2268,17 @@ export async function recordPrReviewVerdictRejection(
 }
 
 /**
- * Issue #3098: latest journal message attributable to a lane, or undefined.
- * Newest wins; join keys are `workflowLane` (the declared obligation) and
- * `laneId` — the recorded `sessionId` is the gate-owner caller (provenance),
+ * Issue #3098: latest journal message for a failing obligation, or undefined.
+ * Newest wins. Join keys are `workflowLane` (the declared obligation) and
+ * `laneId`; the recorded `sessionId` is the gate-owner caller (provenance),
  * never a lane child session, so it is deliberately not a join key.
+ *
+ * The production writer only ever stamps `boundary` (the write args name the
+ * boundary, never a lane), so in practice the phase-scoped fallback below is
+ * what resolves: it reports the newest rejection recorded for the failing
+ * lane's PHASE, which is honest about being phase-scoped rather than
+ * lane-scoped. The lane-exact arms stay because a future attribution producer
+ * (or a hand-seeded state) can populate them.
  */
 export function latestPrReviewVerdictRejectionForLane(
 	state: Pick<PrWorkflowGateState, 'prReviewVerdictRejections'>,
@@ -2285,14 +2301,22 @@ export function latestPrReviewVerdictRejectionForLane(
 		if (laneIds && entry.laneId && laneIds.has(entry.laneId))
 			return entry.message;
 	}
-	// Fallback: an unattributed entry journalled for the phase's boundary is
-	// the closest honest attribution a verdict write can carry (the write args
-	// name the boundary, never the lane).
+	// Fallback tier 1: an entry journalled for the phase's boundary. The write
+	// args name the boundary, never the lane, so this is what resolves in
+	// production — phase-scoped, not lane-scoped.
 	if (matchers.boundary) {
 		for (let index = journal.length - 1; index >= 0; index--) {
 			const entry = journal[index];
 			if (entry?.boundary === matchers.boundary) return entry.message;
 		}
+	}
+	// Fallback tier 2 (weakest): a boundary-less entry — a write that never
+	// parsed far enough to name a boundary, e.g. a schema-rejected call. Still a
+	// real rejection for this phase, and reporting it beats letting it evict
+	// reachable entries unread.
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (entry && !entry.boundary) return entry.message;
 	}
 	return undefined;
 }

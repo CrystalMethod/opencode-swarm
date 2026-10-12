@@ -690,15 +690,16 @@ export function composePrReviewPhaseVerdicts(
 								: 'post_explorer',
 				})
 			: undefined;
+		// Journal suffix first: the whole line is sliced to the diagnostic char
+		// cap, and the predicate alone can fill it, so a trailing suffix would
+		// be cut exactly when the predicate is most detailed.
 		appendCompositionDiagnostic(
 			diagnostics,
 			`declared ${phase} lane "${obligation}" produced no successful exact artifact${
-				failureReason ? `: ${failureReason}` : ''
-			}${
 				journalMessage
 					? `; last rejected write_pr_review_artifact: ${journalMessage}`
 					: ''
-			}`,
+			}${failureReason ? `: ${failureReason}` : ''}`,
 		);
 	}
 

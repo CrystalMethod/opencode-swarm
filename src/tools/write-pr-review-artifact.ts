@@ -595,9 +595,10 @@ export async function executeWritePrReviewArtifact(
 			if (!rollbackError) return result;
 			try {
 				const decoded = JSON.parse(result) as { message?: unknown };
-				return typeof decoded.message === 'string'
-					? failure(`${decoded.message}; ${rollbackError}`)
-					: result;
+				if (typeof decoded.message !== 'string') return result;
+				// Journal the rollback-suffixed text too: the entry the caller
+				// reads must be the one that was actually returned.
+				return await reject(`${decoded.message}; ${rollbackError}`);
 			} catch {
 				return result;
 			}
@@ -775,12 +776,16 @@ export async function executeWritePrReviewArtifact(
 					criticUnavailableIds,
 				);
 			} catch (error) {
+				// A critic-settlement mismatch is a CONTRACT rejection, not an
+				// environmental one: journal it like the other record-shape
+				// rejections so the orchestrator can see why the write failed.
 				return withPartialAdmissionRollback(
-					operationFailure(
-						'validate',
-						relativeFindingsPath.split(path.sep).join('/'),
-						'an authoritative critic settlement matching the authenticated critic verdict map',
-						error,
+					await reject(
+						formatPrReviewRuntimeFieldError(
+							'critic_settlements',
+							'an authoritative critic settlement matching the authenticated critic verdict map',
+							error instanceof Error ? error.message : String(error),
+						),
 					),
 				);
 			}

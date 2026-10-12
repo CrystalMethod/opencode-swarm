@@ -401,6 +401,11 @@ async function findingsSummaryForReportSafe(
  */
 const MAX_TERMINAL_COVERAGE_DEGRADATIONS = 10;
 const MAX_TERMINAL_DEGRADATION_REASON_CHARS = 200;
+const MAX_TERMINAL_DEGRADATION_ID_CHARS = 200;
+
+function boundTerminalText(value: string, max: number): string {
+	return value.slice(0, max);
+}
 
 function redactTerminalCleanLiteral(value: string): string {
 	return value.includes('CLEAN')
@@ -433,10 +438,19 @@ async function coverageDegradationsForReport(
 		.slice(0, MAX_TERMINAL_COVERAGE_DEGRADATIONS)
 		.map((degradation) => ({
 			trigger_id: degradation.trigger_id,
-			source_batch_id: redactTerminalCleanLiteral(degradation.source_batch_id),
-			source_lane_id: redactTerminalCleanLiteral(degradation.source_lane_id),
-			reason: redactTerminalCleanLiteral(
-				degradation.reason.slice(0, MAX_TERMINAL_DEGRADATION_REASON_CHARS),
+			source_batch_id: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.source_batch_id),
+				MAX_TERMINAL_DEGRADATION_ID_CHARS,
+			),
+			source_lane_id: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.source_lane_id),
+				MAX_TERMINAL_DEGRADATION_ID_CHARS,
+			),
+			// Bound AFTER redaction: CLEAN -> clean-attestation expands 5 -> 16
+			// chars, so slicing first let the rendered value exceed the cap.
+			reason: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.reason),
+				MAX_TERMINAL_DEGRADATION_REASON_CHARS,
 			),
 		}));
 }
