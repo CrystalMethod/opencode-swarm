@@ -917,6 +917,24 @@ export interface PrReviewSubmitRejectionRecord {
 /** FIFO cap for the gate-state submit-rejection journal (issue #2859 F3). */
 export const MAX_PR_REVIEW_SUBMIT_REJECTIONS = 24;
 
+/**
+ * One rejected `write_pr_review_artifact` attempt (issue #3098 verdict-lane
+ * journal, mirroring the #2859 discovery journal). `sessionId` is the gate
+ * owner (the orchestrator session that called the tool) — provenance only;
+ * the composition joins entries to lanes via `workflowLane`/`laneId`.
+ */
+export interface PrReviewVerdictRejectionRecord {
+	sessionId: string;
+	laneId?: string;
+	workflowLane?: string;
+	boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	at: number;
+	message: string;
+}
+
+/** FIFO cap for the gate-state verdict-write-rejection journal (issue #3098). */
+export const MAX_PR_REVIEW_VERDICT_REJECTIONS = 24;
+
 export interface PrWorkflowGateState {
 	schemaVersion: 1;
 	/** Monotonic durable revision used to reject stale same-session transitions. */
@@ -1035,6 +1053,17 @@ export interface PrWorkflowGateState {
 	 * to 300 chars at write time.
 	 */
 	prReviewSubmitRejections?: PrReviewSubmitRejectionRecord[];
+	/**
+	 * Bounded FIFO journal of rejected `write_pr_review_artifact` attempts
+	 * (issue #3098, the verdict-lane mirror of the #2859 journal above).
+	 * Observability only — surfaced in the verdict composition diagnostic so
+	 * the orchestrator can see WHY a declared reviewer/critic lane produced no
+	 * successful exact artifact; never consulted for artifact validity. Capped
+	 * by {@link MAX_PR_REVIEW_VERDICT_REJECTIONS}; each entry's message is
+	 * bounded to 300 chars at write time. `sessionId` is the gate-owner caller
+	 * (provenance); lane join happens via `workflowLane`/`laneId`.
+	 */
+	prReviewVerdictRejections?: PrReviewVerdictRejectionRecord[];
 	prReviewHandoffPath?: string;
 	prReviewHandoffRequired?: boolean;
 	checkoutRecovery?: PrWorkflowCheckoutRecoveryRecord;
@@ -1678,6 +1707,23 @@ const PrWorkflowGateStateSchema = z
 			)
 			.max(MAX_PR_REVIEW_SUBMIT_REJECTIONS)
 			.optional(),
+		prReviewVerdictRejections: z
+			.array(
+				z
+					.object({
+						sessionId: z.string().min(1).max(200),
+						laneId: z.string().min(1).max(200).optional(),
+						workflowLane: z.string().min(1).max(200).optional(),
+						boundary: z
+							.enum(['post_explorer', 'post_reviewer', 'post_critic'])
+							.optional(),
+						at: z.number(),
+						message: z.string().min(1).max(300),
+					})
+					.strict(),
+			)
+			.max(MAX_PR_REVIEW_VERDICT_REJECTIONS)
+			.optional(),
 		prReviewArtifactBoundaries: z
 			.array(z.enum(['post_explorer', 'post_reviewer', 'post_critic']))
 			.max(3)
@@ -2136,6 +2182,116 @@ export function latestPrReviewSubmitRejectionMessage(
 	for (let index = journal.length - 1; index >= 0; index--) {
 		if (journal[index]?.childSessionId === childSessionId) {
 			return journal[index]?.message;
+		}
+	}
+	return undefined;
+}
+
+/**
+ * Issue #3098: best-effort, fail-open journal of one rejected
+ * `write_pr_review_artifact` attempt onto the CALLER's own PR_REVIEW gate
+ * state (the tool is a controller tool invoked by the gate-owner session —
+ * no delegation parent-hop, unlike the #2859 discovery journal).
+ * Observability only — never changes the rejection outcome, never creates
+ * gate state for a session that has none (the pre-read outside the
+ * session-state lock means a non-gated caller gets no lock file either).
+ */
+export async function recordPrReviewVerdictRejection(
+	directory: string,
+	sessionID: string,
+	message: string,
+	attribution?: {
+		laneId?: string;
+		workflowLane?: string;
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): Promise<void> {
+	try {
+		const session = sessionID.trim();
+		if (!session) return;
+		const laneId = attribution?.laneId?.trim();
+		const workflowLane = attribution?.workflowLane?.trim();
+		const boundary = attribution?.boundary;
+		// Pre-read OUTSIDE withSessionStateMutation (same lock-pollution guard
+		// as the #2859 journal above).
+		const existing = await readPrWorkflowGateStateFromDisk(directory, session);
+		if (!existing || existing.mode !== 'PR_REVIEW') return;
+		// Same redaction as recordPrReviewSubmitRejection: the message embeds
+		// caller-controlled payload fragments, so credentials and secret-shaped
+		// strings must not persist durably in the gate-state journal.
+		const bounded = redactSecrets(
+			message.replace(
+				PUBLICATION_URL_CREDENTIALS_PATTERN,
+				'$1[REDACTED:url_credentials]@',
+			),
+		).slice(0, 300);
+		await withSessionStateMutation(directory, session, async () => {
+			const locked = await readPrWorkflowGateStateFromDisk(directory, session);
+			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const prior = locked.prReviewVerdictRejections ?? [];
+			// PRR-015 mirror: skip the append when this session's newest entry is
+			// byte-identical so retry loops cannot amplify gate-state writes.
+			const newestForSession = prior
+				.filter((entry) => entry.sessionId === session)
+				.at(-1);
+			if (newestForSession?.message === bounded) return;
+			const journal: PrReviewVerdictRejectionRecord[] = [
+				...prior,
+				{
+					sessionId: session,
+					...(laneId ? { laneId } : {}),
+					...(workflowLane ? { workflowLane } : {}),
+					...(boundary ? { boundary } : {}),
+					at: Date.now(),
+					message: bounded,
+				},
+			].slice(-MAX_PR_REVIEW_VERDICT_REJECTIONS);
+			await writeStateWhileLocked(directory, {
+				...locked,
+				prReviewVerdictRejections: journal,
+				updatedAt: isoNow(),
+			});
+		});
+	} catch {
+		// Fail-open observability: journaling must never change the rejection
+		// outcome the caller sees.
+	}
+}
+
+/**
+ * Issue #3098: latest journal message attributable to a lane, or undefined.
+ * Newest wins; join keys are `workflowLane` (the declared obligation) and
+ * `laneId` — the recorded `sessionId` is the gate-owner caller (provenance),
+ * never a lane child session, so it is deliberately not a join key.
+ */
+export function latestPrReviewVerdictRejectionForLane(
+	state: Pick<PrWorkflowGateState, 'prReviewVerdictRejections'>,
+	matchers: {
+		workflowLane?: string;
+		laneIds?: readonly string[];
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): string | undefined {
+	const journal = state.prReviewVerdictRejections;
+	if (!journal?.length) return undefined;
+	const laneIds = matchers.laneIds?.length
+		? new Set(matchers.laneIds)
+		: undefined;
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (!entry) continue;
+		if (matchers.workflowLane && entry.workflowLane === matchers.workflowLane)
+			return entry.message;
+		if (laneIds && entry.laneId && laneIds.has(entry.laneId))
+			return entry.message;
+	}
+	// Fallback: an unattributed entry journalled for the phase's boundary is
+	// the closest honest attribution a verdict write can carry (the write args
+	// name the boundary, never the lane).
+	if (matchers.boundary) {
+		for (let index = journal.length - 1; index >= 0; index--) {
+			const entry = journal[index];
+			if (entry?.boundary === matchers.boundary) return entry.message;
 		}
 	}
 	return undefined;
@@ -11595,7 +11751,7 @@ interface PrReviewFindingPolicyAuthority {
  * pins the PR head and exact findings bytes, while the sidecar digest pins the
  * synthesized projection itself.
  */
-async function readAuthoritativeFindingPolicy(
+export async function readAuthoritativeFindingPolicy(
 	directory: string,
 	state: PrWorkflowGateState,
 ): Promise<PrReviewFindingPolicyAuthority> {
@@ -14058,6 +14214,7 @@ bindPrReviewTranscriptAdapterHelpers({
 	batchMayContributeClaims,
 	recordsPassingBatchIntegrity,
 	loadArtifactPassingLaneIntegrity,
+	latestPrReviewVerdictRejectionForLane,
 });
 
 /**

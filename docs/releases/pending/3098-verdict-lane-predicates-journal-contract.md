@@ -1,0 +1,21 @@
+# Verdict-lane rejections carry predicates, a durable journal, and the settlement contract
+
+Issue: #3098 ([Workstream V] PR 2 of 2)
+
+## What changed
+
+- **Verdict-lane settlement diagnostics carry the failure predicate.** When a declared reviewer/critic lane produced no successful exact artifact because its artifact failed integrity validation, the orchestrator-facing diagnostic collapsed every failure mode into the predicate-free `declared <phase> lane "<id>" produced no successful exact artifact`. The composition now threads the already-formatted `formatPrReviewLaneValidationFailure` rendering (`predicate=<axis> expected=… actual=…`) into that diagnostic, and appends the lane's last journaled `write_pr_review_artifact` rejection when one exists (`; last rejected write_pr_review_artifact: …`, mirroring the #2859 discovery surfacing). A truly abandoned lane (declared, never ran) keeps the plain diagnostic byte-for-byte.
+- **`write_pr_review_artifact` rejections are journalled.** A new bounded FIFO journal (`prReviewVerdictRejections`, cap 24 — `MAX_PR_REVIEW_VERDICT_REJECTIONS`) on the caller's PR_REVIEW gate state records every validation rejection the tool returns: message redacted (URL-credential pattern + secret redaction) and bounded to 300 chars, consecutive byte-identical messages deduped (the PRR-015 anti-amplification mirror), oldest-first eviction, fully fail-open — journaling never changes the rejection outcome and never materializes gate state for a session that has none. Entries carry the gate-owner `sessionId` (provenance) and the write's `boundary` when known; the composition joins them to lanes via `workflowLane`/`laneId` with a phase↔boundary fallback. I/O-shaped `operationFailure` errors are deliberately not journalled (environmental, not contract rejections).
+- **The architect prompt states the verdict-lane settlement contract.** The RUN HEAD-BOUND VALIDATION bullet now tells reviewer/critic lanes WHAT settles: one row per assigned review item id, each marked `[REVIEWED]` (reviewer) or `[CRITIC]` (critic), exact marker format and exact id match, rows for unassigned ids contribute nothing, and trailing non-contract summary rows (e.g. a `task-unknown` free-text epilogue) fail settlement — fix the record set to the exact contract shape rather than appending explanatory rows. The parser's exact-match identity checks are untouched.
+- **The tool description documents the `UNVERIFIED → PENDING` ledger mapping** on both surfaces (the runtime tool literal and the `TOOL_METADATA` mirror): reviewer verdicts marked `UNVERIFIED` persist to the findings ledger as `PENDING` records routed back to the reviewer — do not resubmit a row whose verdict is already recorded.
+- **`complete_pr_workflow`'s `terminal_report` carries bounded findings and degradation summaries**, captured before the terminal clear deletes the gate-state pointer fields that address that evidence: `findings_summary` (`{ total, by_severity }` with keys constrained to the severity enum plus an `OTHER` bucket) and `coverage_degradations` (bounded to 10 entries with 200-char, CLEAN-redacted reasons). Both readers are fail-open observation-only echoes. The CLEAN shape invariant of the terminal report is preserved structurally.
+
+## Why
+
+A reviewer/critic lane that failed settlement was opaque to the orchestrator: no predicate in the diagnostic, no durable journal of rejected writes, no prompt-side contract telling the lane what a correct artifact even is (the 2026-10-04/05 review-session retrospective; discovery lanes already had all three after #2859). The `UNVERIFIED → PENDING` mapping existed only in the skill reference, costing a full 44-record retry in the source session.
+
+## Notes
+
+- State schema addition is additive and optional; the state codec pins the journal bound (the root schema is passthrough, so old state parses unchanged).
+- `latestPrReviewVerdictRejectionForLane` is bound through the legacy-transcript-adapter helper seam (`bindPrReviewTranscriptAdapterHelpers`) — the adapter stays gate-import-free.
+- Registry citation re-pin: `tryCreatePrReviewRunReservation` anchor `:11349 → :11505` (line shift from the journal additions).

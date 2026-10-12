@@ -377,7 +377,7 @@ export const TOOL_METADATA = {
 	},
 	write_pr_review_artifact: {
 		description:
-			'persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run',
+			'persist schema-validated PR-review findings checkpoints and exact actionable feedback handoffs under the active run; reviewer verdicts marked `UNVERIFIED` persist to the findings ledger as `PENDING` records routed back to the reviewer — do not resubmit a row whose verdict is already recorded',
 		agents: ['architect'],
 	},
 	pr_review_submission: {
