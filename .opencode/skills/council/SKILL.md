@@ -1,9 +1,10 @@
 ---
 name: council
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: COUNCIL -- General Council research,
   parallel member dispatch, disagreement handling, and synthesis.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Council Protocol

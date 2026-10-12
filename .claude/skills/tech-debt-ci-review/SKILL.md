@@ -1,8 +1,9 @@
 ---
 name: tech-debt-ci-review
-audience: swarm-plugin
 description: Deep technical debt and CI stability audit for identifying test theater, missing or mis-scoped tests, actual and potential test failures, flaky-test risk, dependency/toolchain brittleness, and structural debt that prevents PRs from going green safely.
 disable-model-invocation: true
+metadata:
+  audience: swarm-plugin
 ---
 
 # /tech-debt-ci-review

@@ -1,6 +1,5 @@
 ---
 name: codebase-review-swarm
-audience: swarm-plugin
 description: Run a rigorous, quote-grounded codebase review or security/QA/accessibility/performance/AI-slop/enhancement audit. Use for full-repo or large-subsystem review reports; not for normal implementation. Performs Phase 0 inventory, selected exhaustive tracks with non-diluting depth, coverage closure, reviewer/critic validation, and writes .swarm/review-v8 artifacts without modifying source files.
 license: MIT
 metadata:
@@ -8,6 +7,7 @@ metadata:
   generated: "2026-06-08"
   source_prompt: "codebase-review-swarm-prompt-v7"
   artifact_root: ".swarm/review-v8/runs/<run_id>/"
+  audience: swarm-plugin
 ---
 
 # Codebase Review Swarm

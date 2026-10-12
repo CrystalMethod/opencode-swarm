@@ -1,11 +1,11 @@
 ---
 name: issue-tracer
-audience: swarm-plugin
 description: Evidence-first investigation, validation, and full resolution of issues and bugs. Use when asked to investigate, trace, root-cause, reproduce, plan, fix, resolve, close, or prepare a PR for an issue, bug report, defect, regression, failing test, crash, or confusing runtime behavior. Drives issue validation, acceptance-check-driven reproduction and fix planning, independent critic and implementation review, recurrence-class eradication, and an invariant-aware, PR-ready closure with a recorded human merge gate under a mandatory full-resolution contract that forbids partial fixes, deferred work, and unwired code.
 license: MIT
 metadata:
   version: 3.0.0
   source: .opencode/skills/issue-tracer/SKILL.md
+  audience: swarm-plugin
 ---
 
 # Issue Tracer

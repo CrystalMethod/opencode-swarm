@@ -1,12 +1,13 @@
 ---
 name: rust-crate-ci
-audience: swarm-plugin
 description: >
   Load before editing any Rust crate in this repo (currently runners/swarm-sandbox-runner).
   Covers the mandatory local validation gate, common rustfmt/clippy pitfalls, and
   Windows-specific Rust correctness patterns that CI enforces but are hard to catch locally
   without a Windows toolchain.
-effort: low
+metadata:
+  audience: swarm-plugin
+  effort: low
 ---
 
 # Rust Crate CI Guide

@@ -463,6 +463,25 @@ export interface SkillFrontmatterOverrides {
 	skillType?: 'directive' | 'workflow';
 }
 
+/**
+ * Serialize a list as a YAML string whose content is a JSON array — the
+ * Agent-Skills spec types `metadata` as a map from string keys to STRING
+ * values, so a YAML sequence is not spec-conformant (issue #2907). The value
+ * is single-quote wrapped (inner single quotes doubled per YAML).
+ */
+function yamlJsonString(values: string[]): string {
+	const json = JSON.stringify(values);
+	return `'${json.replace(/'/g, "''")}'`;
+}
+
+/** Quote a scalar that YAML would otherwise type-coerce (number/bool/timestamp). */
+function yamlStringScalar(value: string): string {
+	if (/^-?(\d+\.?\d*|\.\d+)$/.test(value)) return `"${value}"`;
+	if (/^(true|false|null|yes|no|on|off)$/i.test(value)) return `"${value}"`;
+	if (/^\d{4}-\d{2}-\d{2}([T ].*)?$/.test(value)) return `"${value}"`;
+	return value;
+}
+
 export function renderSkillMarkdown(
 	cluster: KnowledgeCluster,
 	mode: GenerateMode = 'active',
@@ -473,7 +492,7 @@ export function renderSkillMarkdown(
 		cluster.title.length > 200
 			? `${cluster.title.slice(0, 197)}…`
 			: cluster.title;
-	const ids = cluster.entries.map((e) => `  - ${e.id}`).join('\n');
+	const ids = cluster.entries.map((e) => e.id);
 	const version = overrides?.version ?? 1;
 	const skillOrigin = overrides?.skillOrigin ?? 'generated';
 	const skillType = overrides?.skillType;
@@ -481,23 +500,23 @@ export function renderSkillMarkdown(
 	lines.push('---');
 	lines.push(`name: ${cluster.slug}`);
 	lines.push(`description: ${escapeYaml(description)}`);
+	// Non-spec keys live under the spec `metadata:` map with string values
+	// (https://agentskills.io/specification; issue #2907).
+	lines.push('metadata:');
 	if (cluster.triggers.length > 0) {
-		lines.push('triggers:');
-		for (const trigger of cluster.triggers) {
-			lines.push(`  - ${escapeYaml(trigger)}`);
-		}
+		lines.push(`  triggers: ${yamlJsonString(cluster.triggers)}`);
 	}
-	lines.push('generated_from_knowledge:');
-	lines.push(ids);
-	lines.push('source_knowledge_ids:');
-	lines.push(ids);
-	lines.push(`generated_at: ${generatedAt}`);
-	lines.push(`confidence: ${cluster.avgConfidence.toFixed(2)}`);
-	lines.push(`status: ${mode === 'active' ? 'active' : 'draft'}`);
-	lines.push(`version: ${version}`);
-	lines.push(`skill_origin: ${skillOrigin}`);
+	lines.push(`  generated_from_knowledge: ${yamlJsonString(ids)}`);
+	lines.push(`  source_knowledge_ids: ${yamlJsonString(ids)}`);
+	lines.push(`  generated_at: ${yamlStringScalar(generatedAt)}`);
+	lines.push(
+		`  confidence: ${yamlStringScalar(cluster.avgConfidence.toFixed(2))}`,
+	);
+	lines.push(`  status: ${mode === 'active' ? 'active' : 'draft'}`);
+	lines.push(`  version: ${yamlStringScalar(String(version))}`);
+	lines.push(`  skill_origin: ${skillOrigin}`);
 	if (skillType) {
-		lines.push(`skill_type: ${skillType}`);
+		lines.push(`  skill_type: ${skillType}`);
 	}
 	lines.push('---');
 	lines.push('');
@@ -887,45 +906,61 @@ function injectMissingIdsIntoFrontmatter(
 
 	const closeStart = fenceLen + (closeFence.index ?? 0);
 	const body = stripped.slice(fenceLen, closeStart).replace(/\r\n/g, '\n');
-
-	// Find the `source_knowledge_ids:` line so we can insert after its block.
-	const sourceIdx = body.indexOf('source_knowledge_ids:');
-	if (sourceIdx === -1) return content;
-
-	// Walk forward from `source_knowledge_ids:` to find the end of its list
-	// (the next non-indented, non-empty line, or end of frontmatter body).
-	const afterLabel = body.indexOf('\n', sourceIdx);
-	const listStart = afterLabel === -1 ? body.length : afterLabel + 1;
 	const lines = body.split('\n');
-	let insertIdx = -1;
+
+	// Locate the `source_knowledge_ids:` declaration — spec shape is an
+	// indented `metadata:` child (issue #2907); legacy shape is top-level
+	// with a following `- item` block.
+	let labelIdx = -1;
+	let childIndent = '';
 	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].length === 0) continue;
-		// Skip lines that are part of the `source_knowledge_ids:` value block.
-		const relativePos = body.indexOf(lines[i], listStart);
-		if (relativePos >= 0 && relativePos < listStart + 2) continue; // on the label line
-		if (
-			body.slice(listStart, body.indexOf(lines[i], listStart)).match(/^\s+-/)
-		) {
-			// still inside the list block
-			continue;
+		const m = lines[i].match(/^(\s*)source_knowledge_ids:\s*$/);
+		if (m) {
+			labelIdx = i;
+			childIndent = m[1];
+			break;
 		}
-		insertIdx = body.indexOf(lines[i], listStart);
-		break;
 	}
-	if (insertIdx === -1) insertIdx = body.length;
+	// JSON-string child form (`  source_knowledge_ids: '["…"]'`) — find it too.
+	if (labelIdx === -1) {
+		for (let i = 0; i < lines.length; i++) {
+			const m = lines[i].match(/^(\s*)source_knowledge_ids:\s*\S/);
+			if (m) {
+				labelIdx = i;
+				childIndent = m[1];
+				break;
+			}
+		}
+	}
+	if (labelIdx === -1) return content;
 
-	const missingBlock = [
-		'missing_source_knowledge_ids:',
-		...missingIds.map((id) => `  - ${id}`),
-		'',
-	].join('\n');
-
-	const newBody =
-		body.slice(0, insertIdx) + missingBlock + body.slice(insertIdx);
+	let insertIdx: number;
+	if (childIndent.length > 0) {
+		// Spec metadata-child shape: emit the missing block one level deeper.
+		insertIdx = labelIdx + 1;
+		const itemIndent = `${childIndent}  `;
+		lines.splice(
+			insertIdx,
+			0,
+			`${childIndent}missing_source_knowledge_ids:`,
+			...missingIds.map((id) => `${itemIndent}- ${id}`),
+		);
+	} else {
+		// Legacy top-level shape: insert after the end of its `- item` block.
+		let end = labelIdx + 1;
+		while (end < lines.length && /^\s+-/.test(lines[end])) end += 1;
+		lines.splice(
+			end,
+			0,
+			'missing_source_knowledge_ids:',
+			...missingIds.map((id) => `  - ${id}`),
+			'',
+		);
+	}
 
 	const prefix = stripped.slice(0, fenceLen);
 	const suffix = stripped.slice(closeStart);
-	return prefix + newBody + suffix;
+	return prefix + lines.join('\n') + suffix;
 }
 
 /**
@@ -1056,8 +1091,26 @@ export function parseDraftFrontmatter(content: string): {
 	let inLegacyIdsList = false;
 	let inSourceIdsList = false;
 	let inTriggersList = false;
+	let inMetadataBlock = false;
+	const metadataChildren = new Map<string, string>();
 	for (const raw of lines) {
 		const line = raw;
+		if (inMetadataBlock) {
+			if (/^\S/.test(line)) {
+				// Column-0 key ends the spec metadata block.
+				inMetadataBlock = false;
+			} else {
+				const child = line.match(/^\s+([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
+				if (child) {
+					metadataChildren.set(child[1], stripGeneratedYamlQuotes(child[2]));
+				}
+				continue;
+			}
+		}
+		if (/^metadata:\s*$/.test(line)) {
+			inMetadataBlock = true;
+			continue;
+		}
 		if (inLegacyIdsList || inSourceIdsList || inTriggersList) {
 			// Accept any non-empty, non-whitespace token bounded to 64 chars.
 			// Generator emits UUID v4 ids; tests may use short synthetic ids.
@@ -1125,6 +1178,49 @@ export function parseDraftFrontmatter(content: string): {
 		if (/^source_knowledge_ids:\s*$/.test(line)) {
 			out.sourceKnowledgeIds = [];
 			inSourceIdsList = true;
+		}
+	}
+	// Spec `metadata:` children win over legacy top-level declarations
+	// (issue #2907). Lists serialize as JSON-string arrays.
+	if (metadataChildren.size > 0) {
+		const fromJsonList = (value: string | undefined): string[] | null => {
+			if (!value) return null;
+			if (value.startsWith('[') && value.endsWith(']')) {
+				try {
+					const parsed = JSON.parse(value);
+					if (Array.isArray(parsed)) return parsed.map(String);
+				} catch {
+					// fall through to comma split
+				}
+				return value
+					.slice(1, -1)
+					.split(',')
+					.map((entry) => entry.trim())
+					.filter(Boolean);
+			}
+			return null;
+		};
+		const triggers = fromJsonList(metadataChildren.get('triggers'));
+		if (triggers) out.triggers = triggers;
+		const ids = fromJsonList(metadataChildren.get('source_knowledge_ids'));
+		if (ids) out.sourceKnowledgeIds = ids;
+		const legacyIds = fromJsonList(
+			metadataChildren.get('generated_from_knowledge'),
+		);
+		if (!ids && legacyIds) out.sourceKnowledgeIds = legacyIds;
+		const status = metadataChildren.get('status');
+		if (status) out.status = status;
+		const generatedAt = metadataChildren.get('generated_at');
+		if (generatedAt) out.generatedAt = generatedAt;
+		const version = metadataChildren.get('version');
+		if (version !== undefined && /^\d+$/.test(version)) {
+			out.version = parseInt(version, 10);
+		}
+		const skillOrigin = metadataChildren.get('skill_origin');
+		if (skillOrigin) out.skillOrigin = skillOrigin;
+		const skillType = metadataChildren.get('skill_type');
+		if (skillType === 'directive' || skillType === 'workflow') {
+			out.skillType = skillType;
 		}
 	}
 	return out;
@@ -1243,10 +1339,11 @@ export async function activateProposal(
 		};
 	}
 	// Re-stamp status: active in frontmatter (proposals carry status: draft).
-	const flipped = proposalContent.replace(
-		/^status:\s*draft\s*$/m,
-		'status: active',
-	);
+	// Spec shape nests status under `metadata:` (issue #2907); the legacy
+	// column-0 form stays supported for pre-migration proposals.
+	const flipped = proposalContent
+		.replace(/^(\s*)status:\s*"?draft"?\s*$/m, '$1status: active')
+		.replace(/^status:\s*draft\s*$/m, 'status: active');
 	let evaluation: SkillEvaluationResult | undefined;
 	if (options.evaluate) {
 		let incumbentContent: string | undefined;

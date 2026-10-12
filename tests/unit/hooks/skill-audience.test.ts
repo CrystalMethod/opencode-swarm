@@ -126,11 +126,80 @@ describe('parseSkillFrontmatter: top-level audience metadata', () => {
 		expect(parseAudience(['audience:', ...items])?.status).toBe('invalid');
 	});
 
-	test('does not interpret nested audience keys as top-level metadata', () => {
+	test('resolves a spec metadata.audience child (issue #2907)', () => {
 		expect(parseAudience(['metadata:', '  audience: ragappv3'])).toEqual({
-			status: 'absent',
-			values: [],
+			status: 'valid',
+			values: ['ragappv3'],
 		});
+	});
+
+	test('metadata.audience prefers metadata and fails closed on conflicts', () => {
+		// Only metadata present -> metadata wins.
+		expect(parseAudience(['metadata:', '  audience: runner:claude'])).toEqual({
+			status: 'valid',
+			values: ['runner:claude'],
+		});
+		// JSON-string list child (spec string-typed metadata values).
+		expect(
+			parseAudience([
+				'metadata:',
+				`  audience: '["a-domain", "runner:claude"]'`,
+			]),
+		).toEqual({ status: 'valid', values: ['a-domain', 'runner:claude'] });
+		// Block-list child.
+		expect(
+			parseAudience([
+				'metadata:',
+				'  audience:',
+				'    - a-domain',
+				'    - runner:claude',
+			]),
+		).toEqual({ status: 'valid', values: ['a-domain', 'runner:claude'] });
+		// Conflict (different values) fails closed in both declaration orders.
+		expect(
+			parseAudience(['metadata:', '  audience: other', 'audience: ragappv3'])
+				?.status,
+		).toBe('invalid');
+		expect(
+			parseAudience(['audience: ragappv3', 'metadata:', '  audience: other'])
+				?.status,
+		).toBe('invalid');
+		// Equal value sets in different orders resolve valid (deduped sets).
+		expect(
+			parseAudience([
+				'metadata:',
+				`  audience: '["b-domain", "a-domain"]'`,
+				'audience:',
+				'  - a-domain',
+				'  - b-domain',
+			]),
+		).toEqual({ status: 'valid', values: ['b-domain', 'a-domain'] });
+		// Either side invalid -> invalid overall (fail closed).
+		expect(
+			parseAudience([
+				'metadata:',
+				'  audience: ["ragappv3", 7]',
+				'audience: ragappv3',
+			])?.status,
+		).toBe('invalid');
+		// Duplicate metadata.audience children fail closed.
+		expect(
+			parseAudience(['metadata:', '  audience: a', '  audience: b'])?.status,
+		).toBe('invalid');
+	});
+
+	test('nested metadata forms inherit the malformed and cap rules', () => {
+		expect(
+			parseAudience(['metadata:', '  audience:', '    ragappv3'])?.status,
+		).toBe('invalid');
+		const items = Array.from({ length: 17 }, () => '    - ragappv3');
+		expect(parseAudience(['metadata:', '  audience:', ...items])?.status).toBe(
+			'invalid',
+		);
+		expect(
+			parseAudience(['metadata:', '  audience:', 'metadata:', '  audience: a'])
+				?.status,
+		).toBe('invalid');
 	});
 });
 

@@ -1,7 +1,8 @@
 ---
 name: execute
-audience: swarm-plugin
 description: Claude Code adapter for MODE: EXECUTE. Delegates to the canonical opencode-swarm execution protocol.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Execute Protocol

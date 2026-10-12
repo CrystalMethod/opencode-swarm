@@ -1,7 +1,8 @@
 ---
 name: phase-wrap
-audience: swarm-plugin
 description: Claude Code adapter for MODE: PHASE-WRAP. Delegates to the canonical opencode-swarm phase boundary protocol.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Phase Wrap Protocol

@@ -1259,15 +1259,16 @@ Intelligent skill tracking, scoring, and recommendation system for agent delegat
 }
 ```
 
-Skill frontmatter may declare one domain or a bounded list of domain and runner constraints:
+Skill frontmatter may declare one domain or a bounded list of domain and runner constraints under the spec `metadata:` map (issue #2907; a legacy top-level `audience:` still resolves during the transition):
 
 ```yaml
-audience: ragappv3
-# or
-audience: [ragappv3, runner:opencode]
+metadata:
+  audience: ragappv3
+  # or
+  audience: '["ragappv3", "runner:opencode"]'
 ```
 
-Domain values use OR semantics with other domain values; `runner:*` values use OR semantics with other runner values; the two dimensions are ANDed. Thus `[ragappv3, runner:claude]` does not match an OpenCode runner even when the project accepts `ragappv3`. An absent audience remains unscoped/match-all for backward compatibility; an explicitly empty or malformed audience fails closed.
+Domain values use OR semantics with other domain values; `runner:*` values use OR semantics with other runner values; the two dimensions are ANDed. Thus `["ragappv3", "runner:claude"]` does not match an OpenCode runner even when the project accepts `ragappv3`. An absent audience remains unscoped/match-all for backward compatibility; an explicitly empty or malformed audience fails closed, as does a metadata-vs-top-level audience conflict.
 
 **Skill routing file** (`.opencode/skill-routing.yaml`):
 

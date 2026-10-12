@@ -1,7 +1,8 @@
 ---
 name: swarm-ci-monitor
-audience: swarm-plugin
 description: Codex adapter for end-to-end CI monitoring of an already-reviewed PR in opencode-swarm. Use when the user wants the swarm to monitor a reviewed-and-approved PR's CI, research every failure exhaustively, fix end-to-end, iterate until green (max 5 cycles), then merge. Composes ci-fix-monitor for fix recipes.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Swarm CI Monitor

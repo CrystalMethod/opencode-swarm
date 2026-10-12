@@ -1127,7 +1127,8 @@ Two failures motivated the automated check:
 |---|---|---|
 | `skill-mirror` | `.opencode`↔`.claude` byte identity / divergence / adapter / opencode-only; declared extra identical paths such as `.agents`; unclassified both-tree pairs | `src/config/skill-mirrors.ts` (shared with `tests/unit/skills/skill-mirrors.test.ts`) |
 | `bundled-skill` | `.opencode/skills/` ⊆ `BUNDLED_PROJECT_SKILLS`; no phantom entries; `package.json#files` coverage | `src/config/bundled-skills.ts`, `package.json` |
-| `skill-audience` | tracked static skills declare valid top-level audience metadata; generated lifecycle skills are excluded | static skill frontmatter parsed by `src/hooks/skill-scoring.ts` |
+| `skill-audience` | tracked static skills declare valid audience metadata (spec `metadata.audience` or legacy top-level, issue #2907); generated lifecycle skills are excluded | static skill frontmatter parsed by `src/hooks/skill-scoring.ts` |
+| `skill-frontmatter` | Agent-Skills-spec conformance (issue #2907): no non-spec top-level frontmatter keys outside the host-consumed allowlist (`disable-model-invocation`, `argument-hint`, `context`, `agent`); `name` matches the parent directory; `metadata` children are string-typed scalars | `scripts/drift-check.ts` `detectSkillFrontmatterSpecDrift` |
 | `tool` | metadata / handler / plugin-object / `TOOL_NAMES` / `AGENT_TOOL_MAP` / barrel-export coherence (issue #1643) | reuses `scripts/check-tool-registration.ts` |
 | `command` | `COMMAND_NAME_SET` parity; `subcommandOf` parents exist | `src/commands/registry.ts` |
 | `agent` | `ALL_AGENT_NAMES` ↔ `AGENT_TOOL_MAP`; opt-in maps only reference real agents | `src/config/agent-names.ts`, `src/config/constants.ts` |

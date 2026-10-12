@@ -17,11 +17,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+	readSkillContractStamp,
 	SKILL_CONTRACT_DIGEST_KEY,
-	STAMPED_PR_WORKFLOW_SKILLS,
 	skillContractDigest,
 	splitSkillFrontmatter,
-} from './drift-check';
+} from '../src/config/skill-contract-digest.js';
+import { STAMPED_PR_WORKFLOW_SKILLS } from './drift-check';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WRITE = process.argv.includes('--write');
@@ -33,11 +34,7 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 	const normalized = content.replace(/\r\n/g, '\n');
 	const { frontmatter, body } = splitSkillFrontmatter(normalized);
 	const digest = skillContractDigest(body);
-	const stampLine = `${SKILL_CONTRACT_DIGEST_KEY}: ${digest}`;
-	const existing = new RegExp(
-		`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`,
-		'm',
-	).exec(frontmatter)?.[1];
+	const existing = readSkillContractStamp(frontmatter);
 	if (existing === digest) {
 		console.log(`ok      ${slug} ${digest}`);
 		continue;
@@ -51,10 +48,13 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 	}
 	const next = existing
 		? normalized.replace(
-				new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: [0-9a-f]{12}$`, 'm'),
-				stampLine,
+				new RegExp(
+					`^(\\s*)${SKILL_CONTRACT_DIGEST_KEY}: ?"?[0-9a-f]{12}"?$`,
+					'm',
+				),
+				`$1${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"`,
 			)
-		: insertStampBeforeFrontmatterClose(normalized, stampLine);
+		: insertStamp(normalized, digest);
 	// N-3 (PR #2863 review): a skill without a frontmatter fence made the
 	// helper return the input unchanged and the loop still wrote it and
 	// reported `stamped` — a false success. Fail closed instead so the next
@@ -70,18 +70,23 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 	console.log(`stamped ${slug} ${digest}${existing ? ` (was ${existing})` : ''}`);
 }
 /**
- * Insert the stamp as the LAST frontmatter key (immediately before the
- * closing fence): bundled-skill-runtime-closure asserts the frontmatter
- * begins with the opening fence followed by name: and audience:, so
- * leading insertion breaks that contract.
+ * Insert the stamp as a quoted-string child of the `metadata:` map when one
+ * exists (spec shape, issue #2907), otherwise as the LAST top-level
+ * frontmatter key immediately before the closing fence: the legacy
+ * positional contract only requires the fence to open with name:, and the
+ * pre-#2907 runtime closure asserted `audience:` directly after `name:`.
  */
-function insertStampBeforeFrontmatterClose(
-	content: string,
-	stampLine: string,
-): string {
+function insertStamp(content: string, digest: string): string {
+	const metadataLabel = /^metadata:[ \t]*$/m.exec(content);
+	if (metadataLabel?.index !== undefined) {
+		// +1 skips the line terminator (content is LF-normalized above).
+		const afterLabel = metadataLabel.index + metadataLabel[0].length + 1;
+		const child = `  ${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"\n`;
+		return content.slice(0, afterLabel) + child + content.slice(afterLabel);
+	}
 	const close = content.indexOf('\n---\n');
 	if (close === -1) return content;
-	return content.slice(0, close) + '\n' + stampLine + content.slice(close);
+	return content.slice(0, close) + `\n${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"` + content.slice(close);
 }
 
 if (drift > 0) process.exit(1);

@@ -392,7 +392,7 @@ function hashContent(content: string | undefined): string | undefined {
 
 function normalizeRejectedContent(content: string): string {
 	return content
-		.replace(/^generated_at:\s*\S+\s*$/gim, 'generated_at: <generated>')
+		.replace(/^\s*generated_at:\s*\S+\s*$/gim, 'generated_at: <generated>')
 		.replace(/\s+/g, ' ')
 		.trim()
 		.toLowerCase();

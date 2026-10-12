@@ -1,6 +1,5 @@
 ---
 name: research-first
-audience: swarm-plugin
 description: >
   Apply when planning fixes, investigating tech debt, architecting solutions, or
   diagnosing unknown issues that may involve external frameworks, dependencies,
@@ -8,6 +7,8 @@ description: >
   state-of-the-art approaches before tracing through code.
 context: fork
 agent: Explore
+metadata:
+  audience: swarm-plugin
 ---
 
 ## Research Before Planning Protocol

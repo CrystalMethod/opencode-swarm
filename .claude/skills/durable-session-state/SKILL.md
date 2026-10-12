@@ -1,12 +1,13 @@
 ---
 name: durable-session-state
-audience: swarm-plugin
 description: >
   Persist plans, scope decisions, evidence, and reviewer/critic verdicts to
   durable files during long or multi-phase tasks so work survives context
   compaction, session resumes, and handoffs. Use for swarm-mode tasks, before
   context grows large, when recording approval gates, and when resuming after
   compaction or a session restart.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Durable Session State

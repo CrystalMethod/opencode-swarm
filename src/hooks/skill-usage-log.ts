@@ -1837,6 +1837,8 @@ export async function resolveSourceKnowledgeIds(
  * Pure helper: parse `generated_from_knowledge:` YAML list from frontmatter.
  * Uses a minimal regex-based parser — the SKILL.md format is well-known and narrow.
  * Does NOT use a full YAML parser to avoid adding a dependency.
+ * Accepts the spec shape (indented `metadata:` child; lists serialize as
+ * JSON-string arrays, issue #2907) and the legacy top-level block list.
  */
 function parseGeneratedFromKnowledge(content: string): string[] {
 	// Match frontmatter block (between --- delimiters at start of file)
@@ -1844,10 +1846,22 @@ function parseGeneratedFromKnowledge(content: string): string[] {
 	if (!frontmatterMatch) return [];
 
 	const body = frontmatterMatch[1];
+
+	// Spec metadata-child shape: `  generated_from_knowledge: '["a","b"]'`
+	// (one quote level already handled by the optional group).
+	const jsonMatch = body.match(
+		/^\s+generated_from_knowledge:\s*'?\[([^\]]*)\]'?\s*$/m,
+	);
+	if (jsonMatch) {
+		return jsonMatch[1]
+			.split(',')
+			.map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
+			.filter(Boolean);
+	}
+
 	const ids: string[] = [];
 
-	// Match UUID-style entries under generated_from_knowledge:
-	// Supports both "  - uuid" and "  - uuid  # comment" formats
+	// Legacy shape — "  - uuid" and "  - uuid  # comment" formats
 	const sectionRegex =
 		/generated_from_knowledge\s*:\s*\n((?:\s+-\s+\S+[^\n]*\n?)+)/;
 	const sectionMatch = body.match(sectionRegex);

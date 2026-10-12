@@ -1,7 +1,8 @@
 ---
 name: merge-queue-readiness
-audience: swarm-plugin
 description: Pre-queue merge-group CI simulation. Triggered before adding a PR to a GitHub merge queue. Prevents merge-queue kick-outs from integration test failures.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Merge Queue Readiness

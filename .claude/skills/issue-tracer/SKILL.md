@@ -1,6 +1,5 @@
 ---
 name: issue-tracer
-audience: swarm-plugin
 description: >
   Use when asked to trace, investigate, root-cause, reproduce, plan, fix,
   resolve, close, or prepare a PR for an issue, bug report, defect, regression,
@@ -11,6 +10,7 @@ description: >
   implementation review, and PR-ready closure.
 metadata:
   version: 3.0.0
+  audience: swarm-plugin
 ---
 
 # Issue Tracer

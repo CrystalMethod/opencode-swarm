@@ -22,15 +22,12 @@ import { join } from 'node:path';
 const ROOT = process.cwd();
 
 const ENTRY_SKILL_BASELINES: Record<string, number> = {
-	'.opencode/skills/swarm-pr-review/SKILL.md': 2024,
-	// 950 = 949 + one frontmatter `swarm-contract-digest` stamp line
-	// (issue #2859 F6); content detail unchanged.
-	'.opencode/skills/swarm-pr-feedback/SKILL.md': 950,
-	// The graph/impact safety matrix added in issue #2492 requires seven
-	// additional lines; keep the one-way ratchet at the reviewed 854-line
-	// baseline until that detail moves into references/ under issue #2131.
-	'.opencode/skills/writing-tests/SKILL.md': 854,
+	'.opencode/skills/swarm-pr-review/SKILL.md': 1692,
+	'.opencode/skills/swarm-pr-feedback/SKILL.md': 797,
+	'.opencode/skills/writing-tests/SKILL.md': 424,
 	'.opencode/skills/issue-tracer/SKILL.md': 196,
+	'.claude/skills/graphify/SKILL.md': 420,
+	'.claude/skills/commit-pr/SKILL.md': 478,
 };
 
 describe('progressive-disclosure ratchet (issue #2131 G)', () => {

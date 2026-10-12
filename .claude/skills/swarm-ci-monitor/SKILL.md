@@ -1,6 +1,5 @@
 ---
 name: swarm-ci-monitor
-audience: swarm-plugin
 description: >
   Claude Code adapter for end-to-end CI monitoring of an already-reviewed PR
   in opencode-swarm. Use when the user wants the swarm to monitor a
@@ -9,6 +8,8 @@ description: >
   ci-fix-monitor for fix recipes. This is the first skill in the repo that
   executes a merge — invoke it deliberately.
 disable-model-invocation: true
+metadata:
+  audience: swarm-plugin
 ---
 
 # Swarm CI Monitor

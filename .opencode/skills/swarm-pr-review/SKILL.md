@@ -1,9 +1,10 @@
 ---
 name: swarm-pr-review
-audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: 103ae1c77229
+metadata:
+  audience: swarm-plugin
+  swarm-contract-digest: "fdee609f2a9e"
 ---
 
 # /swarm-pr-review
@@ -235,66 +236,7 @@ Exception: in explicit Council mode only, the main thread may act as the indepen
 
 ## Scope Detection
 
-Determine review scope using this priority:
-
-1. explicit user-provided PR URL, PR number, commit, branch, or file scope,
-2. current feature branch diff vs the remote-tracking base ref (`origin/main`,
-   `origin/master`; a local `main`/`master` only as a last resort — it is only as
-   fresh as the last fetch and yields a different merge base),
-3. staged changes,
-4. latest commit,
-5. user-specified files or directories.
-
-Record:
-
-- base ref,
-- head ref,
-- commit range,
-- changed files,
-- deleted files,
-- generated files,
-- lockfiles,
-- test files,
-- docs/config/schema files,
-- whether the working tree is dirty.
-
-If scope cannot be determined, review the narrowest safe scope available and state the limitation.
-
-### Pre-flight git ref availability
-
-Before launching explorers (Phase 3), perform this exact standalone sequence:
-
-1. Resolve and retain the authoritative full `pr_head_sha` from PR metadata.
-2. Verify the working tree is clean with `git status --porcelain`. If it is
-   dirty at all — tracked changes, untracked files, or both — call
-   `prepare_pr_workflow_checkout` (Profile A). The tool supports
-   self-discovery: call it with no `paths` argument to auto-discover and
-   preserve every dirty path in one step, including untracked files; an
-   already-clean tree returns a no-op (nothing is stashed, no receipt is
-   written). Pass explicit `paths` only when you already have the exact,
-   bounded list of dirty tracked files and want the older exact-match
-   contract. Without the controller (Profiles B/C), do not blind-stash over
-   dirty state: surface tracked changes to the user, or abort. Do not issue
-   `git stash` through shell.
-   Treat the controller's Git-state result as final for this attempt: `clean`
-   proceeds, `stashable` permits exactly one checkout-preparation call, and
-   `recovery-required` or `indeterminate` means report the typed
-   `required_action`, abort/clear any already-active gate, and stop. Retry only
-   when the controller explicitly returns `retryable: true`; never fight an
-   unmerged index or in-progress Git operation with repeated stash attempts.
-3. Fetch the PR head as one standalone command, for example
-   `git fetch origin refs/pull/<N>/head`. Do not compose fetch and checkout.
-3a. Fetch the base branch as its own standalone command, for example
-   `git fetch origin main`. Skipping this is the single most common cause of a
-   rejected dispatch: the merge base is recomputed against `base_ref`, and a
-   local `main`/`refs/heads/main` that was never refreshed resolves to a
-   different commit than `origin/main` for the same `base_sha`.
-4. Prove the full commit exists locally with two portable standalone commands:
-   `git rev-parse --verify <full_pr_head_sha>^0`, then
-   `git cat-file -t <full_pr_head_sha>`. The second command must print
-   `commit`. This avoids shell/wrapper parsing differences around the
-   `^{commit}` suffix on Windows.
-5. Check out the exact PR filesystem with
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/scope-detection.md` (issue #2907 progressive-disclosure budget).
    `git switch --detach <full_pr_head_sha>`. Do not use `--track FETCH_HEAD`:
    `FETCH_HEAD` is not a remote-tracking branch.
 6. Confirm `git rev-parse HEAD` equals the full `pr_head_sha`, bind that exact
@@ -302,39 +244,7 @@ Before launching explorers (Phase 3), perform this exact standalone sequence:
    record it at the top of the findings ledger and repeat it in every lane
    prompt), and finish this before dispatching explorer lanes.
 
-Explorer agents read files from the working tree, not from git history. Passing
-the commit range in a prompt cannot substitute for this checkout because
-`Read` / `Glob` / `Grep` operate on the filesystem.
-- Explicitly pass the verified merge-base range (`base_sha...pr_head_sha`) in every explorer delegation so explorers inspect exactly the bound PR diff. Include `base_ref` only as the live ref used to recompute `base_sha`; do not substitute a two-dot branch-tip range.
-
-If refs cannot be fetched or checked out, state the limitation in the context pack.
-
-### Shell rules under the PR_REVIEW gate
-
-The gate accepts one command per tool call — never compose commands with
-`&&`, `;`, shell pipelines, redirects (`>`, `>>`, `<`), or `$(...)`/`` ` ``
-substitution. The only literal-pipe exception is inside one closed
-double-quoted `gh api --jq` argument with no backslash-escaped nested double
-quotes; that escape is ambiguous under `cmd.exe`. The exception does not
-permit an outer pipeline or any other control syntax.
-A single leading `cd <dir> &&` prefix and a trailing `2>&1` suffix are
-tolerated, but only on read-only commands. State-transition verbs — `git
-fetch`, `git checkout`, `git switch`, `git branch`, and `gh pr checkout` —
-must always run bare: no `cd` prefix, no `2>&1` suffix.
-
-Allowed read-only `git` subcommands: `status`, `log`, `show`, `diff`,
-`rev-parse`, `merge-base`, `ls-files`, `grep`, `blame`, `cat-file`,
-`for-each-ref`, `branch --list` (listing only — mutation flags are blocked),
-`remote -v`, and `config --get`.
-
-Prefer tools over raw shell for state that a single read-only command cannot
-cover cleanly:
-
-- `pr_workflow_status` — observe local HEAD, branch, dirty-file state,
-  remotes, and gate state in one read-only call.
-- `gh_evidence` — bounded PR/issue/run metadata without a shell round-trip.
-- If `gh` is not installed, the web fetch tool against the equivalent
-  `api.github.com` REST URL is the degraded read-only path.
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/scope-detection.md` (issue #2907 progressive-disclosure budget).
 
 ## Phase 0A: Existing PR Signal Ingestion
 
@@ -394,65 +304,7 @@ When thread resolution state matters, prefer GraphQL review-thread inspection.
 If GraphQL is unavailable, keep the signal and mark
 `resolution_state: UNKNOWN`; do not drop it from scope.
 
-### Step 1 — Fetch all PR feedback surfaces
-
-The commands below are GitHub examples. On GitLab, Bitbucket, Gerrit, or
-another code host, use the host's API/connector/CLI to enumerate the same full
-surface, including pagination and unresolved-thread state. Host choice never
-reduces the intake ledger.
-
-```bash
-# Issue comments (general PR thread)
-gh api --paginate repos/{owner}/{repo}/issues/{PR_NUMBER}/comments
-
-# Review comments (inline code comments)
-gh api --paginate repos/{owner}/{repo}/pulls/{PR_NUMBER}/comments
-
-# Review summaries (approve/request-changes/comment events)
-gh api --paginate repos/{owner}/{repo}/pulls/{PR_NUMBER}/reviews
-```
-
-`--paginate` requests every REST page. These three calls are gate-allowed as
-written. A literal jq filter passed as one closed double-quoted `gh api --jq`
-argument is also allowed when it needs no backslash-escaped nested double
-quotes; use `gh_evidence` when a portable filter cannot meet that shape. A real
-shell pipeline to `jq` or another command remains blocked. To
-separate bot/automated reviews (Copilot, Codex, CodeRabbit, etc.) from human
-ones, apply the same predicate in context to the JSON already returned above
-— `user.type == "Bot"` or a `user.login` match against
-`bot|copilot|coderabbit|codex` (case-insensitive) — instead of re-fetching
-with a shell-side `--jq` filter. `gh_evidence` with `target: "pr"` and
-`fields: "comments"` is the sanctioned read-only tool path for the same PR
-comment data when a tool call is preferred over a raw shell command. `gh pr
-view --json comments,reviews` is convenience-only because those fields have
-item caps; never use it as the authoritative "all signals" intake.
-
-### Step 2 — Classify each comment
-
-| Category | Action |
-|----------|--------|
-| **Human review with file:line evidence** | Add as candidate finding with `source: existing-review` — still needs reviewer validation |
-| **Bot/automated finding with specific code reference** | Add as candidate finding with `source: bot-review` — high false-positive rate, treat as unverified |
-| **General feedback / style preference** | Add as advisory obligation |
-| **Resolved/outdated comment** | Skip — note in report under "Ingested Resolved Comments" |
-| **Requested changes not yet addressed** | Add as HIGH-priority obligation |
-
-### Step 3 — Merge into review pipeline
-
-All ingested comments become candidate findings or obligations. They follow the
-same Phase 3-8 pipeline as freshly discovered findings. Ingested findings are
-NOT pre-confirmed — they still require independent reviewer validation per the
-Anti-Self-Review Rule.
-
-**Comment-ledger output:**
-```
-[INGESTED] | source | category | file:line (if applicable) | original_author | status: PENDING_VALIDATION / SKIPPED_OUTDATED / ADVISORY
-```
-
-### Anti-patterns
-- ✗ Ignoring bot reviews because "bots produce false positives" — they also catch real issues
-- ✗ Pre-confirming human review comments without independent validation — even senior reviewers make mistakes
-- ✗ Skipping inline review comments and only reading the summary — inline comments contain the evidence
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/phase0a-intake.md` (issue #2907 progressive-disclosure budget).
 
 ## Phase 0B: Mergeability and Branch-State Intake
 
@@ -722,18 +574,7 @@ ledger file):
    `boundary: "post_critic"` and update final status, the authoritative
    `severity`, and final reporting or handoff action.
 
-**Enforced order, dispositions, and error reporting (Profile A).** The
-trigger evaluation must complete before every findings boundary EXCEPT the
-base-only `post_explorer` write above, which is admissible right after base
-settlement (issue #2280); beyond that exception checkpoints run strictly
-`post_explorer` → `post_reviewer` → `post_critic`, each requiring the prior
-checkpoint persisted, and `post_reviewer`/`post_critic` must exactly cover
-the FULL (base+micro) candidate inventory against the persisted trigger-eval
-artifact; records must match the authoritative reviewer/critic
-verdict rows, and an invalid payload is rejected in ONE call listing every
-violation as `finding_id: field expected <value>, got <value>`. Full contract
-(write order, dispositions, severity authority table, handoff schema):
-references/findings-persistence-contract.md.
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/findings-persistence-detail.md` (issue #2907 progressive-disclosure budget).
 
 Resume/reload procedure: read the latest `findings.jsonl` and reconstruct the
 ledger from disk before dispatching more lanes; the base-only `post_explorer`
@@ -1019,11 +860,7 @@ input was rejected. Do not guess at hidden predicates, weaken acceptance, or
 switch to blocking/direct-Task dispatch; repair the named contract when it is
 available, otherwise stop at the coverage gate with the diagnostic gap.
 
-### Candidate extraction via parser
-
-Under Profile A, after `collect_lane_results` returns for base lanes, process
-each lane result that carries an `output_ref`. The orchestrator MUST use the
-candidate parser rather than preview-text extraction:
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/parser-candidate-extraction.md` (issue #2907 progressive-disclosure budget).
 
 1. For each singleton base `output_ref`, call `parse_lane_candidates` with
    `output_ref`, `producer: "swarm-pr-review"`,
@@ -1046,73 +883,13 @@ candidate parser rather than preview-text extraction:
    complete trigger accounting and settle every launched micro-lane first.
 
 If a lane has `output_degraded: true`, no usable `output_ref`, or `transcript_incomplete: true` without typed positive-candidate recovery, apply the COVERAGE GATE (Phase 3). An incomplete base or micro discovery lane may proceed only when it is explicitly named by a `salvaged_workflow_lane_recoveries` entry whose `kind` is `transcript-incomplete-terminal-candidate`; that recovery validates the retained positive `[CANDIDATE]` row only. Council, reviewer, and critic lanes never qualify for this incomplete-transcript recovery and must retry. Recovery never validates `[CLEAN]`, candidate absence, an unowned sibling lane, or an incomplete lane with no matching entry. Do not use blocking or direct-Task fallbacks while the controller is active, mark affected candidates UNVERIFIED to proceed, or infer candidate absence from a preview. Under Profiles B/C, which have no typed recovery validation, a truncated, incomplete, empty, or attestation-free subagent report is the same lane-output failure and takes the same COVERAGE GATE.
-
 After candidate parsing and before reviewer dispatch, persist the post-explorer
 candidate ledger. The base-only write is admissible immediately after base
 settlement — it is the durable recovery point for context compaction from base
 settlement onward; once trigger evaluation completes, a full-inventory
 (base+micro) `post_explorer` write may refresh it ahead of Phase 6.
 
-**Profiles B/C row convention:** without the parser, the `[CANDIDATE]` row
-format is the extraction contract itself. Explorers emit the rows directly in
-their reports (see the Explorer Prompt Template reference); the orchestrator
-collects them verbatim, validates each row's field count and lane id, and
-treats malformed rows — or output with neither `[CANDIDATE]` rows nor a fully
-populated `[CLEAN]` attestation — as a lane-output failure under the COVERAGE
-GATE. If the parser is unavailable under Profile A, the same row convention
-applies as a fallback, but the orchestrator SHOULD use the parser as the
-primary extraction mechanism.
-
-**lane id uniqueness for parallel dispatches:** When re-dispatching failed or
-re-running explorer lanes, every `dispatch_lanes_async` or `dispatch_lanes`
-lane `id` MUST be unique within that dispatch batch and should include lane and
-attempt suffixes (e.g., `pr_review_explore_lane1_attempt2`). Never reuse an id
-in the same batch unless intentionally replacing that exact lane before dispatch.
-
-Explorers optimize for recall. Over-reporting is expected. Explorers produce candidates only.
-
-The six dimensions are a fixed **check-type** partition, not an area
-partition: every PR needs all six review dimensions, and the lanes
-deliberately overlap by file, each receiving the same diff (via
-`common_prompt` under Profile A) and viewing it through a different lens. Six
-dimensions are this workflow's high-assurance coverage floor, not a claim that
-research proves a universal optimal agent count — the published evidence
-favors complementary, distinct-lens reviewers over duplicated generalists, and
-finding rates rise with diff size, which is why dispatch (not coverage)
-follows the depth tier. Repository policy may add scrutiny but may never
-reduce the six dimensions. Coverage is guaranteed by all six dimensions
-reading the whole diff, so the disjoint-partition rule that governs area-split
-fan-outs does not apply.
-
-| `workflow_lane` | Focus | Required checks |
-|---|---|---|
-| `intent-architecture` | Intent, scope, architecture, and integration | obligation mapping, design fit, callers/consumers, sibling patterns, docs and claimed-vs-actual behavior |
-| `correctness-state` | Functional correctness, data/state flow, edge cases, and failure paths | input domains, nullability, ordering, transactions, error behavior, rollback, backwards behavior |
-| `tests-falsifiability` | Tests, test validity, regressions, and claimed validation | assertion strength, negative paths, isolation, fixtures, deterministic timing, missing proof |
-| `security-trust` | Security, privacy, trust boundaries, unsafe inputs/sinks, and supply chain | authorization, injection, secrets, provenance, dependency risk, data exposure, abuse paths |
-| `reliability-performance` | Reliability, concurrency, retries, resource bounds, and performance | races, retry semantics, timeouts, lifecycle, caching, algorithmic cost, operational failure modes |
-| `compatibility-delivery` | API/schema/config compatibility, maintainability, build/deploy, docs, and release behavior | public contracts, migrations, runtime/platform support, packaging, CI, rollout and recovery guidance |
-
-### Explorer context contract
-
-Every explorer must inspect or explicitly mark unavailable:
-
-1. the changed hunk,
-2. at least one caller, consumer, or downstream impact-cone node,
-3. at least one callee, dependency, or upstream assumption,
-4. at least one sibling implementation or prior pattern,
-5. the nearest relevant test or missing-test location,
-6. deterministic signal entries mapped to its files/symbols,
-7. relevant Swarm knowledge/evidence entries, if present.
-8. the exact bound review range to analyze (`base_sha...pr_head_sha`),
-
-### Explorer output format
-
-Explorers emit structured candidate records. The parser reads the full lane
-artifact and extracts these records. The canonical record shape is:
-
-The fence below is documentation formatting only. Emit the header and all
-machine-readable rows as unfenced plain text; do not emit the backticks.
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/explorer-output-format.md` (issue #2907 progressive-disclosure budget).
 
 ```text
 [CANDIDATE] | candidate_id | lane | severity | category | file:line | claim | evidence_summary | impact_context | confidence | risk_impact | risk_tags
@@ -1120,18 +897,7 @@ machine-readable rows as unfenced plain text; do not emit the backticks.
 
 Profile A now treats `submit_pr_review_result` as the authoritative settlement path for base and micro discovery lanes. The caller-bound structured receipt dominates later prose, truncation, or transcript incompleteness. Transcript candidate/clean rows remain deprecated compatibility only when `pr_review_legacy_transcript_compatibility` was explicitly enabled for that lane and no structured receipt exists; a present-but-invalid structured result fails closed and never falls back.
 
-When compatibility mode is active, Profile A stores the full assistant transcript. The parser locates the first pipe-delimited line whose first field is exactly `[CANDIDATE]`, ignores unmarked preamble, and requires the exact canonical base/micro header; malformed markers or marker-prefixed rows without a header fail closed. The controller refuses a missing marker. Markerless positional fallback remains only for legacy callers outside that trust boundary; explorers should put the canonical header first.
-
 The confidence data value must be exactly LOW, MEDIUM, or HIGH.
-
-Under Profile A the parser-backed transcript path is compatibility-only; a successful `submit_pr_review_result` receipt is authoritative. On Profiles B/C — and on a Profile A lane whose snapped contract explicitly enables deprecated legacy transcript compatibility and lacks a structured receipt — the explorer emits `[CANDIDATE]` rows directly as the extraction contract.
-
-Explorers must not use `CONFIRMED`, `DISPROVED`, or `PRE_EXISTING`.
-
-A base lane that finds no surviving candidates must submit exactly one structured CLEAN result and then stop. Only a lane in the deprecated transcript-compatibility path may instead emit exactly one fully populated clean row:
-
-The fence below is documentation formatting only. Emit the clean attestation
-as unfenced plain text; do not emit the backticks.
 
 ```text
 [CLEAN] | lane | coverage_scope | evidence
@@ -1139,8 +905,6 @@ as unfenced plain text; do not emit the backticks.
 
 Header-only `[CLEAN]` markers, prose-only "clean" claims, or empty output do
 not settle the lane.
-
----
 
 ## Phase 4: Mandatory Repository-Agnostic Micro-Lanes
 
@@ -1605,72 +1369,7 @@ F-001 | severity | category | root cause | affected file:line refs | reviewer | 
 
 ---
 
-## Phase 10: Metrics and Knowledge Writeback
-
-At the end of the review, include review quality metrics in the final report's
-validation provenance. Persist them only through an invoked evidence tool and
-record the exact `.swarm/evidence/` path returned by that tool; if no invoked
-tool supports metrics (including all of Profiles B/C), state `NOT PERSISTED —
-no metrics evidence writer` and keep the metrics block in the final report and
-session ledger rather than naming a nonexistent command or path.
-
-Record:
-
-- raw candidates by base lane,
-- raw candidates by micro-lane,
-- deterministic tool candidates,
-- reviewer-confirmed findings,
-- reviewer-disproved findings,
-- reviewer-unverified findings,
-- critic-upheld findings,
-- critic-downgraded findings,
-- critic-disproved findings,
-- final reported findings,
-- suppressed non-actionable candidates,
-- recurring false-positive patterns,
-- commands or probes used,
-- token/time cost if available,
-- accepted/fixed findings when known.
-
-Knowledge writeback rules:
-
-- Write back only validated true positives or validated false-positive patterns.
-- Include file patterns, invariant, evidence, and why it was confirmed/disproved.
-- Mark repo-specific lessons as project-tier unless there is strong evidence they generalize.
-- Never promote quarantined or unvalidated knowledge to hive-tier.
-- Never store secrets, private tokens, or raw sensitive logs.
-
----
-
-## Phase 11: Post-Fix Re-verification
-
-When the PR author pushes fixes after a review, perform a targeted re-verification before updating the verdict.
-
-### Re-verification scope
-
-Only re-verify findings the author claims to have fixed. Do not re-run the full review pipeline.
-
-### Re-verification steps
-
-1. For each finding the author claims fixed:
-   a. Read the changed file(s) from the updated branch at the specific lines referenced in the original finding.
-   b. Verify the fix addresses the root cause, not just the symptom.
-   c. Check that the fix does not introduce a new issue in the same area.
-2. Run CI checks on the updated branch to confirm no regressions.
-3. For findings the author did not address, carry forward the original finding with unchanged status.
-
-### Re-verification output
-
-```
-[REVERIFIED] | finding_id | FIXED / PARTIALLY_FIXED / NOT_FIXED / NEW_ISSUE | evidence | updated_severity
-```
-
-- `FIXED`: the root cause is resolved and no new issue introduced.
-- `PARTIALLY_FIXED`: the root cause is partially addressed or a residual concern remains.
-- `NOT_FIXED`: the root cause persists unchanged.
-- `NEW_ISSUE`: the fix introduced a new problem at the same location.
-
-Update the verdict only after re-verifying all previously blocking findings.
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/writeback-phases.md` (issue #2907 progressive-disclosure budget).
 
 ---
 
@@ -1680,41 +1379,10 @@ For the full parser-based candidate extraction dry-run example, read `references
 
 # Council Mode Workflow
 
-Council mode is opt-in only and adversarial.
-
-When triggered:
-
-1. Build the same context pack as default mode.
-2. After the default base-dimension and risk-family coverage is complete, launch all supplementary council agents. Under Profile A, use one `dispatch_lanes_async` call with `mode: "swarm-pr-review:council"`, the same exact `pr_head_sha`, and one unique `workflow_lane` per council member; continue independent context preparation while they run, polling with `collect_lane_results` (without `wait`) to process settled agents incrementally, and use `wait: true` only when no independent work remains. All agents must be settled and their candidates added to the ledger before reviewer classification; under Profile A the runtime enforces this join barrier, and blocking, sequential, or direct-Task fallback is not equivalent to the structured council dispatch — bypassing the active controller is `BLOCKED`. Under Profile B, dispatch council members as parallel subagents with the same marker contract and settle them all before reviewer classification; under Profile C, run each council lens as a separate sequential pass.
-3. Each council agent assumes all work is wrong until code evidence proves otherwise.
-4. Each agent hunts within its lane only.
+Detailed reference material moved to `.opencode/skills/swarm-pr-review/references/council-mode.md` (issue #2907 progressive-disclosure budget).
+2. After the default base-dimension and risk-family coverage is complete, launch all supplementary council agents. Under Profile A, use one `dispatch_lanes_async` call with `mode: "swarm-pr-review:council"`, the same exact `pr_head_sha`, and one unique `workflow_lane` per council member; continue independent context preparation while they run, polling with `collect_lane_results` (without `wait`) to process settled agents incrementally, and use `wait: true` only when independent work remains. All agents must be settled and their candidates added to the ledger before reviewer classification; under Profile A the runtime enforces this join barrier, and blocking, sequential, or direct-Task fallback is not equivalent to the structured council dispatch — bypassing the active controller is `BLOCKED`. Under Profile B, dispatch council members as parallel subagents with the same marker contract and settle them all before reviewer classification; under Profile C, run each council lens as a separate sequential pass.
 5. Council uses the micro-lane row family: `[CANDIDATE] | candidate_id | micro_lane | severity | category | file:line | claim | invariant_violated | evidence_summary | confidence | risk_impact | risk_tags`. Emit one row per `EVIDENCE_FOUND` or `SUSPICIOUS` claim, or a fully populated `[CLEAN] | micro_lane | coverage_scope | evidence` row when no candidate survives. Put the exact council `workflow_lane` value in the `micro_lane` data field. Council prose without one of those markers does not settle the lane.
-6. Agents must not return `CONFIRMED`, `DISPROVED`, or final severity; candidate severity remains provisional until reviewer classification.
-7. The independent reviewer then classifies every council candidate as `CONFIRMED`, `DISPROVED`, `UNVERIFIED`, or `PRE_EXISTING`.
-8. Apply critic challenge to reviewer-confirmed HIGH/CRITICAL or borderline findings.
-9. Final synthesis distinguishes real blockers, real low-severity issues, accepted caveats, disproved council claims, and follow-up quality work.
-
-Default council lanes:
-
 - correctness and edge cases,
-- security and trust boundaries,
-- dependency and deployment safety,
-- docs and intent-vs-actual,
-- tests and falsifiability,
-- performance and architecture when risk justifies it.
-
-Council prompt requirements:
-
-- branch and commit range,
-- context pack summary,
-- files owned by that lane,
-- relevant impact cone,
-- explicit checklist,
-- strict output cap,
-- `EVIDENCE_FOUND / SUSPICIOUS / CLEAN` only,
-- file:line evidence required for `EVIDENCE_FOUND`.
-
-Council findings are supplementary, not authoritative overrides. Do not adopt council severities or claims without independent validation.
 
 ---
 

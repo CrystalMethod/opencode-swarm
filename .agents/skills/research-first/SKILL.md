@@ -1,7 +1,8 @@
 ---
 name: research-first
-audience: swarm-plugin
 description: Codex adapter for research-before-planning work. Use when a task depends on current external facts, unfamiliar libraries, APIs, standards, security advisories, release notes, product behavior, or repo behavior that must be verified before planning or implementation.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Research First

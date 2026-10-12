@@ -1,10 +1,11 @@
 ---
 name: ci-fix-monitor
-audience: swarm-plugin
 description: >
   Monitor CI on a PR, diagnose failures, fix them, and re-push until green.
   Covers reading CI logs, classifying failure types (check-title, package-check,
   test failures, lint), determining the correct fix, and re-pushing.
+metadata:
+  audience: swarm-plugin
 ---
 
 # CI Fix & Monitor Protocol

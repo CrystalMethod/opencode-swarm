@@ -1,12 +1,13 @@
 ---
 name: commit-pr
-audience: swarm-plugin
 description: >
   Apply when committing, pushing, opening or updating a PR, writing a pull request,
   creating release notes, or closing out remote CI. Enforces the opencode-swarm
   invariant audit, release-note fragment workflow, full validation suite, issue
   comment requirement, and post-PR lifecycle rules.
-effort: medium
+metadata:
+  audience: swarm-plugin
+  effort: medium
 ---
 
 # Commit & PR Protocol
@@ -410,72 +411,7 @@ $prBodyPath = Join-Path ([System.IO.Path]::GetTempPath()) "pr_body.txt"
 [System.IO.File]::WriteAllText($prBodyPath, $body, $utf8NoBom)
 gh pr create --title "<type>(<scope>): <description>" --body-file $prBodyPath --base main
 ```
-
-### Issue-trace publication receipt
-If this session is running an issue trace (`/swarm issue --trace`), call
-`record_issue_publication` with the issue number, PR number, URL, and HEAD sha immediately
-after `gh pr create` (or after `gh pr edit` / `gh pr ready` for an existing PR).
-This is what lets the issue-trace workflow reach its terminal `published` state —
-without it the trace stays at `publication_handoff` and is NOT considered resolved.
-
-## Step 6a - PR monitoring subscription
-
-After PR creation, if the project uses PR monitoring (`pr_monitor.enabled: true`
-in resolved opencode-swarm config), the new PR must be subscribed for background
-monitoring:
-
-- **Automatic (default):** when `pr_monitor.auto_subscribe_on_pr_create` is
-  enabled (default `true`), the subscription is created automatically after
-  `gh pr create` succeeds — no command needed. Verify with `/swarm pr status`
-  if in doubt.
-- **Manual fallback:** when auto-subscribe is disabled or did not fire, run
-  `/swarm pr subscribe <pr-url>`, which records the subscription and
-  lazy-starts the polling worker.
-
-The post-subscription monitoring protocol — event intake, triage
-(fix / ask / skip), bounded-retry escalation, and terminal-state behavior —
-lives in the swarm-pr-subscribe skill (`../swarm-pr-subscribe/SKILL.md`).
-
-## Step 6.5 - Issue comment
-
-If the PR closes an issue, post a comment on the issue. This is mandatory.
-
-The issue comment must include:
-
-1. the PR link
-2. what changed
-3. how to use it
-4. migration steps or "No migration required"
-
-Uses the same UTF-8-no-BOM file-write pattern as Step 6 above.
-
-````powershell
-$comment = @"
-Fixed in PR #<pr-number>.
-
-## What changed
-- <bullet 1>
-- <bullet 2>
-
-## How to use
-```json
-{ "config": "example" }
-```
-
-## Migration
-No migration required.
-"@
-$utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
-$issueCommentPath = Join-Path ([System.IO.Path]::GetTempPath()) "issue-comment.txt"
-[System.IO.File]::WriteAllText($issueCommentPath, $comment, $utf8NoBom)
-gh issue comment <issue-number> --body-file $issueCommentPath
-````
-
-If the PR merged before this was done, post the missing issue comment immediately.
-
-## Commit messages
-
-PowerShell parens/brackets/backticks/dollar-signs in `git commit -m "..."` fail. Use the same UTF-8-no-BOM file-write pattern (see Step 6), then `git commit -F <file>`.
+Detailed reference material moved to `.claude/skills/commit-pr/references/pr-publication.md` (issue #2907 progressive-disclosure budget).
 
 ## Step 7 - Existing PR follow-up and closeout
 
@@ -501,72 +437,7 @@ gh pr ready <number>
 gh pr checks <number> --watch --fail-fast
 ```
 
-### Conflict closeout
-
-After resolving merge conflicts or syncing a stale branch:
-
-1. verify there are no local unmerged paths or conflict markers,
-2. push the conflict-resolution commit,
-3. verify GitHub reports both `mergeable: MERGEABLE` and
-   `mergeStateStatus: CLEAN`, not merely that local markers are gone, and
-4. keep a conflict/branch-drift item in the PR closure ledger when it affected
-   the PR.
-
-If GitHub still reports `DIRTY`, `BLOCKED`, or stale checks after local conflict
-resolution, fetch current `origin/main` again and re-evaluate before claiming the
-conflict is resolved.
-
-### GitHub auto-merge race condition
-
-With a merge queue enabled, prefer queuing over manual freshness rebases. If you encounter "fetch first" errors after a fresh fetch, GitHub may have auto-pushed a merge commit. Recovery: force-push your local commit with `--force-with-lease`. See `references/pr-incident-playbook.md` for full diagnosis and recovery steps.
-
-### Check closeout
-
-`gh pr checks --watch --fail-fast` is useful but can lag or flatten matrix and
-downstream jobs. When the PR checks view looks stale, missing, or inconsistent,
-use the workflow run as the authoritative detail:
-
-> **MCP environments:** When using GitHub MCP tools instead of `gh`, prefer
-> `get_check_runs` over `get_status`. The `get_status` method uses GitHub's
-> legacy commit status API: it returns `state: "pending"` even when all GitHub
-> Actions jobs are green, because Actions creates check-runs (not legacy
-> statuses). `get_check_runs` returns the actual job results.
-
-```powershell
-gh run view <run-id> --json headSha,status,conclusion,jobs,url
-```
-
-Keep watching after unit jobs pass; this repository may enqueue integration and
-smoke jobs later in the same CI run. Do not call the PR green until the current
-`headRefOid` has all required jobs completed successfully.
-
-If a previous run from an older PR head is still in progress or already failed
-and is blocking the current head's workflow through concurrency, inspect it with
-`gh run view <run-id> --json headSha,status,conclusion,jobs,url`. Cancel only
-obsolete older-head runs that are no longer relevant to the PR head you are
-validating, then wait for the current-head checks to complete.
-
-If you edit the PR body after checks are green, expect PR Standards / title
-checks to rerun. Re-check before claiming final green or merge-readiness.
-
-### Merge queue (current-base validation)
-
-Read `file:.swarm/bundled-skills/merge-queue-readiness/SKILL.md` for the full pre-queue merge-group CI simulation protocol.
-
-When `main` has a GitHub **merge queue** enabled, do not rebase or force-push a PR
-*solely because `main` advanced*. Once required checks and review are green, add the
-PR to the merge queue; GitHub re-runs the required workflows against the queued
-change on top of the latest `main` (and any earlier queued PRs) before merging, so
-manual "freshness" rebases are unnecessary.
-
-Still rebase/force-push when there is a **real** reason: a genuine merge conflict,
-a stale review thread that depends on current SHAs, or a correctness issue that only
-appears against current `main`. The queue handles up-to-date validation; it does not
-resolve conflicts for you.
-
-Required workflows trigger on both `pull_request` and `merge_group`. PR-only checks
-(title/body validation) no-op to success on `merge_group` because the PR already
-satisfied them before being queued.
+Detailed reference material moved to `.claude/skills/commit-pr/references/closeout-playbook.md` (issue #2907 progressive-disclosure budget).
 
 ## Step 8 - Cancelled jobs and skipped dependents
 

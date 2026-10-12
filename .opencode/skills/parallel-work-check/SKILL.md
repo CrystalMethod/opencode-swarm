@@ -1,25 +1,26 @@
 ---
 name: parallel-work-check
-audience: swarm-plugin
 description: >
   Apply before starting work on an existing branch. Checks for parallel work by
   other agents or developers that may supersede or conflict with your planned
   changes. Prevents wasted effort on stale branches.
-effort: small
-generated_from_knowledge: []
-source_knowledge_ids: ['f07c1f4d-9bb0-4219-9804-26aa8efe8146']
-generated_at: 2026-06-14T16:50:00Z
-confidence: 0.8
-status: active
-version: 4
-skill_origin: generated
-provenance_note: >
-  Re-linked to current knowledge entries (version 4). The original source ID
-  b8fee776... is no longer present in the active knowledge store. The skill
-  body and behavior are unchanged; only source_knowledge_ids metadata was
-  updated to point to the current lesson about verifying pre-existing state
-  on parent commit, which is directly relevant to the parallel-work-check
-  protocol.
+metadata:
+  audience: swarm-plugin
+  effort: small
+  generated_from_knowledge: '[]'
+  source_knowledge_ids: '["f07c1f4d-9bb0-4219-9804-26aa8efe8146"]'
+  generated_at: "2026-06-14T16:50:00Z"
+  confidence: "0.8"
+  status: active
+  version: "4"
+  skill_origin: generated
+  provenance_note: >
+    Re-linked to current knowledge entries (version 4). The original source ID
+    b8fee776... is no longer present in the active knowledge store. The skill
+    body and behavior are unchanged; only source_knowledge_ids metadata was
+    updated to point to the current lesson about verifying pre-existing state
+    on parent commit, which is directly relevant to the parallel-work-check
+    protocol.
 ---
 
 # Parallel Work Check Protocol

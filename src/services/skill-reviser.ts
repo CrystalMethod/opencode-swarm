@@ -92,9 +92,26 @@ export function buildDeterministicRevision(
 
 	let result = currentContent;
 
-	// Update or add version in frontmatter
-	if (/^version:\s*\d+\s*$/m.test(result)) {
-		result = result.replace(/^version:\s*\d+\s*$/m, `version: ${nextVersion}`);
+	// Update or add version in frontmatter. Spec shape keeps version as a
+	// quoted-string child under `metadata:` (issue #2907); legacy top-level
+	// `version:` remains supported for skills generated before the migration.
+	const nestedVersion = /^(\s+)version:\s*"?(\d+)"?\s*$/m.exec(result);
+	if (nestedVersion && /^\s+version:/m.test(result) && nestedVersion[1]) {
+		result = result.replace(
+			/^(\s+)version:\s*"?(\d+)"?\s*$/m,
+			`${nestedVersion[1]}version: "${nextVersion}"`,
+		);
+	} else if (/^version:\s*"?(\d+)"?\s*$/m.test(result)) {
+		result = result.replace(
+			/^version:\s*"?(\d+)"?\s*$/m,
+			`version: ${nextVersion}`,
+		);
+	} else if (/^(\s+)confidence:\s*/m.test(result)) {
+		const indent = /^(\s+)confidence:/m.exec(result)?.[1] ?? '';
+		result = result.replace(
+			/^(\s+)(confidence:\s*.+)$/m,
+			`$1$2\n${indent}version: "${nextVersion}"`,
+		);
 	} else if (/^confidence:\s*.+$/m.test(result)) {
 		result = result.replace(
 			/^(confidence:\s*.+)$/m,
@@ -155,9 +172,9 @@ function buildLLMPrompt(
 	const userPrompt = [
 		'Instructions:',
 		'- Revise ONLY the sections that were violated',
-		'- Preserve the exact frontmatter format (--- fenced YAML)',
+		'- Preserve the exact frontmatter format (--- fenced YAML), including the indented `metadata:` block',
 		'- Preserve all sections: Trigger, Required Procedure, Forbidden Shortcuts, Delegation Template, Reviewer Checks, Source Knowledge IDs',
-		`- Update the version field in frontmatter to ${currentVersion + 1}`,
+		`- Update the version field in frontmatter to ${currentVersion + 1} (metadata.version when the metadata block is present)`,
 		'- Make the violated rules clearer, more specific, or add missing edge cases',
 		'- Do NOT remove any source knowledge IDs',
 		'- Do NOT change the name or description in frontmatter',

@@ -136,7 +136,7 @@ export interface SkillMetadata {
 	skillType?: 'directive' | 'workflow';
 	/** Literal trigger phrases from frontmatter. */
 	triggers?: string[];
-	/** Bounded, top-level audience declaration and its parse status. */
+	/** Audience declaration (spec `metadata.audience` or legacy top-level) and its parse status. */
 	audience?: SkillAudienceMetadata;
 }
 
@@ -353,6 +353,103 @@ function collectAudienceYamlList(
 	};
 }
 
+/** A single parsed child of the spec `metadata:` frontmatter map. */
+interface SkillMetadataChild {
+	/** Inline scalar value with one level of surrounding quotes stripped. */
+	inline: string;
+	/** Deeper-indented `- item` lines following the child key, verbatim. */
+	listItems: string[];
+}
+
+/**
+ * Collect the indented children of an Agent-Skills-spec `metadata:` map
+ * (https://agentskills.io/specification — a string-keyed map for non-spec
+ * properties). The block runs from `start` until the next column-0 key or the
+ * closing fence; child keys are indented `key: value` lines and their list
+ * items sit at any deeper indent.
+ */
+function collectMetadataChildren(
+	lines: string[],
+	start: number,
+	end: number,
+): {
+	children: Map<string, SkillMetadataChild>;
+	duplicateKeys: Set<string>;
+	nextIndex: number;
+} {
+	const children = new Map<string, SkillMetadataChild>();
+	const duplicateKeys = new Set<string>();
+	let i = start;
+	let current: { child: SkillMetadataChild } | null = null;
+	for (; i < end; i++) {
+		const line = lines[i] ?? '';
+		if (line.trim() === '') continue;
+		if (!/^\s/.test(line)) break; // column-0 key ends the metadata block
+		const childMatch = line.match(/^\s+([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+		if (childMatch) {
+			const key = childMatch[1].toLowerCase();
+			if (children.has(key)) {
+				duplicateKeys.add(key);
+				current = null;
+				continue;
+			}
+			const child: SkillMetadataChild = {
+				inline: stripQuotes(childMatch[2].trim()),
+				listItems: [],
+			};
+			children.set(key, child);
+			current = { child };
+			continue;
+		}
+		const itemMatch = line.match(/^\s+-\s+(.+?)\s*$/);
+		if (itemMatch && current) {
+			current.child.listItems.push(itemMatch[1]);
+		}
+		// Non-item, non-child indented lines are ignored (they belong to
+		// multi-line values this parser does not interpret).
+	}
+	return { children, duplicateKeys, nextIndex: i - 1 };
+}
+
+/**
+ * Resolve the Agent-Skills-spec transition rule for a key that may be declared
+ * under `metadata:` or legacy top-level: either side invalid fails closed;
+ * both valid compare as deduped, order-insensitive value sets — equal sets
+ * dedupe onto the metadata side's ordering, different sets fail closed.
+ */
+function resolveAudiencePair(
+	metadataAudience: SkillAudienceMetadata,
+	topLevelAudience: SkillAudienceMetadata,
+): SkillAudienceMetadata {
+	if (metadataAudience.status === 'absent') return topLevelAudience;
+	if (metadataAudience.status !== 'valid')
+		return { status: 'invalid', values: [] };
+	if (topLevelAudience.status === 'absent') return metadataAudience;
+	if (topLevelAudience.status !== 'valid')
+		return { status: 'invalid', values: [] };
+	const sortKey = (values: string[]) => [...values].sort().join('\u0000');
+	return sortKey(metadataAudience.values) === sortKey(topLevelAudience.values)
+		? metadataAudience
+		: { status: 'invalid', values: [] };
+}
+
+/** Parse a `metadata.audience` child through the same forms the top-level key accepts. */
+function parseMetadataAudienceChild(
+	child: SkillMetadataChild,
+): SkillAudienceMetadata {
+	if (child.inline) {
+		// One quote level was already stripped in collectMetadataChildren, so a
+		// serialized JSON-string list ('["a","b"]') reaches the JSON branch.
+		return parseInlineAudienceList(child.inline);
+	}
+	if (child.listItems.length === 0) {
+		// A declared-but-empty audience child mirrors the top-level empty
+		// declaration: invalid, not absent.
+		return { status: 'invalid', values: [] };
+	}
+	return parseAudienceValues(child.listItems);
+}
+
 /**
  * Match parsed skill audience metadata against the active project and runner.
  * Domain tokens are ORed with domains, runner tokens are ORed with runners,
@@ -415,6 +512,8 @@ export function parseSkillFrontmatter(
 	let skillType: 'directive' | 'workflow' | undefined;
 	let triggers: string[] = [];
 	let audience: SkillAudienceMetadata = { status: 'absent', values: [] };
+	let metadataChildren: Map<string, SkillMetadataChild> | null = null;
+	let duplicateMetadataBlocks = 0;
 
 	for (let i = 1; i < end; i++) {
 		const line = lines[i] ?? '';
@@ -423,6 +522,19 @@ export function parseSkillFrontmatter(
 
 		const key = match[1].toLowerCase();
 		const rawValue = match[2].trim();
+
+		if (key === 'metadata') {
+			duplicateMetadataBlocks += 1;
+			if (duplicateMetadataBlocks === 1) {
+				const collected = collectMetadataChildren(lines, i + 1, end);
+				metadataChildren = collected.children;
+				if (collected.duplicateKeys.has('audience')) {
+					audience = { status: 'invalid', values: [] };
+				}
+				i = collected.nextIndex;
+			}
+			continue;
+		}
 
 		if (key === 'name') {
 			const parsed = stripQuotes(rawValue);
@@ -458,7 +570,10 @@ export function parseSkillFrontmatter(
 				audience = collected.audience;
 				i = collected.nextIndex;
 			} else {
-				audience = parseInlineAudienceList(rawValue);
+				// One quote level is stripped before list detection so a
+				// serialized JSON-string list is symmetric with the
+				// `metadata.audience` child form (issue #2907).
+				audience = parseInlineAudienceList(stripQuotes(rawValue));
 			}
 			continue;
 		}
@@ -476,6 +591,32 @@ export function parseSkillFrontmatter(
 			description = collected.join(' ');
 		} else {
 			description = stripQuotes(rawValue);
+		}
+	}
+
+	// Agent-Skills-spec transition resolution: keys under `metadata:` win over
+	// legacy top-level declarations; conflicting audience declarations fail
+	// closed (issue #2907).
+	if (duplicateMetadataBlocks > 1) {
+		audience = { status: 'invalid', values: [] };
+	} else if (metadataChildren) {
+		const audienceChild = metadataChildren.get('audience');
+		if (audienceChild && audience.status !== 'invalid') {
+			audience = resolveAudiencePair(
+				parseMetadataAudienceChild(audienceChild),
+				audience,
+			);
+		}
+		const skillTypeChild = metadataChildren.get('skill_type');
+		if (skillTypeChild) {
+			const value = skillTypeChild.inline;
+			if (value === 'directive' || value === 'workflow') skillType = value;
+		}
+		const triggersChild = metadataChildren.get('triggers');
+		if (triggersChild) {
+			triggers = triggersChild.inline
+				? normalizeTriggerList(parseInlineStringList(triggersChild.inline))
+				: normalizeTriggerList(triggersChild.listItems);
 		}
 	}
 

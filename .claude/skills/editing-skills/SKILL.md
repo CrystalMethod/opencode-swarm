@@ -1,6 +1,5 @@
 ---
 name: editing-skills
-audience: swarm-plugin
 description: >
   Contract for adding, editing, moving, or removing skills in this repository
   (.claude/skills, .opencode/skills, .agents/skills, any SKILL.md): mirror
@@ -8,6 +7,8 @@ description: >
   edits, bun run drift:check, bundling via BUNDLED_PROJECT_SKILLS, frontmatter
   conventions, and how to write trigger descriptions. Load before touching any
   SKILL.md file.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Editing Skills in opencode-swarm

@@ -1,7 +1,8 @@
 ---
 name: ci-failure-batching
-audience: swarm-plugin
 description: Batch collection and fix protocol for CI failures. Triggered when any CI check fails on a PR. Prevents serial diagnose-fix-push cycles by collecting all failures before fixing.
+metadata:
+  audience: swarm-plugin
 ---
 
 # CI Failure Batching

@@ -1,8 +1,9 @@
 ---
 name: issue-ingest
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: ISSUE_INGEST -- GitHub issue intake, localization, spec generation, and transition to the full fix workflow.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Issue Ingest Protocol

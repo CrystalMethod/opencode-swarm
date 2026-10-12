@@ -221,9 +221,7 @@ describe('renderSkillMarkdown', () => {
 		const md = renderSkillMarkdown(cluster);
 		expect(md).toContain('---');
 		expect(md).toMatch(/^name:\s+/m);
-		expect(md).toContain('generated_from_knowledge:');
-		expect(md).toContain('source_knowledge_ids:');
-		expect(md).toMatch(/^generated_at:\s+\S+/m);
+		expect(md).toMatch(/^metadata:\s*$/m);
 		expect(md).toContain('## Trigger');
 		expect(md).toContain('## Required Procedure');
 		expect(md).toContain('## Forbidden Shortcuts');
@@ -310,8 +308,9 @@ describe('generateSkills draft mode', () => {
 		]);
 
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - qa-entry');
-		expect(content).toContain('  - lock-entry');
+		expect(content).toContain(
+			`'${JSON.stringify(['qa-entry', 'lock-entry'])}'`,
+		);
 		expect(content).toContain('run the focused regression tests');
 		expect(content).toContain('update the package lockfile');
 	});
@@ -338,7 +337,7 @@ describe('generateSkills draft mode', () => {
 		expect(result.written).toHaveLength(1);
 		expect(result.written[0].sourceKnowledgeIds).toEqual(['active-entry']);
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - active-entry');
+		expect(content).toContain(`'${JSON.stringify(['active-entry'])}'`);
 		expect(content).not.toContain('quarantined-entry');
 	});
 });
@@ -431,8 +430,9 @@ describe('generateSkills active mode', () => {
 		]);
 
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - active-qa');
-		expect(content).toContain('  - active-lock');
+		expect(content).toContain(
+			`'${JSON.stringify(['active-qa', 'active-lock'])}'`,
+		);
 		const stamped = readFileSync(resolveSwarmKnowledgePath(tmp), 'utf-8')
 			.trim()
 			.split('\n')

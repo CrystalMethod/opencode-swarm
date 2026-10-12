@@ -44,6 +44,9 @@ export function skillContractDigest(body: string): string {
 
 /**
  * Read the stamped contract digest from a frontmatter block, if present.
+ * Accepts the spec shape (an indented child under the `metadata:` map,
+ * issue #2907) and the legacy column-0 form so consumer installs generated
+ * before the migration keep verifying.
  * String.match rather than RegExp.exec: the SAST callee-binding classifier
  * (issue #2300) flags an unresolved .exec member call as exec-like.
  */
@@ -52,6 +55,11 @@ export function readSkillContractStamp(
 ): string | undefined {
 	const match = frontmatter
 		.replace(/\r\n/g, '\n')
-		.match(new RegExp(`^${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`, 'm'));
-	return match?.[1];
+		.match(
+			new RegExp(
+				`^\\s*${SKILL_CONTRACT_DIGEST_KEY}: ?"([0-9a-f]{12})"$|^\\s*${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`,
+				'm',
+			),
+		);
+	return match?.[1] ?? match?.[2];
 }

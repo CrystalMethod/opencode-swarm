@@ -4,21 +4,22 @@ description: >
   Workflow for safely renaming symbols (functions, types, classes, interfaces,
   constants, variables) across a codebase. Uses repo_map, batch_symbols, and
   build_check to ensure every consumer is updated and nothing breaks.
-effort: small
-generated_from_knowledge: []
-source_knowledge_ids: ['20f7da40-02e0-4da8-9310-a78eb87ca81e']
-generated_at: 2026-06-14T16:50:00Z
-confidence: 0.8
-status: active
-version: 4
-skill_origin: generated
-provenance_note: >
-  Re-linked to current knowledge entries (version 4). The original source ID
-  1eb9f867... is no longer present in the active knowledge store. The skill
-  body and behavior are unchanged; only source_knowledge_ids metadata was
-  updated to point to the current lesson about updating test data when a
-  fix changes expectations, which is directly relevant to safe rename
-  verification.
+metadata:
+  effort: small
+  generated_from_knowledge: '[]'
+  source_knowledge_ids: '["20f7da40-02e0-4da8-9310-a78eb87ca81e"]'
+  generated_at: "2026-06-14T16:50:00Z"
+  confidence: "0.8"
+  status: active
+  version: "4"
+  skill_origin: generated
+  provenance_note: >
+    Re-linked to current knowledge entries (version 4). The original source ID
+    1eb9f867... is no longer present in the active knowledge store. The skill
+    body and behavior are unchanged; only source_knowledge_ids metadata was
+    updated to point to the current lesson about updating test data when a
+    fix changes expectations, which is directly relevant to safe rename
+    verification.
 ---
 
 # Safe Rename Skill

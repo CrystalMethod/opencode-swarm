@@ -1,8 +1,9 @@
 ---
 name: pre-phase-briefing
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: PRE-PHASE BRIEFING -- phase-start context assembly, evidence review, and task readiness checks.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Pre Phase Briefing Protocol

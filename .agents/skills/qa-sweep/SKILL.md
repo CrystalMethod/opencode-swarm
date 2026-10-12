@@ -1,7 +1,8 @@
 ---
 name: qa-sweep
-audience: swarm-plugin
 description: Codex adapter for independent QA review of opencode-swarm changes. Use after implementation or debugging when the user asks for a QA sweep, regression check, review pass, quality gate, or confidence check before publishing.
+metadata:
+  audience: swarm-plugin
 ---
 
 # QA Sweep

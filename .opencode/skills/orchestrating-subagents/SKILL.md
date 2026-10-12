@@ -1,6 +1,5 @@
 ---
 name: orchestrating-subagents
-audience: swarm-plugin
 description: >
   Tiering and economics for delegating to subagents: which agent type, model,
   and effort to use per role (explorer, implementer, reviewer, critic), how many
@@ -8,6 +7,8 @@ description: >
   bounded structured returns, and how to keep the main context clean. Use when
   launching subagents, parallel explorers, independent reviewers, or critic
   passes — especially for swarm-mode, qa-sweep, or issue-tracer work.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Orchestrating Subagents
