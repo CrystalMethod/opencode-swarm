@@ -57,6 +57,7 @@ const cases: MatrixCase[] = [
 			'accepts@1.3.8',
 			'express@4.18.2',
 			'ms@2.1.3',
+			'ts-node@10.9.1',
 		],
 		representativePurls: ['pkg:npm/express@4.18.2', 'pkg:npm/ms@2.1.3'],
 	},

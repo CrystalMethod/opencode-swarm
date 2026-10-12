@@ -214,7 +214,7 @@ function parsePnpmLockYaml(content: string): SbomComponent[] {
 
 		let key = trimmed.slice(0, -1);
 		key = key.replace(/^["'](.*)["']$/, '$1');
-		key = key.replace(/\([^)]*\)$/, '');
+		key = key.replace(/(\([^)]*\))+$/, '');
 		if (key.startsWith('/')) key = key.slice(1);
 
 		const at = key.lastIndexOf('@');

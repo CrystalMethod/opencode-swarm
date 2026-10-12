@@ -185,6 +185,39 @@ snapshots:
 		expect(components.length).toBe(1);
 		expect(setOf(components)).toEqual(['express@4.18.2']);
 	});
+
+	it('strips ALL trailing peer-suffix groups (multi-peer keys keep their own version)', () => {
+		// Regression (implementation review round 1): stripping exactly one
+		// trailing (...) group left `ts-node@10.9.1(@types/node` as the name
+		// and the first peer's version `18.11.18)` as the version — a wrong
+		// BOM entry where the pre-fix parser was correct.
+		const v6 = `packages:
+
+  /ts-node@10.9.1(@types/node@18.11.18)(typescript@4.9.5):
+    resolution: {integrity: sha512-aaa}
+`;
+		expect(setOf(detectComponents('pnpm-lock.yaml', v6))).toEqual([
+			'ts-node@10.9.1',
+		]);
+
+		const scoped = `packages:
+
+  /@babel/core@7.23.9(@babel/traverse@7.23.9)(semver@7.5.4):
+    resolution: {integrity: sha512-bbb}
+`;
+		expect(setOf(detectComponents('pnpm-lock.yaml', scoped))).toEqual([
+			'@babel/core@7.23.9',
+		]);
+
+		const v9 = `packages:
+
+  accepts@1.3.8(express@4.18.2)(mime@2.6.0):
+    resolution: {integrity: sha512-ccc}
+`;
+		expect(setOf(detectComponents('pnpm-lock.yaml', v9))).toEqual([
+			'accepts@1.3.8',
+		]);
+	});
 });
 
 describe('sbom detectors — regression: NuGet v1 dependencies fallback is dead code (#2956)', () => {
