@@ -57,9 +57,7 @@ describe('renderer order-stability surfaces (issue #2906)', () => {
 	});
 
 	test('summary line counts unstable findings and carries no finding id', () => {
-		const result = render([
-			finding('T-101', { order_agreement: 'disagree' }),
-		]);
+		const result = render([finding('T-101', { order_agreement: 'disagree' })]);
 		const summary = result.body
 			.split('\n')
 			.find((l) => l.includes('order-unstable') && !l.includes('[T-'));
