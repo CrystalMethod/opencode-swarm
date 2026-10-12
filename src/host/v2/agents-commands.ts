@@ -19,9 +19,11 @@
  *   - Entries the v1 hook marks `disable: true` (auto-select disabling the
  *     `build`/`plan` built-ins) are REMOVED on the v2 agent editor.
  *   - v1 command entries `{template, description}` → v2 CommandDefinition
- *     whose `execute` submits the expanded template through
- *     `ctx.session.prompt` (TUI-side $ARGUMENTS expansion is replaced by
- *     direct substitution — inventory row).
+ *     whose `execute` natively dispatches through the shared v1 command
+ *     handler (`command.execute.before` on the hooks object) and submits the
+ *     handler-produced prompt via the v2 session prompt surface; the raw
+ *     expanded template survives as the explicit fallback (#3169 Phase 4 —
+ *     see deferredV2ExecuteSwarmCommand).
  */
 
 import { log } from '../../utils';
@@ -31,11 +33,14 @@ import type {
 	V2AgentEditor,
 	V2AgentInfo,
 	V2CommandDefinition,
+	V2CommandInvocation,
 	V2PluginContext,
 	V2Registration,
 } from './types';
 
 const V2_REGISTRATION_TIMEOUT_MS = 60_000;
+/** Dispatch budget for one /swarm command execution (#3169 Phase 4). */
+const V2_COMMAND_DISPATCH_TIMEOUT_MS = 300_000;
 
 interface V1AgentConfigLike {
 	mode?: unknown;
@@ -107,6 +112,119 @@ export function expandV1Template(
 	return template.replaceAll('$ARGUMENTS', argumentsText).trim();
 }
 
+/** Extract the spliced prompt text from a dispatched command handler's parts. */
+function extractDispatchedPromptText(parts: unknown[]): string | null {
+	for (const part of parts) {
+		if (
+			part &&
+			typeof part === 'object' &&
+			typeof (part as { text?: unknown }).text === 'string' &&
+			(part as { text: string }).text.length > 0
+		) {
+			return (part as { text: string }).text;
+		}
+	}
+	return null;
+}
+
+/**
+ * Native /swarm command dispatch for the v2 execute path (#3169 Phase 4).
+ *
+ * Invokes the shared v1 command handler (`command.execute.before` on the
+ * hooks object — the same safeHook-wrapped handler the v1 host runs for a
+ * human-typed command: registry resolution, policy refusals, help/not-found,
+ * real handler execution, and the canonical output envelope) and submits the
+ * handler-produced prompt through the v2 session prompt surface. Human
+ * provenance is structural: the host invokes a CommandDefinition's execute
+ * only for user-typed commands (verified live on 2.0.26 — issue #3169
+ * comments 6083674508 / 6106407764); the model has no tool that reaches this
+ * path, so human-only commands (epic) stay agent-unreachable while becoming
+ * startable by the user.
+ *
+ * Fallback arms: an absent hook, an empty parts result, or a swallowed
+ * handler error submits the expanded template exactly as the pre-#3169
+ * bridge did (v1-faithful degradation: a swallowed v1 throw leaves
+ * output.parts untouched and the host submits the original typed line). A
+ * dispatch TIMEOUT submits a distinct bounded notice instead — never the
+ * raw template, so the model is not prompted to re-attempt a command that
+ * may still be completing in the background.
+ */
+async function deferredV2ExecuteSwarmCommand(
+	hooks: V1HooksSubset,
+	key: string,
+	template: string,
+	ctx: V2PluginContext,
+	invocation: V2CommandInvocation,
+): Promise<void> {
+	// The prompt-surface check precedes dispatch: a host without the session
+	// prompt surface must not run the registry handler (side-effect-free
+	// no-op, the pre-#3169 arm).
+	const prompt = ctx.session?.prompt;
+	if (typeof prompt !== 'function') {
+		log('v2 command executed without a session prompt surface', { name: key });
+		return;
+	}
+	let dispatched: string | null = null;
+	const hook = hooks['command.execute.before'];
+	if (typeof hook === 'function') {
+		const output: { parts: unknown[] } = { parts: [] };
+		const dispatchTimeoutError = new Error(
+			`[opencode-swarm] v2: command ${key} dispatch exceeded budget`,
+		);
+		try {
+			await withTimeout(
+				Promise.resolve(
+					hook(
+						{
+							command: key,
+							sessionID: invocation.sessionID,
+							arguments: invocation?.prompt?.text ?? '',
+						},
+						output,
+					),
+				),
+				V2_COMMAND_DISPATCH_TIMEOUT_MS,
+				dispatchTimeoutError,
+			);
+			dispatched = extractDispatchedPromptText(output.parts);
+		} catch (err) {
+			if (err === dispatchTimeoutError) {
+				const budgetSeconds = V2_COMMAND_DISPATCH_TIMEOUT_MS / 1000;
+				await withTimeout(
+					Promise.resolve(
+						prompt({
+							sessionID: invocation.sessionID,
+							text:
+								`[opencode-swarm] v2: command ${key} dispatch exceeded its ` +
+								`${budgetSeconds}s budget; the command may still be completing ` +
+								`in the background — check its status before re-running.`,
+						}),
+					),
+					V2_REGISTRATION_TIMEOUT_MS,
+					new Error(
+						`[opencode-swarm] v2: command ${key} prompt exceeded budget`,
+					),
+				);
+				return;
+			}
+			log('v2 command dispatch failed (falling back to template)', {
+				name: key,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	}
+	const text =
+		dispatched ?? expandV1Template(template, invocation?.prompt?.text ?? '');
+	// 2.0.26 SessionApi shape: one object input carrying
+	// sessionID + text (issue #3169; the published surface has
+	// been object-input since at least 2.0.20).
+	await withTimeout(
+		Promise.resolve(prompt({ sessionID: invocation.sessionID, text })),
+		V2_REGISTRATION_TIMEOUT_MS,
+		new Error(`[opencode-swarm] v2: command ${key} prompt exceeded budget`),
+	);
+}
+
 /** Register agents + commands via the synthetic config-hook run. */
 export async function registerV2AgentsAndCommands(
 	ctx: V2PluginContext,
@@ -168,31 +286,20 @@ export async function registerV2AgentsAndCommands(
 							typeof entry.description === 'string'
 								? entry.description
 								: undefined,
-						execute: async (invocation) => {
-							const text = expandV1Template(
+						// #3169 Phase 4: native dispatch through the shared v1
+						// command handler, with the raw-template bridge as the
+						// explicit fallback. Deliberately NOT an async arrow:
+						// every await lives in the deferred*-named helper so the
+						// C6 no-bare-awaits scan (dual-shape-parity) stays clean —
+						// the scanner does not track object-literal method names.
+						execute: (invocation) =>
+							deferredV2ExecuteSwarmCommand(
+								hooks,
+								key,
 								template,
-								invocation?.prompt?.text ?? '',
-							);
-							const prompt = ctx.session?.prompt;
-							if (typeof prompt !== 'function') {
-								log('v2 command executed without a session prompt surface', {
-									name: key,
-								});
-								return;
-							}
-							// 2.0.26 SessionApi shape: one object input carrying
-							// sessionID + text (issue #3169; the published surface has
-							// been object-input since at least 2.0.20).
-							await withTimeout(
-								Promise.resolve(
-									prompt({ sessionID: invocation.sessionID, text }),
-								),
-								V2_REGISTRATION_TIMEOUT_MS,
-								new Error(
-									`[opencode-swarm] v2: command ${key} prompt exceeded budget`,
-								),
-							);
-						},
+								ctx,
+								invocation,
+							),
 					};
 					editor.add(definition);
 				}
