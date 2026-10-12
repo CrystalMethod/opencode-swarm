@@ -25,10 +25,15 @@ import {
 	precreateStandardWorktreeSession,
 	resetStandardWorktreeIsolationState,
 } from '../../../../src/hooks/delegation-gate/worktree-isolation';
-import { createV2SessionClient } from '../../../../src/host/v2/session-client';
+import {
+	clearV2SessionClientState,
+	createV2SessionClient,
+} from '../../../../src/host/v2/session-client';
 import type { V2PluginContext } from '../../../../src/host/v2/types';
 import { resetSwarmState, swarmState } from '../../../../src/state';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+
+const GIT_FIXTURE_TIMEOUT_MS = 30_000;
 
 const PARENT = 'ses_gate_parent';
 
@@ -80,11 +85,19 @@ function makeFakeSessionDomain(parentDirectory: string, laneDirectory: string) {
 describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', () => {
 	let gitDir: string;
 	let laneDirectory: string;
+	// PRR-016: captured in beforeEach, NOT mid-test — a mid-test capture left the
+	// unconditional afterEach restore installing `undefined` into the
+	// module-wide `_internals` seam whenever the test threw first.
 	let originalProvision: unknown;
+	let gitFixtureAvailable = true;
 
 	beforeEach(() => {
 		resetSwarmState();
 		resetStandardWorktreeIsolationState();
+		// PRR-016: eager records live in the shim's module-level registry.
+		clearV2SessionClientState();
+		originalProvision = isolationInternals.provisionWorktree;
+		gitFixtureAvailable = true;
 		gitDir = canonicalMkdtemp('swarm-v2-gate-');
 		fs.writeFileSync(path.join(gitDir, 'a.txt'), 'a\n');
 		fs.writeFileSync(path.join(gitDir, 'b.txt'), 'b\n');
@@ -93,9 +106,30 @@ describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', ()
 			['add', '.'],
 			['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'init'],
 		] as string[][]) {
-			const result = spawnSync('git', args, { cwd: gitDir, encoding: 'utf8' });
+			// PRR-015: hermetic git env (the repo-wide convention documented in
+			// tests/unit/helpers/no-global-git-config.test.ts) plus a bound so a
+			// hung credential helper cannot stall the suite.
+			const result = spawnSync('git', args, {
+				cwd: gitDir,
+				encoding: 'utf8',
+				timeout: GIT_FIXTURE_TIMEOUT_MS,
+				env: {
+					...process.env,
+					// Git wants the NULL DEVICE by NAME: os.devNull is '\\.\NUL'
+					// on Windows, which git rejects as an invalid path. Same value the
+					// sibling suites use (tests/unit/helpers/no-global-git-config.test.ts).
+					GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+					GIT_CONFIG_SYSTEM: process.platform === 'win32' ? 'NUL' : '/dev/null',
+				},
+			});
+			if (result.error) {
+				// PRR-015: a missing/slow git must not fail the suite — the
+				// flag makes each test return early (a skip) instead.
+				gitFixtureAvailable = false;
+				return;
+			}
 			if (result.status !== 0) {
-				throw new Error(`git ${args[0]} failed: ${result.stderr}`);
+				throw new Error(`git ${args[0]} failed: ${result.stderr ?? 'unknown'}`);
 			}
 		}
 		laneDirectory = path.join(gitDir, '.swarm-worktrees', 'lane-gate');
@@ -105,6 +139,7 @@ describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', ()
 		(isolationInternals as Record<string, unknown>).provisionWorktree =
 			originalProvision;
 		(swarmState as { opencodeClient: unknown }).opencodeClient = undefined;
+		clearV2SessionClientState();
 		try {
 			fs.rmSync(gitDir, { recursive: true, force: true });
 		} catch {
@@ -115,6 +150,7 @@ describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', ()
 	});
 
 	test('isolationRequired dispatch rewrites task_id to the REAL lane id without degrading', async () => {
+		if (!gitFixtureAvailable) return; // git unavailable: skip, not fail
 		const fake = makeFakeSessionDomain(gitDir, laneDirectory);
 		const registration = { dispose: async () => {} };
 		const ctx = {
@@ -138,7 +174,6 @@ describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', ()
 		expect(client).toBeDefined();
 		(swarmState as { opencodeClient: unknown }).opencodeClient = client;
 
-		originalProvision = isolationInternals.provisionWorktree;
 		(isolationInternals as Record<string, unknown>).provisionWorktree =
 			async () => ({
 				worktreePath: laneDirectory,
@@ -174,5 +209,67 @@ describe('gate precreate through the v2 session-client shim (#3169 Phase 3)', ()
 		// The lane prompt context (worktree_lane_context) is prepended in place.
 		expect(typeof outputArgs.prompt).toBe('string');
 		expect(String(outputArgs.prompt)).toContain('<worktree_lane_context>');
+		// PRR-019/e: the lane title is the operator-visible
+		// "(worktree lane)" marker on the host session — assert it survives.
+		expect(createArg.title).toContain('(worktree lane)');
+	});
+
+	// PRR-013: the gate's FAILURE path is the Phase 3 guard's whole purpose —
+	// a placement mismatch must route into the gate's existing degradation, not
+	// silently hand the caller a wrong-directory session.
+	test('placement mismatch through the shim throws under isolationRequired (the EPIC_ISOLATION_DEGRADED path)', async () => {
+		if (!gitFixtureAvailable) return; // git unavailable: skip, not fail
+		const fake = makeFakeSessionDomain(gitDir, laneDirectory);
+		// Host echoes a location that is NOT the requested lane directory.
+		(fake as { create: unknown }).create = async () => ({
+			id: 'ses_gate_wrong',
+			location: { directory: gitDir },
+		});
+		const registration = { dispose: async () => {} };
+		const ctx = {
+			app: { name: 'opencode', version: 'test', channel: 'test' },
+			location: {
+				directory: gitDir,
+				workspaceID: 'w',
+				project: { id: 'p', directory: gitDir, canonical: gitDir },
+			},
+			options: {},
+			tool: {
+				transform: async () => registration,
+				hook: async () => registration,
+			},
+			agent: { transform: async () => registration },
+			command: { transform: async () => registration },
+			session: fake,
+			event: { subscribe: () => (async function* () {})() },
+		} as never as V2PluginContext;
+		(swarmState as { opencodeClient: unknown }).opencodeClient =
+			createV2SessionClient(ctx);
+		(isolationInternals as Record<string, unknown>).provisionWorktree =
+			async () => ({
+				worktreePath: laneDirectory,
+				branchName: 'swarm/lane/lane-gate-bad',
+				purpose: 'lane',
+				id: 'lane-gate-bad',
+				sessionId: PARENT,
+			});
+
+		const outputArgs: Record<string, unknown> = {};
+		await expect(
+			precreateStandardWorktreeSession({
+				isolationRequired: true,
+				config: { worktree: { policy: 'auto', merge_strategy: 'merge' } },
+				directory: gitDir,
+				parentSessionID: PARENT,
+				callID: 'call-gate-bad',
+				taskId: 'task-gate-bad',
+				outputArgs,
+			} as Parameters<typeof precreateStandardWorktreeSession>[0]),
+		).rejects.toThrow(/STANDARD_WORKTREE_SESSION_CREATE_FAILED/);
+		// The mis-placed host session is removed, and no task_id is published.
+		expect(
+			fake.calls.some((c) => c.op === 'remove' && c.arg === 'ses_gate_wrong'),
+		).toBe(true);
+		expect(outputArgs.task_id).toBeUndefined();
 	});
 });

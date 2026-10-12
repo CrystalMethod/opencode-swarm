@@ -266,6 +266,75 @@ describe('v2 session-client lane sessions (issue #3169 Phase 3)', () => {
 		expect(fake.removedSessions.has('ses_silent_bad')).toBe(true);
 	});
 
+	// PRR-013: a REJECTING get during placement verification must still return
+	// the typed fail-closed envelope (the shim's `.catch`), not reject the whole
+	// create and bypass the gate's EPIC_ISOLATION_DEGRADED wrap.
+	test('a rejecting get during placement verification still fails closed with a typed error', async () => {
+		const fake = makeFakeSessionDomain(parentDir, {
+			createOverride: async () => ({ id: 'ses_get_rejects' }),
+		});
+		(fake as { getInfo: unknown }).getInfo = () => {
+			throw new Error('host get exploded');
+		};
+		const client = createV2SessionClient(
+			makeFakeCtx(parentDir, fake),
+		) as unknown as LaneClient;
+		const result = await client.session.create({
+			body: { parentID: 'ses_parent' },
+			query: { directory: laneDir },
+		});
+		expect(result.data).toBeNull();
+		expect(result.error?.message).toContain('unverifiable');
+		expect(fake.removedSessions.has('ses_get_rejects')).toBe(true);
+	});
+
+	// PRR-013: a host that creates but returns no id must produce the typed
+	// error (no session is addressable, so no remove is possible — but the
+	// caller must never see a success envelope).
+	test('a create returning no id fails closed with the typed error', async () => {
+		const fake = makeFakeSessionDomain(parentDir, {
+			createOverride: async () => ({ location: { directory: laneDir } }),
+		});
+		const client = createV2SessionClient(
+			makeFakeCtx(parentDir, fake),
+		) as unknown as LaneClient;
+		const result = await client.session.create({
+			body: { parentID: 'ses_parent' },
+			query: { directory: laneDir },
+		});
+		expect(result.data).toBeNull();
+		expect(result.error?.message).toContain('returned no id');
+	});
+
+	// PRR-007: an aborted caller must not leave the created host session behind.
+	test('an aborted create compensates: removes the created session and refuses', async () => {
+		const fake = makeFakeSessionDomain(parentDir);
+		const client = createV2SessionClient(
+			makeFakeCtx(parentDir, fake),
+		) as unknown as LaneClient & {
+			session: {
+				create: (args: {
+					body?: { parentID?: string };
+					query: { directory: string };
+					signal?: AbortSignal;
+				}) => Promise<{
+					data: { id: string } | null;
+					error?: { message?: string };
+				}>;
+			};
+		};
+		const controller = new AbortController();
+		controller.abort();
+		const result = await client.session.create({
+			body: { parentID: 'ses_parent' },
+			query: { directory: laneDir },
+			signal: controller.signal,
+		});
+		expect(result.data).toBeNull();
+		expect(result.error?.message).toContain('aborted');
+		expect(fake.removedSessions.has('ses_real_1')).toBe(true);
+	});
+
 	test('full-treatment prompt: switches, fence-aware hook, denied tools, envelope, disposal', async () => {
 		const { client, fake, laneId } = await setupLane(parentDir, laneDir);
 		const result = await client.session.prompt({
@@ -370,57 +439,5 @@ describe('v2 session-client lane sessions (issue #3169 Phase 3)', () => {
 		});
 		expect(fake.calls.some((c) => c.op === 'switchModel')).toBe(false);
 		expect(fake.contextHandlers.length).toBe(handlersBefore);
-	});
-
-	test('eviction (interleaved): 64 placeholder insertions evict a live eager record — both degradations', async () => {
-		const { client, fake, laneId } = await setupLane(parentDir, laneDir);
-		// Residue: parentless placeholder creates share the map and are not pruned.
-		for (let i = 0; i < 64; i += 1) {
-			const r = await client.session.create({
-				body: { title: `factory ${i}` },
-				query: { directory: parentDir },
-			});
-			expect(r.data?.id).toMatch(/^v2shim-/);
-		}
-		// The eager record was evicted: prompt takes the DIRECT path (no
-		// switchModel, no context hook) and get no longer overlays parentID.
-		await client.session.prompt({
-			path: { id: laneId },
-			body: {
-				agent: 'reviewer',
-				model: { providerID: 'p', modelID: 'm' },
-				parts: [{ type: 'text', text: 'late' }],
-			},
-		});
-		expect(fake.calls.some((c) => c.op === 'switchModel')).toBe(false);
-		const handlersBefore = fake.contextHandlers.length;
-		expect(handlersBefore).toBe(0);
-		const late = await client.session.get({ path: { id: laneId } });
-		expect((late.data as { parentID?: string }).parentID).toBeUndefined();
-	});
-
-	test('eviction (eager-only): the oldest of 65 eager records loses treatment, the newest keeps it', async () => {
-		const fake = makeFakeSessionDomain(parentDir);
-		const client = createV2SessionClient(
-			makeFakeCtx(parentDir, fake),
-		) as unknown as LaneClient;
-		const ids: string[] = [];
-		for (let i = 0; i < 65; i += 1) {
-			const r = await client.session.create({
-				body: { parentID: 'ses_parent', title: `lane ${i}` },
-				query: { directory: laneDir },
-			});
-			ids.push(r.data?.id ?? '');
-		}
-		await client.session.prompt({
-			path: { id: ids[0] },
-			body: { model: { providerID: 'p', modelID: 'm' }, parts: [] },
-		});
-		expect(fake.calls.some((c) => c.op === 'switchModel')).toBe(false);
-		await client.session.prompt({
-			path: { id: ids[64] },
-			body: { model: { providerID: 'p', modelID: 'm' }, parts: [] },
-		});
-		expect(fake.calls.some((c) => c.op === 'switchModel')).toBe(true);
 	});
 });

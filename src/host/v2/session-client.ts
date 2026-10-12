@@ -80,6 +80,7 @@
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import { canonicalRootKeyLexical } from '../../utils/canonical-root';
 import { log } from '../../utils/logger';
+import { withTimeout } from '../../utils/timeout';
 import type {
 	V2EventEnvelope,
 	V2PluginContext,
@@ -777,19 +778,20 @@ export function createV2SessionClient(
 				const resolved = resolveSessionId(id);
 				if (resolved !== undefined) {
 					sessionErrors.delete(resolved);
-					return ctx.session
-						.remove({ sessionID: resolved })
-						.catch(() => undefined)
-						.finally(() => {
-							// #3169 Phase 3: EAGER records are pruned once the removal
-							// settles — the id is real, so a later `get` still resolves
-							// through to a host that reports the session gone, and the
-							// parentID overlay correctly stops applying. Pruning keeps
-							// steady-state residency to live sessions.
-							if (stash?.eager === true) {
-								placeholderSessions.delete(id);
-							}
-						});
+					// PRR-010: prune only on a CONFIRMED removal. A failed remove
+					// leaves the host session ALIVE, so dropping its record would
+					// orphan an untracked session and silently lose the parentID
+					// overlay the enforcement consumers rely on. The non-eager arm
+					// keeps its stash for exactly this keep-for-get reason.
+					return deferredV2SessionRemoveEager(ctx, resolved).then((outcome) => {
+						if (stash?.eager === true && outcome.ok) {
+							placeholderSessions.delete(id);
+						} else if (stash?.eager === true) {
+							log('v2 session-client: eager delete cleanup failed', {
+								reason: outcome.reason,
+							});
+						}
+					});
 				}
 				// Same leak race as abort: park the delete for the prompt's
 				// finally; a never-prompted placeholder deletes nothing.
@@ -840,6 +842,55 @@ export function createV2SessionClient(
 	return client as unknown as OpencodeClient;
 }
 
+/** Bound for a host-reported/caller-supplied path inside a typed error message. */
+const MAX_PATH_IN_MESSAGE_CHARS = 200;
+
+/**
+ * PRR-011: bound interpolated paths. The placement-guard message is not just
+ * display text — dispatch-lanes' retry classifier regex-tests the error object's
+ * `message` scalar (src/tools/dispatch-lanes.ts isRetryableSessionCreateFailure),
+ * so an unbounded, HOST-reported path is an unbounded influence on control flow
+ * and on the advisory queue's message size.
+ */
+function boundPathForMessage(path: string | undefined): string {
+	if (path === undefined) return 'an unverifiable location';
+	if (path.length <= MAX_PATH_IN_MESSAGE_CHARS) return path;
+	return `${path.slice(0, MAX_PATH_IN_MESSAGE_CHARS)}… (truncated)`;
+}
+
+/** Cleanup budget for the eager-create compensation removes (PRR-001). */
+const EAGER_CLEANUP_TIMEOUT_MS = 10_000;
+
+/**
+ * PRR-001/PRR-007/PRR-010: one bounded, outcome-reporting removal helper for the
+ * eager arm. The placement-compensation removes used to be bare
+ * `await ctx.session.remove(...).catch(() => undefined)` — unbounded (which is
+ * what the dual-shape C6 gate flags once the scanner's function tracker is
+ * reset by a neighbouring cast-assignment) and outcome-blind (a failed
+ * cleanup of a mis-placed session was indistinguishable from a successful
+ * one). This bounds the call and reports what happened.
+ */
+async function deferredV2SessionRemoveEager(
+	ctx: V2PluginContext,
+	sessionID: string,
+): Promise<{ ok: boolean; reason?: string }> {
+	try {
+		await withTimeout(
+			ctx.session.remove({ sessionID }),
+			EAGER_CLEANUP_TIMEOUT_MS,
+			new Error(
+				`v2 session-client: eager cleanup of session ${sessionID} exceeded ${EAGER_CLEANUP_TIMEOUT_MS}ms`,
+			),
+		);
+		return { ok: true };
+	} catch (error) {
+		return {
+			ok: false,
+			reason: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
 /**
  * #3169 Phase 3 — the EAGER parentless lane create (confirmed divergence only).
  *
@@ -860,11 +911,27 @@ async function deferredV2SessionCreateEager(
 	parentID: string,
 	title: string | undefined,
 	directory: string,
+	signal: AbortSignal | undefined,
 ): Promise<{ data: { id: string } | null; error?: unknown }> {
-	const created = await ctx.session.create({
-		...(title !== undefined ? { title } : {}),
-		location: { directory },
-	});
+	// PRR-006: keep the v1 envelope contract — a host rejection resolves to
+	// `{data:null,error}`, never a throw (the shim's contract note at the
+	// `get` arm says the same).
+	let created: unknown;
+	try {
+		created = await ctx.session.create({
+			...(title !== undefined ? { title } : {}),
+			location: { directory },
+		});
+	} catch (error) {
+		return {
+			data: null,
+			error: {
+				message: `v2 session-client: eager lane create failed (${
+					error instanceof Error ? error.message : String(error)
+				})`,
+			},
+		};
+	}
 	const createdRecord = created as {
 		id?: unknown;
 		location?: { directory?: unknown };
@@ -880,6 +947,31 @@ async function deferredV2SessionCreateEager(
 			},
 		};
 	}
+	// PRR-007: the caller's abort/timeout can land while the host create is
+	// still in flight (its cleanup keys on the RESOLVED id, so an abandoned
+	// create would otherwise leave a live parentless session nobody holds the
+	// id for). Compensate here: remove what we just created and refuse.
+	if (signal?.aborted) {
+		const compensated = await deferredV2SessionRemoveEager(ctx, realId);
+		if (!compensated.ok) {
+			// Report the truth: the compensation itself failed, so the session may
+			// still be alive and the caller needs the id to clean it up.
+			log('v2 session-client: aborted eager create compensation failed', {
+				reason: compensated.reason,
+			});
+		}
+		return {
+			data: null,
+			error: {
+				message: `v2 session-client: eager lane create aborted by the caller; ${
+					compensated.ok
+						? 'the created session was removed'
+						: `removing session ${realId} also failed (${compensated.reason ?? 'unknown error'}) — remove it manually`
+				}`,
+				...(compensated.ok ? {} : { sessionID: realId, cleanupFailed: true }),
+			},
+		};
+	}
 	let landed: string | undefined =
 		typeof createdRecord.location?.directory === 'string'
 			? createdRecord.location.directory
@@ -888,20 +980,34 @@ async function deferredV2SessionCreateEager(
 		const info = await ctx.session
 			.get({ sessionID: realId })
 			.catch(() => undefined);
-		const location = (
-			info as { location?: { directory?: unknown } } | undefined
-		)?.location;
+		// Non-parenthesized on purpose: a `const x = (` cast-assignment matches
+		// the C6 scanner's function-binding regex and resets its function tracker
+		// mid-function, mis-attributing later awaits (dual-shape-parity.test.ts
+		// C6 gate). Keep cast bindings off a leading `(` in this file.
+		const reported = info as { location?: { directory?: unknown } } | undefined;
 		landed =
-			typeof location?.directory === 'string' ? location.directory : undefined;
+			typeof reported?.location?.directory === 'string'
+				? reported.location.directory
+				: undefined;
 	}
 	if (landed === undefined || !sameDirectoryLexical(landed, directory)) {
-		await ctx.session.remove({ sessionID: realId }).catch(() => undefined);
+		// PRR-010: surface a FAILED removal in the typed envelope rather than
+		// swallowing it — a mis-placed live session holding the lane's swarm.db
+		// WAL is the #2599 hazard, and the caller needs the id to retry teardown.
+		const removed = await deferredV2SessionRemoveEager(ctx, realId);
 		return {
 			data: null,
 			error: {
-				message: `v2 session-client: eager lane create landed in ${
-					landed ?? 'an unverifiable location'
-				}, not the requested ${directory} (#3169 Phase 3 placement guard; Phase 0 C1)`,
+				message: `v2 session-client: eager lane create landed in ${boundPathForMessage(
+					landed,
+				)}, not the requested ${boundPathForMessage(
+					directory,
+				)} (#3169 Phase 3 placement guard; Phase 0 C1)${
+					removed.ok
+						? ''
+						: `; cleanup of session ${realId} also failed (${removed.reason ?? 'unknown error'}) — remove it before retrying`
+				}`,
+				...(removed.ok ? {} : { sessionID: realId, cleanupFailed: true }),
 			},
 		};
 	}
@@ -956,11 +1062,22 @@ async function deferredV2SessionCreate(
 			// create — placement-verified, with the requested parentID remembered
 			// plugin-side for the `get` overlay (the discriminator, its flip list,
 			// and the disclosed deltas live in the trace's approved plan).
+			//
+			// PRR-008 (disclosed, not narrowed): the discriminator is DIVERGENCE
+			// ONLY — any in-plugin caller whose parent session lives elsewhere
+			// reaches this arm. That includes factory-from-lane callers (e.g. a
+			// lane coder invoking the knowledge-curator delegate), which land a
+			// parentless session in the project root and therefore lose the
+			// child-of-parent TUI nesting those factories rely on. The session is
+			// ephemeral and caller-deleted, so the effect is transient; narrowing
+			// the arm to registered lanes would need a lane-registry lookup on the
+			// create path (deferred to Phase 4 with the registry-residue work).
 			return deferredV2SessionCreateEager(
 				ctx,
 				parentID,
 				args?.body?.title,
 				directory,
+				args?.signal,
 			);
 		}
 	}
@@ -999,11 +1116,29 @@ async function deferredV2SessionPromptEager(
 	text: string,
 	signal: AbortSignal | undefined,
 ): Promise<{ data: TranslatedPromptData }> {
+	// PRR-019/a: short-circuit an already-aborted caller BEFORE switching,
+	// registering the hook, or submitting a prompt — the placeholder arm does
+	// exactly this so a teardown-then-prompt race cannot burn a host turn (or
+	// hit the caller's already-removed session).
+	if (signal?.aborted) {
+		throw new Error('v2 session-client: eager prompt aborted before dispatch');
+	}
 	const agent = typeof body.agent === 'string' ? body.agent : undefined;
 	if (agent !== undefined) {
 		const switchAgent = ctx.session.switchAgent;
 		if (typeof switchAgent === 'function') {
 			await switchAgent({ sessionID: realId, agent });
+		} else {
+			// PRR-009: the eager create carries no agent (permissions/agent are
+			// create-time-only on v2), so a host without switchAgent runs the lane
+			// under its DEFAULT agent. Make the degradation observable rather than
+			// reporting a success the caller cannot distinguish.
+			log(
+				'v2 session-client: eager prompt skipped switchAgent (host lacks it)',
+				{
+					agent,
+				},
+			);
 		}
 	}
 	const model =
@@ -1016,6 +1151,11 @@ async function deferredV2SessionPromptEager(
 		const switchModel = ctx.session.switchModel;
 		if (typeof switchModel === 'function') {
 			await switchModel({ sessionID: realId, model });
+		} else {
+			log(
+				'v2 session-client: eager prompt skipped switchModel (host lacks it)',
+				{ model },
+			);
 		}
 	}
 	const system = typeof body.system === 'string' ? body.system : undefined;

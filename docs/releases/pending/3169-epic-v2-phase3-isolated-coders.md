@@ -52,32 +52,88 @@ phase implements it inside the shim.
   LVD-4 live-verification item).
 - Every client-prompted eager session (lean turbo lanes, blocking `dispatch_lanes`, and
   factory creates whose caller is itself a lane session) rests on ONE of Phase 2's two
-  read-only enforcement layers (the context-hook deletion + switches) instead of two —
-  create-time deny permissions are prompt-time knowledge and cannot ride an eager create.
-  For every one of these consumers the v2 status quo was a typed refusal, so this is a
-  capability increase with a disclosed enforcement delta.
+  read-only enforcement layers — the context-hook `event.tools` deletion; the
+  `switchAgent`/`switchModel` calls are routing, not enforcement — because create-time deny
+  permissions are prompt-time knowledge and cannot ride an eager create. Two further
+  reductions of that same layer are disclosed: registry-cap eviction of a live eager record
+  takes the hook-less direct path (zero layers), and whether the host FIRES the context hook
+  for plugin-created sessions is itself an open live-verification item. For every one of these
+  consumers the v2 status quo was a typed refusal, so this is a capability increase with a
+  disclosed enforcement delta.
 - The shared session registry (placeholders + eager records) is bounded at 64 with FIFO
   eviction; placeholder residue is intentionally not pruned, so a LIVE eager record can be
   evicted after 64 later insertions of any kind — its next prompt then takes the direct path
   (agent-switch only) and the parentID overlay stops applying (PR-gate resolution falls back
-  to the resolver's own parents-map cache). Both degradations are pinned in
-  `tests/unit/host/v2/session-client-lane-3169.test.ts`.
+  to the resolver's own parents-map cache). Both degradations (and the cap's lower bound) are pinned in
+  `tests/unit/host/v2/session-client-lane-registry-3169.test.ts`.
+- The divergence discriminator is DIVERGENCE-ONLY, with no lane-registry check: a factory
+  caller whose parent session lives in a lane (e.g. a lane coder invoking the knowledge
+  curator delegate) also takes this arm and lands a parentless session in the project root,
+  losing the child-of-parent TUI nesting those factories rely on. The session is ephemeral
+  and caller-deleted, so the effect is transient.
 - Live-verification requests for the acd17sk A/B (same pattern as Phase 2): LVD-1 the
   `subagent` tool resumes a PARENTLESS plugin-created session and the host ERRORS (does not
   silently fork) on an unresolvable `sessionID`; LVD-2 `create` echoes `location.directory`
-  through the shim; LVD-4 the parentID overlay keeps the resolver's get-hop correct on a
-  live host. A refusal surfaces as a dispatch-time subagent error with cleanup via the
-  existing dispatch/orphan-recovery machinery — no silent un-isolated run.
+  through the shim; LVD-3 `get(parent).location` still resolves (carried from Phase 2);
+  LVD-4 the parentID overlay keeps the resolver's get-hop correct on a live host. A refusal
+  surfaces as a dispatch-time subagent error with cleanup via the existing
+  dispatch/orphan-recovery machinery — no silent un-isolated run.
 - The epic ENTRY POINT stays double-gated on v2 (`human-only` toolPolicy + no v2 command
   dispatch); enabling, docs, and the dual-host CI lane are Phase 4.
 
+## Migration
+
+No user action. v1 hosts are untouched.
+
+## Behavior changes
+
+- **OpenCode 2 only:** `client.session.create` for a parented session whose requested
+  directory DIVERGES from the parent's now performs a real, placement-verified, PARENTLESS
+  host create instead of returning a typed refusal. Callers that relied on the refusal to
+  detect an unavailable lane now observe a real session id; a placement failure still
+  surfaces as the same typed error and `STANDARD_WORKTREE_SESSION_CREATE_FAILED`
+  degradation, and a host that REJECTS the create now resolves to that same typed envelope
+  rather than throwing.
+- Placement compensation is time-bounded (10s per removal); a removal that fails or times
+  out is reported in the typed error (with the session id) instead of being swallowed, and
+  an eager record is pruned on delete only when its removal is confirmed.
+- An already-aborted caller no longer completes a placement create: the created session is
+  removed and the create returns a typed "aborted" error.
+
 ## Tests
 
-`tests/unit/host/v2/session-client-lane-3169.test.ts` (placement fail-closed arms, get
-fallback, full-treatment prompt incl. hook disposal, stale-error epoch pin, parentID
-overlay, delete-prune, both eviction pins) and
-`tests/unit/host/v2/session-client-lane-gate-3169.test.ts` (the REAL
-`precreateStandardWorktreeSession` through the shim: `task_id` rewritten to the real lane
-id, no `EPIC_ISOLATION_DEGRADED` under `isolationRequired`, no degradation reason recorded).
+- `tests/unit/host/v2/session-client-lane-3169.test.ts` (9 tests) — placement fail-closed
+  arms incl. a rejecting `get`, the silent-create `get` fallback, an id-less create, the
+  aborted-create compensation, the full-treatment prompt (fence-aware hook + denied-tool
+  deletion + disposal), the stale-error epoch pin, the parentID overlay, and the
+  delete-prune (via post-delete direct-path routing).
+- `tests/unit/host/v2/session-client-lane-registry-3169.test.ts` (3 tests) — the registry
+  cap's lower bound (63 records survive), interleaved eviction (both degradations), and
+  eager-only eviction (oldest loses treatment, newest keeps it).
+- `tests/unit/host/v2/session-client-lane-failures-3169.test.ts` (5 tests) — the FAILURE
+  legs, each discriminating its fix from a revert: a rejecting create resolves to the typed
+  envelope; a failed placement cleanup surfaces the session id; a long host-reported path is
+  truncated; a failed delete keeps the record; a failed abort-compensation says so.
+- `tests/unit/host/v2/session-client-lane-gate-3169.test.ts` (2 tests) — the REAL
+  `precreateStandardWorktreeSession` through the shim: `task_id` rewritten to the real
+  lane id with the `(worktree lane)` title and no `EPIC_ISOLATION_DEGRADED` under
+  `isolationRequired`; PLUS the failure path — a placement mismatch throws
+  `STANDARD_WORKTREE_SESSION_CREATE_FAILED`, removes the mis-placed session and publishes no
+  task_id.
+
 The one deliberately-updated base pin is `session-client-3169.test.ts` "AC3 divergent parent
 directory" — its subject was exactly the removed refusal.
+
+## Deferred to Phase 4 (explicit, owner #3169)
+
+- **Retry-context reuse (review PRR-012):** an eager retry keeps the failed attempt's
+  conversation (the v1 envelope stays correct — the translation slices from the last user
+  entry — but `idleOutcome` scans all entries, so an attempt-2 turn that emits no idle
+  marker can inherit attempt-1's `failed`). Isolating retries would need per-id epochs or a
+  fresh session per attempt, which conflicts with the stable host-visible id the
+  `subagent` tool resumes; queued with the per-id serialization follow-up.
+- **Create-time permissions for factory-from-lane creates (review PRR-018):** the eager arm
+  cannot carry deny permissions (they are prompt-time knowledge on v2), so a factory caller
+  running from a lane session has only the context-hook deletion. A lane-registry lookup on
+  the create path (the discriminator is currently divergence-only) belongs with the Phase 4
+  registry work.
