@@ -17044,7 +17044,8 @@ export async function derivePrReviewOrderUnstableItems(
 		.filter((batch) => batch.phase === 'reviewer')
 		.at(-1)?.batchId;
 	const stamped = newestReviewerBatchId
-		? state.prReviewBatchCoherence?.[newestReviewerBatchId]?.orderUnstableItemIds
+		? state.prReviewBatchCoherence?.[newestReviewerBatchId]
+				?.orderUnstableItemIds
 		: undefined;
 	if (stamped && stamped.length > 0) return [...new Set(stamped)].sort();
 	return [...composition.claims.entries()]
