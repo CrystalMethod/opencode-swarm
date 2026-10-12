@@ -1554,16 +1554,29 @@ export async function executeDispatchLanesAsync(
 			parsed.data.mode === 'swarm-pr-review:critic')
 	) {
 		try {
-			if (parsed.data.mode === 'swarm-pr-review:reviewer') {
-				prReviewPresentationOrder = await derivePrReviewPresentationOrder(
-					directory,
-					context.sessionID,
-				);
-			} else {
-				prReviewOrderUnstableItemIds = await derivePrReviewOrderUnstableItems(
-					directory,
-					context.sessionID,
-				);
+			// Fail-open when no active PR_REVIEW workflow exists yet: a
+			// first-ever reviewer/critic dispatch activates the gate mid-flow
+			// inside enforcePrWorkflowDispatchLanesAsync below, so this
+			// derivation must not pre-empt that activation — the later
+			// enforcement keeps ownership of rejecting unbound dispatches.
+			// Only a derivation failure on an ALREADY-active workflow is a
+			// real invalid-args signal.
+			const preflightGateState = await readPrWorkflowGateState(
+				directory,
+				context.sessionID,
+			);
+			if (preflightGateState?.mode === 'PR_REVIEW') {
+				if (parsed.data.mode === 'swarm-pr-review:reviewer') {
+					prReviewPresentationOrder = await derivePrReviewPresentationOrder(
+						directory,
+						context.sessionID,
+					);
+				} else {
+					prReviewOrderUnstableItemIds = await derivePrReviewOrderUnstableItems(
+						directory,
+						context.sessionID,
+					);
+				}
 			}
 		} catch (error) {
 			return asyncFailureResult({

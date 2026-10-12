@@ -232,4 +232,102 @@ describe('order_agreement authority cross-check (issue #2906, plan R1)', () => {
 		);
 		expect(absent).toContain('"success": true');
 	});
+
+	test('unbacked affirmative labels are rejected before any reviewer phase composes', async () => {
+		// Plan D5 arm: a supplied 'agree'/'disagree' with NO composed value for
+		// that id must fail closed. The reachable route through the real writer
+		// is a post_explorer write carrying order_agreement BEFORE any
+		// reviewer batch exists — the authoritative map is empty, so any
+		// affirmative label is unbacked.
+		await establishPrReviewPrerequisites(directory, 'oa-run-3');
+		const runId = await resolvePrReviewWriterRunId(directory, SESSION_ID);
+		const unbacked = await writeBoundary(
+			runId,
+			'post_explorer',
+			INVENTORY.map(explorerRecord).map((record) => ({
+				...record,
+				order_agreement: 'agree' as const,
+			})),
+		);
+		expect(unbacked).toContain('no composed reviewer authority');
+		// 'single' is the allowed legacy-shaped value with no authority.
+		const singleNoAuthority = await writeBoundary(
+			runId,
+			'post_explorer',
+			INVENTORY.map(explorerRecord).map((record) => ({
+				...record,
+				order_agreement: 'single' as const,
+			})),
+		);
+		expect(singleNoAuthority).toContain('"success": true');
+	});
+
+	test('a contradictory label at the post_critic boundary is rejected', async () => {
+		// Plan round-2 blocker-1 arm: the authority check runs on EVERY
+		// invocation supplying the field — post_critic writes pass through the
+		// same general findings path, so a model-supplied contradiction at
+		// that boundary fails closed too.
+		await establishPrReviewPrerequisites(directory, 'oa-run-4');
+		const runId = await resolvePrReviewWriterRunId(directory, SESSION_ID);
+		await reviewerPass('oa-w4-a', {});
+		await reviewerPass('oa-w4-b', { 'C-0': 'MEDIUM' });
+		await writeBoundary(runId, 'post_explorer', INVENTORY.map(explorerRecord));
+		const reviewerWrite = await writeBoundary(runId, 'post_reviewer', [
+			reviewerRecord('C-0', {
+				severity: 'MEDIUM' as const,
+				next_action: 'report' as const,
+				order_agreement: 'disagree',
+			}),
+			...INVENTORY.slice(1).map((id) =>
+				reviewerRecord(id, { order_agreement: 'agree' }),
+			),
+		]);
+		expect(reviewerWrite).toContain('"success": true');
+		// Critic batch over the critic-routed (HIGH) items so the critic phase
+		// settles; then a post_critic write carrying a spoofed label.
+		const criticItems = INVENTORY.slice(1);
+		await recordPrReviewValidationBatch(
+			directory,
+			SESSION_ID,
+			'critic',
+			[
+				{
+					laneId: 'oa-w4-critic',
+					workflowLane: 'oa-w4-critic',
+					reviewItemIds: criticItems,
+				},
+			],
+			{ batchId: 'oa-w4-c', prHeadSha: HEAD_SHA },
+		);
+		await persistPrReviewBatch(
+			directory,
+			'oa-w4-c',
+			'swarm-pr-review:critic',
+			[{ laneId: 'oa-w4-critic', workflowLane: 'oa-w4-critic' }],
+			{
+				textOverride: criticItems
+					.map(
+						(id) =>
+							`[CRITIC] | ${id} | UPHELD | HIGH | reason ${id} | change ${id}`,
+					)
+					.join('\n'),
+			},
+		);
+		const postCriticSpoof = await writeBoundary(runId, 'post_critic', [
+			reviewerRecord('C-0', {
+				severity: 'MEDIUM' as const,
+				next_action: 'report' as const,
+				order_agreement: 'agree',
+			}),
+			...criticItems.map((id) =>
+				reviewerRecord(id, {
+					next_action: 'report' as const,
+					order_agreement: 'agree',
+					critic_status: 'UPHELD' as const,
+				}),
+			),
+		]);
+		expect(postCriticSpoof).toContain('order_agreement for C-0');
+		expect(postCriticSpoof).toContain('disagree');
+	});
 });
