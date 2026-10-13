@@ -17,17 +17,20 @@ live ruleset.
 The capture is public metadata only. It records the repository, protected
 branch, active ruleset, merge-group observation, workflow-event facts, source
 API endpoints, UTC `capturedAt`, and a capture SHA. Here, `captureSha` pins the
-external observation to base commit `b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f`:
-the pinned Contents API blob records show that the base `drift-check.yml` did
-not declare `merge_group`, while the two concrete merge-group receipts are CI
-run `34639685905` and PR Standards run `34639685670`. The
-`capturedWorkflowFiles` entries retain those Contents endpoints and blob SHAs.
-The run map explicitly records no base merge-group run for `drift`; its new
-local trigger is a proposed change, not retroactive external evidence.
+external observation to base commit `012c4e40db4a63dd9b771cb99d57c565949d2931`
+(main tip at capture time): the pinned Contents API blob records show that the
+base `drift-check.yml` already declares the `merge_group` trigger, while the
+two concrete merge-group receipts are CI run `38204222229` and PR Standards
+run `38204222210`. The `capturedWorkflowFiles` entries retain those Contents
+endpoints and blob SHAs. The run map explicitly records no successful
+merge-group run for `drift` at that capture; the trigger being live is
+necessary but not sufficient, so `drift` stays an intended-required notice
+until an operator observes its merge-group runs and promotes it in the live
+ruleset.
 The separate `localWorkflowHashes` entries describe the proposed/current tree
 being checked; they are not asserted to have existed at `captureSha`. This
-separation makes the external base fact and the locally proposed
-`merge_group` trigger auditable without conflating them.
+separation makes the external base facts and the locally proposed
+workflow state auditable without conflating them.
 
 Captures older than 30 days, missing or malformed evidence, branch/ruleset
 mismatches, unknown protection or merge-group state, and changed local

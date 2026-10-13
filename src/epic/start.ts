@@ -182,12 +182,13 @@ const UNSETTLED_WAL_STATES = new Set(['DISPATCHED', 'PREPARED', 'unreadable']);
  * Every git-epic coder needs worktree isolation and every phase needs the
  * `epic_phase_review` dispatch, and both create sessions through that client
  * (`worktree-isolation.ts` STANDARD_WORKTREE_ISOLATION_UNAVAILABLE,
- * `src/review/contracts.ts`). The OpenCode 2 adapter initializes the plugin
- * with `client: undefined` (`src/host/v2/setup.ts`), so an epic there could
- * neither dispatch a coder nor complete a phase.
+ * `src/review/contracts.ts`). Since #3169 Phase 2 the OpenCode 2 adapter
+ * installs a session-capable client shim (`src/host/v2/setup.ts`), and since
+ * Phase 4 a human-typed `/swarm` command dispatches natively there — this
+ * refusal now fires only on genuinely client-less hosts.
  */
 export const EPIC_HOST_UNSUPPORTED_MESSAGE =
-	'This OpenCode host gives the plugin no SDK client (OpenCode 2 does not yet, see docs/host/v2-hook-inventory.md). Epic needs it for worktree-isolated coders and for the epic_phase_review reviewer/critic, so an epic here could neither run its coders nor complete a phase. Run the plan in Balanced, or use an OpenCode 1.x host (1.18.29+).';
+	'This OpenCode host gives the plugin no SDK client. Epic needs it for worktree-isolated coders and for the epic_phase_review reviewer/critic, so an epic here could neither run its coders nor complete a phase. Run the plan in Balanced, or use an OpenCode 1.x host (1.18.29+). (On OpenCode 2 the v2 adapter ships a session-capable client and native /swarm command dispatch, so this refusal does not fire there.)';
 
 function refused(
 	reason: EpicStartRefusal,
@@ -996,10 +997,13 @@ export const _internals = {
 	hasActiveTurboMode: (): boolean => hasActiveTurboMode(),
 	/**
 	 * False only when the plugin was initialized on a host that supplies no
-	 * SDK client: the v1 init stores the host client, the OpenCode 2 adapter
-	 * stores `undefined`, and an uninitialized process (tests, scripts) keeps
-	 * the initial `null` — which is not a host verdict, so it is allowed.
-	 * Capability-based: once a v2 client is wired, Epic starts there too.
+	 * SDK client: the v1 init stores the host client, an uninitialized process
+	 * (tests, scripts) keeps the initial `null`, and only a genuinely
+	 * client-less host stores `undefined` — which is not a host verdict, so
+	 * it is allowed. Capability-based: the v2 adapter now ships a
+	 * session-capable client (the #3169 session shim), so this passes on v2;
+	 * Epic's v2 execution is held by the entry-point double-gate and the
+	 * child-session placement work, not by this check.
 	 */
 	hostProvidesClient: (): boolean => swarmState.opencodeClient !== undefined,
 	findRunningLeanRun,

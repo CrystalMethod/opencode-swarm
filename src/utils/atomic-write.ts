@@ -147,9 +147,9 @@ export const SWARM_TEMP_GRAMMARS: readonly SwarmTempGrammar[] = [
 			'src/hooks/review-receipt.ts:894',
 			'src/knowledge/identity.ts:234',
 			'src/evidence/phase-participation.ts (pre-#2035; migrated-to=src/evidence/phase-participation.ts:atomicWriteBytes)',
-			'src/turbo/lean/integration.ts:428',
+			'src/turbo/lean/integration.ts:429',
 			'src/turbo/lean/reviewer.ts:403',
-			'src/plan/ledger.ts:1471',
+			'src/plan/ledger.ts:1474',
 			'src/services/synonym-map.ts:389',
 			'src/services/skill-optimizer/store.ts:340',
 			'src/services/skill-optimizer/store.ts:503',
@@ -236,8 +236,8 @@ export const SWARM_TEMP_GRAMMARS: readonly SwarmTempGrammar[] = [
 		quarantineEligible: true,
 		parsesTarget: true,
 		producers: [
-			'src/tools/write-pr-review-artifact.ts:154',
-			'src/tools/write-pr-review-artifact.ts:174',
+			'src/tools/write-pr-review-artifact.ts:157',
+			'src/tools/write-pr-review-artifact.ts:177',
 			// Symbol form: shift-proof against import-order drift in the writer
 			// (issue #3094 re-pin; the old line-form anchor pointed at :105).
 			'src/tools/write-pr-review-trigger-eval.ts:createTriggerReceipt',
@@ -326,7 +326,7 @@ export const SWARM_TEMP_GRAMMARS: readonly SwarmTempGrammar[] = [
 			'src/hooks/skill-usage-pending.ts:817',
 			'src/parallel/file-locks.ts:113',
 			'src/plan/ledger.ts:607',
-			'src/plan/ledger.ts:1793',
+			'src/plan/ledger.ts:1796',
 		],
 		note: 'constant-name temps: reported when stale, never auto-quarantined. file-locks meta sidecars live under the scanner-skipped .swarm/locks/ subtree; the ledger reconcile temp embeds instance tokens but its .tmp-suffix shape maps here (conservatively report-only)',
 	},

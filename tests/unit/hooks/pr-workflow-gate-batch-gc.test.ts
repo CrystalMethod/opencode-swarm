@@ -287,7 +287,20 @@ describe('pr-workflow-gate workflow batch GC', () => {
 				assertPrReviewValidationSettled(tempDir, SESSION_ID, 'reviewer'),
 			).resolves.toMatchObject({ mode: 'PR_REVIEW' });
 
-			for (let index = 1; index < MAX_WORKFLOW_BATCHES - 1; index += 1) {
+			// Issue #2906 review finding F-04: a reviewer batch that contributed
+			// ORDER OBSERVATIONS survives the GC even when it is claim-inert, so
+			// `rv-first` must be observation-subsumed before it can be the pruned
+			// subject. `rv-parity` (declared only) flips the window parity so
+			// `rv-superseder` lands the same rows under the SAME presentation
+			// order as `rv-first`, one position newer — first-write-wins per
+			// (item, order) then leaves `rv-first` holding neither claims nor
+			// observations. `rv-winner` (an odd number of batches later) lands
+			// under the opposite order, so its observations are its own.
+			await recordReviewerBatch('rv-parity');
+			await recordReviewerBatch('rv-superseder');
+			await landReviewerArtifact('rv-superseder');
+
+			for (let index = 1; index < MAX_WORKFLOW_BATCHES - 3; index += 1) {
 				await recordReviewerBatch(`rv-${index}`);
 			}
 			// A later batch lands the same rows, so it — not `rv-first` — is the
@@ -305,7 +318,12 @@ describe('pr-workflow-gate workflow batch GC', () => {
 			await recordReviewerBatch('rv-after-gc');
 
 			const surviving = await validationBatchIds();
-			expect(surviving).toEqual(['rv-winner', 'rv-after-gc']);
+			// `rv-first` is the one prunable landed batch: its claims were taken
+			// by the newer reverse scan and its 'A' observations by
+			// `rv-superseder` (same order, newer). `rv-superseder` ('A') and
+			// `rv-winner` ('B') each own one marked order's observations, so
+			// both are retained (F-04) alongside the append.
+			expect(surviving).toEqual(['rv-superseder', 'rv-winner', 'rv-after-gc']);
 			expect(
 				await gateInternals.derivePrReviewCandidateInventory(
 					tempDir,

@@ -301,8 +301,9 @@ export type PrReviewTransitionRejectionCode =
 	| 'live_lane_blocks_coverage'
 	| 'partial_coverage_cannot_approve'
 	| 'no_coverage_requires_incomplete'
-	// Issue #2840: a disclosed coverage degradation (dead family) makes the
-	// review DEGRADED_DISCLOSED; it can never emit APPROVE.
+	// Issue #2840: a disclosed coverage degradation (dead family or dead
+	// verdict lane) makes the review DEGRADED_DISCLOSED; it can never emit
+	// APPROVE.
 	| 'degraded_disclosure_cannot_approve'
 	| 'critic_required_unfulfilled'
 	| 'stale_foreign_authorization'

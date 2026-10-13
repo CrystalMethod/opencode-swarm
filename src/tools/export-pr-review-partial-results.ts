@@ -101,6 +101,8 @@ interface PersistedFindingRowBase {
 	next_action: string;
 	severity?: string;
 	critic_status?: string;
+	/** Issue #2906: retained when supplied; the post-abort body reuses the renderer. */
+	order_agreement?: string;
 	provenance?: string[];
 	boundary: string;
 	pr_head_sha: string;
@@ -486,6 +488,7 @@ function renderSummary(input: {
 		// trip the renderer's "(dismissed) omitted" line after passing the
 		// filter above.
 		severity: row.severity?.trim().toUpperCase(),
+		order_agreement: row.order_agreement,
 	}));
 	const rendered = renderPrReviewSubmissionBody({
 		run_id: input.runId,

@@ -4,7 +4,9 @@ import {
 	type DepFreshnessDeps,
 	type DriftFinding,
 	detectDependencyFreshnessDrift,
+	fetchNpmLatestVersion,
 	minorSeriesBehind,
+	npmDistTagsUrl,
 	parseMajorMinor,
 } from '../../../scripts/drift-check';
 
@@ -271,6 +273,90 @@ describe('detectDependencyFreshnessDrift: fail-open', () => {
 			expect(f.severity).toBe('notice');
 			expect(f.message).toContain('disposition errored');
 			expect(f.message).toContain('EACCES');
+		}
+	});
+});
+
+describe('fetchNpmLatestVersion (bounded dist-tags read)', () => {
+	function fakeFetch(
+		respond: () => Response,
+		urls: string[] = [],
+	): typeof fetch {
+		return (async (input: string | URL | Request) => {
+			urls.push(String(input));
+			return respond();
+		}) as typeof fetch;
+	}
+
+	test('reads latest from the dist-tags endpoint, scoped name encoded', async () => {
+		const urls: string[] = [];
+		const latest = await fetchNpmLatestVersion(
+			'@opencode-ai/sdk',
+			fakeFetch(
+				() =>
+					new Response(JSON.stringify({ latest: '1.18.3', beta: '2.0.0-b' })),
+				urls,
+			),
+		);
+		expect(latest).toBe('1.18.3');
+		expect(urls).toEqual([
+			'https://registry.npmjs.org/-/package/%40opencode-ai%2Fsdk/dist-tags',
+		]);
+		expect(npmDistTagsUrl('@opencode-ai/sdk')).toBe(urls[0]);
+	});
+
+	test('an oversized body is rejected by declared length and by actual size', async () => {
+		const huge = JSON.stringify({
+			latest: '1.0.0',
+			pad: 'x'.repeat(70 * 1024),
+		});
+		expect(
+			await fetchNpmLatestVersion(
+				'pkg',
+				fakeFetch(() => new Response(huge)),
+			),
+		).toBeNull();
+		expect(
+			await fetchNpmLatestVersion(
+				'pkg',
+				fakeFetch(
+					() =>
+						new Response('{"latest":"1.0.0"}', {
+							headers: { 'content-length': String(10 * 1024 * 1024) },
+						}),
+				),
+			),
+		).toBeNull();
+	});
+
+	test('a chunked oversized body with no Content-Length is rejected by the shared bounded reader', async () => {
+		let pulled = 0;
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pulled++;
+				controller.enqueue(new TextEncoder().encode('x'.repeat(16 * 1024)));
+			},
+		});
+		expect(
+			await fetchNpmLatestVersion(
+				'pkg',
+				fakeFetch(() => new Response(stream)),
+			),
+		).toBeNull();
+		// 64 KiB cap / 16 KiB chunks: the endless stream is cut off, not drained.
+		expect(pulled).toBeLessThan(20);
+	});
+
+	test('non-OK, unparseable, non-string latest and a throwing fetch yield null', async () => {
+		for (const respond of [
+			() => new Response('{}', { status: 404 }),
+			() => new Response('not json'),
+			() => new Response(JSON.stringify({ latest: 7 })),
+			() => {
+				throw new Error('offline');
+			},
+		]) {
+			expect(await fetchNpmLatestVersion('pkg', fakeFetch(respond))).toBeNull();
 		}
 	});
 });

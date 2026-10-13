@@ -188,6 +188,17 @@ export function createEvaluationModelDispatcher(
 			// attribution. A bounded same-model retry still absorbs transient quota
 			// blips; each attempt is cleaned up by dispatchEphemeralAgent.
 			const requestedModel = parseRequestedModel(request.modelId);
+			// #3169 Phase 2: a v2 session-client shim supplies the session
+			// subset only — feature-detect the agent-listing surface so the
+			// dispatch returns a typed error instead of a raw TypeError.
+			if (
+				!client.app ||
+				typeof (client.app as { agents?: unknown }).agents !== 'function'
+			) {
+				throw new Error(
+					'evaluation dispatch unavailable: host client carries no app.agents surface',
+				);
+			}
 			const agentsResult = await awaitWithAbort(
 				client.app.agents({
 					query: { directory: request.sessionDirectory },

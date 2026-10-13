@@ -1,17 +1,31 @@
 /**
  * Vendored structural types for the OpenCode 2 plugin API.
  *
- * Provenance: distilled from `@opencode/plugin@2.0.20`
- * `dist/promise/{plugin,registration,tool,session,command,agent,event,storage,app,options}.d.ts`
- * and `@opencode/schema@2.0.20` `dist/{tool,agent,location}.d.ts`,
- * `@opencode/ai` `dist/schema/messages.d.ts` (fetched 2026-09-30, issue #3004).
+ * Provenance: distilled from `@opencode/plugin@2.0.26`
+ * `dist/promise/{plugin,registration,tool,session,worktree,command,agent,event,storage,app,options}.d.ts`
+ * and `@opencode/schema@2.0.26` `dist/{tool,agent,location}.d.ts`,
+ * `@opencode/client@2.0.26` `dist/promise/generated/{client,types}.d.ts`,
+ * `@opencode/ai` `dist/schema/messages.d.ts` (fetched 2026-10-09, issues #3004 / #3169).
  * Structural only — deliberately no runtime dependency on `@opencode/plugin`.
  *
- * Drift guard: DEFERRED to the #2910 follow-up PR (a check-host-contract v2 digest leg over this corpus, plus the dual-host CI lane); until it lands, type truth rests on this provenance pin and the live-host smoke. See docs/host/v2-hook-inventory.md for the full v1-to-v2 map.
+ * Flattening note: the client's Effect-generated input types express optional fields as
+ * `{ field: Body["field"] }` records; they are vendored here as plain optional fields of the
+ * same types (e.g. `SessionCreateInput` is all-optional in the published form).
+ *
+ * Drift guard: DEFERRED to the #2910 follow-up PR (a check-host-contract v2 digest leg over this corpus, plus the dual-host CI lane); until it lands, type truth rests on this provenance pin (now 2.0.26) and the live-host smoke. See docs/host/v2-hook-inventory.md for the full v1-to-v2 map.
+ *
+ * Host-tolerance contract for the session/worktree method surface (issue #3169):
+ * the members below are REQUIRED to mirror the published `SessionDomain`/`WorktreeDomain`.
+ * Since Phase 2 the session-client shim (`src/host/v2/session-client.ts`) is the call
+ * site — it feature-detects every member it consumes, including `hook` (`typeof
+ * ctx.session.create === 'function'`), and returns `undefined` when any is missing, so
+ * requiredness stays type-level only and a 2.0.2x host lacking a member must never crash
+ * the adapter.
  *
  * Only the surfaces this adapter consumes are typed. Unknown fields are
  * intentionally left off; the adapter never relies on their absence.
- * Upstream: @opencode/plugin@2.0.20 and @opencode/schema@2.0.20 (MIT, sst/opencode).
+ * Upstream: @opencode/plugin@2.0.26, @opencode/schema@2.0.26 and
+ * @opencode/client@2.0.26 (MIT, sst/opencode).
  */
 
 /** v2 `App` — host identity (dist/app.d.ts). */
@@ -162,16 +176,263 @@ export interface V2SessionPromptEvent {
 	readonly delivery?: string;
 }
 
-/** v2 `SessionDomain` (only hook used by this adapter). */
+/**
+ * v2 session-call input types (`@opencode/client@2.0.26` generated types, flattened —
+ * see the module header's flattening note). Only the fields with published evidence
+ * are named; the index signature keeps them structural, not exhaustive.
+ */
+
+/** `Model.Ref` (schema/model.d.ts). */
+export interface V2ModelRef {
+	readonly id: string;
+	readonly providerID: string;
+	readonly variant?: string;
+}
+
+/** Session permission rule (schema/permission.d.ts shape on create/switch inputs). */
+export interface V2SessionPermission {
+	readonly action: string;
+	readonly resource: string;
+	readonly effect: 'allow' | 'deny' | 'ask';
+}
+
+/** `SessionCreateInput` — all-optional in the published (Effect-generated) form. */
+export interface V2SessionCreateInput {
+	readonly id?: string | null;
+	readonly parentID?: string | null;
+	readonly title?: string | null;
+	readonly agent?: string | null;
+	readonly model?: V2ModelRef | null;
+	readonly location?: { readonly directory: string } | null;
+	readonly metadata?: Readonly<Record<string, unknown>> | null;
+	readonly permissions?: ReadonlyArray<V2SessionPermission> | null;
+}
+
+/**
+ * `SessionPromptInput` (`@opencode/client@2.0.26` generated, flattened):
+ * `sessionID` and `text` are required; `command`/`args` are NOT members of
+ * this input (the command shape is `name` + `text` on `SessionCommandInput` —
+ * the earlier fabricated members were removed in the PR-review feedback pass).
+ * Attachment members are abbreviated structural shapes.
+ */
+export interface V2SessionPromptCallInput {
+	readonly sessionID: string;
+	readonly text: string;
+	readonly id?: string | null;
+	readonly files?: ReadonlyArray<{
+		readonly uri: string;
+		readonly name?: string;
+		readonly description?: string;
+	}>;
+	readonly agents?: ReadonlyArray<{ readonly name: string }>;
+	readonly skills?: ReadonlyArray<{ readonly id: string }>;
+	readonly metadata?: Readonly<Record<string, unknown>>;
+	readonly delivery?: 'steer' | 'queue' | null;
+	readonly resume?: boolean | null;
+	[key: string]: unknown;
+}
+
+/** `SessionSwitchAgentInput`. */
+export interface V2SessionSwitchAgentInput {
+	readonly sessionID: string;
+	readonly agent: string;
+}
+
+/** `SessionSwitchModelInput`. */
+export interface V2SessionSwitchModelInput {
+	readonly sessionID: string;
+	readonly model: V2ModelRef;
+}
+
+/** `SessionInterruptInput`. */
+export interface V2SessionInterruptInput {
+	readonly sessionID: string;
+	readonly resume?: boolean;
+}
+
+/** `SessionInfo` — fields with published evidence; structural, not exhaustive. */
+export interface V2SessionInfo {
+	readonly id: string;
+	readonly parentID?: string;
+	readonly projectID: string;
+	readonly agent?: string;
+	readonly model?: V2ModelRef;
+	readonly title?: string;
+	readonly location: {
+		readonly directory: string;
+		[key: string]: unknown;
+	};
+	readonly time?: {
+		readonly created: number;
+		readonly updated: number;
+		readonly idle?: number;
+	};
+	readonly outcome?: 'succeeded' | 'failed' | 'interrupted';
+	[key: string]: unknown;
+}
+
+/** `SessionMessageInfo` union member (abbreviated; consumers read type + text). */
+export interface V2SessionMessageInfo {
+	readonly type?: string;
+	[key: string]: unknown;
+}
+
+/**
+ * v2 `SessionDomain` (dist/promise/session.d.ts 2.0.26): `Pick<SessionApi, "create" | "get" |
+ * "remove" | "switchAgent" | "switchModel" | "prompt" | "generate" | "command" | "compact" |
+ * "synthetic" | "interrupt" | "update" | "move" | "wait" | "context"> & { hook }`.
+ *
+ * `hook` names stay the 2.0.20-era three this adapter registers (context/compaction/prompt;
+ * the published SessionHooks map has grown, but the adapter only registers these).
+ */
 export interface V2SessionDomain {
 	readonly hook: (
 		name: 'context' | 'compaction' | 'prompt',
 		callback: (event: never) => Promise<void> | void,
 	) => Promise<V2Registration>;
-	readonly prompt?: (
-		sessionID: string,
-		input: { text: string } | { command: string; args?: string },
-	) => Promise<unknown>;
+	readonly create: (input?: V2SessionCreateInput) => Promise<V2SessionInfo>;
+	readonly get: (input: {
+		readonly sessionID: string;
+	}) => Promise<V2SessionInfo>;
+	readonly remove: (input: { readonly sessionID: string }) => Promise<void>;
+	readonly switchAgent: (input: V2SessionSwitchAgentInput) => Promise<void>;
+	readonly switchModel: (input: V2SessionSwitchModelInput) => Promise<void>;
+	/** Asynchronous: returns an inbox entry; pair with `wait` (issue #3169 Phase 2). */
+	readonly prompt: (input: V2SessionPromptCallInput) => Promise<unknown>;
+	readonly generate: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<{ text: string }>;
+	readonly command: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<void>;
+	readonly compact: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<unknown>;
+	readonly synthetic: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<unknown>;
+	readonly interrupt: (input: V2SessionInterruptInput) => Promise<unknown>;
+	readonly update: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<void>;
+	readonly move: (input: {
+		readonly sessionID: string;
+		[key: string]: unknown;
+	}) => Promise<void>;
+	readonly wait: (input: { readonly sessionID: string }) => Promise<void>;
+	readonly context: (input: {
+		readonly sessionID: string;
+	}) => Promise<V2SessionMessageInfo[]>;
+}
+
+/**
+ * v2 worktree types (`@opencode/plugin@2.0.26` + `@opencode/client@2.0.26`).
+ * The host publishes TWO distinct flavors — the client `WorktreeApi` inputs
+ * (project-id keyed) and the plugin `WorktreeDefinition` callback inputs
+ * (source-directory keyed) — and they must not be merged (PR-review feedback
+ * FB-003): a caller against either flavor would compile and then fail
+ * host-side at runtime.
+ */
+
+/** Client `WorktreeListInput` / `WorktreeRefreshInput` (project-id keyed). */
+export interface V2WorktreeProjectInput {
+	readonly projectID: string;
+}
+
+/** Client `WorktreeCreateInput`. */
+export interface V2WorktreeCreateInput {
+	readonly projectID: string;
+	readonly from?: string;
+	readonly branch?: string;
+	readonly directory?: string;
+	readonly name?: string;
+	[key: string]: unknown;
+}
+
+/** Client `WorktreeRemoveInput`. */
+export interface V2WorktreeRemoveInput {
+	readonly projectID: string;
+	readonly directory: string;
+	readonly force: boolean;
+}
+
+/** Client `WorktreeInfo` (create result; `directory` is the only published member). */
+export interface V2WorktreeInfo {
+	readonly directory: string;
+	[key: string]: unknown;
+}
+
+/** Plugin `WorktreeCreateInput` (the `../worktree.js` flavor — distinct from the client's). */
+export interface V2PluginWorktreeCreateInput {
+	readonly sourceDirectory: string;
+	readonly directory: string;
+	readonly branch?: string;
+	[key: string]: unknown;
+}
+
+/** Plugin `WorktreeRemoveInput`. */
+export interface V2PluginWorktreeRemoveInput {
+	readonly directory: string;
+	readonly force: boolean;
+}
+
+/** Plugin `WorktreeResult` (create return). */
+export interface V2WorktreeResult {
+	readonly directory: string;
+	[key: string]: unknown;
+}
+
+/**
+ * Plugin `WorktreeEntry` (list item). Only `directory` is published-verified
+ * here; the structural index keeps the remaining fields without inventing shapes.
+ */
+export interface V2WorktreeEntry extends V2WorktreeResult {}
+
+/** Plugin-side `WorktreeDefinition` (registers an implementation via transform). */
+export interface V2WorktreeDefinition {
+	readonly id: string;
+	readonly create: (
+		input: V2PluginWorktreeCreateInput,
+		context: { readonly signal: AbortSignal },
+	) => Promise<V2WorktreeResult>;
+	readonly remove: (
+		input: V2PluginWorktreeRemoveInput,
+		context: { readonly signal: AbortSignal },
+	) => Promise<void>;
+	readonly list: (
+		sourceDirectory: string,
+		context: { readonly signal: AbortSignal },
+	) => Promise<readonly V2WorktreeEntry[]>;
+}
+
+/** v2 `WorktreeEditor` (dist/promise/worktree.d.ts). */
+export interface V2WorktreeEditor {
+	/** Registers an implementation and selects it as the default. */
+	add(definition: V2WorktreeDefinition): void;
+}
+
+/**
+ * v2 `WorktreeDomain` (dist/promise/worktree.d.ts 2.0.26): the client
+ * `WorktreeApi` (`list`/`create`/`remove`/`refresh`) plus `transform` and
+ * `reload`. Consumed by no Phase 1 code path; typed so Phase 2+ (issue #3169)
+ * sees the surface with the published requiredness intact.
+ */
+export interface V2WorktreeDomain {
+	readonly list: (
+		input: V2WorktreeProjectInput,
+	) => Promise<readonly V2WorktreeInfo[]>;
+	readonly create: (input: V2WorktreeCreateInput) => Promise<V2WorktreeInfo>;
+	readonly remove: (input: V2WorktreeRemoveInput) => Promise<void>;
+	readonly refresh: (input: V2WorktreeProjectInput) => Promise<void>;
+	readonly reload: () => Promise<void>;
+	readonly transform: (
+		callback: (editor: V2WorktreeEditor) => void,
+	) => Promise<V2Registration>;
 }
 
 /** v2 `CommandDefinition` / `CommandEditor` (dist/promise/command.d.ts). */
@@ -266,6 +527,8 @@ export interface V2PluginContext {
 	readonly session: V2SessionDomain;
 	readonly event: V2EventDomain;
 	readonly permission?: V2PermissionDomain;
+	/** Present on 2.0.26 hosts; no Phase 1 code path consumes it (issue #3169). */
+	readonly worktree?: V2WorktreeDomain;
 	readonly [key: string]: unknown;
 }
 
