@@ -96,6 +96,38 @@ describe('epic start on a host without an SDK client', () => {
 		expect((await start(dir)).status).toBe('started');
 	});
 
+	test('the real v2 session client (OpenCode 2 shim) starts normally', async () => {
+		// #3169 Phase 4: pin that the REAL createV2SessionClient over a
+		// v2-shaped ctx installs (not undefined) and passes the capability
+		// guard — the v2 host's actual path since #3186. The fake carries
+		// exactly the eight session-domain members the shim feature-detects
+		// (src/host/v2/session-client.ts); startEpic's start path never
+		// invokes them.
+		const { createV2SessionClient } = await import(
+			'../../../src/host/v2/session-client'
+		);
+		const dir = await project();
+		const fakeV2Ctx = {
+			session: {
+				create: async () => ({ id: 'ses_child', location: { directory: dir } }),
+				get: async (input: { sessionID?: string }) => ({
+					id: input?.sessionID,
+					location: { directory: dir },
+				}),
+				remove: async () => {},
+				prompt: async () => ({}),
+				wait: async () => {},
+				context: async () => [],
+				interrupt: async () => {},
+				hook: async () => ({ dispose: async () => {} }),
+			},
+		};
+		const client = createV2SessionClient(fakeV2Ctx as never);
+		expect(client).toBeDefined();
+		swarmState.opencodeClient = client as never;
+		expect((await start(dir)).status).toBe('started');
+	});
+
 	test('the message names the cause and the ways forward', () => {
 		expect(EPIC_HOST_UNSUPPORTED_MESSAGE).toContain('SDK client');
 		expect(EPIC_HOST_UNSUPPORTED_MESSAGE).toContain('OpenCode 2');

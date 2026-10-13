@@ -65,6 +65,10 @@ in this phase; the `host-unsupported` refusal described above was lifted when
 the Phase 2 session client landed (#3169 Phase 2: the v2 capability guard now
 passes, with the epic entry point still double-gated until Phase 4).
 
+> **Superseded in part by `3169-epic-v2-phase4-command-dispatch.md` (same release).** The
+> epic entry point is no longer double-gated: the Phase 4 v2 command dispatch landed, so
+> `/swarm epic start` dispatches natively on OpenCode 2.
+
 ## Notes
 
 Phase 2+ items remain open on #3169: the v2 session client shim, provider error
