@@ -48,6 +48,10 @@ Phase 2, per the tracking issue's phased plan).
   null exactly as before; Epic's capability guard now passes, but the epic entry point
   remains double-gated on v2 (`human-only` toolPolicy + no v2 command dispatch — Phase 4).
 
+> **Superseded in part by `3169-epic-v2-phase4-command-dispatch.md` (same release).** The
+> "no v2 command dispatch" half is closed: the Phase 4 dispatch landed, so the epic entry
+> point is open on OpenCode 2 (the `human-only` agent policy is unchanged).
+
 > **Superseded in part by `3169-epic-v2-phase3-isolated-coders.md` (same release).** The
 > placement fail-closed described below now applies to an UNVERIFIABLE parent placement
 > only; a CONFIRMED parent-directory divergence takes the eager parentless lane create
