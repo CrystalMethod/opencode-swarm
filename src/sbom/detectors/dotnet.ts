@@ -34,6 +34,7 @@ import { generatePurl } from './index.js';
  */
 function parsePackagesLockJson(content: string): SbomComponent[] {
 	const components: SbomComponent[] = [];
+	const seenPurls = new Set<string>();
 
 	try {
 		const lock = JSON.parse(content);
@@ -45,29 +46,42 @@ function parsePackagesLockJson(content: string): SbomComponent[] {
 			if (!targetDeps || typeof targetDeps !== 'object') continue;
 
 			for (const [pkgSpec, pkgData] of Object.entries(targetDeps)) {
+				// A null/scalar entry must be skipped, never dereferenced — a
+				// throw here would silently truncate everything collected so far.
+				if (!pkgData || typeof pkgData !== 'object') continue;
 				const pkg = pkgData as Record<string, unknown>;
 
 				let name: string;
 				let version: string;
 				if (pkgSpec.includes('/')) {
 					// v2 `targets` shape: keys are `Name/Version`
-					const slash = pkgSpec.indexOf('/');
-					name = pkgSpec.slice(0, slash);
-					version = pkgSpec.slice(slash + 1);
+					const [specName, specVersion] = pkgSpec.split('/');
+					name = specName;
+					version = specVersion;
 				} else {
 					// v1 `dependencies` fallback shape: keys are bare NuGet IDs
 					// (IDs cannot contain '/'); the resolved version rides in the
-					// entry body.
+					// entry body as a string.
 					name = pkgSpec;
-					version = (pkg.resolved as string) || (pkg.version as string) || '';
+					version =
+						typeof pkg.resolved === 'string'
+							? pkg.resolved
+							: typeof pkg.version === 'string'
+								? pkg.version
+								: '';
 				}
 
 				if (name && version) {
+					// Multi-TFM lockfiles repeat each package per target framework;
+					// emit it once.
+					const purl = generatePurl('nuget', name, version);
+					if (seenPurls.has(purl)) continue;
+					seenPurls.add(purl);
 					components.push({
 						name,
 						version,
 						type: 'library',
-						purl: generatePurl('nuget', name, version),
+						purl,
 						license: pkg.license as string | undefined,
 					});
 				}

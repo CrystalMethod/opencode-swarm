@@ -1,11 +1,12 @@
 /**
  * Lockfile parser truth matrix (issue #2956).
  *
- * One describe per checked-in redacted fixture under fixtures/lockfiles/.
- * Each test runs the REAL detectComponents against the fixture and asserts
- * EXACT set equality of name@version plus the exact component count — set
- * equality (not toBeGreaterThan(0), not toContain) is what makes any dropped
- * or double-counted component class fail this suite.
+ * One describe per checked-in hand-authored synthetic fixture under
+ * fixtures/lockfiles/ (shapes mirrored from real generator output; URLs and
+ * hashes are placeholders). Each test runs the REAL detectComponents against
+ * the fixture and asserts EXACT set equality of name@version plus the exact
+ * component count — set equality (not toBeGreaterThan(0), not toContain) is
+ * what makes any dropped or double-counted component class fail this suite.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -62,6 +63,17 @@ const cases: MatrixCase[] = [
 		representativePurls: ['pkg:npm/express@4.18.2', 'pkg:npm/ms@2.1.3'],
 	},
 	{
+		fixture: 'pnpm-v5.lock',
+		fileName: 'pnpm-lock.yaml',
+		expected: [
+			'@types/node@18.19.50',
+			'debug@4.3.4',
+			'express@4.18.2',
+			'lodash@4.17.21',
+		],
+		representativePurls: ['pkg:npm/express@4.18.2', 'pkg:npm/debug@4.3.4'],
+	},
+	{
 		fixture: 'pnpm-v9.lock',
 		fileName: 'pnpm-lock.yaml',
 		expected: ['@types/node@20.11.30', 'express@4.18.2', 'ms@2.1.3'],
@@ -98,9 +110,16 @@ describe('lockfile parser truth matrix (#2956)', () => {
 			});
 
 			test('every emitted name is a bare package name', () => {
-				expect(components.every((c) => !c.name.includes('node_modules'))).toBe(
-					true,
-				);
+				expect(
+					components.every(
+						(c) =>
+							!c.name.includes('node_modules') &&
+							!c.name.includes('(') &&
+							!c.name.includes(':') &&
+							!c.name.includes(' ') &&
+							!/^\//.test(c.name),
+					),
+				).toBe(true);
 			});
 
 			test('carries literal purls for unscoped representatives', () => {

@@ -85,27 +85,42 @@ function parsePackageLock(content: string): SbomComponent[] {
 }
 
 /**
- * Split a yarn dependency spec into name and specifier.
+ * Trim leading/trailing quote characters without regex backtracking
+ * (a `/^["']+/ … /["']+$/` pair is quadratic on interior quote runs).
+ */
+function trimQuoteChars(value: string): string {
+	let start = 0;
+	let end = value.length;
+	while (start < end && (value[start] === '"' || value[start] === "'")) {
+		start++;
+	}
+	while (end > start && (value[end - 1] === '"' || value[end - 1] === "'")) {
+		end--;
+	}
+	return value.slice(start, end);
+}
+
+const PROTOCOL_LIKE = /^[a-z][a-z0-9+.-]*:/;
+
+/**
+ * Split a yarn dependency spec into name and raw specifier.
  *
  * The separator is the first `@` (after a possible scope) whose remainder
  * starts a protocol (`npm:`, `workspace:`, `patch:`, …) or a version range
  * — Berry patch specs embed further `@` signs (`pkg@patch:pkg@npm%3A1.0.0#…`),
  * so a last-`@` split would mis-parse them. Falls back to the last `@` for
- * plain dist-tag specifiers.
+ * plain dist-tag specifiers. The `npm:` protocol is NOT stripped here; the
+ * caller needs it to resolve Berry aliases.
  */
 function splitYarnSpec(
 	spec: string,
 ): { name: string; specifier: string } | null {
-	const schemeLike = /^[a-z][a-z0-9+.-]*:/;
 	const rangeLike = /^[\d^~>=<]/;
 	for (let i = 1; i < spec.length; i++) {
 		if (spec[i] !== '@') continue;
 		const rest = spec.slice(i + 1);
-		if (schemeLike.test(rest) || rangeLike.test(rest)) {
-			return {
-				name: spec.slice(0, i),
-				specifier: rest.startsWith('npm:') ? rest.slice(4) : rest,
-			};
+		if (PROTOCOL_LIKE.test(rest) || rangeLike.test(rest)) {
+			return { name: spec.slice(0, i), specifier: rest };
 		}
 	}
 	const last = spec.lastIndexOf('@');
@@ -120,13 +135,15 @@ function splitYarnSpec(
  * comma-separated list of dependency specs (each optionally quoted; Berry
  * wraps whole lists in one quote pair). The resolved version comes from the
  * block's first `version "X"` (classic) or `version: X` (Berry) line, never
- * from the key's specifier.
+ * from the key's specifier. Berry aliases (`alias@npm:real@range`) are
+ * recorded under the REAL package identity from the specifier.
  */
 function parseYarnLock(content: string): SbomComponent[] {
 	const components: SbomComponent[] = [];
 	const seenPurls = new Set<string>();
 
 	let blockNames: string[] = [];
+	const blockNameSet = new Set<string>();
 	let blockVersion = '';
 
 	const flushBlock = () => {
@@ -143,6 +160,7 @@ function parseYarnLock(content: string): SbomComponent[] {
 			});
 		}
 		blockNames = [];
+		blockNameSet.clear();
 		blockVersion = '';
 	};
 
@@ -155,23 +173,25 @@ function parseYarnLock(content: string): SbomComponent[] {
 			flushBlock();
 			const header = line.trimEnd().slice(0, -1);
 			for (const rawSpec of header.split(',')) {
-				const spec = rawSpec
-					.trim()
-					.replace(/^["'](.*)["']$/, '$1')
-					.replace(/^["']+/, '')
-					.replace(/["']+$/, '');
+				const spec = trimQuoteChars(rawSpec.trim());
 				const split = splitYarnSpec(spec);
 				if (!split) continue; // no name@specifier split (e.g. __metadata)
-				const { name, specifier } = split;
-				if (
-					specifier.startsWith('workspace:') ||
-					specifier.startsWith('patch:') ||
-					specifier.startsWith('portal:') ||
-					specifier.startsWith('link:')
-				) {
-					continue; // local protocols are not registry components
+				let { name, specifier } = split;
+				if (specifier.startsWith('npm:')) {
+					// Berry alias: `alias@npm:real@range` resolves to the REAL
+					// package; record that identity, not the local alias name.
+					specifier = specifier.slice(4);
+					const innerAt = specifier.lastIndexOf('@');
+					if (innerAt > 0) name = specifier.slice(0, innerAt);
+				} else if (PROTOCOL_LIKE.test(specifier)) {
+					// workspace:/patch:/portal:/link:/file:/git:/github:/http(s):
+					// are local or non-registry — not registry components.
+					continue;
 				}
-				if (name && !blockNames.includes(name)) blockNames.push(name);
+				if (name && !blockNameSet.has(name)) {
+					blockNameSet.add(name);
+					blockNames.push(name);
+				}
 			}
 			continue;
 		}
@@ -187,12 +207,14 @@ function parseYarnLock(content: string): SbomComponent[] {
 }
 
 /**
- * Parse pnpm-lock.yaml (v5/v6/v9 formats)
+ * Parse pnpm-lock.yaml (v5 through v9 formats)
  *
  * Registry packages live only under the top-level `packages:` section
- * (v5/v6 also accept the legacy `/packages:` header shape). Keys are
- * `[/]name@version[(peer-specs)]:` — pnpm v9 dropped the leading slash and
- * YAML-single-quotes scoped names; peer-suffix parentheses carry no version.
+ * (v5/v6 also accept the legacy `/packages:` header shape). Two key
+ * grammars: v6+ writes `[/]name@version[(peer-specs)]:` (v9 drops the
+ * leading slash and YAML-single-quotes scoped names); v5.0-5.4 writes
+ * `/[host/]name[/scope/name]/version[_peer@x]:`. Peer-suffix parentheses
+ * and underscore peer suffixes carry no version.
  */
 function parsePnpmLockYaml(content: string): SbomComponent[] {
 	const components: SbomComponent[] = [];
@@ -211,17 +233,44 @@ function parsePnpmLockYaml(content: string): SbomComponent[] {
 
 		const trimmed = line.trim();
 		if (!trimmed.endsWith(':')) continue; // nested `key: value` lines are not keys
+		if (trimmed.includes('://')) continue; // tarball/git URL keys are not registry components
 
-		let key = trimmed.slice(0, -1);
-		key = key.replace(/^["'](.*)["']$/, '$1');
-		key = key.replace(/(\([^)]*\))+$/, '');
+		let key = trimQuoteChars(trimmed.slice(0, -1));
+		// Peer suffixes start at the first `(` — npm names cannot contain
+		// parentheses, so cutting there is linear and handles nesting.
+		const paren = key.indexOf('(');
+		if (paren >= 0) key = key.slice(0, paren);
 		if (key.startsWith('/')) key = key.slice(1);
 
-		const at = key.lastIndexOf('@');
-		if (at <= 0) continue; // block headers like `dependencies:` carry no version
+		// v6+ @-form: `name[@scope/name]@version` — at most one slash that
+		// belongs to a leading @scope. Anything else with a slash is v5-form.
+		const atForm = /^(@[^/]+\/)?[^/@]+@/.test(key);
 
-		const name = key.slice(0, at);
-		const version = key.slice(at + 1);
+		let name: string;
+		let version: string;
+		if (atForm) {
+			const at = key.lastIndexOf('@');
+			if (at <= 0) continue; // block headers like `dependencies:` carry no version
+			name = key.slice(0, at);
+			version = key.slice(at + 1);
+			// pnpm `file:`/`link:` keys (real shape: `@scope/pkg@file:path` — no
+			// `//`, so the URL pre-filter above cannot catch them) are local
+			// paths, not registry components.
+			if (PROTOCOL_LIKE.test(version)) continue;
+		} else {
+			// v5 slash-form: `[host/]name[/scope]/version` — the version is the
+			// last segment; a dotted first segment is a registry host prefix.
+			const slash = key.lastIndexOf('/');
+			if (slash <= 0) continue; // `dependencies:` headers carry no version
+			version = key.slice(slash + 1);
+			name = key.slice(0, slash);
+			const hostEnd = name.indexOf('/');
+			if (hostEnd > 0 && /^[^/@]+\.[^/@]+$/.test(name.slice(0, hostEnd))) {
+				name = name.slice(hostEnd + 1);
+			}
+			const peer = version.indexOf('_');
+			if (peer > 0) version = version.slice(0, peer); // v5 `_peer@x` suffix
+		}
 		if (!name || !version || !/\d/.test(version)) continue;
 
 		const purl = generatePurl('npm', name, version);

@@ -1,0 +1,20 @@
+lockfileVersion: '5.4'
+
+dependencies:
+  express:
+    specifier: ^4.18.0
+    version: 4.18.2
+
+packages:
+
+  /express/4.18.2:
+    resolution: {integrity: sha512-aaa}
+
+  /@types/node/18.19.50:
+    resolution: {integrity: sha512-bbb}
+
+  /debug/4.3.4_supports-color@8.1.1:
+    resolution: {integrity: sha512-ccc}
+
+  /registry.example.invalid/lodash/4.17.21:
+    resolution: {integrity: sha512-ddd}

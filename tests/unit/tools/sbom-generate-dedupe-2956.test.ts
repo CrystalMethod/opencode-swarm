@@ -6,10 +6,20 @@
  * Assertions read the CycloneDX BOM written to output_path — the tool's
  * JSON result carries counts only, not components.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'bun:test';
+import {
+	afterEach,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	mock,
+	spyOn,
+	vi,
+} from 'bun:test';
 import * as fs from 'node:fs';
 import path from 'node:path';
 import type { ToolContext } from '@opencode-ai/plugin';
+import { saveEvidence } from '../../../src/evidence/manager';
 import { sbom_generate } from '../../../src/tools/sbom-generate';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
@@ -19,6 +29,10 @@ vi.mock('../../../src/evidence/manager', () => ({
 
 let tempDir: string;
 let originalCwd: string;
+const mockSaveEvidence = saveEvidence as unknown as {
+	mock: { calls: unknown[][] };
+	mockClear: () => void;
+};
 
 function getMockContext(): ToolContext {
 	return {
@@ -59,6 +73,7 @@ describe('sbom_generate tool — lockfile precedence and dedup (#2956)', () => {
 		originalCwd = process.cwd();
 		tempDir = canonicalMkdtemp('sbom-dedupe-2956-');
 		process.chdir(tempDir);
+		mockSaveEvidence.mockClear();
 	});
 
 	afterEach(() => {
@@ -197,5 +212,66 @@ accepts@~1.3.8:
 		expect(
 			components.some((c) => c.name === 'express' && c.version === '4.18.0'),
 		).toBe(false);
+	});
+
+	it('persists evidence whose components_count matches the deduped BOM', async () => {
+		fs.writeFileSync(
+			path.join(tempDir, 'package.json'),
+			JSON.stringify({
+				name: 'evidence-check',
+				version: '1.0.0',
+				dependencies: { express: '^4.18.0' },
+			}),
+		);
+		fs.writeFileSync(
+			path.join(tempDir, 'yarn.lock'),
+			'express@^4.18.0:\n  version "4.18.2"\n',
+		);
+
+		const { result } = await runToolAndReadBom();
+
+		expect(saveEvidence).toHaveBeenCalledTimes(1);
+		const evidencePayload = mockSaveEvidence.mock.calls[0][2] as {
+			components_count: number;
+			components: unknown[];
+		};
+		expect(evidencePayload.components_count).toBe(result.components_count);
+		expect(evidencePayload.components.length).toBe(result.components_count);
+	});
+
+	it('returns a skip verdict with no artifact when every manifest is unreadable', async () => {
+		fs.writeFileSync(path.join(tempDir, 'package.json'), '{"name":"x"}');
+		fs.writeFileSync(
+			path.join(tempDir, 'yarn.lock'),
+			'express@^4.18.0:\n  version "4.18.2"\n',
+		);
+		const readSpy = spyOn(fs, 'readFileSync').mockImplementation(() => {
+			const error = new Error(
+				'EACCES: permission denied (simulated)',
+			) as NodeJS.ErrnoException;
+			error.code = 'EACCES';
+			throw error;
+		});
+
+		try {
+			const raw = await sbom_generate.execute(
+				{ scope: 'all' },
+				getMockContext(),
+			);
+			const result = JSON.parse(raw as string);
+			expect(result.verdict).toBe('skip');
+			expect(result.files).toEqual([]);
+			expect(result.components_count).toBe(0);
+			expect(result.output_path).toBe('');
+			// No BOM artifact may be written for a read-failure skip (consistent
+			// with the other skip returns).
+			const written = fs
+				.readdirSync(tempDir)
+				.filter((name) => name.startsWith('sbom-'));
+			expect(written).toEqual([]);
+		} finally {
+			readSpy.mockRestore();
+			mock.restore();
+		}
 	});
 });

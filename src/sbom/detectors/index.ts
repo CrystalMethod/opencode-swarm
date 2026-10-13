@@ -221,18 +221,29 @@ export function detectComponents(
  * deduplicated set (issue #2956).
  *
  * Lockfile-resolved entries take precedence over manifest declared-base
- * entries of the same name (a `package.json` declaring `express@^4.18.0`
- * resolves to `express@4.18.2` in the lockfile — the declared-base twin is
- * dropped). Exact purls then dedupe (falling back to `name@version` when a
- * component carries no purl), preserving first-occurrence order.
+ * entries of the same package identity — a `package.json` declaring
+ * `express@^4.18.0` resolves to `express@4.18.2` in the lockfile, and the
+ * declared-base twin is dropped. Identity is name + ecosystem (the purl
+ * type): an npm lockfile entry must not suppress a same-named Cargo or PyPI
+ * package from a polyglot repo. Components without a usable purl fall back
+ * to name-only suppression (the issue's literal rule). Exact purls then
+ * dedupe (falling back to `name@version` when a component carries no purl),
+ * preserving first-occurrence order.
  */
 export function dedupeSbomComponents(
 	lockfileComponents: SbomComponent[],
 	manifestComponents: SbomComponent[],
 ): SbomComponent[] {
-	const lockfileNames = new Set(
-		lockfileComponents.map((component) => component.name),
-	);
+	const lockfileEcosystemsByName = new Map<string, Set<string | null>>();
+	for (const component of lockfileComponents) {
+		let ecosystems = lockfileEcosystemsByName.get(component.name);
+		if (!ecosystems) {
+			ecosystems = new Set<string | null>();
+			lockfileEcosystemsByName.set(component.name, ecosystems);
+		}
+		ecosystems.add(componentEcosystem(component));
+	}
+
 	const seenKeys = new Set<string>();
 	const merged: SbomComponent[] = [];
 
@@ -247,9 +258,21 @@ export function dedupeSbomComponents(
 		pushIfNew(component);
 	}
 	for (const component of manifestComponents) {
-		if (lockfileNames.has(component.name)) continue;
+		const ecosystem = componentEcosystem(component);
+		const competing = lockfileEcosystemsByName.get(component.name);
+		const superseded =
+			competing !== undefined &&
+			(ecosystem === null || competing.has(null) || competing.has(ecosystem));
+		if (superseded) continue;
 		pushIfNew(component);
 	}
 
 	return merged;
+}
+
+/** The purl type segment (`pkg:<ecosystem>/...`), or null when absent. */
+function componentEcosystem(component: SbomComponent): string | null {
+	if (!component.purl || !component.purl.startsWith('pkg:')) return null;
+	const slash = component.purl.indexOf('/', 4);
+	return slash > 4 ? component.purl.slice(4, slash) : null;
 }
