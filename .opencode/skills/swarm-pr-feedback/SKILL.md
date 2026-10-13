@@ -12,7 +12,7 @@ description: >
   (structural pre-checks) and Stage B (reviewer + test_engineer) gates and the
   reviewer + critic closeout gate are MANDATORY for any change made as part of
   this process.
-swarm-contract-digest: 22e16b85a121
+swarm-contract-digest: aca3f05b0677
 ---
 
 # Swarm PR Feedback
@@ -428,7 +428,7 @@ Rules:
   items.
 - Use explicit IDs for non-review feedback when useful, for example
   `CONFLICT-001` for merge/base drift and `CI-001` for check failures, so PR
-  bodies can show exactly how operational blockers were closed.
+  bodies can show exactly how operational blockers were closed. See `references/operational-gotchas.md` (## Contract addendum (2026-10-12)) for the body-claim-audit, probe-hygiene, and stable-obligation/coverage-diff ledger rules.
 
 ### Mandatory: integrate all PR comments with feedback or findings before branch validation (Stage A)
 
@@ -948,21 +948,3 @@ gates must run again. A published generation is never cleared by abort; use
 reports `checkout_restore_required`, call `prepare_pr_workflow_checkout` with
 `operation: "restore"` before returning. On Profiles B/C there is no durable
 gate to abort: report the blocker to the user and stop.
-
-## Contract addendum (2026-10-12)
-
-- **Body-claim audit.** Before the reviewer gate, grep the LIVE published
-  artifact (PR body, issue body) against every ledger row whose fix-ref is
-  that artifact: the fixed phrasing present, the contradicting phrasing
-  absent. A row marked FIXED for a file never edited is an unbacked claim —
-  record CLOSED only after the grep matches.
-- **Probe hygiene.** Mutation/revert probes must leave the tree as found:
-  restore with `git checkout -- <file>` after every probe and verify
-  `git status --porcelain` clean before the first commit of the round. An
-  uncommitted mutant left in a tracked source file can ride explicit-path
-  staging into the fix commit — or `git add -A` into the release.
-- **Stable obligation identity.** Never substitute the obligation between
-  ledger and proof: if the ledger defined mutant M4 as X, closing it with a
-  different mutant Y is a new row, not a closure. Coverage-diff the ledger
-  against EVERY source finding table by ID, both directions, before
-  implementing.
