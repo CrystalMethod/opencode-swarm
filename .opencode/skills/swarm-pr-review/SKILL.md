@@ -168,7 +168,7 @@ receipt; persist post-explorer findings; run reviewers;
 run critics; then persist the final artifact and complete the workflow. Transcript
 `[CANDIDATE]` / `[CLEAN]` rows are deprecated legacy compatibility only for
 lanes whose snapped `pr_review_legacy_transcript_compatibility` contract
-explicitly enables them.
+explicitly enables them. Candidate rows are defect claims only — never verification notes or INFO-severity confirmations (see `references/prompt-templates.md`, ## Contract addendum (2026-10-12)).
 The **initial** micro dispatch MUST supply the complete trigger-evaluation
 ledger; that dispatch freezes it for the session.
 Any subsequent micro batch in that same session MAY omit `trigger_evaluation`

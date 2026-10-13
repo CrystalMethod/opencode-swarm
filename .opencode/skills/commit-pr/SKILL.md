@@ -101,3 +101,11 @@ If this session is running an issue trace (`/swarm issue --trace`), call
 right after the PR is opened so the issue-trace workflow can reach its terminal
 `published` state — without it the trace stays at `publication_handoff` and is NOT
 considered resolved.
+
+## Contract addendum (2026-10-12)
+
+- **Publication-time re-derivation.** As the LAST step before `gh pr create`
+  / `pr edit`, re-derive every claim in the body from the final tree: PR head
+  SHA, test counts, file lists, closure evidence. A body drafted earlier is
+  stale by construction — the head moves with every amend — and a stale
+  `PR head:` line in particular is guarded by no validator.
