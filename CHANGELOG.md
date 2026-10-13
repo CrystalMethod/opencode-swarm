@@ -1,5 +1,29 @@
 # Changelog
 
+## [7.195.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.194.0...v7.195.0) (2026-10-13)
+
+
+### Features
+
+* **pr-review:** counterbalanced reviewer passes with per-finding order agreement (issue [#2906](https://github.com/ZaxbyHub/opencode-swarm/issues/2906)) ([dfc7554](https://github.com/ZaxbyHub/opencode-swarm/commit/dfc75543a9951e6ad3791c016a727d902da3ef65))
+* **pr-review:** counterbalanced reviewer passes with per-finding order agreement (issue [#2906](https://github.com/ZaxbyHub/opencode-swarm/issues/2906)) ([5684600](https://github.com/ZaxbyHub/opencode-swarm/commit/56846004a8386ff80e77c84f5d7747faa301719f))
+
+
+### Bug Fixes
+
+* **ci:** make the local workflow hash line-ending independent ([9c4f174](https://github.com/ZaxbyHub/opencode-swarm/commit/9c4f174f24e87ed88dfbbe6e02ec636c3ba44ec0))
+* **ci:** make the local workflow hash line-ending independent ([8b497e6](https://github.com/ZaxbyHub/opencode-swarm/commit/8b497e61ff8f085b5e300d347360d3ac94859f39))
+* **host/v2:** harden the eager lane create and correct the review claims ([#3193](https://github.com/ZaxbyHub/opencode-swarm/issues/3193)) ([3901d7d](https://github.com/ZaxbyHub/opencode-swarm/commit/3901d7d6ff580de5c4b182b95e06b624497c5337)), closes [#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169)
+* **host/v2:** place worktree lane sessions eagerly and parentless ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169) phase 3) ([bd99a74](https://github.com/ZaxbyHub/opencode-swarm/commit/bd99a7495a566a4b22781b9d2608c8f413bb5a99))
+* **host/v2:** place worktree lane sessions eagerly and parentless ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169) phase 3) ([c0dc2aa](https://github.com/ZaxbyHub/opencode-swarm/commit/c0dc2aa7de467abcb2f7578e829214a49b10ef56))
+* **pr-review:** close review findings — prompt budget, stale pins, journal bounds, claim accuracy ([b01ed36](https://github.com/ZaxbyHub/opencode-swarm/commit/b01ed360a586a8b78aa0f373685f024495aacf99))
+* **pr-review:** close review round 1 — journal the boundary contract arms, honest fail-open shapes ([814c3fc](https://github.com/ZaxbyHub/opencode-swarm/commit/814c3fc3379aa4790bb20782db12309accf17ff9))
+* **pr-review:** fail closed on an omitted order-agreement label (review F-01) and keep order-unstable flips visible when the final status is DISPROVED (review F-02) ([86b9009](https://github.com/ZaxbyHub/opencode-swarm/commit/86b9009e590daf667dfd5b50c478804f34f166ab))
+* **pr-review:** give the [#2906](https://github.com/ZaxbyHub/opencode-swarm/issues/2906) receipt and unstable-id fields real readers, and document the deviations (review LOWs) ([83e2e78](https://github.com/ZaxbyHub/opencode-swarm/commit/83e2e78772b287f947cbea8ed013a6a3f96ff89f))
+* **pr-review:** stop the capacity prune from wedging parity and erasing order-agreement evidence (review F-03, F-04) ([d9ca00f](https://github.com/ZaxbyHub/opencode-swarm/commit/d9ca00ff1e17352fce036b6a0e4aa55eef1cb389))
+* **pr-review:** verdict-lane rejections carry predicates, a durable journal, and the settlement contract ([4846498](https://github.com/ZaxbyHub/opencode-swarm/commit/4846498ba5bd1f3840b89bbc530f0e84a5ca1d55))
+* **pr-review:** verdict-lane rejections carry predicates, a durable journal, and the settlement contract ([fff8cae](https://github.com/ZaxbyHub/opencode-swarm/commit/fff8cae117a6f261cf5ebd4223a613f3013b15a1))
+
 ## [7.194.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.193.0...v7.194.0) (2026-10-11)
 
 
