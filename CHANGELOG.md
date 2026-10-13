@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.197.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.196.0...v7.197.0) (2026-10-13)
+
+
+### Features
+
+* **skills:** align shipped skills with the Agent Skills specification (issue [#2907](https://github.com/ZaxbyHub/opencode-swarm/issues/2907)) ([e000387](https://github.com/ZaxbyHub/opencode-swarm/commit/e000387465dbc27885d6cb54a1c4abd53cf053ba))
+
+
+### Bug Fixes
+
+* **skills:** close the 17 verified PR [#3207](https://github.com/ZaxbyHub/opencode-swarm/issues/3207) review findings ([bd36028](https://github.com/ZaxbyHub/opencode-swarm/commit/bd360288a65c300a7058782ecd4c37f40ba1f796))
+
 ## [7.196.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.195.0...v7.196.0) (2026-10-13)
 
 
