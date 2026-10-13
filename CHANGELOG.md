@@ -1,5 +1,17 @@
 # Changelog
 
+## [7.196.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.195.0...v7.196.0) (2026-10-13)
+
+
+### Features
+
+* **host/v2:** dispatch /swarm commands natively on OpenCode 2 ([#3169](https://github.com/ZaxbyHub/opencode-swarm/issues/3169) phase 4) ([6c59661](https://github.com/ZaxbyHub/opencode-swarm/commit/6c596613b6fa43206a4ba020e721382f17a3686e))
+
+
+### Bug Fixes
+
+* **sbom:** truthful lockfile parsers with exact-set fixture matrix ([#2956](https://github.com/ZaxbyHub/opencode-swarm/issues/2956)) ([a94fc4d](https://github.com/ZaxbyHub/opencode-swarm/commit/a94fc4def15754055ec261b7fd0236b70b4a4c89))
+
 ## [7.195.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.194.0...v7.195.0) (2026-10-13)
 
 
