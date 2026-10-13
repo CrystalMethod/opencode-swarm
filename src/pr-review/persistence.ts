@@ -289,10 +289,24 @@ export interface PrReviewStateCodec<S extends PrWorkflowPersistedStateBase> {
 
 let codec: PrReviewStateCodec<PrWorkflowPersistedStateBase> | undefined;
 
+/**
+ * Issue #3199: observability-only state fields (the PR-review rejection
+ * journals and the skill-contract advisory list). Every state-machine write
+ * through `writeStateWhileLocked` takes these fields from the DURABLE state
+ * instead of the caller's snapshot, so a snapshot that predates an
+ * observability append can neither clobber appended entries nor resurrect
+ * cleared ones. Only the dedicated no-bump append path
+ * (`appendObservabilityStateWhileLocked`) may change them — no state-machine
+ * writer modifies them today (verified in the #3199 trace).
+ */
+let observabilityFieldNames: readonly string[] = [];
+
 export function bindPrReviewStateCodec<S extends PrWorkflowPersistedStateBase>(
 	nextCodec: PrReviewStateCodec<S>,
+	nextObservabilityFieldNames?: readonly string[],
 ): void {
 	codec = nextCodec as PrReviewStateCodec<PrWorkflowPersistedStateBase>;
+	observabilityFieldNames = nextObservabilityFieldNames ?? [];
 }
 
 function requireCodec(): PrReviewStateCodec<PrWorkflowPersistedStateBase> {
@@ -932,16 +946,39 @@ async function importLegacyPrWorkflowGateStateIfNeeded<
 // CAS write
 // ---------------------------------------------------------------------------
 
-/** Persist one CAS-checked state replacement while the session lock is held. */
-export async function writeStateWhileLocked<
+/** Take the observability-only fields from the durable state (issue #3199):
+ * durable-present wins; durable-absent is dropped from the incoming snapshot
+ * so stale entries cannot resurrect. A no-op until the gate binds the field
+ * names at module init. */
+function withDurableObservabilityFields<S extends PrWorkflowPersistedStateBase>(
+	incoming: S,
+	current: S | null,
+): S {
+	if (!current || observabilityFieldNames.length === 0) return incoming;
+	const merged: Record<string, unknown> = {
+		...{ ...(incoming as unknown as Record<string, unknown>) },
+	};
+	const durable = current as unknown as Record<string, unknown>;
+	for (const field of observabilityFieldNames) {
+		if (durable[field] !== undefined) merged[field] = durable[field];
+		else delete merged[field];
+	}
+	return merged as S;
+}
+
+/** Shared CAS write body for the state-machine path (bumps the revision) and
+ * the observability append path (keeps it). Both write the full row payload
+ * under the caller-held session mutation lock; the row-level CAS
+ * (`expectedRevision`) protects against lock-skipping writers on both paths. */
+async function persistStateRowWhileLocked<
 	S extends PrWorkflowPersistedStateBase,
 >(
 	directory: string,
-	state: S,
+	validated: S,
+	bumpRevision: boolean,
 	options: { replaceWorkflowInstanceId?: string } = {},
 ): Promise<S> {
 	const bound = requireCodec() as PrReviewStateCodec<S>;
-	const validated = bound.parse(state);
 	let currentAuthoritative = readPrWorkflowGateStateCoordinationRow<S>(
 		directory,
 		validated.sessionID,
@@ -973,10 +1010,11 @@ export async function writeStateWhileLocked<
 			'BLOCKED: PR workflow gate state changed concurrently; reload the active session state before retrying',
 		);
 	}
-	const nextState = bound.parse({
-		...validated,
-		revision: validated.revision + 1,
-	});
+	const nextState = bound.parse(
+		bumpRevision
+			? { ...validated, revision: validated.revision + 1 }
+			: validated,
+	);
 	const result = transitionCoordinationState(directory, {
 		namespace: workflowGateStateCoordinationNamespace(validated.sessionID),
 		entityKey: WORKFLOW_STATE_ENTITY_KEY,
@@ -998,6 +1036,54 @@ export async function writeStateWhileLocked<
 	);
 	rememberState(directory, nextState);
 	return nextState;
+}
+
+/** Persist one CAS-checked state replacement while the session lock is held. */
+export async function writeStateWhileLocked<
+	S extends PrWorkflowPersistedStateBase,
+>(
+	directory: string,
+	state: S,
+	options: { replaceWorkflowInstanceId?: string } = {},
+): Promise<S> {
+	const bound = requireCodec() as PrReviewStateCodec<S>;
+	const validated = bound.parse(state);
+	const currentAuthoritative = readPrWorkflowGateStateCoordinationRow<S>(
+		directory,
+		validated.sessionID,
+	);
+	let current = currentAuthoritative?.state ?? null;
+	if (!current) {
+		current = await readPrWorkflowGateStateFromDisk<S>(
+			directory,
+			validated.sessionID,
+		);
+	}
+	const effective = withDurableObservabilityFields(validated, current);
+	return persistStateRowWhileLocked(directory, effective, true, options);
+}
+
+/**
+ * Issue #3199: persist one observability-only state change (a rejection-
+ * journal or advisory append) WITHOUT advancing the state machine's durable
+ * revision, so a journaled rejection can never trip a concurrent gate
+ * operation's revision CAS (`completePrWorkflow`'s readiness compare, the
+ * terminal-clear compare, or the write CAS itself). Same lock contract as
+ * `writeStateWhileLocked` — the caller holds the per-session mutation lock
+ * and re-reads the durable state inside it; this function never locks. The
+ * coordination row is still CAS-written (`expectedRevision`) and its own
+ * row revision still advances, so the cross-process backstop is unchanged;
+ * only the state-machine generation the CAS compares stays put. Callers must
+ * change ONLY observability fields (`updatedAt` plus fields registered via
+ * `bindPrReviewStateCodec`) relative to the durable state — never
+ * state-machine semantics.
+ */
+export async function appendObservabilityStateWhileLocked<
+	S extends PrWorkflowPersistedStateBase,
+>(directory: string, state: S): Promise<S> {
+	const bound = requireCodec() as PrReviewStateCodec<S>;
+	const validated = bound.parse(state);
+	return persistStateRowWhileLocked(directory, validated, false);
 }
 
 /** Remove authoritative PR workflow state while the session mutation lock is held. */

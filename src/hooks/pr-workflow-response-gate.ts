@@ -46,6 +46,10 @@ export const _internals: {
 	// Issue #2601: seam for the wake-path skill-contract verification so
 	// fake-timer wake suites can stub the real (fs-bound) verifier.
 	ensurePrWorkflowSkillContractsFresh: typeof ensurePrWorkflowSkillContractsFresh;
+	// Issue #3199: seam for pinning the wake-progress token's revision
+	// sensitivity — a journal-only (non-transitioning) observability write
+	// must not count as wake progress, while a real state write must.
+	workflowProgressSnapshot: typeof workflowProgressSnapshot;
 } = {
 	readPrWorkflowGateState,
 	claimPrFeedbackMonitorEvents,
@@ -53,6 +57,7 @@ export const _internals: {
 	observePrWorkflowAutoWakeEvent,
 	scanDelegationsForRecovery,
 	ensurePrWorkflowSkillContractsFresh,
+	workflowProgressSnapshot,
 };
 
 /**
