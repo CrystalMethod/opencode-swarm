@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: 103ae1c77229
+swarm-contract-digest: 66db247ce302
 ---
 
 # /swarm-pr-review
@@ -167,7 +167,7 @@ receipt; persist post-explorer findings; run reviewers;
 run critics; then persist the final artifact and complete the workflow. Transcript
 `[CANDIDATE]` / `[CLEAN]` rows are deprecated legacy compatibility only for
 lanes whose snapped `pr_review_legacy_transcript_compatibility` contract
-explicitly enables them.
+explicitly enables them. Candidate rows are defect claims only — never verification notes or INFO-severity confirmations (see `references/prompt-templates.md`, ## Contract addendum (2026-10-12)).
 The **initial** micro dispatch MUST supply the complete trigger-evaluation
 ledger; that dispatch freezes it for the session.
 Any subsequent micro batch in that same session MAY omit `trigger_evaluation`

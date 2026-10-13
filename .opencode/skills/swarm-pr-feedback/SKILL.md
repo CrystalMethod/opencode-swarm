@@ -12,7 +12,7 @@ description: >
   (structural pre-checks) and Stage B (reviewer + test_engineer) gates and the
   reviewer + critic closeout gate are MANDATORY for any change made as part of
   this process.
-swarm-contract-digest: 143d9443a82d
+swarm-contract-digest: aca3f05b0677
 ---
 
 # Swarm PR Feedback
@@ -428,7 +428,7 @@ Rules:
   items.
 - Use explicit IDs for non-review feedback when useful, for example
   `CONFLICT-001` for merge/base drift and `CI-001` for check failures, so PR
-  bodies can show exactly how operational blockers were closed.
+  bodies can show exactly how operational blockers were closed. See `references/operational-gotchas.md` (## Contract addendum (2026-10-12)) for the body-claim-audit, probe-hygiene, and stable-obligation/coverage-diff ledger rules.
 
 ### Mandatory: integrate all PR comments with feedback or findings before branch validation (Stage A)
 
