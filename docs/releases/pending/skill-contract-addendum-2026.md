@@ -5,7 +5,11 @@ title: "Skill contract addendum — closure reconciliation, named-mutation disci
 ## What
 
 The four contract skills (`issue-tracer`, `swarm-pr-feedback`, `swarm-pr-review`,
-`commit-pr`) gain a `## Contract addendum (2026-10-12)` section, distilled from a
+`commit-pr`) gain a `## Contract addendum (2026-10-12)` block, placed in each
+skill's `references/` progressive-disclosure files for the three entry skills
+whose line-count ratchet is at baseline (plus one in-place pointer line in
+`swarm-pr-feedback`/`swarm-pr-review` entries; `commit-pr` has no ratchet and
+carries the block inline). All of it distilled from a
 post-merge audit of ZaxbyHub/ragappv3 PR #708/#883 where two closure dispositions
 were recorded as FIXED while the obligation had silently changed shape, and four-plus
 mutants survived the entire frozen gate suite:
@@ -40,3 +44,6 @@ residue in a shared worktree is one `git add -A` away from shipping a mutant.
   now.
 - Local `.swarm/bundled-skills` vendoring and the ZCode user-level copies were
   updated in place in the same session but are untracked by design.
+- The three entry SKILL.md files stay exactly at their one-way ratchet
+  baselines (196/950/2024); entry-file pointers are in-place line edits, not
+  line additions.
