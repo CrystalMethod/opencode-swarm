@@ -997,7 +997,11 @@ function readBoundedJson(file: string): unknown {
 }
 
 function sha256(file: string): string {
-	return crypto.createHash('sha256').update(readBoundedText(file, MAX_WORKFLOW_BYTES)).digest('hex');
+	// Normalize line endings so the recorded hash describes the committed
+	// content rather than the checkout's CRLF translation: a Windows checkout
+	// with core.autocrlf=true would otherwise mismatch the Linux runner's view
+	// of an unchanged workflow.
+	return crypto.createHash('sha256').update(readBoundedText(file, MAX_WORKFLOW_BYTES).replace(/\r\n/g, '\n')).digest('hex');
 }
 
 function readBoundedText(file: string, maxBytes: number): string {

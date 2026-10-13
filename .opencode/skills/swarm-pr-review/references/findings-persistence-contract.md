@@ -10,6 +10,7 @@ reviewer_classifications: CONFIRMED | DISPROVED | UNVERIFIED | PRE_EXISTING
 reviewer_evidence_types: STRUCTURALLY_PROVEN | EXECUTION_PROVEN | STATIC_TRACE_PROVEN | PLAUSIBLE_BUT_UNVERIFIED
 critic_fields: marker | item_id | status | severity | rationale | required_change
 critic_statuses: UPHELD | DOWNGRADED | DISPROVED | NEEDS_MORE_EVIDENCE
+order_agreements: agree | disagree | single
 severities: CRITICAL | HIGH | MEDIUM | LOW | INFO | NONE
 finding_statuses: PENDING | CONFIRMED | DISPROVED | PRE_EXISTING
 finding_actions: route_to_reviewer | route_to_critic | report | suppress_with_reason | handoff_to_feedback
@@ -251,3 +252,23 @@ newline, and `\r` a carriage return. The byte-zero contract card injected into
 each Profile A lane is authoritative for the live enums and includes positive
 and explicitly discarded negative examples. Discarded examples are
 documentation only and must never be emitted as live marker rows.
+
+## `order_agreement` (issue #2906)
+
+Every findings record MAY carry `order_agreement`, the order-stability of that
+finding's reviewer verdict across the counterbalanced presentation orders
+(pass A = canonical sorted ids, pass B = the exact reverse):
+
+- `agree` — both marked orders produced the same `(classification, severity)`;
+- `disagree` — they differed. The finding is order-unstable: rendered with an
+  `(order-unstable)` marker and counted in the report summary, and flagged to
+  the critic via `order_unstable_item_ids`;
+- `single` — fewer than two marked orders were observed (a single reviewer
+  pass, or unmarked/legacy batches, which contribute no observations).
+
+The field is **optional**. It is written on `post_reviewer` and `post_critic`
+rows, is cross-checked at write time against the composed reviewer verdicts,
+and **must not be omitted** on a finding whose composed label is `disagree` —
+an omitted label there fails the write closed rather than silently suppressing
+the marker. It is part of the replay-identity key: a re-submission whose
+`order_agreement` differs is not an exact replay.

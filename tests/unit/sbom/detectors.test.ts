@@ -79,7 +79,6 @@ urllib3
 # Comment
 numpy
 `,
-	// Note: pip doesn't typically have multiline format this way, but for testing
 
 	poetryLock: `# poetry.lock
 [[package]]
@@ -254,8 +253,6 @@ dev_dependencies:
     sdk: flutter
   test: ^1.0.0
 `,
-
-	// Note: pubspec.yaml uses 2-space indentation, so lines under dependencies have 2 spaces,
 };
 
 describe('SBOM Detectors', () => {
@@ -415,6 +412,9 @@ describe('SBOM Detectors', () => {
 			expect(components.length).toBeGreaterThan(0);
 			expect(components.find((c) => c.name === 'lodash')?.version).toBe(
 				'4.17.21',
+			);
+			expect(components.find((c) => c.name === 'express')?.version).toBe(
+				'4.18.2',
 			);
 		});
 

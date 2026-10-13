@@ -182,12 +182,13 @@ const UNSETTLED_WAL_STATES = new Set(['DISPATCHED', 'PREPARED', 'unreadable']);
  * Every git-epic coder needs worktree isolation and every phase needs the
  * `epic_phase_review` dispatch, and both create sessions through that client
  * (`worktree-isolation.ts` STANDARD_WORKTREE_ISOLATION_UNAVAILABLE,
- * `src/review/contracts.ts`). The OpenCode 2 adapter initializes the plugin
- * with `client: undefined` (`src/host/v2/setup.ts`), so an epic there could
- * neither dispatch a coder nor complete a phase.
+ * `src/review/contracts.ts`). Since #3169 Phase 2 the OpenCode 2 adapter
+ * installs a session-capable client shim (`src/host/v2/setup.ts`), and since
+ * Phase 4 a human-typed `/swarm` command dispatches natively there — this
+ * refusal now fires only on genuinely client-less hosts.
  */
 export const EPIC_HOST_UNSUPPORTED_MESSAGE =
-	'This OpenCode host gives the plugin no SDK client. Epic needs it for worktree-isolated coders and for the epic_phase_review reviewer/critic, so an epic here could neither run its coders nor complete a phase. Run the plan in Balanced, or use an OpenCode 1.x host (1.18.29+). (On OpenCode 2 the v2 adapter now ships a session-capable client, so this refusal no longer fires there — Epic on v2 is held by the #3169 child-session placement work instead.)';
+	'This OpenCode host gives the plugin no SDK client. Epic needs it for worktree-isolated coders and for the epic_phase_review reviewer/critic, so an epic here could neither run its coders nor complete a phase. Run the plan in Balanced, or use an OpenCode 1.x host (1.18.29+). (On OpenCode 2 the v2 adapter ships a session-capable client and native /swarm command dispatch, so this refusal does not fire there.)';
 
 function refused(
 	reason: EpicStartRefusal,

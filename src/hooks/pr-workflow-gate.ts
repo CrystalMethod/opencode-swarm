@@ -904,6 +904,20 @@ interface PrReviewBatchCoherenceRecord {
 	reviewerItemBindings?: Record<string, string>;
 	/** Key encoding for reviewerItemBindings; absent means legacy raw item IDs. */
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
+	/**
+	 * Issue #2906: reviewer batches only. The presentation order this batch's
+	 * candidates were counterbalanced into — 'A' renders the canonical sorted
+	 * inventory, 'B' the exact reverse — alternating by reviewer-batch ordinal
+	 * within the reviewer window so repeated passes observe order effects.
+	 */
+	presentationOrder?: 'A' | 'B';
+	/**
+	 * Issue #2906: critic batches only. AUDIT-ONLY snapshot of the
+	 * order-unstable item ids the critic prompt for this batch was flagged
+	 * with (the prompt re-derives them live via
+	 * `derivePrReviewOrderUnstableItems`); no runtime reader consumes this.
+	 */
+	orderUnstableItemIds?: string[];
 }
 
 /** One rejected `submit_pr_review_result` attempt (issue #2859 F3 journal). */
@@ -916,6 +930,24 @@ export interface PrReviewSubmitRejectionRecord {
 
 /** FIFO cap for the gate-state submit-rejection journal (issue #2859 F3). */
 export const MAX_PR_REVIEW_SUBMIT_REJECTIONS = 24;
+
+/**
+ * One rejected `write_pr_review_artifact` attempt (issue #3098 verdict-lane
+ * journal, mirroring the #2859 discovery journal). `sessionId` is the gate
+ * owner (the orchestrator session that called the tool) — provenance only;
+ * the composition joins entries to lanes via `workflowLane`/`laneId`.
+ */
+export interface PrReviewVerdictRejectionRecord {
+	sessionId: string;
+	laneId?: string;
+	workflowLane?: string;
+	boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	at: number;
+	message: string;
+}
+
+/** FIFO cap for the gate-state verdict-write-rejection journal (issue #3098). */
+export const MAX_PR_REVIEW_VERDICT_REJECTIONS = 24;
 
 export interface PrWorkflowGateState {
 	schemaVersion: 1;
@@ -1035,6 +1067,17 @@ export interface PrWorkflowGateState {
 	 * to 300 chars at write time.
 	 */
 	prReviewSubmitRejections?: PrReviewSubmitRejectionRecord[];
+	/**
+	 * Bounded FIFO journal of rejected `write_pr_review_artifact` attempts
+	 * (issue #3098, the verdict-lane mirror of the #2859 journal above).
+	 * Observability only — surfaced in the verdict composition diagnostic so
+	 * the orchestrator can see WHY a declared reviewer/critic lane produced no
+	 * successful exact artifact; never consulted for artifact validity. Capped
+	 * by {@link MAX_PR_REVIEW_VERDICT_REJECTIONS}; each entry's message is
+	 * bounded to 300 chars at write time. `sessionId` is the gate-owner caller
+	 * (provenance); lane join happens via `workflowLane`/`laneId`.
+	 */
+	prReviewVerdictRejections?: PrReviewVerdictRejectionRecord[];
 	prReviewHandoffPath?: string;
 	prReviewHandoffRequired?: boolean;
 	checkoutRecovery?: PrWorkflowCheckoutRecoveryRecord;
@@ -1526,6 +1569,10 @@ const PrReviewBatchCoherenceRecordSchema = z
 			.record(z.string().min(1), z.string().regex(/^[0-9a-f]{64}$/))
 			.optional(),
 		reviewerItemBindingKeyEncoding: z.literal('prefixed-v1').optional(),
+		// Issue #2906: enum-validated additive fields (the record stays
+		// passthrough; see the rollback-safety note above the interface).
+		presentationOrder: z.enum(['A', 'B']).optional(),
+		orderUnstableItemIds: z.array(z.string().min(1)).optional(),
 	})
 	.passthrough();
 
@@ -1677,6 +1724,28 @@ const PrWorkflowGateStateSchema = z
 					.strict(),
 			)
 			.max(MAX_PR_REVIEW_SUBMIT_REJECTIONS)
+			.optional(),
+		prReviewVerdictRejections: z
+			.array(
+				z
+					.object({
+						sessionId: z.string().min(1).max(200),
+						laneId: z.string().min(1).max(200).optional(),
+						workflowLane: z.string().min(1).max(200).optional(),
+						boundary: z
+							.enum(['post_explorer', 'post_reviewer', 'post_critic'])
+							.optional(),
+						at: z.number(),
+						message: z.string().min(1).max(300),
+					})
+					// Not .strict(): this record is the newest persisted shape and is
+					// the most likely to gain fields. Passthrough keeps a future
+					// field opaque but present through a read-modify-write cycle
+					// instead of bricking a rollback (same rule as the batch
+					// coherence record above). The array cap still bounds growth.
+					.passthrough(),
+			)
+			.max(MAX_PR_REVIEW_VERDICT_REJECTIONS)
 			.optional(),
 		prReviewArtifactBoundaries: z
 			.array(z.enum(['post_explorer', 'post_reviewer', 'post_critic']))
@@ -2137,6 +2206,135 @@ export function latestPrReviewSubmitRejectionMessage(
 		if (journal[index]?.childSessionId === childSessionId) {
 			return journal[index]?.message;
 		}
+	}
+	return undefined;
+}
+
+/**
+ * Issue #3098: best-effort, fail-open journal of one rejected
+ * `write_pr_review_artifact` attempt onto the CALLER's own PR_REVIEW gate
+ * state (the tool is a controller tool invoked by the gate-owner session —
+ * no delegation parent-hop, unlike the #2859 discovery journal).
+ * Observability only — never changes the rejection outcome, never creates
+ * gate state for a session that has none (the pre-read outside the
+ * session-state lock means a non-gated caller gets no lock file either).
+ */
+export async function recordPrReviewVerdictRejection(
+	directory: string,
+	sessionID: string,
+	message: string,
+	attribution?: {
+		laneId?: string;
+		workflowLane?: string;
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): Promise<void> {
+	try {
+		const session = sessionID.trim();
+		if (!session) return;
+		const laneId = attribution?.laneId?.trim();
+		const workflowLane = attribution?.workflowLane?.trim();
+		const boundary = attribution?.boundary;
+		// Pre-read OUTSIDE withSessionStateMutation (same lock-pollution guard
+		// as the #2859 journal above).
+		const existing = await readPrWorkflowGateStateFromDisk(directory, session);
+		if (!existing || existing.mode !== 'PR_REVIEW') return;
+		// Same redaction as recordPrReviewSubmitRejection: the message embeds
+		// caller-controlled payload fragments, so credentials and secret-shaped
+		// strings must not persist durably in the gate-state journal.
+		const bounded = redactSecrets(
+			message.replace(
+				PUBLICATION_URL_CREDENTIALS_PATTERN,
+				'$1[REDACTED:url_credentials]@',
+			),
+		).slice(0, 300);
+		await withSessionStateMutation(directory, session, async () => {
+			const locked = await readPrWorkflowGateStateFromDisk(directory, session);
+			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const prior = locked.prReviewVerdictRejections ?? [];
+			// PRR-015 mirror: skip the append when this session's newest entry is
+			// byte-identical so retry loops cannot amplify gate-state writes.
+			const newestForSession = prior
+				.filter((entry) => entry.sessionId === session)
+				.at(-1);
+			if (
+				newestForSession?.message === bounded &&
+				newestForSession?.boundary === boundary
+			)
+				return;
+			const journal: PrReviewVerdictRejectionRecord[] = [
+				...prior,
+				{
+					sessionId: session,
+					...(laneId ? { laneId } : {}),
+					...(workflowLane ? { workflowLane } : {}),
+					...(boundary ? { boundary } : {}),
+					at: Date.now(),
+					message: bounded,
+				},
+			].slice(-MAX_PR_REVIEW_VERDICT_REJECTIONS);
+			await writeStateWhileLocked(directory, {
+				...locked,
+				prReviewVerdictRejections: journal,
+				updatedAt: isoNow(),
+			});
+		});
+	} catch {
+		// Fail-open observability: journaling must never change the rejection
+		// outcome the caller sees.
+	}
+}
+
+/**
+ * Issue #3098: latest journal message for a failing obligation, or undefined.
+ * Newest wins. Join keys are `workflowLane` (the declared obligation) and
+ * `laneId`; the recorded `sessionId` is the gate-owner caller (provenance),
+ * never a lane child session, so it is deliberately not a join key.
+ *
+ * The production writer only ever stamps `boundary` (the write args name the
+ * boundary, never a lane), so in practice the phase-scoped fallback below is
+ * what resolves: it reports the newest rejection recorded for the failing
+ * lane's PHASE, which is honest about being phase-scoped rather than
+ * lane-scoped. The lane-exact arms stay because a future attribution producer
+ * (or a hand-seeded state) can populate them.
+ */
+export function latestPrReviewVerdictRejectionForLane(
+	state: Pick<PrWorkflowGateState, 'prReviewVerdictRejections'>,
+	matchers: {
+		workflowLane?: string;
+		laneIds?: readonly string[];
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): string | undefined {
+	const journal = state.prReviewVerdictRejections;
+	if (!journal?.length) return undefined;
+	const laneIds = matchers.laneIds?.length
+		? new Set(matchers.laneIds)
+		: undefined;
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (!entry) continue;
+		if (matchers.workflowLane && entry.workflowLane === matchers.workflowLane)
+			return entry.message;
+		if (laneIds && entry.laneId && laneIds.has(entry.laneId))
+			return entry.message;
+	}
+	// Fallback tier 1: an entry journalled for the phase's boundary. The write
+	// args name the boundary, never the lane, so this is what resolves in
+	// production — phase-scoped, not lane-scoped.
+	if (matchers.boundary) {
+		for (let index = journal.length - 1; index >= 0; index--) {
+			const entry = journal[index];
+			if (entry?.boundary === matchers.boundary) return entry.message;
+		}
+	}
+	// Fallback tier 2 (weakest): a boundary-less entry — a write that never
+	// parsed far enough to name a boundary, e.g. a schema-rejected call. Still a
+	// real rejection for this phase, and reporting it beats letting it evict
+	// reachable entries unread.
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (entry && !entry.boundary) return entry.message;
 	}
 	return undefined;
 }
@@ -7000,12 +7198,13 @@ async function prunePrWorkflowBatchesForCapacity(
  *   per *lane* under the tier-L singleton-first precedence, and a reverse
  *   per-batch scan here would not always agree. A superset can only under-prune;
  * - any reviewer batch that contributed at least one claim to the **exhaustive**
- *   composition. Contribution is read from a full-window scan rather than from
- *   the memoized early-exit pass, so this durable decision never rests on the
- *   composition's performance heuristic (issue #1968 MUST-FIX 3 / FIX 5; the two
- *   agree under today's exit condition — see `composePrReviewPhaseVerdicts`).
- *   A non-contributing reviewer batch is provably unable to change any verdict —
- *   composition is
+ *   composition, or (issue #2906 review finding F-04) at least one ORDER
+ *   OBSERVATION the agreement labels read. Contribution is read from a
+ *   full-window scan rather than from the memoized early-exit pass, so this
+ *   durable decision never rests on the composition's performance heuristic
+ *   (issue #1968 MUST-FIX 3 / FIX 5; the two agree under today's exit
+ *   condition — see `composePrReviewPhaseVerdicts`). A non-contributing
+ *   reviewer batch is provably unable to change any verdict — composition is
  *   first-write-wins over a reverse scan, so a batch that claimed nothing at its
  *   own position cannot claim anything once the batches ahead of it are still
  *   there. That is a stronger warrant than inventory inequality and subsumes it:
@@ -7013,6 +7212,10 @@ async function prunePrWorkflowBatchesForCapacity(
  *   The warrant is about the composition as it stands now; if a later inventory
  *   change made a dropped batch eligible again, its claims are simply absent,
  *   which can only leave an item unclaimed and BLOCK — never admit a verdict.
+ *   The order-observation retention is the same argument one level up: the
+ *   observation map is first-write-wins per (item, order) over the same reverse
+ *   scan, so a batch that recorded an observation cannot be inert for the
+ *   labels even when it is inert for the claims.
  *
  * Pruning a reviewer batch would otherwise loosen one fail-closed check —
  * `reviewerSubagentSessionIds`, the ban on a critic lane reusing a reviewer's
@@ -7081,14 +7284,36 @@ function pruneWorkflowBatches(
 	}
 	// Exhaustive on purpose: the hot path stops as soon as every item is claimed,
 	// and "was not reached before the early exit" is not evidence of inertness.
+	const exhaustiveReviewerComposition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+		true,
+	);
 	const contributingReviewerBatchIds = new Set(
-		composePrReviewPhaseVerdicts(directory, state, 'reviewer', ctx, true)
-			.contributingBatchIds,
+		exhaustiveReviewerComposition.contributingBatchIds,
+	);
+	// Issue #2906 review finding F-04: a reviewer batch can be claim-inert yet
+	// still load-bearing — when the newer counterbalanced pass claims every
+	// item, the older pass contributes no claim but supplies the second marked
+	// order every agree/disagree label is computed from (the #2906
+	// agreement-only continuation in the adapter reads exactly that batch).
+	// Dropping it would degrade those labels to `single` while the prune's
+	// inventory-equality discharge stays green, silently erasing the
+	// order-agreement evidence. Retain every batch that recorded an order
+	// observation; a same-order older pass subsumed by a newer one records
+	// nothing and stays prunable.
+	const orderObservingReviewerBatchIds = new Set(
+		exhaustiveReviewerComposition.orderObservingBatchIds,
 	);
 	const survivingValidation = validationBatches.filter((batch) => {
 		if (batch.phase === 'council' || batch.phase === 'critic') return true;
 		if (newestBatchIdByPhase.get(batch.phase) === batch.batchId) return true;
-		return contributingReviewerBatchIds.has(batch.batchId);
+		return (
+			contributingReviewerBatchIds.has(batch.batchId) ||
+			orderObservingReviewerBatchIds.has(batch.batchId)
+		);
 	});
 
 	if (
@@ -7306,12 +7531,48 @@ export async function recordPrReviewMicroFamilyDispatch(
 	return nextState;
 }
 
+/**
+ * Issue #2906: the order-unstable item ids among `assignedItems`, derived from
+ * the composed reviewer claims. Sorted for deterministic receipts/prompts.
+ */
+function derivePrReviewOrderUnstableItemsForState(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx: PrReviewGateContext,
+	assignedItems: readonly string[],
+): string[] {
+	const assigned = new Set(assignedItems);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	return [...composition.claims.entries()]
+		.filter(
+			([itemId, claim]) =>
+				claim.orderAgreement === 'disagree' && assigned.has(itemId),
+		)
+		.map(([itemId]) => itemId)
+		.sort();
+}
+
 export async function recordPrReviewValidationBatch(
 	directory: string,
 	sessionID: string,
 	phase: PrReviewValidationPhase,
 	lanes: readonly PrWorkflowLaneSpec[],
-	options: { batchId: string; prHeadSha: string },
+	options: {
+		batchId: string;
+		prHeadSha: string;
+		/**
+		 * Issue #2906: reviewer batches only. The presentation order the dispatch
+		 * prompt was counterbalanced for (from `derivePrReviewPresentationOrder`).
+		 * When supplied and the re-derived ordinal disagrees, recording fails
+		 * closed so the prompt can never misrepresent the stamped receipt.
+		 */
+		expectedPresentationOrder?: 'A' | 'B';
+	},
 ): Promise<PrWorkflowGateState> {
 	let state = await bindPrWorkflowHead(directory, sessionID, options.prHeadSha);
 	if (state.mode !== 'PR_REVIEW') throw wrongModeError(state, 'PR_REVIEW');
@@ -7431,9 +7692,50 @@ export async function recordPrReviewValidationBatch(
 				retainedIds.has(id),
 			),
 		);
+	// Issue #2906: deterministic counterbalancing. The ordinal counts retained
+	// reviewer batches in the window EXCLUDING the batch being recorded —
+	// computed from `retained` before the append below — so it equals the value
+	// `derivePrReviewPresentationOrder` returned while the prompt was built:
+	// that derivation applies the same pure capacity prune under the same
+	// >= cap condition (issue #2906 review finding F-03), so a prune-shifted
+	// window can no longer wedge the two sides. A divergence that still reaches
+	// the guard means real state changed between derivation and recording; it
+	// fails closed and a re-derived dispatch recovers.
+	const retainedState: PrWorkflowGateState = {
+		...state,
+		prReviewValidationBatches: retained,
+	};
+	const presentationOrder =
+		phase === 'reviewer'
+			? prReviewPhaseWindow(retainedState, 'reviewer').length % 2 === 0
+				? 'A'
+				: 'B'
+			: undefined;
+	if (
+		phase === 'reviewer' &&
+		options.expectedPresentationOrder !== undefined &&
+		options.expectedPresentationOrder !== presentationOrder
+	) {
+		throw new Error(
+			`BLOCKED: PR_REVIEW reviewer presentation order derives as "${presentationOrder}" but the dispatch prompt was built for "${options.expectedPresentationOrder}"; re-derive the order and retry the dispatch`,
+		);
+	}
+	// Issue #2906: audit-only snapshot of the order-unstable items the critic
+	// prompt for this batch is flagged with (the prompt re-derives them live).
+	const orderUnstableItemIds =
+		phase === 'critic'
+			? derivePrReviewOrderUnstableItemsForState(
+					directory,
+					retainedState,
+					ctx,
+					normalizedLanes.flatMap((lane) => lane.reviewItemIds ?? []),
+				)
+			: undefined;
 	if (validatedInventory) {
 		coherence[batchId] = {
 			validatedInventory,
+			...(presentationOrder ? { presentationOrder } : {}),
+			...(orderUnstableItemIds?.length ? { orderUnstableItemIds } : {}),
 			...(reviewerItemBindings
 				? {
 						reviewerItemBindings,
@@ -11595,7 +11897,7 @@ interface PrReviewFindingPolicyAuthority {
  * pins the PR head and exact findings bytes, while the sidecar digest pins the
  * synthesized projection itself.
  */
-async function readAuthoritativeFindingPolicy(
+export async function readAuthoritativeFindingPolicy(
 	directory: string,
 	state: PrWorkflowGateState,
 ): Promise<PrReviewFindingPolicyAuthority> {
@@ -14058,6 +14360,7 @@ bindPrReviewTranscriptAdapterHelpers({
 	batchMayContributeClaims,
 	recordsPassingBatchIntegrity,
 	loadArtifactPassingLaneIntegrity,
+	latestPrReviewVerdictRejectionForLane,
 });
 
 /**
@@ -16851,6 +17154,115 @@ export async function readAuthoritativePrReviewCriticVerdicts(
 		ctx,
 		'write_pr_review_artifact critic settlement',
 	);
+}
+
+/**
+ * Issue #2906: the presentation order the NEXT reviewer batch will be
+ * counterbalanced into — 'A' when the reviewer window holds an even number of
+ * batches, 'B' when odd. Pure function of the persisted window state; the
+ * dispatch tool derives it before prompt assembly and passes the same value to
+ * `recordPrReviewValidationBatch` as `expectedPresentationOrder`, which
+ * re-derives and fails closed on divergence.
+ *
+ * Issue #2906 review finding F-03: at the `MAX_WORKFLOW_BATCHES` cap the
+ * record guard counts the window of the PRUNED state (its read-prune-append
+ * transaction applies `prunePrWorkflowBatchesForCapacity` before deriving the
+ * stamped ordinal), while this derivation used to count the unpruned persisted
+ * window. When the prune flipped the window parity the guard threw — before
+ * `persistState`, so the prune was never durable — and every retry re-derived
+ * the same divergent value: a permanent liveness wedge that failed closed.
+ * This derivation therefore applies the SAME pure prune under the SAME
+ * >= cap condition, so both sides count the identical window. The prune is
+ * pure with respect to durable state (it reads artifacts and returns a
+ * candidate state; only the record path persists it), so running it here
+ * cannot violate the BL-6 single-transaction rule. Every prune-abort path
+ * (inventory inequality, unreadable delegation store, ledger overflow) returns
+ * the state unchanged here AND inside the record guard, so the two sides agree
+ * on those paths as well; a divergence that still reaches the guard means the
+ * state genuinely changed between derivation and recording, which fails closed
+ * and is recoverable by re-deriving.
+ */
+export async function derivePrReviewPresentationOrder(
+	directory: string,
+	sessionID: string,
+): Promise<'A' | 'B'> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const previous = state.prReviewValidationBatches ?? [];
+	const effective =
+		previous.length >= MAX_WORKFLOW_BATCHES
+			? await prunePrWorkflowBatchesForCapacity(directory, state, undefined)
+			: state;
+	return prReviewPhaseWindow(effective, 'reviewer').length % 2 === 0
+		? 'A'
+		: 'B';
+}
+
+/**
+ * Issue #2906: every currently-composed reviewer item whose verdict flipped
+ * across counterbalanced presentation orders (`orderAgreement: 'disagree'`).
+ * The critic dispatch tool renders these as `order_unstable_item_ids` so the
+ * critic prioritizes them.
+ */
+export async function derivePrReviewOrderUnstableItems(
+	directory: string,
+	sessionID: string,
+): Promise<string[]> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	// The order-unstable ids are STAMPED AT RECORD TIME onto the CRITIC batch's
+	// coherence record (the critic record is the only writer — see
+	// recordPrReviewValidationBatch), so that stamp is the receipt-of-record
+	// for what a critic dispatch is about to be told. Prefer the newest
+	// critic-phase stamp, and recompute from the composed claims only when no
+	// stamped set exists yet (pre-stamping batches, or a critic dispatch that
+	// precedes its own record). Reading the stamp is therefore never stale
+	// relative to the composition: both derive from the same window.
+	const newestStampedBatchId = [...(state.prReviewValidationBatches ?? [])]
+		.reverse()
+		.find(
+			(batch) =>
+				(state.prReviewBatchCoherence?.[batch.batchId]?.orderUnstableItemIds
+					?.length ?? 0) > 0,
+		)?.batchId;
+	const stamped = newestStampedBatchId
+		? state.prReviewBatchCoherence?.[newestStampedBatchId]?.orderUnstableItemIds
+		: undefined;
+	if (stamped && stamped.length > 0) return [...new Set(stamped)].sort();
+	return [...composition.claims.entries()]
+		.filter(([, claim]) => claim.orderAgreement === 'disagree')
+		.map(([itemId]) => itemId)
+		.sort();
+}
+
+/**
+ * Issue #2906: the authoritative per-item order-agreement map for the findings
+ * writer — the same reader shape as `readAuthoritativePrReviewCriticVerdicts`,
+ * so a model-supplied `order_agreement` on a findings row can be cross-checked
+ * against the composed reviewer claims instead of being taken on trust.
+ */
+export async function readAuthoritativePrReviewOrderAgreement(
+	directory: string,
+	sessionID: string,
+): Promise<Map<string, 'agree' | 'disagree' | 'single'>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const agreements = new Map<string, 'agree' | 'disagree' | 'single'>();
+	for (const [itemId, claim] of composition.claims) {
+		if (claim.orderAgreement) agreements.set(itemId, claim.orderAgreement);
+	}
+	return agreements;
 }
 
 /**

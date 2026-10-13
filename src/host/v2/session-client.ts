@@ -1,5 +1,5 @@
 /**
- * v2 session client shim — issue #3169 Phase 2.
+ * v2 session client shim — issue #3169 Phase 2 (+ Phase 3 lane sessions).
  *
  * A narrow `OpencodeClient` subset implementing exactly the v1 session surface
  * Epic's dispatch paths use (`session.create/prompt/abort/delete` plus `get`,
@@ -14,27 +14,36 @@
  * findings on @opencode/cli 2.0.26):
  *
  *   - `create({body:{parentID,title}, query:{directory}})` validates placement
- *     BEFORE creating anything: v2 child sessions inherit the parent's
- *     directory and ignore the requested one (Phase 0 C1 catch), so a divergent
- *     or unverifiable placement fails closed with a typed `{data: null,
- *     error}` result — routing worktree isolation to its existing degradation
- *     path instead of silently running a "lane" session in the project root.
- *     A passing precheck mints a placeholder id; the real v2 session is
- *     created at PROMPT time, when the v1 prompt body supplies the create-time
- *     options (agent/model/permissions) the published `SessionCreateInput`
- *     expects (issue R2: one session per dispatch contains the per-session
- *     shift).
+ *     BEFORE creating anything. Phase 3: a CONFIRMED parent-directory divergence
+ *     (the worktree-isolation lane shape — a lane worktree directory always
+ *     differs from the parent's project root) now takes the EAGER path: a REAL
+ *     parentless host session created immediately in the requested directory
+ *     (Phase 0 C1: parented children inherit the parent's directory; parentless
+ *     creates honor the requested one), placement verified post-create (echo,
+ *     `get` fallback) with a remove-and-fail-closed guard, and the requested
+ *     `parentID` REMEMBERED plugin-side and overlaid onto `get` results so
+ *     `prWorkflowSessionResolver`'s first-hop controller resolution
+ *     (`pr-workflow-session-resolver.ts`) and `lookupParentSessionIDForTaskRoute`
+ *     stay v1-faithful for parentless lane children (the host-side link is what
+ *     the v2 host cannot carry here). A real id is returned — the native
+ *     `subagent` tool resumes it by id (Phase 0 C7). Unverifiable parent
+ *     placement still fails closed with the Phase 2 typed error (live-verification
+ *     item), and same-directory/parentless creates keep the deferred placeholder
+ *     (the real create there must carry prompt-time options — permissions are
+ *     create-time-only on v2).
  *   - `prompt({path:{id}, body:{agent,model?,system?,tools,parts}, signal?})`
- *     emulates the v1 BLOCKING call: real create (carrying agent/model and the
- *     read-only denial map as `effect:'deny'` permissions) → one sessionID-
- *     scoped `context` hook that replaces `event.system` (fence-aware: parts
- *     carrying the `<swarm_system_directive` provenance fence survive, per
- *     #2526) and deletes denied keys from `event.tools` → `prompt` → bounded
- *     `wait` → `context()` translated into the v1 `{data:{info,parts}}`
- *     envelope so `dispatchEphemeralAgent` and `readProviderMessageError`
- *     work unchanged. A prompt addressed to a non-placeholder (real) session
- *     id takes a direct path without re-creating — the pr-event-delivery wake
- *     prompt shape.
+ *     emulates the v1 BLOCKING call over three arms keyed on the registry:
+ *     (1) an EAGER record → full treatment on the real session — `switchAgent` +
+ *     `switchModel`, a sessionID-scoped `context` hook (fence-aware system
+ *     replacement preserving `<swarm_system_directive` parts, denied-tool
+ *     deletion from `event.tools`), epoch-scoped error clear, `prompt` →
+ *     bounded `wait` → `context()`; (2) a deferred/already-prompted PLACEHOLDER
+ *     → real create carrying agent/model + the read-only denial map as
+ *     `effect:'deny'` permissions, then the same hook/prompt/wait/context
+ *     sequence, with the #3186 PRR-002 retire-and-recreate on re-prompts;
+ *     (3) a foreign real id → the direct path (agent switch only). All three
+ *     translate into the v1 `{data:{info,parts}}` envelope so
+ *     `dispatchEphemeralAgent` and `readProviderMessageError` work unchanged.
  *   - Provider failures are EVENT-SOURCED on v2 (Phase 0 C4: no error text in
  *     `context()`), so the event pump records `session.error` /
  *     `session.execution.failed` payloads here (`recordV2SessionErrorFromEnvelope`,
@@ -42,15 +51,25 @@
  *     translation surfaces them as the v1 `info.error` shape. A failed outcome
  *     without recorded detail yields a bounded `provider.unknown` error
  *     instead of a silent empty success.
- *   - `abort` maps to `interrupt`, `delete` to `remove`, `get` to the v2 get
- *     (unresolved placeholders read as `{data: null}` — never prompted means
- *     gone, satisfying `teardownEphemeralSessionVerified`).
+ *   - `abort` maps to `interrupt`, `delete` to `remove` (eager records are
+ *     pruned after the removal resolves — the id is real, so a later `get`
+ *     still resolves through to a host that reports the session gone), and
+ *     `get` maps `{path:{id}}` onto `ctx.session.get({sessionID})` returning
+ *     `{data: info}` — verified teardown through the shim resolves.
+ *
+ * Registry (invariant 8): placeholder and eager records share ONE bounded map
+ * (cap 64, FIFO). Placeholder residue is intentionally not pruned (keep-for-get);
+ * that residue shares the cap, so a live eager record can be evicted after 64
+ * later insertions of any kind — a disclosed, bounded degradation (its next
+ * prompt takes the direct path and the parentID overlay stops applying), pinned
+ * in tests/unit/host/v2/session-client-lane-3169.test.ts.
  *
  * Deferred-work marker: NONE. The unverified live-host behaviors this design
  * rests on are recorded as deferrals in the trace (context-hook firing for
  * plugin-created sessions, permission vocabulary honor, `context()` entry
- * shapes, `wait` on failed prompts, `get(parent).location` availability) with
- * the owning follow-up on #3169.
+ * shapes, `wait` on failed prompts, `get(parent).location` availability,
+ * parentless subagent resume + parentID overlay — LVD-1..LVD-4) with the owning
+ * follow-up on #3169.
  *
  * C6 await convention: every `await` lives inside a `deferredV2Session*`
  * function declaration or `const deferredV2SessionX = async (` binding — the
@@ -61,6 +80,7 @@
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import { canonicalRootKeyLexical } from '../../utils/canonical-root';
 import { log } from '../../utils/logger';
+import { withTimeout } from '../../utils/timeout';
 import type {
 	V2EventEnvelope,
 	V2PluginContext,
@@ -92,6 +112,14 @@ interface PlaceholderRecord {
 	title?: string;
 	directory: string;
 	realId?: string;
+	/**
+	 * #3169 Phase 3: this record represents an EAGERLY created REAL host session
+	 * (parentless lane placement) rather than a deferred placeholder — prompt
+	 * routing keys on this flag, never on `realId` presence (a prompted
+	 * placeholder also has `realId` bound; the PRR-002 retire logic applies to
+	 * non-eager records only).
+	 */
+	eager?: boolean;
 	/** Set synchronously when a prompt on this placeholder starts. */
 	promptStarted?: boolean;
 	/**
@@ -743,31 +771,63 @@ export function createV2SessionClient(
 				// Resolve BEFORE anything else — the dispatcher's teardown arrives
 				// with the PLACEHOLDER id, and the placeholder must map to the
 				// real host session (#3169 Phase 2 F2). The stash is KEPT (not
-				// consumed): the verified-teardown existence check `get` arrives
-				// AFTER this delete and must still resolve to the real id, where
-				// the host reports the removed session as gone.
+				// consumed) for non-eager records: the verified-teardown existence
+				// check `get` arrives AFTER this delete and must still resolve to
+				// the real id, where the host reports the removed session as gone.
+				const stash = placeholderSessions.get(id);
 				const resolved = resolveSessionId(id);
 				if (resolved !== undefined) {
 					sessionErrors.delete(resolved);
-					return ctx.session
-						.remove({ sessionID: resolved })
-						.catch(() => undefined);
+					// PRR-010: prune only on a CONFIRMED removal. A failed remove
+					// leaves the host session ALIVE, so dropping its record would
+					// orphan an untracked session and silently lose the parentID
+					// overlay the enforcement consumers rely on. The non-eager arm
+					// keeps its stash for exactly this keep-for-get reason.
+					return deferredV2SessionRemoveEager(ctx, resolved).then((outcome) => {
+						if (stash?.eager === true && outcome.ok) {
+							placeholderSessions.delete(id);
+						} else if (stash?.eager === true) {
+							log('v2 session-client: eager delete cleanup failed', {
+								reason: outcome.reason,
+							});
+						}
+					});
 				}
 				// Same leak race as abort: park the delete for the prompt's
 				// finally; a never-prompted placeholder deletes nothing.
-				const stash = placeholderSessions.get(id);
 				if (stash?.promptStarted) stash.deletePending = true;
 				return Promise.resolve(undefined);
 			},
 			get: (args: {
 				path: { id: string };
 			}): Promise<{ data: unknown; error?: unknown }> => {
-				const resolved = resolveSessionId(args?.path?.id);
+				const id = args?.path?.id;
+				const stash = placeholderSessions.get(id);
+				// #3169 Phase 3: overlay the REMEMBERED parentID for eager records —
+				// the host session is parentless by design (lane placement), and the
+				// plugin-side link keeps `prWorkflowSessionResolver`'s first-hop
+				// controller resolution and `lookupParentSessionIDForTaskRoute`
+				// v1-faithful. Non-eager records and foreign ids pass through.
+				const overlayParentID =
+					stash?.eager === true && typeof stash.parentID === 'string'
+						? stash.parentID
+						: undefined;
+				const resolved = resolveSessionId(id);
 				if (resolved === undefined) return Promise.resolve({ data: null });
 				return (
 					ctx.session
 						.get({ sessionID: resolved })
-						.then((info) => ({ data: info }))
+						.then((info) => ({
+							data:
+								overlayParentID !== undefined &&
+								info &&
+								typeof info === 'object'
+									? {
+											...(info as Record<string, unknown>),
+											parentID: overlayParentID,
+										}
+									: info,
+						}))
 						// #3186 review PRR-006: v1 SDK clients resolve error responses
 						// to `{error}` envelopes instead of rejecting, so consumers
 						// branch on `result.error` or wrap their own try/catch
@@ -780,6 +840,185 @@ export function createV2SessionClient(
 		},
 	};
 	return client as unknown as OpencodeClient;
+}
+
+/** Bound for a host-reported/caller-supplied path inside a typed error message. */
+const MAX_PATH_IN_MESSAGE_CHARS = 200;
+
+/**
+ * PRR-011: bound interpolated paths. The placement-guard message is not just
+ * display text — dispatch-lanes' retry classifier regex-tests the error object's
+ * `message` scalar (src/tools/dispatch-lanes.ts isRetryableSessionCreateFailure),
+ * so an unbounded, HOST-reported path is an unbounded influence on control flow
+ * and on the advisory queue's message size.
+ */
+function boundPathForMessage(path: string | undefined): string {
+	if (path === undefined) return 'an unverifiable location';
+	if (path.length <= MAX_PATH_IN_MESSAGE_CHARS) return path;
+	return `${path.slice(0, MAX_PATH_IN_MESSAGE_CHARS)}… (truncated)`;
+}
+
+/** Cleanup budget for the eager-create compensation removes (PRR-001). */
+const EAGER_CLEANUP_TIMEOUT_MS = 10_000;
+
+/**
+ * PRR-001/PRR-007/PRR-010: one bounded, outcome-reporting removal helper for the
+ * eager arm. The placement-compensation removes used to be bare
+ * `await ctx.session.remove(...).catch(() => undefined)` — unbounded (which is
+ * what the dual-shape C6 gate flags once the scanner's function tracker is
+ * reset by a neighbouring cast-assignment) and outcome-blind (a failed
+ * cleanup of a mis-placed session was indistinguishable from a successful
+ * one). This bounds the call and reports what happened.
+ */
+async function deferredV2SessionRemoveEager(
+	ctx: V2PluginContext,
+	sessionID: string,
+): Promise<{ ok: boolean; reason?: string }> {
+	try {
+		await withTimeout(
+			ctx.session.remove({ sessionID }),
+			EAGER_CLEANUP_TIMEOUT_MS,
+			new Error(
+				`v2 session-client: eager cleanup of session ${sessionID} exceeded ${EAGER_CLEANUP_TIMEOUT_MS}ms`,
+			),
+		);
+		return { ok: true };
+	} catch (error) {
+		return {
+			ok: false,
+			reason: error instanceof Error ? error.message : String(error),
+		};
+	}
+}
+
+/**
+ * #3169 Phase 3 — the EAGER parentless lane create (confirmed divergence only).
+ *
+ * Creates a REAL host session immediately — WITHOUT `parentID` (Phase 0 C1: a
+ * parented child inherits the parent's directory and ignores the requested
+ * one; a parentless create honors it) and WITHOUT permissions (lane coders
+ * need full tools; the read-only map is a dispatcher-only concept). Placement
+ * is the entire point, so it is REQUIRED: echoed `location.directory` must
+ * match lexically; a silent create falls back to `get`; mismatch or
+ * unverifiable removes the session and fails closed (the consumer's existing
+ * `STANDARD_WORKTREE_SESSION_CREATE_FAILED` degradation runs unchanged). The
+ * requested `parentID` is remembered plugin-side and overlaid onto `get`
+ * results, keeping `prWorkflowSessionResolver`'s first-hop controller
+ * resolution v1-faithful for parentless lane children.
+ */
+async function deferredV2SessionCreateEager(
+	ctx: V2PluginContext,
+	parentID: string,
+	title: string | undefined,
+	directory: string,
+	signal: AbortSignal | undefined,
+): Promise<{ data: { id: string } | null; error?: unknown }> {
+	// PRR-006: keep the v1 envelope contract — a host rejection resolves to
+	// `{data:null,error}`, never a throw (the shim's contract note at the
+	// `get` arm says the same).
+	let created: unknown;
+	try {
+		created = await ctx.session.create({
+			...(title !== undefined ? { title } : {}),
+			location: { directory },
+		});
+	} catch (error) {
+		return {
+			data: null,
+			error: {
+				message: `v2 session-client: eager lane create failed (${
+					error instanceof Error ? error.message : String(error)
+				})`,
+			},
+		};
+	}
+	const createdRecord = created as {
+		id?: unknown;
+		location?: { directory?: unknown };
+	};
+	const realId =
+		typeof createdRecord?.id === 'string' ? createdRecord.id : undefined;
+	if (realId === undefined) {
+		return {
+			data: null,
+			error: {
+				message:
+					'v2 session-client: eager lane create returned no id (#3169 Phase 3)',
+			},
+		};
+	}
+	// PRR-007: the caller's abort/timeout can land while the host create is
+	// still in flight (its cleanup keys on the RESOLVED id, so an abandoned
+	// create would otherwise leave a live parentless session nobody holds the
+	// id for). Compensate here: remove what we just created and refuse.
+	if (signal?.aborted) {
+		const compensated = await deferredV2SessionRemoveEager(ctx, realId);
+		if (!compensated.ok) {
+			// Report the truth: the compensation itself failed, so the session may
+			// still be alive and the caller needs the id to clean it up.
+			log('v2 session-client: aborted eager create compensation failed', {
+				reason: compensated.reason,
+			});
+		}
+		return {
+			data: null,
+			error: {
+				message: `v2 session-client: eager lane create aborted by the caller; ${
+					compensated.ok
+						? 'the created session was removed'
+						: `removing session ${realId} also failed (${compensated.reason ?? 'unknown error'}) — remove it manually`
+				}`,
+				...(compensated.ok ? {} : { sessionID: realId, cleanupFailed: true }),
+			},
+		};
+	}
+	let landed: string | undefined =
+		typeof createdRecord.location?.directory === 'string'
+			? createdRecord.location.directory
+			: undefined;
+	if (landed === undefined) {
+		const info = await ctx.session
+			.get({ sessionID: realId })
+			.catch(() => undefined);
+		// Non-parenthesized on purpose: a `const x = (` cast-assignment matches
+		// the C6 scanner's function-binding regex and resets its function tracker
+		// mid-function, mis-attributing later awaits (dual-shape-parity.test.ts
+		// C6 gate). Keep cast bindings off a leading `(` in this file.
+		const reported = info as { location?: { directory?: unknown } } | undefined;
+		landed =
+			typeof reported?.location?.directory === 'string'
+				? reported.location.directory
+				: undefined;
+	}
+	if (landed === undefined || !sameDirectoryLexical(landed, directory)) {
+		// PRR-010: surface a FAILED removal in the typed envelope rather than
+		// swallowing it — a mis-placed live session holding the lane's swarm.db
+		// WAL is the #2599 hazard, and the caller needs the id to retry teardown.
+		const removed = await deferredV2SessionRemoveEager(ctx, realId);
+		return {
+			data: null,
+			error: {
+				message: `v2 session-client: eager lane create landed in ${boundPathForMessage(
+					landed,
+				)}, not the requested ${boundPathForMessage(
+					directory,
+				)} (#3169 Phase 3 placement guard; Phase 0 C1)${
+					removed.ok
+						? ''
+						: `; cleanup of session ${realId} also failed (${removed.reason ?? 'unknown error'}) — remove it before retrying`
+				}`,
+				...(removed.ok ? {} : { sessionID: realId, cleanupFailed: true }),
+			},
+		};
+	}
+	rememberPlaceholder(realId, {
+		parentID,
+		...(title !== undefined ? { title } : {}),
+		directory,
+		realId,
+		eager: true,
+	});
+	return { data: { id: realId } };
 }
 
 /** The shim's create: placement precheck, then placeholder mint (no host call). */
@@ -817,12 +1056,29 @@ async function deferredV2SessionCreate(
 			};
 		}
 		if (!sameDirectoryLexical(parentDirectory, directory)) {
-			return {
-				data: null,
-				error: {
-					message: `v2 session-client: child sessions inherit the parent directory (#3169 Phase 0 C1); requested ${directory} diverges from parent ${parentDirectory} — refusing to create`,
-				},
-			};
+			// #3169 Phase 3: a CONFIRMED divergence is the worktree-isolation lane
+			// shape (a lane worktree directory always differs from the parent's
+			// project root). The Phase 2 refusal becomes an EAGER parentless real
+			// create — placement-verified, with the requested parentID remembered
+			// plugin-side for the `get` overlay (the discriminator, its flip list,
+			// and the disclosed deltas live in the trace's approved plan).
+			//
+			// PRR-008 (disclosed, not narrowed): the discriminator is DIVERGENCE
+			// ONLY — any in-plugin caller whose parent session lives elsewhere
+			// reaches this arm. That includes factory-from-lane callers (e.g. a
+			// lane coder invoking the knowledge-curator delegate), which land a
+			// parentless session in the project root and therefore lose the
+			// child-of-parent TUI nesting those factories rely on. The session is
+			// ephemeral and caller-deleted, so the effect is transient; narrowing
+			// the arm to registered lanes would need a lane-registry lookup on the
+			// create path (deferred to Phase 4 with the registry-residue work).
+			return deferredV2SessionCreateEager(
+				ctx,
+				parentID,
+				args?.body?.title,
+				directory,
+				args?.signal,
+			);
 		}
 	}
 	placeholderCounter += 1;
@@ -837,7 +1093,98 @@ async function deferredV2SessionCreate(
 	return { data: { id: placeholderId } };
 }
 
-/** The shim's prompt: placeholder path vs real-session direct path. */
+/**
+ * #3169 Phase 3 — the full-treatment prompt for an EAGER (real, parentless
+ * lane) session. No create (the session exists); agent/model arrive via
+ * `switchAgent`/`switchModel` (feature-detected — a partial host degrades to
+ * skipping the switch, disclosed in the header), the per-session `context`
+ * hook carries the fence-aware system replacement and denied-tool deletion,
+ * and the error store is epoch-scoped BEFORE the prompt: the eager id is
+ * STABLE across a caller's retry chain (curator/skill-improver/mutation
+ * generator re-prompt the same id per model attempt), so a stale
+ * `session.error` from attempt 1 must not mask a succeeded attempt 2.
+ */
+async function deferredV2SessionPromptEager(
+	ctx: V2PluginContext,
+	realId: string,
+	body: {
+		agent?: unknown;
+		model?: { providerID?: unknown; modelID?: unknown };
+		system?: unknown;
+		tools?: Readonly<Record<string, false>>;
+	},
+	text: string,
+	signal: AbortSignal | undefined,
+): Promise<{ data: TranslatedPromptData }> {
+	// PRR-019/a: short-circuit an already-aborted caller BEFORE switching,
+	// registering the hook, or submitting a prompt — the placeholder arm does
+	// exactly this so a teardown-then-prompt race cannot burn a host turn (or
+	// hit the caller's already-removed session).
+	if (signal?.aborted) {
+		throw new Error('v2 session-client: eager prompt aborted before dispatch');
+	}
+	const agent = typeof body.agent === 'string' ? body.agent : undefined;
+	if (agent !== undefined) {
+		const switchAgent = ctx.session.switchAgent;
+		if (typeof switchAgent === 'function') {
+			await switchAgent({ sessionID: realId, agent });
+		} else {
+			// PRR-009: the eager create carries no agent (permissions/agent are
+			// create-time-only on v2), so a host without switchAgent runs the lane
+			// under its DEFAULT agent. Make the degradation observable rather than
+			// reporting a success the caller cannot distinguish.
+			log(
+				'v2 session-client: eager prompt skipped switchAgent (host lacks it)',
+				{
+					agent,
+				},
+			);
+		}
+	}
+	const model =
+		body.model &&
+		typeof body.model.providerID === 'string' &&
+		typeof body.model.modelID === 'string'
+			? { id: body.model.modelID, providerID: body.model.providerID }
+			: undefined;
+	if (model !== undefined) {
+		const switchModel = ctx.session.switchModel;
+		if (typeof switchModel === 'function') {
+			await switchModel({ sessionID: realId, model });
+		} else {
+			log(
+				'v2 session-client: eager prompt skipped switchModel (host lacks it)',
+				{ model },
+			);
+		}
+	}
+	const system = typeof body.system === 'string' ? body.system : undefined;
+	sessionErrors.delete(realId);
+	let registration: V2Registration | undefined;
+	try {
+		if (system !== undefined || body.tools !== undefined) {
+			registration = await ctx.session.hook(
+				'context',
+				makeV2SessionContextHandler(realId, system, body.tools) as never,
+			);
+		}
+		await ctx.session.prompt({ sessionID: realId, text });
+		await deferredV2SessionWait(ctx, realId, signal);
+		const entries = await ctx.session.context({ sessionID: realId });
+		return {
+			data: await deferredV2SessionTranslate(
+				Array.isArray(entries) ? entries : [],
+				realId,
+			),
+		};
+	} finally {
+		if (registration?.dispose) {
+			await registration.dispose().catch(() => undefined);
+		}
+	}
+}
+
+/** The shim's prompt: three arms keyed on the registry (eager / placeholder / direct). */
 async function deferredV2SessionPrompt(
 	ctx: V2PluginContext,
 	args: {
@@ -862,6 +1209,22 @@ async function deferredV2SessionPrompt(
 	};
 	const text = promptBodyText(body.parts);
 	const stash = placeholderSessions.get(id);
+	// Routing keys on the `eager` FLAG, never on `realId` presence: a prompted
+	// placeholder also has `realId` bound (its finally keeps the stash) and must
+	// keep the PRR-002 retire-and-recreate semantics.
+	if (
+		stash !== undefined &&
+		stash.eager === true &&
+		stash.realId !== undefined
+	) {
+		return deferredV2SessionPromptEager(
+			ctx,
+			stash.realId,
+			body,
+			text,
+			args?.signal,
+		);
+	}
 	if (stash !== undefined) {
 		return deferredV2SessionPromptPlaceholder(
 			ctx,
