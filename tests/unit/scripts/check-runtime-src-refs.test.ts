@@ -495,4 +495,5 @@ describe('real-tree smoke: shipped baseline is coherent against the current repo
 			keys.add(key);
 		}
 	});
+	// Real-tree scan-vs-baseline smoke: runtime-src-refs-real-tree-3207.test.ts (FR-006 cap).
 });

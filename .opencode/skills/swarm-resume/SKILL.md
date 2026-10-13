@@ -1,8 +1,9 @@
 ---
 name: swarm-resume
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: RESUME -- continuing an existing approved plan safely from current state.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Resume Protocol

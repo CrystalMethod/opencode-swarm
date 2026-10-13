@@ -1,8 +1,9 @@
 ---
 name: swarm-plan
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: PLAN -- plan creation, external plan ingestion, QA gate persistence, task granularity, and traceability checks.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Plan Protocol

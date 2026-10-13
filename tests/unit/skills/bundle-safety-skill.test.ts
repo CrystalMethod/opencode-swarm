@@ -34,9 +34,11 @@ function frontmatterValue(
 				if (arrayItems.length > 0) return arrayItems;
 				inArray = false;
 			}
-			if (after.startsWith('[') && after.endsWith(']')) {
-				// inline array
-				const inner = after.slice(1, -1);
+			// A list may be an inline array or (issue #2907 spec shape) a
+			// single-quote-wrapped JSON array string under metadata:.
+			const unquoted = after.replace(/^['"]|['"]$/g, '');
+			if (unquoted.startsWith('[') && unquoted.endsWith(']')) {
+				const inner = unquoted.slice(1, -1);
 				return inner
 					.split(',')
 					.map((s) => s.trim().replace(/^['"]|['"]$/g, ''));
@@ -46,7 +48,7 @@ function frontmatterValue(
 				arrayItems = [];
 				continue;
 			}
-			return after.replace(/^['"]|['"]$/g, '');
+			return unquoted;
 		}
 		if (inArray && line.match(/^\s+-\s+/)) {
 			arrayItems.push(

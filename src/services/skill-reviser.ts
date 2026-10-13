@@ -12,6 +12,7 @@
  */
 
 import { readFile, rename, writeFile } from 'node:fs/promises';
+import { splitSkillFrontmatter } from '../config/skill-contract-digest.js';
 import type { SkillImproverLLMDelegate } from '../hooks/skill-improver-llm-factory.js';
 import { warn } from '../utils/logger.js';
 import type { SkillChangelogEntry } from './skill-changelog.js';
@@ -59,6 +60,11 @@ export interface ReviseSkillParams {
 export async function getSkillVersion(skillPath: string): Promise<number> {
 	try {
 		const content = await readFile(skillPath, 'utf-8');
+		// Dual-shape: spec metadata.version child (quoted, indented) first,
+		// then the legacy column-0 form (PRR-016 — the exported reader was
+		// column-0-only while every writer now emits the nested shape).
+		const nested = content.match(/^\s+version:\s*"(\d+)"\s*$/m);
+		if (nested) return parseInt(nested[1], 10);
 		const match = content.match(/^version:\s*(\d+)\s*$/m);
 		return match ? parseInt(match[1], 10) : 1;
 	} catch {
@@ -92,18 +98,53 @@ export function buildDeterministicRevision(
 
 	let result = currentContent;
 
-	// Update or add version in frontmatter
-	if (/^version:\s*\d+\s*$/m.test(result)) {
-		result = result.replace(/^version:\s*\d+\s*$/m, `version: ${nextVersion}`);
-	} else if (/^confidence:\s*.+$/m.test(result)) {
-		result = result.replace(
-			/^(confidence:\s*.+)$/m,
-			`$1\nversion: ${nextVersion}`,
+	// Update or add version in FRONTMATTER ONLY. All version surgery is
+	// bounded to the frontmatter slice so an indented `version:`/`confidence:`
+	// line inside a fenced body example can never be rewritten instead of the
+	// real declaration (PRR-004, PR #3207 review). Spec shape keeps version
+	// as a quoted-string child under `metadata:` (issue #2907); legacy
+	// top-level `version:` is bumped in place (its shape is already
+	// pre-spec), and every NEW insertion prefers the spec shape so the
+	// writer never produces frontmatter its own detector rejects.
+	const split = splitSkillFrontmatter(result);
+	let fm = split.frontmatter;
+	const nestedVersion = /^(\s+)version:\s*"?(\d+)"?\s*[ \t]*$/m.exec(fm);
+	if (nestedVersion?.[1]) {
+		fm = fm.replace(
+			/^(\s+)version:\s*"?(\d+)"?\s*[ \t]*$/m,
+			`${nestedVersion[1]}version: "${nextVersion}"`,
 		);
+	} else if (/^version:\s*"?(\d+)"?\s*[ \t]*$/m.test(fm)) {
+		// Legacy column-0 (quoted tolerated): bump in place, shape preserved.
+		fm = fm.replace(
+			/^version:\s*"?(\d+)"?\s*[ \t]*$/m,
+			`version: ${nextVersion}`,
+		);
+	} else if (/^(\s+)confidence:\s*/m.test(fm)) {
+		const indent = /^(\s+)confidence:/m.exec(fm)?.[1] ?? '';
+		fm = fm.replace(
+			/^(\s+)(confidence:[^\n]*)$/m,
+			`$1$2\n${indent}version: "${nextVersion}"`,
+		);
+	} else if (
+		/^confidence:[^\n]*$/m.test(fm) &&
+		!/^metadata:[ \t]*$/m.test(fm)
+	) {
+		// Legacy column-0 confidence without a metadata block: legacy insert.
+		fm = fm.replace(/^(confidence:[^\n]*)$/m, `$1\nversion: ${nextVersion}`);
+	} else if (/^metadata:[ \t]*$/m.test(fm)) {
+		// Spec-shaped frontmatter: insert the version as the FIRST metadata
+		// child so the writer never emits column-0 in a spec-shaped file.
+		fm = fm.replace(/^(metadata:[ \t]*\n)/m, `$1  version: "${nextVersion}"\n`);
 	} else {
-		// Insert version after the opening frontmatter fence as a last resort
-		result = result.replace(/^(---\s*\n)/, `$1version: ${nextVersion}\n`);
+		// No metadata block and no anchors: insert a minimal spec-shaped
+		// block before the closing fence (keeps `name:` as the first key).
+		fm = fm.replace(
+			/\n(---[ \t]*(?:\r?\n|$))/,
+			`\nmetadata:\n  version: "${nextVersion}"\n$1`,
+		);
 	}
+	result = fm + split.body;
 
 	// Remove any existing Revision Notes section (from prior revisions)
 	const revisionNotesPattern =
@@ -155,9 +196,9 @@ function buildLLMPrompt(
 	const userPrompt = [
 		'Instructions:',
 		'- Revise ONLY the sections that were violated',
-		'- Preserve the exact frontmatter format (--- fenced YAML)',
+		'- Preserve the exact frontmatter format (--- fenced YAML), including the indented `metadata:` block',
 		'- Preserve all sections: Trigger, Required Procedure, Forbidden Shortcuts, Delegation Template, Reviewer Checks, Source Knowledge IDs',
-		`- Update the version field in frontmatter to ${currentVersion + 1}`,
+		`- Update the version field in frontmatter to ${currentVersion + 1} (metadata.version when the metadata block is present)`,
 		'- Make the violated rules clearer, more specific, or add missing edge cases',
 		'- Do NOT remove any source knowledge IDs',
 		'- Do NOT change the name or description in frontmatter',
@@ -331,12 +372,26 @@ export async function reviseSkill(
 
 		const expectedVersion = params.currentVersion + 1;
 		let finalOutput = llmOutput.trim();
-		// Force the correct version in the LLM output to prevent drift
-		if (/^version:\s*\d+\s*$/m.test(finalOutput)) {
-			finalOutput = finalOutput.replace(
-				/^version:\s*\d+\s*$/m,
-				`version: ${expectedVersion}`,
-			);
+		// Force the correct version in the LLM output to prevent drift.
+		// Bounded to the frontmatter slice and shape-aware (spec-shape
+		// metadata child is quoted+indented; legacy is column-0) so the guard
+		// cannot silently no-op on either emitted shape (PRR-004 class).
+		{
+			const llmSplit = splitSkillFrontmatter(finalOutput);
+			let llmFm = llmSplit.frontmatter;
+			const nested = /^(\s+)version:\s*"?\d+"?\s*[ \t]*$/m.exec(llmFm);
+			if (nested?.[1]) {
+				llmFm = llmFm.replace(
+					/^(\s+)version:\s*"?\d+"?\s*[ \t]*$/m,
+					`${nested[1]}version: "${expectedVersion}"`,
+				);
+			} else if (/^version:\s*\d+\s*$/m.test(llmFm)) {
+				llmFm = llmFm.replace(
+					/^version:\s*\d+\s*$/m,
+					`version: ${expectedVersion}`,
+				);
+			}
+			finalOutput = llmFm + llmSplit.body;
 		}
 
 		const validation = await validateRevisionCandidate(

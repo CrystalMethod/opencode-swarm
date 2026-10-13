@@ -1,12 +1,13 @@
 ---
 name: qa-sweep
-audience: swarm-plugin
 description: >
   Apply when implementing features, fixing bugs, debugging errors, investigating failures,
   tracing root causes, reviewing tech debt, tracing issues, planning fixes, or completing
   any task. Enforces parallel sub-agent implementation, independent adversarial review,
   and a 95% confidence gate before stopping.
-effort: high
+metadata:
+  audience: swarm-plugin
+  effort: high
 ---
 
 ## QA & Independent Review Protocol

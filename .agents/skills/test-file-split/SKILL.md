@@ -1,7 +1,8 @@
 ---
 name: test-file-split
-audience: swarm-plugin
 description: Protocol for splitting test files that approach or exceed the FR-006 500-line limit (enforced in CI by scripts/check-test-file-cap.ts as a diff-scoped ratchet). Covers describe-block extraction, shared helper management, pure-function extraction, mock isolation verification, and cascading-split detection. Load when a test file approaches or exceeds 500 lines.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Test File Split Protocol (FR-006)

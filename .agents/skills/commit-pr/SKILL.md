@@ -1,12 +1,13 @@
 ---
 name: commit-pr
-audience: swarm-plugin
 description: >
   Mandatory Codex/Copilot publication adapter for opencode-swarm. Use for every
   GitHub issue assignment that results in code changes, commits, pushes, draft PRs,
   PR body edits, PR readying, release notes, or CI closeout. Must be loaded before
   `git push`, `gh pr create`, `gh pr edit`, or `gh pr ready`. Routes to the single
   canonical source of truth at `.claude/skills/commit-pr/SKILL.md`.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Commit & PR

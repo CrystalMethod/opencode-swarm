@@ -321,9 +321,11 @@ describe('bundled skill runtime dependency closure', () => {
 	test('every allowlisted package source has valid plugin audience metadata', () => {
 		for (const slug of BUNDLED_PROJECT_SKILLS) {
 			const source = bundledSkillSource(slug);
-			expect(source).toMatch(
-				/^---\r?\nname:[^\r\n]+\r?\naudience: swarm-plugin\r?\n/,
-			);
+			// Post-#2907 shape: the fence opens with name: (spec order) and the
+			// plugin audience is a child of the spec metadata: map.
+			expect(source).toMatch(/^---\r?\nname:[^\r\n]+\r?\n/);
+			const frontmatter = source.split(/^---\r?$/m)[1] ?? '';
+			expect(frontmatter).toMatch(/^\s+audience: swarm-plugin\r?$/m);
 		}
 	});
 });

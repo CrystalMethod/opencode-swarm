@@ -1,12 +1,13 @@
 ---
 name: design-docs
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: DESIGN_DOCS — generate or sync structured,
   language-agnostic design docs (domain.md, technical-spec.md, behavior-spec.md,
   reference/) for the project under build, with a stable section-ID registry and
   a design changelog. Loaded on demand by the architect when the design-docs
   command emits a [MODE: DESIGN_DOCS ...] signal (issue #1080).
+metadata:
+  audience: swarm-plugin
 ---
 
 # Design-Doc Generation & Sync Protocol

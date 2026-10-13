@@ -221,9 +221,9 @@ describe('renderSkillMarkdown', () => {
 		const md = renderSkillMarkdown(cluster);
 		expect(md).toContain('---');
 		expect(md).toMatch(/^name:\s+/m);
-		expect(md).toContain('generated_from_knowledge:');
-		expect(md).toContain('source_knowledge_ids:');
-		expect(md).toMatch(/^generated_at:\s+\S+/m);
+		// Child-key pin (PRR-016): metadata must carry the string-typed
+		// provenance list, not merely exist.
+		expect(md).toMatch(/^\s+source_knowledge_ids: '/m);
 		expect(md).toContain('## Trigger');
 		expect(md).toContain('## Required Procedure');
 		expect(md).toContain('## Forbidden Shortcuts');
@@ -310,8 +310,9 @@ describe('generateSkills draft mode', () => {
 		]);
 
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - qa-entry');
-		expect(content).toContain('  - lock-entry');
+		expect(content).toContain(
+			`'${JSON.stringify(['qa-entry', 'lock-entry'])}'`,
+		);
 		expect(content).toContain('run the focused regression tests');
 		expect(content).toContain('update the package lockfile');
 	});
@@ -338,7 +339,7 @@ describe('generateSkills draft mode', () => {
 		expect(result.written).toHaveLength(1);
 		expect(result.written[0].sourceKnowledgeIds).toEqual(['active-entry']);
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - active-entry');
+		expect(content).toContain(`'${JSON.stringify(['active-entry'])}'`);
 		expect(content).not.toContain('quarantined-entry');
 	});
 });
@@ -431,8 +432,9 @@ describe('generateSkills active mode', () => {
 		]);
 
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		expect(content).toContain('  - active-qa');
-		expect(content).toContain('  - active-lock');
+		expect(content).toContain(
+			`'${JSON.stringify(['active-qa', 'active-lock'])}'`,
+		);
 		const stamped = readFileSync(resolveSwarmKnowledgePath(tmp), 'utf-8')
 			.trim()
 			.split('\n')
@@ -488,17 +490,14 @@ describe('generateSkills active mode — PR #1485 missing source knowledge IDs',
 		});
 		expect(result.written.length).toBeGreaterThan(0);
 		const content = readFileSync(result.written[0].path, 'utf-8');
-		// Frontmatter must contain the missing_source_knowledge_ids key
-		expect(content).toContain('missing_source_knowledge_ids:');
-		// The phantom ID must appear with 2-space indent as a YAML list item
-		expect(content).toContain('  - does-not-exist-uuid');
-		// e1 and e2 were found in swarm — must NOT appear in the missing block
-		const missingBlockMatch = content.match(
-			/missing_source_knowledge_ids:\n(?:[ \t]+-.*\n)*/,
+		// Frontmatter must contain the missing_source_knowledge_ids key as a
+		// string-typed metadata child (JSON array — the metadata map is
+		// string->string per the Agent Skills spec; PR #3207 review PRR-010).
+		// The exact-match assertion also proves e1/e2 (found in swarm) are
+		// absent from the missing list.
+		expect(content).toMatch(
+			/^\s+missing_source_knowledge_ids: '\["does-not-exist-uuid"\]'$/m,
 		);
-		expect(missingBlockMatch).not.toBeNull();
-		expect(missingBlockMatch![0]).not.toContain('  - e1');
-		expect(missingBlockMatch![0]).not.toContain('  - e2');
 	});
 
 	it('hive early-return path is exercised when the hive file is absent', async () => {

@@ -1,11 +1,12 @@
 ---
 name: swarm-pr-subscribe
-audience: swarm-plugin
 description: >
   Codex adapter for post-PR monitoring in opencode-swarm. Use when subscribing
   to a pull request after opening it, when asked to watch, babysit, or autofix
   a PR until merge, or when a <pr-activity> wake message or [pr-monitor:...]
   advisory arrives for a subscribed PR and its events need triage and action.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Swarm PR Subscribe

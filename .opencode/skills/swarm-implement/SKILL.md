@@ -1,8 +1,9 @@
 ---
 name: swarm-implement
-audience: swarm-plugin
 description: Execute complex implementation work with a swarm-like workflow: parallel exploration, scoped planning, objective validation, mandatory independent implementation review for changed work, and final critic approval. Use for feature work, bug fixes, refactors, and multi-file changes.
 disable-model-invocation: true
+metadata:
+  audience: swarm-plugin
 ---
 
 # /swarm-implement

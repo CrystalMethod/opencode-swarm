@@ -1,11 +1,12 @@
 ---
 name: swarm-pr-feedback
-audience: swarm-plugin
 description: >
   Codex adapter for closing known PR feedback in any repository. Use when asked
   to address pasted review feedback, GitHub review comments or threads,
   requested changes, CI/check failures, merge conflicts, stale PR branches, or
   follow-up work that must verify and close all known PR issues.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Swarm PR Feedback

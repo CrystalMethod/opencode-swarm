@@ -1,12 +1,13 @@
 ---
 name: running-tests
-audience: swarm-plugin
 description: >
   Safe test execution patterns for opencode-swarm. Covers when to use the test_runner
   tool vs shell bun commands, scope safety rules, per-file isolation loops (bash and
   PowerShell), pre-existing failure verification, CI log reading, and failure
   classification. Load this skill when you need to run tests — not when you need to
   write them (see writing-tests for authoring guidance).
+metadata:
+  audience: swarm-plugin
 ---
 
 # Running Tests for opencode-swarm

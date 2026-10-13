@@ -1,10 +1,11 @@
 ---
 name: codebase-review-swarm
-audience: swarm-plugin
 description: >
   Codex adapter for running a rigorous, quote-grounded codebase review or
   security/QA/accessibility/performance/AI-slop/enhancement audit. Use for
   full-repo or large-subsystem review reports; not for normal implementation.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Codebase Review Swarm

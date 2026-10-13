@@ -1,7 +1,8 @@
 ---
 name: mock-to-internals-migration
-audience: swarm-plugin
 description: Codex adapter for migrating opencode-swarm tests away from Bun mock.module leakage toward _internals dependency-injection seams. Use when touching tests with mock.module, adding test seams, fixing Bun mock isolation failures, or updating source modules for injectable internals.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Mock To Internals Migration

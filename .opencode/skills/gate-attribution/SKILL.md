@@ -1,7 +1,8 @@
 ---
 name: gate-attribution
-audience: swarm-plugin
 description: Per-task gate dispatch protocol for reviewer/test_engineer set-dispatch attribution. Activates when dispatch_lanes returns set-dispatch verdict rows that must be attributed to plan tasks. Documents single-task attribution plus parseable set-dispatch reviewer/test_engineer rows.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Gate Attribution

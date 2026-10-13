@@ -1,7 +1,8 @@
 ---
 name: worktree-retry-cleanup
-audience: swarm-plugin
 description: Protocol for cleaning parallel-coder worktree lanes before retry. Triggered before re-dispatching any task that already has a lane (completed, denied, cancelled, or failed).
+metadata:
+  audience: swarm-plugin
 ---
 
 # Worktree Retry Cleanup

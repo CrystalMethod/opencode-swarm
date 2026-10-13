@@ -1,10 +1,11 @@
 ---
 name: swarm-pr-review
-audience: swarm-plugin
 description: >
   Thin adapter for the canonical swarm-pr-review skill. The authoritative
   workflow lives in .opencode and this file only preserves the mirror contract
   for Codex-side skill discovery.
+metadata:
+  audience: swarm-plugin
 ---
 # Swarm PR Review
 Read and follow `../../../.opencode/skills/swarm-pr-review/SKILL.md` as the canonical workflow.

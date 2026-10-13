@@ -37,17 +37,83 @@ Retiring a skill is a deliberate act: remove it from
 allowlist together, add it to `RETIRED_BUNDLED_PROJECT_SKILLS`, and update
 its disposition entry - the controls fail on any partial retirement.
 
-Static skills declare a top-level audience:
+Static skills declare an audience under the spec `metadata:` map (see
+[Frontmatter conventions](#frontmatter-conventions-agent-skills-spec) below;
+issue #2907):
 
 ```yaml
-audience: ragappv3
-# or a domain plus runner constraint
-audience: [ragappv3, runner:codex]
+metadata:
+  audience: ragappv3
 ```
 
-An absent audience remains unscoped for backward compatibility. Explicit empty/malformed declarations fail closed. Domain values are alternatives to one another, runner values are alternatives to one another, and the domain/runner dimensions must both match. OpenCode project audiences are configured through `skillPropagation.audiences`; the plugin adds `swarm-plugin` and `runner:opencode` itself.
+or, with a runner constraint (a single `audience` key whose value is a JSON
+array string — a second `audience` child under the same `metadata:` block is
+a duplicate key and fails closed):
 
-The field is opencode-swarm routing metadata. Native hosts currently choose files from their own skill roots; they may ignore the custom top-level field. Runtime-generated skills under `.opencode/skills/generated/` therefore stay unscoped unless their creator has an explicit audience instead of inheriting a guessed repository identity.
+```yaml
+metadata:
+  audience: '["ragappv3", "runner:codex"]'
+```
+
+A legacy top-level `audience:` still resolves during the transition window; a
+declaration present in both places with different values fails closed. An
+absent audience remains unscoped for backward compatibility. Explicit
+empty/malformed declarations fail closed. Domain values are alternatives to
+one another, runner values are alternatives to one another, and the
+domain/runner dimensions must both match. OpenCode project audiences are
+configured through `skillPropagation.audiences`; the plugin adds
+`swarm-plugin` and `runner:opencode` itself.
+
+The field is opencode-swarm routing metadata. Native hosts currently choose
+files from their own skill roots; they may ignore the custom metadata child.
+Runtime-generated skills under `.opencode/skills/generated/` therefore stay
+unscoped unless their creator has an explicit audience instead of inheriting a
+guessed repository identity.
+
+## Frontmatter conventions (Agent Skills spec)
+
+Shipped skills follow the [Agent Skills specification](https://agentskills.io/specification)
+(issue #2907). The spec's frontmatter fields are exactly `name`,
+`description`, `license`, `compatibility`, `metadata`, and `allowed-tools`;
+`name` must match the parent directory. Every other key lives under the
+`metadata:` map, which the spec types as **a map from string keys to string
+values**:
+
+- Scalars that YAML would type-coerce — numbers (`version`, `confidence`),
+  booleans, ISO timestamps (`generated_at`) — are double-quoted
+  (`version: "2"`).
+- List-valued keys (`audience`, `triggers`, `generated_from_knowledge`,
+  `source_knowledge_ids`) serialize as JSON array strings, single-quote
+  wrapped: `audience: '["swarm-plugin", "runner:claude"]'`. A YAML sequence
+  is not a string and would violate the spec's typing.
+- The reader (`parseSkillFrontmatter` in `src/hooks/skill-scoring.ts`)
+  accepts the spec shape and the legacy top-level shape during the
+  transition; `metadata.<key>` is preferred, and a metadata-vs-top-level
+  audience conflict fails closed.
+- The generator (`renderSkillMarkdown`), reviser, and the
+  `swarm-contract-digest` stamp writer all emit the spec shape.
+
+**Host-consumed keys stay top-level on purpose.** `disable-model-invocation`,
+`argument-hint` (Claude Code) and `context`, `agent` (OpenCode) are behavioral
+switches the host runtimes read at the top level of skill frontmatter — moving
+them under `metadata:` would delete host behavior. Shipped skills therefore
+remain intentionally non-spec in exactly these four keys; the drift-check
+`skill-frontmatter` detector's `HOST_CONSUMED_TOP_LEVEL_KEYS` allowlist
+documents the same set, and every other non-spec top-level key in a shipped
+(tracked, non-generated) skill is an error under
+`bun run drift:check --enforce`. The generated tree
+(`.opencode/skills/generated/`) is exempt from the detector, matching the
+audience detector's precedent — regenerated skills converge on the spec shape
+through the generator, but legacy keys there are not CI-enforced.
+
+**Progressive-disclosure budgets.** The spec recommends keeping `SKILL.md`
+under 500 lines with detail in `references/`. `writing-tests`, `graphify`,
+and `commit-pr` are at or under 500. Dated reduction plan for the two
+remaining entry skills: `swarm-pr-review` (currently ~1.7k lines) reaches
+≤1500 by 2026-11-15 and ≤500 by 2026-12-15; `swarm-pr-feedback` (currently
+~800) reaches ≤500 by 2026-11-15. The
+`tests/unit/skills/progressive-disclosure-ratchet.test.ts` baseline is the
+ratchet: it only ever moves down.
 
 ## Complete Knowledge Lifecycle
 

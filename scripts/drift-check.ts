@@ -758,8 +758,187 @@ export function detectSkillAudienceDrift(
 					category,
 					severity: 'error',
 					file: skillPath,
-					message: `static skill "${slug}" must declare a valid top-level audience`,
+					message: `static skill "${slug}" must declare a valid audience (metadata.audience or legacy top-level)`,
 				});
+			}
+		}
+	}
+
+	return findings;
+}
+
+/**
+ * Spec frontmatter keys per https://agentskills.io/specification: name,
+ * description, license, compatibility, metadata, allowed-tools.
+ */
+const SKILL_SPEC_FRONTMATTER_KEYS = new Set([
+	'name',
+	'description',
+	'license',
+	'compatibility',
+	'metadata',
+	'allowed-tools',
+]);
+
+/**
+ * Host-runtime behavioral keys that intentionally stay top-level (issue
+ * #2907): Claude Code reads `disable-model-invocation` / `argument-hint` and
+ * OpenCode reads `context` / `agent` at the top level of skill frontmatter —
+ * moving them under `metadata` would delete host behavior, which the issue
+ * scopes out. Everything else non-spec must live under `metadata:`.
+ */
+const HOST_CONSUMED_TOP_LEVEL_KEYS = new Set([
+	'disable-model-invocation',
+	'argument-hint',
+	'context',
+	'agent',
+]);
+
+/**
+ * Bare metadata-child values YAML would resolve as a NON-STRING scalar.
+ * YAML 1.2 core resolves integers/floats/bools/null; ISO-8601 timestamps
+ * resolve as strings under 1.2 but the repo's writer policy quotes them
+ * (issue #2907), so bare timestamps are flagged to keep output canonical.
+ */
+const SKILL_METADATA_NON_STRING_SCALAR =
+	/^(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?|-?\.[0-9]+|true|false|null|yes|no|on|off|~|\d{4}-\d{2}-\d{2}(?:[T ].*)?)$/i;
+
+/**
+ * Agent-Skills-spec conformance for tracked static SKILL.md frontmatter
+ * (issue #2907): non-spec keys must live under the `metadata:` string map,
+ * `name` must match the parent directory, and metadata children must be
+ * string-typed scalars.
+ */
+export function detectSkillFrontmatterSpecDrift(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const { fileExists, readFile, listDirNames } = makeFs(root);
+	const findings: DriftFinding[] = [];
+	const category = 'skill-frontmatter';
+
+	for (const skillRoot of [
+		'.opencode/skills',
+		'.claude/skills',
+		'.agents/skills',
+	]) {
+		for (const slug of listDirNames(skillRoot)) {
+			// The generated tree stays exempt, matching detectSkillAudienceDrift
+			// (:743): generated SKILL.md files are machine-written by
+			// renderSkillMarkdown and their repository audience/provenance
+			// cannot be guessed safely (issue #2907 review — PRR-009).
+			if (skillRoot === '.opencode/skills' && slug === 'generated') {
+				continue;
+			}
+			const skillPath = `${skillRoot}/${slug}/SKILL.md`;
+			if (!fileExists(skillPath)) continue;
+			const content = readFile(skillPath).replace(/\r\n/g, '\n');
+			const lines = content.split('\n');
+			if (lines[0]?.trim() !== '---') continue;
+			const end = lines.findIndex(
+				(line, index) => index > 0 && line.trim() === '---',
+			);
+			if (end === -1) continue;
+
+			let inMetadata = false;
+			for (let i = 1; i < end; i++) {
+				const line = lines[i] ?? '';
+				if (!line.trim()) continue;
+				const indented = /^\s/.test(line);
+				if (inMetadata) {
+					if (!indented) {
+						inMetadata = false;
+					} else {
+						const child = line.match(
+							/^(\s+)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/,
+						);
+						if (child) {
+							// Strip a trailing YAML comment (unquoted scalars
+							// only — a quoted string may contain '#') so
+							// `key: true # note` is still judged as a bare
+							// scalar (PRR-011b).
+							let value = child[3].trim();
+							const startsQuoted =
+								value.startsWith('"') || value.startsWith("'");
+							if (!startsQuoted && value.includes(' #')) {
+								value = value.slice(0, value.indexOf(' #')).trim();
+							}
+							const quoted =
+								(value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+								(value.startsWith("'") && value.endsWith("'") && value.length >= 2);
+							// A declared-but-empty child followed by `- item`
+							// lines is a YAML sequence — not a string (PRR-011c).
+							if (value === '') {
+								const childIndent = child[1].length;
+								for (let j = i + 1; j < end; j++) {
+									const next = lines[j] ?? '';
+									if (!next.trim()) continue;
+									if (!/^\s/.test(next)) break;
+									const nextIndent = next.length - next.trimStart().length;
+									if (nextIndent > childIndent && /^\s+-\s/.test(next)) {
+										findings.push({
+											category,
+											severity: 'error',
+											file: skillPath,
+											message: `metadata child "${child[2]}" is a YAML sequence — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+										});
+									}
+									break;
+								}
+							} else if (
+								!quoted &&
+								(/^\[.*\]$/.test(value) || /^\{.*\}$/.test(value))
+							) {
+								findings.push({
+									category,
+									severity: 'error',
+									file: skillPath,
+									message: `metadata child "${child[2]}" is a flow collection — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+								});
+							} else if (
+								value !== '' &&
+								!quoted &&
+								SKILL_METADATA_NON_STRING_SCALAR.test(value)
+							) {
+								findings.push({
+									category,
+									severity: 'error',
+									file: skillPath,
+									message: `metadata child "${child[2]}" has a bare non-string scalar value "${value}" — the spec metadata map is string-typed (quote it)`,
+								});
+							}
+						}
+						continue;
+					}
+				}
+				const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+				if (!match) continue;
+				const key = match[1].toLowerCase();
+				if (key === 'metadata') {
+					inMetadata = true;
+					continue;
+				}
+				if (
+					!SKILL_SPEC_FRONTMATTER_KEYS.has(key) &&
+					!HOST_CONSUMED_TOP_LEVEL_KEYS.has(key)
+				) {
+					findings.push({
+						category,
+						severity: 'error',
+						file: skillPath,
+						message: `non-spec top-level frontmatter key "${match[1]}" — move it under the metadata: map (agentskills.io/specification)`,
+					});
+				}
+				if (key === 'name') {
+					const declared = match[2].trim().replace(/^["']|["']$/g, '');
+					if (declared && declared !== slug) {
+						findings.push({
+							category,
+							severity: 'error',
+							file: skillPath,
+							message: `frontmatter name "${declared}" does not match the parent directory "${slug}" (spec requirement)`,
+						});
+					}
+				}
 			}
 		}
 	}
@@ -1688,6 +1867,7 @@ export function detectBundledSkillStaleness(
 export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['skill-mirror', detectSkillMirrorDrift],
 	['skill-audience', detectSkillAudienceDrift],
+	['skill-frontmatter', detectSkillFrontmatterSpecDrift],
 	['bundled-skill', detectBundledSkillDrift],
 	['skill-reference', detectSkillReferenceDrift],
 	['duplicate-slug', detectDuplicateSlugs],

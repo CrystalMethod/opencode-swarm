@@ -1,13 +1,14 @@
 ---
 name: engineering-conventions
-audience: swarm-plugin
 description: >
   Guidelines and non-negotiable engineering invariants for modifying opencode-swarm.
   Load before architecture, plugin initialization, subprocess, tool registration, plan
   durability, .swarm storage, runtime portability, session/global state, guardrails/retry,
   chat/system message hooks, or release/cache changes. Authoritative source: AGENTS.md
   at the repo root and docs/engineering-invariants.md.
-effort: medium
+metadata:
+  audience: swarm-plugin
+  effort: medium
 ---
 
 # Engineering Conventions for opencode-swarm (Claude Code)

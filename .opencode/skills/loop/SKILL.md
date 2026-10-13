@@ -1,6 +1,5 @@
 ---
 name: loop
-audience: swarm-plugin
 description: >
   Full execution protocol for MODE: LOOP — the compound-engineering loop:
   brainstorm → plan → build → review → improve, iterating under
@@ -8,6 +7,8 @@ description: >
   durable resumable state, and mandatory compounding learning capture.
   Loaded on demand by the architect when the loop command emits a
   [MODE: LOOP ...] signal.
+metadata:
+  audience: swarm-plugin
 ---
 
 # Compound-Engineering Loop Protocol

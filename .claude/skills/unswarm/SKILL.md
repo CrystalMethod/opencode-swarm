@@ -1,8 +1,9 @@
 ---
 name: unswarm
-audience: swarm-plugin
 description: Disable swarm mode for the current Claude Code session and return to normal behavior.
 disable-model-invocation: true
+metadata:
+  audience: swarm-plugin
 ---
 
 # /unswarm

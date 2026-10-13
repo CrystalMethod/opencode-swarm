@@ -210,8 +210,8 @@ describe('regenerateSkill', () => {
 		expect(newContent).toContain('## Trigger');
 		expect(newContent).toContain('## Required Procedure');
 		expect(newContent).toContain('source_knowledge_ids:');
-		expect(newContent).toMatch(/^generated_at:\s+\S+/m);
-		expect(newContent).not.toContain('generated_at: 2000-01-01T00:00:00.000Z');
+		expect(newContent).toMatch(/^\s+generated_at:\s*"/m);
+		expect(newContent).not.toContain('2000-01-01T00:00:00.000Z');
 	});
 	it('evaluate=true rejects non-improving regeneration before write or changelog', async () => {
 		const entry1 = makeEntry('entry-gate-1', {

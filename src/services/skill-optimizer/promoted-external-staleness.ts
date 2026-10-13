@@ -64,25 +64,33 @@ export function parsePromotedExternalFrontmatter(content: string): {
 	const match = /^---\n([\s\S]*?)\n---/.exec(content);
 	if (!match) return {};
 	const fm = match[1];
-	const originMatch = /^skill_origin:\s*(\S+)/m.exec(fm);
-	const promotedAtMatch = /^promoted_at:\s*(\S+)/m.exec(fm);
-	const origin = originMatch?.[1];
-	const promotedAt = promotedAtMatch?.[1];
+	// Spec shape (issue #2907): non-spec keys are indented children of a
+	// `metadata:` map. A child match subsumes the legacy column-0 form, so
+	// try the indented form first and fall back to top-level.
+	const originMatch = /^\s+skill_origin:\s*(\S+)/m.exec(fm);
+	const promotedAtMatch = /^\s+promoted_at:\s*(\S+)/m.exec(fm);
+	const origin = stripFmQuotes(
+		originMatch?.[1] ?? /^skill_origin:\s*(\S+)/m.exec(fm)?.[1],
+	);
+	const promotedAt = stripFmQuotes(
+		promotedAtMatch?.[1] ?? /^promoted_at:\s*(\S+)/m.exec(fm)?.[1],
+	);
 
-	// Parse source_knowledge_ids supporting BOTH YAML forms (F5 fix):
-	//   inline:  source_knowledge_ids: ["a", "b"]
+	// Parse source_knowledge_ids supporting YAML inline/block forms in either
+	// the metadata child position (F5 fix + issue #2907) or legacy top-level:
+	//   inline:  source_knowledge_ids: ["a", "b"]   (or a quoted JSON string)
 	//   block:   source_knowledge_ids:
 	//              - "a"
 	//              - "b"
 	let sourceKnowledgeIds: string[] | undefined;
-	const inlineMatch = /^source_knowledge_ids:\s*\[([^\]]*)\]/m.exec(fm);
+	const inlineMatch = /^\s*source_knowledge_ids:\s*'?\[([^\]]*)\]'?/m.exec(fm);
 	if (inlineMatch) {
 		sourceKnowledgeIds = inlineMatch[1]
 			.split(',')
 			.map((s) => s.trim().replace(/^["']|["']$/g, ''))
 			.filter(Boolean);
 	} else {
-		const blockMatch = /^source_knowledge_ids:\s*$/m.exec(fm);
+		const blockMatch = /^\s*source_knowledge_ids:\s*$/m.exec(fm);
 		if (blockMatch && blockMatch.index !== undefined) {
 			const afterKey = fm.slice(blockMatch.index + blockMatch[0].length);
 			const blockItems: string[] = [];
@@ -100,6 +108,18 @@ export function parsePromotedExternalFrontmatter(content: string): {
 	}
 
 	return { origin, sourceKnowledgeIds, promotedAt };
+}
+
+function stripFmQuotes(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const trimmed = value.trim();
+	if (
+		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+		(trimmed.startsWith("'") && trimmed.endsWith("'"))
+	) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
 }
 
 /**

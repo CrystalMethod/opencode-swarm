@@ -1,12 +1,7 @@
 /**
- * Phase G′ tests: skill draft lifecycle.
- *
- * Verifies:
- *  - draft mode emits `status: draft` (so activation flip is not a no-op)
- *  - active mode emits `status: active`
- *  - skill_apply parses draft frontmatter and stamps source knowledge entries
- *  - malformed frontmatter does NOT stamp anything (returns stamped: false)
- *  - stampSourceEntries (refactored signature) takes (directory, slug, ids[])
+ * Phase G′ skill draft lifecycle: emission shapes (#2907 metadata map),
+ * activation flip + source-entry stamping, rejection-ledger equivalence,
+ * and malformed-frontmatter fail-closed behavior.
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
@@ -89,26 +84,25 @@ describe('renderSkillMarkdown mode', () => {
 
 	it('emits status: draft for draft mode', () => {
 		const md = renderSkillMarkdown(cluster, 'draft');
-		expect(md).toMatch(/^status:\s*draft\s*$/m);
-		expect(md).not.toMatch(/^status:\s*active\s*$/m);
+		expect(md).toMatch(/^\s+status:\s*draft\s*$/m);
+		expect(md).not.toMatch(/^\s+status:\s*active\s*$/m);
 	});
 
 	it('emits status: active for active mode (default)', () => {
 		const md = renderSkillMarkdown(cluster);
-		expect(md).toMatch(/^status:\s*active\s*$/m);
+		expect(md).toMatch(/^\s+status:\s*active\s*$/m);
 	});
 
 	it('includes both generated_from_knowledge and source_knowledge_ids YAML lists', () => {
 		const md = renderSkillMarkdown(cluster, 'draft');
-		expect(md).toContain('generated_from_knowledge:');
-		expect(md).toContain('source_knowledge_ids:');
-		expect(md).toMatch(/^generated_at:\s+\S+/m);
+		expect(md).toMatch(/^\s+generated_from_knowledge:\s+'/m);
+		expect(md).toMatch(/^\s+source_knowledge_ids:\s+'/m);
+		expect(md).toMatch(/^\s+generated_at:\s+"/m);
 	});
 
 	it('emits trigger frontmatter that round-trips through the draft parser', () => {
 		const md = renderSkillMarkdown(cluster, 'draft');
-		expect(md).toContain('triggers:');
-		expect(md).toContain('  - coder delegation');
+		expect(md).toMatch(/^\s+triggers:\s+'/m);
 		const fm = parseDraftFrontmatter(md);
 		expect(fm?.triggers).toEqual(['coder delegation']);
 	});
@@ -226,6 +220,12 @@ describe('activateProposal stamps source knowledge entries', () => {
 				`.opencode/skills/generated/${slug}/SKILL.md`,
 			);
 		}
+		const active = readFileSync(
+			path.join(tmp, '.opencode/skills/generated', slug, 'SKILL.md'),
+			'utf-8',
+		);
+		expect(active).toMatch(/^\s+status:\s*active\s*$/m);
+		expect(active).not.toMatch(/^\s*status:\s*"?draft"?\s*$/m);
 	});
 
 	it('malformed frontmatter activates but does not stamp', async () => {
