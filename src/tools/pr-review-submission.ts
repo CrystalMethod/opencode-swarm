@@ -8,6 +8,7 @@ import {
 	type RenderReviewBodyInput,
 	renderPrReviewSubmissionBody,
 } from '../pr-review/render-review-body.js';
+import { readVerdictSettlementReceipt } from '../pr-review/verdict-settlement.js';
 import type {
 	ExternalToolRunOptions,
 	ExternalToolRunResult,
@@ -89,6 +90,7 @@ interface PersistedFindingRecord {
 	evidence?: unknown;
 	next_action?: unknown;
 	severity?: unknown;
+	order_agreement?: unknown;
 	boundary?: unknown;
 	pr_head_sha?: unknown;
 	recorded_at?: unknown;
@@ -327,6 +329,37 @@ function deriveCoverage(
 	if (reasons.length > 0) {
 		return {
 			coverage: { kind: 'PARTIAL', unresolved_dimensions: reasons },
+		};
+	}
+	// Issue #3101 (review PRR-012): an admitted N-of-M verdict settlement is
+	// also a coverage degradation — a run that settled dead verdict lanes must
+	// never render `Coverage kind: FULL` on a public surface. Any per-phase
+	// receipt under this run with at least one disclosed row downgrades the
+	// claim (over-disclosure is the safe direction here; the gate's full-cover
+	// consumption stays stricter than this public echo).
+	const settlementReasons: string[] = [];
+	for (const phase of ['reviewer', 'critic'] as const) {
+		const settlementRead = readVerdictSettlementReceipt(
+			directory,
+			runId,
+			phase,
+		);
+		if (
+			settlementRead.status === 'ok' &&
+			settlementRead.receipt.runId === runId &&
+			settlementRead.receipt.items.length > 0
+		) {
+			settlementReasons.push(
+				`verdict-settlement (${phase}): ${settlementRead.receipt.items.length} liveness-dead item(s) disclosed by N-of-M settlement`,
+			);
+		}
+	}
+	if (settlementReasons.length > 0) {
+		return {
+			coverage: {
+				kind: 'PARTIAL',
+				unresolved_dimensions: [...reasons, ...settlementReasons],
+			},
 		};
 	}
 	return { coverage: { kind: 'FULL', unresolved_dimensions: [] } };
@@ -635,10 +668,36 @@ export async function executePrReviewSubmission(
 			record.boundary === 'post_critic' && record.status !== 'DISPROVED',
 	);
 
+	// Issue #2906: a DISPROVED record is not published as a finding, but an
+	// ORDER-UNSTABLE one still carries the counterbalancing signal (the
+	// reviewer verdict flipped with presentation order) and must not vanish
+	// with the drop. Those rows ride a separate renderer input so they are
+	// listed and counted without entering the findings list or the derived
+	// review event.
+	const suppressedOrderUnstable = records.filter(
+		(record) =>
+			record.boundary === 'post_critic' &&
+			record.status === 'DISPROVED' &&
+			record.order_agreement === 'disagree',
+	);
+
 	const derived = deriveCoverage(directory, runId, receipt);
 	if ('refusal' in derived) return derived.refusal;
 	const coverage = derived.coverage;
 	const event = reviewEventFor(settledRecords);
+	const toRendererFinding = (record: (typeof records)[number]) => ({
+		finding_id: typeof record.finding_id === 'string' ? record.finding_id : '',
+		status: typeof record.status === 'string' ? record.status : '',
+		file_line: typeof record.file_line === 'string' ? record.file_line : '',
+		evidence: typeof record.evidence === 'string' ? record.evidence : '',
+		next_action:
+			typeof record.next_action === 'string' ? record.next_action : '',
+		severity: typeof record.severity === 'string' ? record.severity : undefined,
+		order_agreement:
+			typeof record.order_agreement === 'string'
+				? record.order_agreement
+				: undefined,
+	});
 	const rendererInput: RenderReviewBodyInput = {
 		run_id: runId,
 		pr_head_sha: headSha,
@@ -648,6 +707,7 @@ export async function executePrReviewSubmission(
 				? receipt.base_verification
 				: undefined,
 		coverage,
+		order_unstable_suppressed: suppressedOrderUnstable.map(toRendererFinding),
 		findings: settledRecords.map((record) => ({
 			finding_id:
 				typeof record.finding_id === 'string' ? record.finding_id : '',
@@ -658,6 +718,10 @@ export async function executePrReviewSubmission(
 				typeof record.next_action === 'string' ? record.next_action : '',
 			severity:
 				typeof record.severity === 'string' ? record.severity : undefined,
+			order_agreement:
+				typeof record.order_agreement === 'string'
+					? record.order_agreement
+					: undefined,
 		})),
 	};
 

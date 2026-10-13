@@ -24,8 +24,23 @@ const PrReviewCollectionReceiptPayloadSchema = z
 			.array(z.string().min(1).max(160))
 			.min(1)
 			.max(MAX_PR_REVIEW_COLLECTION_RECEIPT_ITEM_IDS),
+		/**
+		 * Issue #2906: additive optional — the counterbalanced presentation
+		 * order this reviewer batch's candidates were rendered in. Omitted for
+		 * critic batches, pre-#2906 reviewers, and whenever gate state is
+		 * unreadable at footer time (fail-open; the per-batch coherence record
+		 * stays the authoritative per-pass receipt).
+		 */
+		presentationOrder: z.enum(['A', 'B']).optional(),
 	})
-	.strict()
+	// Review finding LOW: an older build reading a NEW footer must not lose
+	// the accepted/rejected id partitions. `.strict()` returned null for the
+	// whole receipt once an unknown key appeared, so a footer written by a
+	// later plugin permanently discarded those partitions after compaction.
+	// The per-batch coherence record is already `.passthrough()` for exactly
+	// this reason; the receipt now matches it — unknown keys are ignored,
+	// not fatal.
+	.passthrough()
 	.superRefine((payload, context) => {
 		if (new Set(payload.reviewItemIds).size !== payload.reviewItemIds.length) {
 			context.addIssue({
@@ -70,6 +85,8 @@ export interface PrReviewCollectionReceiptBinding {
 	correlationId: string;
 	mode?: string;
 	workflowLane?: string;
+	/** Issue #2906: optional presentation order threaded from the batch's coherence record. */
+	presentationOrder?: 'A' | 'B';
 }
 
 export interface PrReviewCollectionReceiptResult {
@@ -143,6 +160,9 @@ function buildPrReviewCollectionReceiptPayload(
 		outputDigest: result.digest,
 		disposition,
 		reviewItemIds: receipt.assignedReviewItemIds,
+		...(binding.presentationOrder
+			? { presentationOrder: binding.presentationOrder }
+			: {}),
 	});
 	if (!parsed.success) return null;
 	return parsed.data;

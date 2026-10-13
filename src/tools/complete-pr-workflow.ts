@@ -196,6 +196,20 @@ export async function executeCompletePrWorkflow(
 							}
 						: {}),
 					report_verdict: parsed.data.report_verdict,
+					// Issue #3098: bounded findings and degradation summaries, captured
+					// before the terminal clear deletes the gate-state pointer fields
+					// that address this evidence. Both readers are fail-open.
+					...((summary) => (summary ? { findings_summary: summary } : {}))(
+						await findingsSummaryForReportSafe(directory, context.sessionID),
+					),
+					coverage_degradations: await coverageDegradationsForReportSafe(
+						directory,
+						context.sessionID,
+					),
+					verdict_settlement: await verdictSettlementSummaryForReportSafe(
+						directory,
+						context.sessionID,
+					),
 				};
 			}
 		}
@@ -279,6 +293,7 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport: typeof readPrReviewTerminalCoverageForReport;
 	readPrReviewFinalFindingPolicyForReport: typeof readPrReviewFinalFindingPolicyForReport;
 	settlePresumedStalePrWorkflowLanes: typeof settlePresumedStalePrWorkflowLanes;
+	verdictSettlementSummaryForReportSafe: typeof verdictSettlementSummaryForReportSafe;
 } = {
 	completePrWorkflow,
 	listPendingPrWorkflowCheckoutRestores,
@@ -286,4 +301,175 @@ export const _internals: {
 	readPrReviewTerminalCoverageForReport,
 	readPrReviewFinalFindingPolicyForReport,
 	settlePresumedStalePrWorkflowLanes,
+	verdictSettlementSummaryForReportSafe,
 };
+
+/** Issue #3101: additive per-item disclosure echo for admitted N-of-M verdict settlements. */
+async function verdictSettlementSummaryForReport(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}>
+> {
+	const { readPrReviewVerdictSettlementReceiptItems } = await import(
+		'../hooks/pr-workflow-gate.js'
+	);
+	return readPrReviewVerdictSettlementReceiptItems(directory, sessionID);
+}
+
+/** Observation-only echo: a read failure degrades to an absent echo (the
+ * sibling observation-only reads above follow the same guard pattern) rather
+ * than failing the completion report itself. */
+async function verdictSettlementSummaryForReportSafe(
+	directory: string,
+	sessionID: string,
+) {
+	try {
+		return await verdictSettlementSummaryForReport(directory, sessionID);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Issue #3098: count-based findings summary for the terminal report, captured
+ * before the terminal clear. `by_severity` keys are constrained to the
+ * FindingSeverity enum values plus a literal `OTHER` bucket, so no rendered
+ * key can ever be an arbitrary (or sentinel-bearing) string.
+ */
+async function findingsSummaryForReport(
+	directory: string,
+	sessionID: string,
+): Promise<{
+	total: number;
+	by_severity: Record<string, number>;
+}> {
+	const { readAuthoritativeFindingPolicy } = await import(
+		'../hooks/pr-workflow-gate.js'
+	);
+	const state = await readPrWorkflowGateState(directory, sessionID);
+	if (!state) {
+		throw new Error('BLOCKED: no active PR workflow gate state');
+	}
+	const { policyFindings } = await readAuthoritativeFindingPolicy(
+		directory,
+		state,
+	);
+	const severityAxes = new Set([
+		'CRITICAL',
+		'HIGH',
+		'MEDIUM',
+		'LOW',
+		'INFO',
+		'NONE',
+	]);
+	const bySeverity: Record<string, number> = {};
+	for (const finding of policyFindings) {
+		const axis = severityAxes.has(finding.severity)
+			? finding.severity
+			: 'OTHER';
+		bySeverity[axis] = (bySeverity[axis] ?? 0) + 1;
+	}
+	return { total: policyFindings.length, by_severity: bySeverity };
+}
+
+/** Observation-only echo (same guard pattern as the sibling readers above). */
+async function findingsSummaryForReportSafe(
+	directory: string,
+	sessionID: string,
+): Promise<{ total: number; by_severity: Record<string, number> } | undefined> {
+	try {
+		return await findingsSummaryForReport(directory, sessionID);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Issue #3098: bounded coverage-degradation disclosure for the terminal
+ * report, read from the run's trigger-eval receipt before the terminal clear.
+ * Free-text `reason` values are CLEAN-redacted: the terminal report shape
+ * invariant (r04 / the #3098 frozen check) forbids the bare literal CLEAN
+ * anywhere in the report.
+ */
+const MAX_TERMINAL_COVERAGE_DEGRADATIONS = 10;
+const MAX_TERMINAL_DEGRADATION_REASON_CHARS = 200;
+const MAX_TERMINAL_DEGRADATION_ID_CHARS = 200;
+
+function boundTerminalText(value: string, max: number): string {
+	return value.slice(0, max);
+}
+
+function redactTerminalCleanLiteral(value: string): string {
+	return value.includes('CLEAN')
+		? value.split('CLEAN').join('clean-attestation')
+		: value;
+}
+
+async function coverageDegradationsForReport(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		trigger_id: string;
+		source_batch_id: string;
+		source_lane_id: string;
+		reason: string;
+	}>
+> {
+	const state = await readPrWorkflowGateState(directory, sessionID);
+	if (!state) return [];
+	const { readPrReviewTriggerReceiptForGate } = await import(
+		'../background/pr-review-trigger-receipt-reader.js'
+	);
+	const read = readPrReviewTriggerReceiptForGate(
+		directory,
+		state.prReviewTriggerEvalPath ?? null,
+	);
+	if ('noReceipt' in read) return [];
+	return read.receipt.coverageDegradations
+		.slice(0, MAX_TERMINAL_COVERAGE_DEGRADATIONS)
+		.map((degradation) => ({
+			trigger_id: degradation.trigger_id,
+			source_batch_id: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.source_batch_id),
+				MAX_TERMINAL_DEGRADATION_ID_CHARS,
+			),
+			source_lane_id: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.source_lane_id),
+				MAX_TERMINAL_DEGRADATION_ID_CHARS,
+			),
+			// Bound AFTER redaction: CLEAN -> clean-attestation expands 5 -> 16
+			// chars, so slicing first let the rendered value exceed the cap.
+			reason: boundTerminalText(
+				redactTerminalCleanLiteral(degradation.reason),
+				MAX_TERMINAL_DEGRADATION_REASON_CHARS,
+			),
+		}));
+}
+
+/** Observation-only echo (same guard pattern as the sibling readers above). */
+async function coverageDegradationsForReportSafe(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		trigger_id: string;
+		source_batch_id: string;
+		source_lane_id: string;
+		reason: string;
+	}>
+> {
+	try {
+		return await coverageDegradationsForReport(directory, sessionID);
+	} catch {
+		return [];
+	}
+}

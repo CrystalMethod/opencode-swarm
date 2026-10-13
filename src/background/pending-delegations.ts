@@ -4064,7 +4064,14 @@ function sameRetainedResult(
 	);
 }
 
-function recordedPrReviewResultReceipt(
+/**
+ * The retained receipt for one delegation record (result copy first, the
+ * closed-summary `terminalResult` copy second). Exported for the
+ * `pr_workflow_status` read surface (issue #3095) so the status tool reads
+ * receipts through the same accessor the store's own writers use instead of
+ * duplicating the fallback order.
+ */
+export function recordedPrReviewResultReceipt(
 	record: BackgroundDelegationRecord,
 ): PrReviewResultReceipt | undefined {
 	return (

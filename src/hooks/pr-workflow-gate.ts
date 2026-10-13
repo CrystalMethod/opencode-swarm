@@ -208,15 +208,27 @@ import type {
 	PrReviewWorkflowState,
 } from '../pr-review/types.js';
 import {
+	buildVerdictSettlementReceipt,
+	deriveVerdictSettlementAdmission,
+	effectiveVerdictSettlementItems,
+	type PrReviewVerdictSettlementPhase,
+	type PrReviewVerdictSettlementReceipt,
+	persistVerdictSettlementReceipt,
+	readVerdictSettlementReceipt,
+	verdictSettlementDegradationActive,
+} from '../pr-review/verdict-settlement.js';
+import {
 	canonicalForgePrUrl,
 	type ForgeContext,
 } from '../providers/forge-provider.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
+import { collectPrWorkflowGhReadinessAdvisory } from '../services/pr-workflow-gh-readiness.js';
 import {
 	ensurePrWorkflowSkillContractsFresh,
 	MAX_SKILL_CONTRACT_ADVISORIES,
 } from '../services/pr-workflow-skill-contract.js';
 import { swarmState } from '../state.js';
+import { resolveGhBinary } from '../tools/gh-evidence.js';
 import { getPrWorkflowToolCapability } from '../tools/tool-metadata.js';
 import { sameProjectRoot } from '../utils/canonical-root.js';
 import { log, warn } from '../utils/logger.js';
@@ -815,6 +827,14 @@ type PrReviewArtifactRecord = {
 	 */
 	risk_impact?: PrReviewRiskImpact;
 	risk_tags?: PrReviewRiskTag[];
+	/**
+	 * Model-supplied critic status (issue #3101). Present on post_critic
+	 * records when the caller attests a critic outcome; the records-match
+	 * validator rejects any value on a disclosed-dead critic item (the model
+	 * never authors a critic status there — the writer's settlement injection
+	 * derives it).
+	 */
+	critic_status?: string;
 };
 
 interface PrFeedbackScopeDeclarationRecord {
@@ -884,6 +904,20 @@ interface PrReviewBatchCoherenceRecord {
 	reviewerItemBindings?: Record<string, string>;
 	/** Key encoding for reviewerItemBindings; absent means legacy raw item IDs. */
 	reviewerItemBindingKeyEncoding?: 'prefixed-v1';
+	/**
+	 * Issue #2906: reviewer batches only. The presentation order this batch's
+	 * candidates were counterbalanced into — 'A' renders the canonical sorted
+	 * inventory, 'B' the exact reverse — alternating by reviewer-batch ordinal
+	 * within the reviewer window so repeated passes observe order effects.
+	 */
+	presentationOrder?: 'A' | 'B';
+	/**
+	 * Issue #2906: critic batches only. AUDIT-ONLY snapshot of the
+	 * order-unstable item ids the critic prompt for this batch was flagged
+	 * with (the prompt re-derives them live via
+	 * `derivePrReviewOrderUnstableItems`); no runtime reader consumes this.
+	 */
+	orderUnstableItemIds?: string[];
 }
 
 /** One rejected `submit_pr_review_result` attempt (issue #2859 F3 journal). */
@@ -896,6 +930,24 @@ export interface PrReviewSubmitRejectionRecord {
 
 /** FIFO cap for the gate-state submit-rejection journal (issue #2859 F3). */
 export const MAX_PR_REVIEW_SUBMIT_REJECTIONS = 24;
+
+/**
+ * One rejected `write_pr_review_artifact` attempt (issue #3098 verdict-lane
+ * journal, mirroring the #2859 discovery journal). `sessionId` is the gate
+ * owner (the orchestrator session that called the tool) — provenance only;
+ * the composition joins entries to lanes via `workflowLane`/`laneId`.
+ */
+export interface PrReviewVerdictRejectionRecord {
+	sessionId: string;
+	laneId?: string;
+	workflowLane?: string;
+	boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	at: number;
+	message: string;
+}
+
+/** FIFO cap for the gate-state verdict-write-rejection journal (issue #3098). */
+export const MAX_PR_REVIEW_VERDICT_REJECTIONS = 24;
 
 export interface PrWorkflowGateState {
 	schemaVersion: 1;
@@ -984,6 +1036,16 @@ export interface PrWorkflowGateState {
 	prReviewArtifactRunId?: string;
 	prReviewFindingsPath?: string;
 	prReviewArtifactBoundaries?: PrReviewArtifactBoundary[];
+	/**
+	 * Issue #3101: sha256 of each phase's persisted N-of-M verdict-settlement
+	 * receipt (the exact file bytes, recorded at persist time). Consumption
+	 * re-verifies the digest so a receipt rewritten after the fact under the
+	 * same head/digest identity fails closed — the same controller-held anchor
+	 * discipline as `prReviewCoverageDisclosureDigest` (issue #2383).
+	 */
+	prReviewVerdictSettlementDigests?: Partial<
+		Record<PrReviewVerdictSettlementPhase, string>
+	>;
 	prReviewPartialBaseCoverage?: PrReviewPartialBaseCoverageRecord;
 	prReviewCoverageDisclosurePath?: string;
 	prReviewCoverageDisclosureDigest?: string;
@@ -1005,6 +1067,17 @@ export interface PrWorkflowGateState {
 	 * to 300 chars at write time.
 	 */
 	prReviewSubmitRejections?: PrReviewSubmitRejectionRecord[];
+	/**
+	 * Bounded FIFO journal of rejected `write_pr_review_artifact` attempts
+	 * (issue #3098, the verdict-lane mirror of the #2859 journal above).
+	 * Observability only — surfaced in the verdict composition diagnostic so
+	 * the orchestrator can see WHY a declared reviewer/critic lane produced no
+	 * successful exact artifact; never consulted for artifact validity. Capped
+	 * by {@link MAX_PR_REVIEW_VERDICT_REJECTIONS}; each entry's message is
+	 * bounded to 300 chars at write time. `sessionId` is the gate-owner caller
+	 * (provenance); lane join happens via `workflowLane`/`laneId`.
+	 */
+	prReviewVerdictRejections?: PrReviewVerdictRejectionRecord[];
 	prReviewHandoffPath?: string;
 	prReviewHandoffRequired?: boolean;
 	checkoutRecovery?: PrWorkflowCheckoutRecoveryRecord;
@@ -1496,6 +1569,10 @@ const PrReviewBatchCoherenceRecordSchema = z
 			.record(z.string().min(1), z.string().regex(/^[0-9a-f]{64}$/))
 			.optional(),
 		reviewerItemBindingKeyEncoding: z.literal('prefixed-v1').optional(),
+		// Issue #2906: enum-validated additive fields (the record stays
+		// passthrough; see the rollback-safety note above the interface).
+		presentationOrder: z.enum(['A', 'B']).optional(),
+		orderUnstableItemIds: z.array(z.string().min(1)).optional(),
 	})
 	.passthrough();
 
@@ -1647,6 +1724,28 @@ const PrWorkflowGateStateSchema = z
 					.strict(),
 			)
 			.max(MAX_PR_REVIEW_SUBMIT_REJECTIONS)
+			.optional(),
+		prReviewVerdictRejections: z
+			.array(
+				z
+					.object({
+						sessionId: z.string().min(1).max(200),
+						laneId: z.string().min(1).max(200).optional(),
+						workflowLane: z.string().min(1).max(200).optional(),
+						boundary: z
+							.enum(['post_explorer', 'post_reviewer', 'post_critic'])
+							.optional(),
+						at: z.number(),
+						message: z.string().min(1).max(300),
+					})
+					// Not .strict(): this record is the newest persisted shape and is
+					// the most likely to gain fields. Passthrough keeps a future
+					// field opaque but present through a read-modify-write cycle
+					// instead of bricking a rollback (same rule as the batch
+					// coherence record above). The array cap still bounds growth.
+					.passthrough(),
+			)
+			.max(MAX_PR_REVIEW_VERDICT_REJECTIONS)
 			.optional(),
 		prReviewArtifactBoundaries: z
 			.array(z.enum(['post_explorer', 'post_reviewer', 'post_critic']))
@@ -1861,6 +1960,19 @@ export async function activatePrWorkflow(
 				directory,
 				mode,
 			);
+			// Issue #3099 R2-14: gh readiness, checked once at activation. Safe against
+			// the .max(8) schema cap because the fresh detector emits at most one
+			// entry and the skill-contract source at most three (review-3 nit).
+			// Written
+			// FIRST so it reserves one of the shared advisory slots; the append
+			// helper never evicts an existing entry, so a first-written entry
+			// survives. Fail-open — detection never gates activation.
+			const ghReadinessAdvisory = collectPrWorkflowGhReadinessAdvisory(
+				_test_exports.resolveGhBinary,
+			);
+			const activationAdvisories = ghReadinessAdvisory
+				? [ghReadinessAdvisory, ...skillContractAdvisories]
+				: skillContractAdvisories;
 			const timestamp = isoNow();
 			const feedbackTargetUrl =
 				mode === 'PR_FEEDBACK' && options.prUrl
@@ -1881,8 +1993,8 @@ export async function activatePrWorkflow(
 				mode,
 				activatedAt: timestamp,
 				updatedAt: timestamp,
-				...(skillContractAdvisories.length > 0
-					? { skillContractAdvisories }
+				...(activationAdvisories.length > 0
+					? { skillContractAdvisories: activationAdvisories }
 					: {}),
 				...(initialHead ? { prHeadSha: initialHead } : {}),
 				...(feedbackTargetUrl
@@ -2094,6 +2206,135 @@ export function latestPrReviewSubmitRejectionMessage(
 		if (journal[index]?.childSessionId === childSessionId) {
 			return journal[index]?.message;
 		}
+	}
+	return undefined;
+}
+
+/**
+ * Issue #3098: best-effort, fail-open journal of one rejected
+ * `write_pr_review_artifact` attempt onto the CALLER's own PR_REVIEW gate
+ * state (the tool is a controller tool invoked by the gate-owner session —
+ * no delegation parent-hop, unlike the #2859 discovery journal).
+ * Observability only — never changes the rejection outcome, never creates
+ * gate state for a session that has none (the pre-read outside the
+ * session-state lock means a non-gated caller gets no lock file either).
+ */
+export async function recordPrReviewVerdictRejection(
+	directory: string,
+	sessionID: string,
+	message: string,
+	attribution?: {
+		laneId?: string;
+		workflowLane?: string;
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): Promise<void> {
+	try {
+		const session = sessionID.trim();
+		if (!session) return;
+		const laneId = attribution?.laneId?.trim();
+		const workflowLane = attribution?.workflowLane?.trim();
+		const boundary = attribution?.boundary;
+		// Pre-read OUTSIDE withSessionStateMutation (same lock-pollution guard
+		// as the #2859 journal above).
+		const existing = await readPrWorkflowGateStateFromDisk(directory, session);
+		if (!existing || existing.mode !== 'PR_REVIEW') return;
+		// Same redaction as recordPrReviewSubmitRejection: the message embeds
+		// caller-controlled payload fragments, so credentials and secret-shaped
+		// strings must not persist durably in the gate-state journal.
+		const bounded = redactSecrets(
+			message.replace(
+				PUBLICATION_URL_CREDENTIALS_PATTERN,
+				'$1[REDACTED:url_credentials]@',
+			),
+		).slice(0, 300);
+		await withSessionStateMutation(directory, session, async () => {
+			const locked = await readPrWorkflowGateStateFromDisk(directory, session);
+			if (!locked || locked.mode !== 'PR_REVIEW') return;
+			const prior = locked.prReviewVerdictRejections ?? [];
+			// PRR-015 mirror: skip the append when this session's newest entry is
+			// byte-identical so retry loops cannot amplify gate-state writes.
+			const newestForSession = prior
+				.filter((entry) => entry.sessionId === session)
+				.at(-1);
+			if (
+				newestForSession?.message === bounded &&
+				newestForSession?.boundary === boundary
+			)
+				return;
+			const journal: PrReviewVerdictRejectionRecord[] = [
+				...prior,
+				{
+					sessionId: session,
+					...(laneId ? { laneId } : {}),
+					...(workflowLane ? { workflowLane } : {}),
+					...(boundary ? { boundary } : {}),
+					at: Date.now(),
+					message: bounded,
+				},
+			].slice(-MAX_PR_REVIEW_VERDICT_REJECTIONS);
+			await writeStateWhileLocked(directory, {
+				...locked,
+				prReviewVerdictRejections: journal,
+				updatedAt: isoNow(),
+			});
+		});
+	} catch {
+		// Fail-open observability: journaling must never change the rejection
+		// outcome the caller sees.
+	}
+}
+
+/**
+ * Issue #3098: latest journal message for a failing obligation, or undefined.
+ * Newest wins. Join keys are `workflowLane` (the declared obligation) and
+ * `laneId`; the recorded `sessionId` is the gate-owner caller (provenance),
+ * never a lane child session, so it is deliberately not a join key.
+ *
+ * The production writer only ever stamps `boundary` (the write args name the
+ * boundary, never a lane), so in practice the phase-scoped fallback below is
+ * what resolves: it reports the newest rejection recorded for the failing
+ * lane's PHASE, which is honest about being phase-scoped rather than
+ * lane-scoped. The lane-exact arms stay because a future attribution producer
+ * (or a hand-seeded state) can populate them.
+ */
+export function latestPrReviewVerdictRejectionForLane(
+	state: Pick<PrWorkflowGateState, 'prReviewVerdictRejections'>,
+	matchers: {
+		workflowLane?: string;
+		laneIds?: readonly string[];
+		boundary?: 'post_explorer' | 'post_reviewer' | 'post_critic';
+	},
+): string | undefined {
+	const journal = state.prReviewVerdictRejections;
+	if (!journal?.length) return undefined;
+	const laneIds = matchers.laneIds?.length
+		? new Set(matchers.laneIds)
+		: undefined;
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (!entry) continue;
+		if (matchers.workflowLane && entry.workflowLane === matchers.workflowLane)
+			return entry.message;
+		if (laneIds && entry.laneId && laneIds.has(entry.laneId))
+			return entry.message;
+	}
+	// Fallback tier 1: an entry journalled for the phase's boundary. The write
+	// args name the boundary, never the lane, so this is what resolves in
+	// production — phase-scoped, not lane-scoped.
+	if (matchers.boundary) {
+		for (let index = journal.length - 1; index >= 0; index--) {
+			const entry = journal[index];
+			if (entry?.boundary === matchers.boundary) return entry.message;
+		}
+	}
+	// Fallback tier 2 (weakest): a boundary-less entry — a write that never
+	// parsed far enough to name a boundary, e.g. a schema-rejected call. Still a
+	// real rejection for this phase, and reporting it beats letting it evict
+	// reachable entries unread.
+	for (let index = journal.length - 1; index >= 0; index--) {
+		const entry = journal[index];
+		if (entry && !entry.boundary) return entry.message;
 	}
 	return undefined;
 }
@@ -6957,12 +7198,13 @@ async function prunePrWorkflowBatchesForCapacity(
  *   per *lane* under the tier-L singleton-first precedence, and a reverse
  *   per-batch scan here would not always agree. A superset can only under-prune;
  * - any reviewer batch that contributed at least one claim to the **exhaustive**
- *   composition. Contribution is read from a full-window scan rather than from
- *   the memoized early-exit pass, so this durable decision never rests on the
- *   composition's performance heuristic (issue #1968 MUST-FIX 3 / FIX 5; the two
- *   agree under today's exit condition — see `composePrReviewPhaseVerdicts`).
- *   A non-contributing reviewer batch is provably unable to change any verdict —
- *   composition is
+ *   composition, or (issue #2906 review finding F-04) at least one ORDER
+ *   OBSERVATION the agreement labels read. Contribution is read from a
+ *   full-window scan rather than from the memoized early-exit pass, so this
+ *   durable decision never rests on the composition's performance heuristic
+ *   (issue #1968 MUST-FIX 3 / FIX 5; the two agree under today's exit
+ *   condition — see `composePrReviewPhaseVerdicts`). A non-contributing
+ *   reviewer batch is provably unable to change any verdict — composition is
  *   first-write-wins over a reverse scan, so a batch that claimed nothing at its
  *   own position cannot claim anything once the batches ahead of it are still
  *   there. That is a stronger warrant than inventory inequality and subsumes it:
@@ -6970,6 +7212,10 @@ async function prunePrWorkflowBatchesForCapacity(
  *   The warrant is about the composition as it stands now; if a later inventory
  *   change made a dropped batch eligible again, its claims are simply absent,
  *   which can only leave an item unclaimed and BLOCK — never admit a verdict.
+ *   The order-observation retention is the same argument one level up: the
+ *   observation map is first-write-wins per (item, order) over the same reverse
+ *   scan, so a batch that recorded an observation cannot be inert for the
+ *   labels even when it is inert for the claims.
  *
  * Pruning a reviewer batch would otherwise loosen one fail-closed check —
  * `reviewerSubagentSessionIds`, the ban on a critic lane reusing a reviewer's
@@ -7038,14 +7284,36 @@ function pruneWorkflowBatches(
 	}
 	// Exhaustive on purpose: the hot path stops as soon as every item is claimed,
 	// and "was not reached before the early exit" is not evidence of inertness.
+	const exhaustiveReviewerComposition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+		true,
+	);
 	const contributingReviewerBatchIds = new Set(
-		composePrReviewPhaseVerdicts(directory, state, 'reviewer', ctx, true)
-			.contributingBatchIds,
+		exhaustiveReviewerComposition.contributingBatchIds,
+	);
+	// Issue #2906 review finding F-04: a reviewer batch can be claim-inert yet
+	// still load-bearing — when the newer counterbalanced pass claims every
+	// item, the older pass contributes no claim but supplies the second marked
+	// order every agree/disagree label is computed from (the #2906
+	// agreement-only continuation in the adapter reads exactly that batch).
+	// Dropping it would degrade those labels to `single` while the prune's
+	// inventory-equality discharge stays green, silently erasing the
+	// order-agreement evidence. Retain every batch that recorded an order
+	// observation; a same-order older pass subsumed by a newer one records
+	// nothing and stays prunable.
+	const orderObservingReviewerBatchIds = new Set(
+		exhaustiveReviewerComposition.orderObservingBatchIds,
 	);
 	const survivingValidation = validationBatches.filter((batch) => {
 		if (batch.phase === 'council' || batch.phase === 'critic') return true;
 		if (newestBatchIdByPhase.get(batch.phase) === batch.batchId) return true;
-		return contributingReviewerBatchIds.has(batch.batchId);
+		return (
+			contributingReviewerBatchIds.has(batch.batchId) ||
+			orderObservingReviewerBatchIds.has(batch.batchId)
+		);
 	});
 
 	if (
@@ -7263,12 +7531,48 @@ export async function recordPrReviewMicroFamilyDispatch(
 	return nextState;
 }
 
+/**
+ * Issue #2906: the order-unstable item ids among `assignedItems`, derived from
+ * the composed reviewer claims. Sorted for deterministic receipts/prompts.
+ */
+function derivePrReviewOrderUnstableItemsForState(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx: PrReviewGateContext,
+	assignedItems: readonly string[],
+): string[] {
+	const assigned = new Set(assignedItems);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	return [...composition.claims.entries()]
+		.filter(
+			([itemId, claim]) =>
+				claim.orderAgreement === 'disagree' && assigned.has(itemId),
+		)
+		.map(([itemId]) => itemId)
+		.sort();
+}
+
 export async function recordPrReviewValidationBatch(
 	directory: string,
 	sessionID: string,
 	phase: PrReviewValidationPhase,
 	lanes: readonly PrWorkflowLaneSpec[],
-	options: { batchId: string; prHeadSha: string },
+	options: {
+		batchId: string;
+		prHeadSha: string;
+		/**
+		 * Issue #2906: reviewer batches only. The presentation order the dispatch
+		 * prompt was counterbalanced for (from `derivePrReviewPresentationOrder`).
+		 * When supplied and the re-derived ordinal disagrees, recording fails
+		 * closed so the prompt can never misrepresent the stamped receipt.
+		 */
+		expectedPresentationOrder?: 'A' | 'B';
+	},
 ): Promise<PrWorkflowGateState> {
 	let state = await bindPrWorkflowHead(directory, sessionID, options.prHeadSha);
 	if (state.mode !== 'PR_REVIEW') throw wrongModeError(state, 'PR_REVIEW');
@@ -7388,9 +7692,50 @@ export async function recordPrReviewValidationBatch(
 				retainedIds.has(id),
 			),
 		);
+	// Issue #2906: deterministic counterbalancing. The ordinal counts retained
+	// reviewer batches in the window EXCLUDING the batch being recorded —
+	// computed from `retained` before the append below — so it equals the value
+	// `derivePrReviewPresentationOrder` returned while the prompt was built:
+	// that derivation applies the same pure capacity prune under the same
+	// >= cap condition (issue #2906 review finding F-03), so a prune-shifted
+	// window can no longer wedge the two sides. A divergence that still reaches
+	// the guard means real state changed between derivation and recording; it
+	// fails closed and a re-derived dispatch recovers.
+	const retainedState: PrWorkflowGateState = {
+		...state,
+		prReviewValidationBatches: retained,
+	};
+	const presentationOrder =
+		phase === 'reviewer'
+			? prReviewPhaseWindow(retainedState, 'reviewer').length % 2 === 0
+				? 'A'
+				: 'B'
+			: undefined;
+	if (
+		phase === 'reviewer' &&
+		options.expectedPresentationOrder !== undefined &&
+		options.expectedPresentationOrder !== presentationOrder
+	) {
+		throw new Error(
+			`BLOCKED: PR_REVIEW reviewer presentation order derives as "${presentationOrder}" but the dispatch prompt was built for "${options.expectedPresentationOrder}"; re-derive the order and retry the dispatch`,
+		);
+	}
+	// Issue #2906: audit-only snapshot of the order-unstable items the critic
+	// prompt for this batch is flagged with (the prompt re-derives them live).
+	const orderUnstableItemIds =
+		phase === 'critic'
+			? derivePrReviewOrderUnstableItemsForState(
+					directory,
+					retainedState,
+					ctx,
+					normalizedLanes.flatMap((lane) => lane.reviewItemIds ?? []),
+				)
+			: undefined;
 	if (validatedInventory) {
 		coherence[batchId] = {
 			validatedInventory,
+			...(presentationOrder ? { presentationOrder } : {}),
+			...(orderUnstableItemIds?.length ? { orderUnstableItemIds } : {}),
 			...(reviewerItemBindings
 				? {
 						reviewerItemBindings,
@@ -7428,6 +7773,9 @@ export async function assertPrReviewValidationSettled(
 	gateContext?: PrReviewGateContext,
 ): Promise<PrWorkflowGateState> {
 	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	// Returned state: the N-of-M settlement branch persists a receipt + anchor
+	// digest, and callers must observe that state (issue #3101).
+	let stateOut: PrWorkflowGateState = state;
 	const ctx =
 		gateContext ?? (await createPrReviewGateContext(directory, state));
 	const declaredPhases = new Set(
@@ -7492,14 +7840,93 @@ export async function assertPrReviewValidationSettled(
 			ctx,
 		);
 		if (composed.unclaimed.length > 0) {
-			const named = composed.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
-			const overflow = composed.unclaimed.length - named.length;
-			throw new Error(
-				`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
-					(overflow > 0 ? ` (+${overflow} more)` : '') +
-					(composed.diagnostics.length > 0
-						? `; diagnostics: ${composed.diagnostics.join(' | ')}`
-						: ''),
+			// Issue #3101: N-of-M truthful verdict settlement. Before blocking,
+			// derive admissibility from durable controller-written terminality
+			// evidence (typed liveness class on the delegation records of every
+			// unclaimed item's owner lanes) plus an exhausted item-scoped retry
+			// budget. Silence, self-report, and empty owner sets keep blocking.
+			const boundPrHeadSha = state.prHeadSha;
+			if (!boundPrHeadSha) {
+				throw new Error(
+					'BLOCKED: PR_REVIEW settlement requires a bound PR head SHA',
+				);
+			}
+			const admission = deriveVerdictSettlementAdmission({
+				directory,
+				prHeadSha: boundPrHeadSha,
+				phase: requiredPhase,
+				window: prReviewPhaseWindow(state, requiredPhase),
+				unclaimed: composed.unclaimed,
+				parentSessionId: state.sessionID,
+			});
+			if (!admission.admitted) {
+				const named = composed.unclaimed.slice(
+					0,
+					MAX_UNCLAIMED_ITEMS_IN_MESSAGE,
+				);
+				const overflow = composed.unclaimed.length - named.length;
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
+						(overflow > 0 ? ` (+${overflow} more)` : '') +
+						(composed.diagnostics.length > 0
+							? `; diagnostics: ${composed.diagnostics.join(' | ')}`
+							: '') +
+						`; N-of-M settlement not admissible (${admission.reason}); re-dispatch the unclaimed items to exhaust the retry budget with controller-observed liveness evidence, or complete downgrade-only once admissible`,
+				);
+			}
+			const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
+			if (!runId) {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} N-of-M settlement requires a reserved pr-review run id to persist its disclosure receipt`,
+				);
+			}
+			const receipt = buildVerdictSettlementReceipt({
+				runId,
+				prHeadSha: boundPrHeadSha,
+				revisionDigest: ctx.revisionDigest,
+				phase: requiredPhase,
+				items: admission.items,
+			});
+			await persistVerdictSettlementReceipt(directory, receipt);
+			// Round-trip + anchor (issue #3101): the file just persisted must
+			// read back as a clean bounded file, and its sha256 becomes the
+			// durable consumption anchor — a receipt rewritten afterwards under
+			// the same head/revision identity fails closed at
+			// `admittedVerdictSettlementReceipt` (the #2383 disclosure-digest
+			// discipline applied to this artifact).
+			const persistedRead = readVerdictSettlementReceipt(
+				directory,
+				runId,
+				requiredPhase,
+			);
+			if (persistedRead.status !== 'ok') {
+				throw new Error(
+					`BLOCKED: PR_REVIEW ${requiredPhase} verdict-settlement receipt failed to persist as a readable bounded file (${persistedRead.status})`,
+				);
+			}
+			// The anchor write must be IDEMPOTENT per state revision: admission
+			// re-runs on every assert call for a settled-with-dead-items phase
+			// (composition still reports those items unclaimed), and persisting
+			// state unconditionally would bump the revision on every call —
+			// tripping the terminal-completion CAS guard. Skip when the digest
+			// already matches (the receipt content is deterministic per state).
+			if (
+				stateOut.prReviewVerdictSettlementDigests?.[requiredPhase] !==
+				persistedRead.rawSha256
+			) {
+				const settledState: PrWorkflowGateState = {
+					...stateOut,
+					updatedAt: isoNow(),
+					prReviewVerdictSettlementDigests: {
+						...(stateOut.prReviewVerdictSettlementDigests ?? {}),
+						[requiredPhase]: persistedRead.rawSha256,
+					},
+				};
+				await persistState(directory, settledState);
+				stateOut = settledState;
+			}
+			warn(
+				`PR_REVIEW ${requiredPhase} settled N-of-M over ${composed.claims.size} claimed item(s); ${admission.items.length} liveness-dead item(s) disclosed in the verdict-settlement receipt`,
 			);
 		}
 		// B1 (issue #1968): reaching here means this phase is now *treated as
@@ -7523,7 +7950,7 @@ export async function assertPrReviewValidationSettled(
 			);
 		}
 	}
-	return state;
+	return stateOut;
 }
 
 export async function declarePrFeedbackInventory(
@@ -10439,14 +10866,30 @@ export async function assertPrReviewArtifactBoundary(
 		state,
 		ctx,
 	);
-	const normalizedFindingIds = [...new Set(findingIds)].sort();
+	// Issue #3101: items disclosed dead by an admitted N-of-M reviewer
+	// settlement are exempt from exact-cover ONLY — the architect cannot
+	// produce a verdict for them, so no record is required (a record for a
+	// dead item is a named violation in the records-match gate below).
+	const reviewerDeadForCover = verdictSettlementEffectiveIdsForGate(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const coverableExpected = expectedFindingIds.filter(
+		(id) => !reviewerDeadForCover.has(id),
+	);
+	const nonDeadFindingIds = findingIds.filter(
+		(id) => !reviewerDeadForCover.has(id),
+	);
+	const normalizedFindingIds = [...new Set(nonDeadFindingIds)].sort();
 	if (
-		normalizedFindingIds.length !== findingIds.length ||
+		normalizedFindingIds.length !== nonDeadFindingIds.length ||
 		JSON.stringify(normalizedFindingIds) !==
-			JSON.stringify([...expectedFindingIds].sort())
+			JSON.stringify([...coverableExpected].sort())
 	) {
 		const actualSet = new Set(normalizedFindingIds);
-		const expectedSet = new Set(expectedFindingIds);
+		const expectedSet = new Set(coverableExpected);
 		const missing = [...expectedSet].filter((id) => !actualSet.has(id));
 		const extra = [...actualSet].filter((id) => !expectedSet.has(id));
 		const duplicates = [
@@ -10628,7 +11071,37 @@ export async function assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(
 						`assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(${boundary})`,
 					)
 				: undefined;
+		// Issue #3101: the disclosed-dead reviewer items (admitted N-of-M
+		// settlement, effective set) live only in the settlement receipt — a
+		// verdict-bearing record for them is a named violation, never an
+		// unvalidated entry in the findings ledger.
+		const reviewerDeadForMatch = verdictSettlementEffectiveIdsForGate(
+			directory,
+			state,
+			'reviewer',
+			ctx,
+		);
+		// Issue #3101 (critic-phase twin, PRR-003): a disclosed-dead CRITIC item
+		// is REQUIRED by exact-cover (it stays in the inventory) but settles as
+		// a writer-derived terminal CRITIC_UNAVAILABLE, never as a critic
+		// verdict — deriveLatestPrReviewCriticVerdicts returns nothing for it by
+		// construction, and the writer's settlement injection runs after this
+		// check. Without this arm the post_critic artifact is unwritable and the
+		// run can never reach terminal state for exactly the critic-dead
+		// population the settlement exists to serve.
+		const criticDeadForMatch =
+			boundary === 'post_critic'
+				? verdictSettlementEffectiveIdsForGate(directory, state, 'critic', ctx)
+				: new Set<string>();
 		for (const record of records) {
+			if (reviewerDeadForMatch.has(record.finding_id)) {
+				violations.push({
+					findingId: record.finding_id,
+					detail:
+						'disclosed-dead items carry no verdict-bearing record; they live only in the verdict-settlement receipt',
+				});
+				continue;
+			}
 			const reviewer = reviewerVerdicts.get(record.finding_id);
 			if (!reviewer) {
 				violations.push({
@@ -10648,6 +11121,37 @@ export async function assertPrReviewArtifactRecordsMatchAuthoritativeVerdicts(
 				reviewer.classification === 'UNVERIFIED'
 					? 'PENDING'
 					: reviewer.classification;
+			if (
+				boundary === 'post_critic' &&
+				criticDeadForMatch.has(record.finding_id)
+			) {
+				// Disclosed-dead critic item: the record must carry no
+				// model-authored critic attestation and must keep the reviewer's
+				// final disposition (the CRITIC_UNAVAILABLE settlement preserves
+				// it verbatim). The writer's settlement injection validates the
+				// same shape one layer later; keeping severity anchored to the
+				// reviewer row means a fabricated downgrade/upgrade cannot ride
+				// the settlement.
+				if (record.critic_status !== undefined) {
+					report(
+						record.finding_id,
+						'critic_status',
+						'(absent — the model never authors a critic status on a disclosed-dead critic item)',
+						`"${record.critic_status}"`,
+					);
+				}
+				if (record.status !== expectedStatus) {
+					report(
+						record.finding_id,
+						'status',
+						`"${expectedStatus}"`,
+						`"${record.status}"`,
+					);
+				}
+				reportSeverity(record, reviewer.severity);
+				reportRiskMetadata(record, reviewer);
+				continue;
+			}
 			if (boundary === 'post_reviewer') {
 				if (record.status !== expectedStatus) {
 					report(
@@ -11320,6 +11824,7 @@ const PrReviewCriticSettlementEvidenceSchema = z
 			'DOWNGRADED',
 			'DISPROVED',
 			'NEEDS_MORE_EVIDENCE',
+			'CRITIC_UNAVAILABLE',
 		]),
 	})
 	.passthrough();
@@ -11392,7 +11897,7 @@ interface PrReviewFindingPolicyAuthority {
  * pins the PR head and exact findings bytes, while the sidecar digest pins the
  * synthesized projection itself.
  */
-async function readAuthoritativeFindingPolicy(
+export async function readAuthoritativeFindingPolicy(
 	directory: string,
 	state: PrWorkflowGateState,
 ): Promise<PrReviewFindingPolicyAuthority> {
@@ -11426,9 +11931,17 @@ async function readAuthoritativeFindingPolicy(
 		'PR_REVIEW final findings artifact',
 	);
 	const findingsDigest = createHash('sha256').update(raw, 'utf8').digest('hex');
+	// Version mismatch gets its OWN message (issue #3101): a sidecar written by
+	// a different plugin version (rollback or stale-cache read) must not be
+	// misdiagnosed as a generic stale artifact — the version numbers name the
+	// actual mismatch. Still fail-closed in every direction.
+	if (receipt.version !== FINDING_POLICY_VERSION) {
+		throw new Error(
+			`BLOCKED: PR_REVIEW finding-policy route receipt version ${String(receipt.version)} does not match the current finding-policy version ${FINDING_POLICY_VERSION}; the sidecar was written by a different plugin version and cannot be trusted at this one`,
+		);
+	}
 	if (
 		receipt.kind !== 'pr_review_finding_policy' ||
-		receipt.version !== FINDING_POLICY_VERSION ||
 		receipt.sessionId !== state.sessionID ||
 		receipt.taskId !== runId ||
 		receipt.boundary !== 'post_critic' ||
@@ -11478,11 +11991,16 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	const findings = authority.policyFindings;
 	// Issue #2840: the report projection must carry the same degradation
 	// downgrade the completion gates enforce — a disclosed coverage degradation
-	// (dead family) excludes APPROVE from the reported permitted verdicts.
-	const disclosedDegradation = prReviewReceiptHasCoverageDegradations(
-		directory,
-		state.prReviewTriggerEvalPath,
-	);
+	// (dead family or dead verdict lane) excludes APPROVE from the reported
+	// permitted verdicts.
+	const disclosedDegradation =
+		prReviewReceiptHasCoverageDegradations(
+			directory,
+			state.prReviewTriggerEvalPath,
+			// Thread the memoized gate context: a fresh context here resolves the
+			// revision digest a second time and breaks the one-digest-per-pass
+			// threading contract pinned by pr-workflow-gate-digest-threading.
+		) || (await verdictSettlementDegradesReport(directory, state, ctx));
 	const permittedVerdicts = allowedPrReviewReportVerdicts(
 		settlement.kind,
 		findings,
@@ -11690,17 +12208,24 @@ async function assertPrReviewTerminalReady(
 				`BLOCKED: PR_REVIEW reviewer verdicts require critic coverage for: ${criticInventory.join(', ')}`,
 			);
 		}
+		// Ordering is load-bearing (issue #3101 PRR-018): the settlement assert
+		// above this comment persists the N-of-M disclosure receipt when the
+		// critic phase settles through admission. Deriving the authoritative
+		// settlements BEFORE that persist projected every receipt-covered item
+		// as nonterminal on the first invocation (CRITIC_RECEIPT_MISSING /
+		// CRITIC_SETTLEMENT_INCOMPLETE) while the same pass logged "settled
+		// N-of-M" — a false block that only self-healed on a second invocation.
+		// Preserve the phase-level diagnostic for a declared critic batch whose
+		// attempted rows are still nonterminal (for example,
+		// NEEDS_MORE_EVIDENCE). The no-batch case above intentionally remains the
+		// distinct critic-coverage diagnostic.
+		await assertPrReviewValidationSettled(directory, sessionID, 'critic', ctx);
 		authoritativeCriticSettlements = deriveAuthoritativeCriticSettlements(
 			directory,
 			state,
 			ctx,
 			criticInventory,
 		);
-		// Preserve the phase-level diagnostic for a declared critic batch whose
-		// attempted rows are still nonterminal (for example,
-		// NEEDS_MORE_EVIDENCE). The no-batch case above intentionally remains the
-		// distinct critic-coverage diagnostic.
-		await assertPrReviewValidationSettled(directory, sessionID, 'critic', ctx);
 		// Issue #2512: critic settlement is REDUCER-OWNED — the adapter derives
 		// valid settled receipts (UPHELD / DOWNGRADED / DISPROVED, each bound
 		// to the current authoritative reviewer row digest via
@@ -11735,9 +12260,22 @@ async function assertPrReviewTerminalReady(
 				reviewerRowDigest,
 			});
 		}
+		// Issue #3101: under an admitted critic-phase N-of-M settlement, the
+		// receipt-covered items are disclosed CRITIC_UNAVAILABLE (no critic
+		// receipt exists or is required for them) — narrow the reducer's
+		// required set to the surviving items so the disclosed death does not
+		// read as an unfulfilled critic obligation.
+		const criticSettlementEffective = verdictSettlementEffectiveIdsForGate(
+			directory,
+			state,
+			'critic',
+			ctx,
+		);
 		const criticOutcome = reducePrReviewEvent(state, {
 			type: 'critic_result_recorded',
-			criticRequiredFindingIds: criticInventory,
+			criticRequiredFindingIds: criticInventory.filter(
+				(itemId) => !criticSettlementEffective.has(itemId),
+			),
 			criticSettledReceipts: settledReceipts,
 		});
 		if (criticOutcome.status === 'rejected') {
@@ -12890,10 +13428,13 @@ export async function completePrWorkflow(
 		// it for COMPLETE only; every other kind is provably false.
 		let disclosedDegradation =
 			settlement.kind === 'COMPLETE' &&
-			prReviewReceiptHasCoverageDegradations(
+			(prReviewReceiptHasCoverageDegradations(
 				directory,
 				state.prReviewTriggerEvalPath,
-			);
+			) ||
+				// Thread the memoized ctx — a fresh gate context here resolves the
+				// digest again and breaks the one-digest-per-pass contract.
+				(await verdictSettlementDegradesReport(directory, state, ctx)));
 		// Issue #2512: coverage finalization is REDUCER-OWNED — the adapter
 		// dispatches `coverage_finalization_requested` and maps the typed
 		// rejections to the operator-facing BLOCKED messages the inline checks
@@ -12936,7 +13477,7 @@ export async function completePrWorkflow(
 			// rejections whose vocabulary the coverage kind alone explains.
 			if (code === 'degraded_disclosure_cannot_approve') {
 				throw new Error(
-					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
+					`BLOCKED: PR_REVIEW ${finalizationSettlement.kind} completion discloses a coverage degradation (dead family or dead verdict lane) and cannot report verdict APPROVE; got "${verdict}". Report REQUEST_CHANGES with the disclosed degradation surfaced in the report, or INCOMPLETE.`,
 				);
 			}
 			const allowedList = allowedPrReviewReportVerdicts(
@@ -13104,10 +13645,11 @@ export async function completePrWorkflow(
 			// preflight keep its own capture — an illegal verdict must fail fast
 			// before the expensive ladder).
 			if (ready.settlement.kind === 'COMPLETE') {
-				disclosedDegradation = prReviewReceiptHasCoverageDegradations(
-					directory,
-					readyState.prReviewTriggerEvalPath,
-				);
+				disclosedDegradation =
+					prReviewReceiptHasCoverageDegradations(
+						directory,
+						readyState.prReviewTriggerEvalPath,
+					) || (await verdictSettlementDegradesReport(directory, readyState));
 			}
 			dispatchCoverageFinalization(ready.settlement);
 			const finalFindingAuthority = await readAuthoritativeFindingPolicy(
@@ -13464,6 +14006,13 @@ export async function completePrWorkflow(
 }
 
 export const _test_exports = {
+	/**
+	 * Issue #3099 R6: `gh` availability seam. Read at ACTIVATION call time and
+	 * handed to the readiness service, so a test can pin presence or absence.
+	 * Seeded to the real resolver, so removing the property falls back to live
+	 * behavioural detection rather than to a null stub.
+	 */
+	resolveGhBinary,
 	// Issue #2601 (PRR-009): direct codec access so tests can pin the
 	// skillContractAdvisories schema cap independently of the append guard.
 	parseGateState: (data: unknown) => PrWorkflowGateStateSchema.safeParse(data),
@@ -13811,6 +14360,7 @@ bindPrReviewTranscriptAdapterHelpers({
 	batchMayContributeClaims,
 	recordsPassingBatchIntegrity,
 	loadArtifactPassingLaneIntegrity,
+	latestPrReviewVerdictRejectionForLane,
 });
 
 /**
@@ -14138,6 +14688,47 @@ function readOnlyArgumentPath(parent: string, key: string): string {
 	return parent ? `${parent}.${key}` : key;
 }
 
+/**
+ * Issue #3099 R4: enumerated read-only method vocabularies.
+ *
+ * `classifyReadOnlyToolArguments` used to apply ONE global vocabulary — literal
+ * GET/HEAD — to every read-only-gated tool, assuming a tool's `method` is always
+ * an HTTP verb. For a tool whose `method` is an enumerated OPERATION name that
+ * assumption is false and every value is rejected, so a tool the gate admits by
+ * name (`PR_REVIEW_READ_ONLY_TOOL_NAMES`) is made unusable. The repo even ships
+ * a skill — .opencode/skills/ci-fix-monitor/SKILL.md — instructing agents to
+ * call `mcp__github__pull_request_read` with `method: "get_check_runs"`, which
+ * the gate then hard-blocked whenever a PR_REVIEW gate was armed.
+ *
+ * Keyed by tool NAME because the GitHub MCP surface is runtime-injected: grep
+ * over src/ finds no occurrence of `github_pull_request_read` or
+ * `get_check_runs`, so there is no schema to read at build time.
+ *
+ * A tool with no entry here keeps the GET/HEAD-only default, so the fail-closed
+ * posture for every undeclared tool is unchanged.
+ */
+const PR_REVIEW_ENUMERATED_READ_METHODS = new Set([
+	'get',
+	'get_diff',
+	'get_status',
+	'get_files',
+	'get_commits',
+	'get_review_comments',
+	'get_reviews',
+	'get_comments',
+	'get_check_runs',
+]);
+
+const PR_REVIEW_TOOLS_WITH_ENUMERATED_READ_METHODS = new Set([
+	'github_pull_request_read',
+	'mcp__github__pull_request_read',
+]);
+
+function isDeclaredReadOnlyMethod(toolName: string, value: string): boolean {
+	if (!PR_REVIEW_TOOLS_WITH_ENUMERATED_READ_METHODS.has(toolName)) return false;
+	return PR_REVIEW_ENUMERATED_READ_METHODS.has(value.trim().toLowerCase());
+}
+
 function classifyReadOnlyToolArguments(
 	toolName: string,
 	value: unknown,
@@ -14170,13 +14761,24 @@ function classifyReadOnlyToolArguments(
 		);
 	}
 	if (keyTokens.some((token) => /^(?:method|verb)$/i.test(token))) {
-		return typeof value === 'string' && /^(?:GET|HEAD)$/i.test(value.trim())
-			? { safe: true }
-			: unsafeReadOnlyArgument(
-					path,
-					'HTTP method/verb must be GET or HEAD for a read-only tool',
-					value,
-				);
+		if (typeof value !== 'string') {
+			return unsafeReadOnlyArgument(
+				path,
+				'HTTP method/verb must be GET or HEAD for a read-only tool',
+				value,
+			);
+		}
+		// GET/HEAD for a tool whose method really is an HTTP verb, OR a value the
+		// tool itself declares as one of its read-only operations. The
+		// mutation-bearing ARGUMENT-NAME check above still runs first, so a read
+		// method alongside a `body` argument is still rejected.
+		if (/^(?:GET|HEAD)$/i.test(value.trim())) return { safe: true };
+		if (isDeclaredReadOnlyMethod(toolName, value)) return { safe: true };
+		return unsafeReadOnlyArgument(
+			path,
+			'HTTP method/verb must be GET or HEAD for a read-only tool',
+			value,
+		);
 	}
 	if (
 		keyTokens.length === 1 &&
@@ -14590,6 +15192,37 @@ function classifyPrWorkflowShellSyntax(
 		return { unsafe: true, reason: 'gh-api-jq-pipe' };
 	}
 	const quotedPipeToken = pipeTokens[0];
+	// Issue #3099 R5: a second, equally narrow operand class. `git grep -E`
+	// takes a regex PATTERN argument whose alternation is a literal `|`, exactly
+	// like a jq expression — and `git grep` is on this gate's own allowed read
+	// list, so rejecting it forced a workaround turn for a legitimate read.
+	//
+	// Narrowness, stated so it cannot be widened by accident:
+	//  - the subcommand must be literally `grep` under `git`, after any number
+	//    of `-C <dir>` forms and global git flags. `git commit -m "a|b"` fails
+	//    this walk and falls through to the jq arm below;
+	//  - `-E`/`--extended-regexp` must appear among the flag tokens, including
+	//    COMBINED short forms (`-nE`, `-inE`) — a bare `^-E$` test would reject
+	//    `git grep -nE "a|b"`;
+	//  - the admitted token must be the PATTERN OPERAND, the first non-flag
+	//    token after the flag prefix (POSIX getopt), NOT the token adjacent to
+	//    the flag. `git grep --extended-regexp -n "a|b"` puts the operand two
+	//    tokens later;
+	//  - the double-quote requirement carries over unchanged, with its original
+	//    rationale: apostrophes do not quote under cmd.exe, so requiring double
+	//    quotes keeps the accepted command safe for every executor behind
+	//    OpenCode's cross-platform shell tool.
+	// It runs AFTER the generic `pipeTokens` checks above, so a real unquoted
+	// outer pipe still fails earlier at the tokenizer's `|` rejection, and it
+	// widens nothing about `;`, `<`, `>`, `$(`, backticks or escaped quotes.
+	const gitGrepPattern = resolveGitGrepRegexPatternOperand(tokens);
+	if (
+		gitGrepPattern !== null &&
+		gitGrepPattern === quotedPipeToken &&
+		quotedPipeToken.pipeIsDoubleQuoted
+	) {
+		return { unsafe: false, reason: null };
+	}
 	if (!/^gh\s+api(?:\s|$)/i.test(compact)) {
 		return { unsafe: true, reason: 'gh-api-jq-pipe' };
 	}
@@ -14600,6 +15233,78 @@ function classifyPrWorkflowShellSyntax(
 		}
 	}
 	return { unsafe: true, reason: 'gh-api-jq-pipe' };
+}
+
+/**
+ * Resolve the extended-regex pattern operand of a `git grep -E` command.
+ * Returns null when the command is not `git … grep` with an extended-regex
+ * flag, or when no pattern operand follows the flag prefix.
+ */
+function resolveGitGrepRegexPatternOperand(
+	tokens: PrWorkflowShellToken[],
+): PrWorkflowShellToken | null {
+	if (tokens.length === 0 || tokens[0].value !== 'git') return null;
+	let index = 1;
+	// `-C <dir>`, `-C<dir>`, `-C=<dir>`, then global git flags.
+	while (index < tokens.length) {
+		const value = tokens[index].value;
+		if (/^--[\w-]+=/.test(value)) {
+			index += 1;
+			continue;
+		}
+		if (value === '-C') {
+			index += 2; // `-C <dir>` is two tokens
+			continue;
+		}
+		if (
+			value.startsWith('-C=') ||
+			(value.startsWith('-C') && value.length > 2)
+		) {
+			index += 1;
+			continue;
+		}
+		if (value === '-c') {
+			index += 2; // `-c <key>=<value>` is two tokens
+			continue;
+		}
+		if (value.startsWith('-C') && value.length > 2) {
+			index += 1;
+			continue;
+		}
+		if (value === '--') {
+			index += 1;
+			break;
+		}
+		if (value.startsWith('-')) {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+	if (tokens[index]?.value !== 'grep') return null;
+	index += 1;
+
+	let extendedRegexp = false;
+	let operand: PrWorkflowShellToken | null = null;
+	for (; index < tokens.length; index += 1) {
+		const token = tokens[index];
+		const value = token.value;
+		if (value === '--extended-regexp') {
+			extendedRegexp = true;
+			continue;
+		}
+		if (value.startsWith('--')) continue;
+		// Combined short flags: `-nE`, `-inE`. An `E` anywhere in a short-flag
+		// cluster selects extended regexp.
+		if (value.startsWith('-') && /^-\w+$/.test(value)) {
+			if (/[Ee]/.test(value.slice(1))) extendedRegexp = true;
+			continue;
+		}
+		operand = token;
+		break;
+	}
+	if (!extendedRegexp) return null;
+	return operand;
 }
 
 function hasUnsafeShellControlSyntax(command: string): boolean {
@@ -14617,7 +15322,7 @@ function describeShellSyntaxViolation(command: string): string | null {
 		case 'command-substitution':
 			return 'Reason: command-substitution syntax ($() or @()) is not allowed in this read-only gate.';
 		case 'gh-api-jq-pipe':
-			return 'Reason: literal `|` is only allowed inside a double-quoted `gh api --jq` value; single quotes do not protect pipes under cmd.exe, and every other shape is treated as compound shell syntax.';
+			return 'Reason: literal `|` is only allowed inside a double-quoted `gh api --jq` value or a double-quoted `git grep -E` pattern operand; single quotes do not protect pipes under cmd.exe, and every other shape is treated as compound shell syntax.';
 		default:
 			return 'Reason: compound-syntax (;, &&, |, <, >, backtick, or $()/@()). Run ONE command per call; a single leading `cd <dir> &&` and a trailing `2>&1` are tolerated for reads only.';
 	}
@@ -15527,6 +16232,72 @@ function derivePrReviewCandidateInventory(
 }
 
 /**
+ * Issue #3095: read-surface reuse of the derivation above for
+ * `pr_workflow_status`. The derivation itself stays single-sourced: every
+ * production caller is a validation/enforcement path that must keep throwing,
+ * so this wrapper exists only to thread the SAME result to a read-only status
+ * tool and to degrade fail-soft instead of blocking an observation. A status
+ * read must never fail the whole tool for an unbound head or an unreadable
+ * revision digest — the caller renders the `unavailable` arm (with the
+ * bounded reason) and still projects boundaries and lane coverage.
+ *
+ * Read-only by construction: it performs no writes and mutates no state.
+ * COST DISCLOSURE (not free): resolving the derivation context runs the
+ * revision-digest computation on every bound PR_REVIEW call — three bounded
+ * git processes plus a re-read/hash of every changed file
+ * (`createPrReviewGateContext` → `resolvePrWorkflowRevisionDigestForGate` →
+ * the workspace-snapshot digest path). An observation surface pays the same
+ * digest price an enforcement call would.
+ */
+export type PrReviewCandidateInventoryForStatus =
+	| { state: 'available'; inventory: string[] }
+	| { state: 'unavailable'; reason: string };
+
+const PR_REVIEW_STATUS_REASON_MAX_CHARS = 240;
+
+/**
+ * Bound an `unavailable`-arm reason before it leaves the gate. Error
+ * messages interpolate repository-controlled text (paths, refs, ids), so this
+ * strips the same character classes every status-side sanitizer strips —
+ * control characters, markdown backticks, and angle brackets — before the
+ * length cap. A reason that survives un-sanitized would let repository text
+ * inject markup into the operator-facing status payload.
+ */
+function boundPrReviewStatusReason(error: unknown): string {
+	const message =
+		error instanceof Error ? error.message : String(error ?? 'unknown error');
+	const cleaned = message
+		.replace(/[\p{Cc}]/gu, ' ')
+		.replace(/[`<>]/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return cleaned.length > PR_REVIEW_STATUS_REASON_MAX_CHARS
+		? `${cleaned.slice(0, PR_REVIEW_STATUS_REASON_MAX_CHARS)}…`
+		: cleaned;
+}
+
+export async function derivePrReviewCandidateInventoryForStatus(
+	directory: string,
+	state: PrWorkflowGateState,
+): Promise<PrReviewCandidateInventoryForStatus> {
+	if (!state.prHeadSha) {
+		return {
+			state: 'unavailable',
+			reason: 'active PR_REVIEW workflow is not bound to a PR head',
+		};
+	}
+	try {
+		const ctx = await createPrReviewGateContext(directory, state);
+		return {
+			state: 'available',
+			inventory: derivePrReviewCandidateInventory(directory, state, ctx),
+		};
+	} catch (error) {
+		return { state: 'unavailable', reason: boundPrReviewStatusReason(error) };
+	}
+}
+
+/**
  * Extract candidate ids from a discovery artifact's [CANDIDATE] rows. When
  * `scopeToLanes` is given (base-dimension sources credited for only a subset
  * of their owned dimensions), rows whose `lane` field is outside that set are
@@ -15835,9 +16606,129 @@ function batchMayContributeClaims(
 }
 
 /**
- * Reviewer claims only when the reviewer phase is item-complete. Preserves the
- * pre-existing fail-closed "empty map" semantics for an unsettled reviewer
- * phase, now derived from the same computation settlement uses.
+ * Issue #3101: read + identity-verify a durable N-of-M verdict-settlement
+ * receipt for a phase. Returns undefined on absent/invalid receipts, any
+ * identity mismatch (wrong run, wrong PR head, wrong worktree revision, body
+ * fields that disagree with the path-derived run/phase), or a sha256 anchor
+ * mismatch against the digest recorded in durable state at persist time —
+ * readers then keep the pre-existing fail-closed semantics.
+ */
+function admittedVerdictSettlementReceipt(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	expectedRevisionDigest: string,
+): PrReviewVerdictSettlementReceipt | undefined {
+	const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
+	if (!runId) return undefined;
+	const read = readVerdictSettlementReceipt(directory, runId, phase);
+	if (read.status !== 'ok') return undefined;
+	if (read.receipt.runId !== runId || read.receipt.phase !== phase) {
+		return undefined;
+	}
+	if (read.receipt.prHeadSha !== state.prHeadSha) return undefined;
+	if (read.receipt.revisionDigest !== expectedRevisionDigest) {
+		return undefined;
+	}
+	const anchoredDigest = state.prReviewVerdictSettlementDigests?.[phase];
+	if (!anchoredDigest || anchoredDigest !== read.rawSha256) {
+		return undefined;
+	}
+	return read.receipt;
+}
+
+/**
+ * The receipt only settles a phase when its EFFECTIVE set still covers EVERY
+ * currently-unclaimed item (an item claimed after the receipt was written, or
+ * a new unclaimed item, re-arms the fail-closed path rather than silently
+ * shrinking coverage).
+ */
+function settlementCoveringAllUnclaimed(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	unclaimed: readonly string[],
+	expectedRevisionDigest: string,
+): PrReviewVerdictSettlementReceipt | undefined {
+	if (unclaimed.length === 0) return undefined;
+	const receipt = admittedVerdictSettlementReceipt(
+		directory,
+		state,
+		phase,
+		expectedRevisionDigest,
+	);
+	if (!receipt) return undefined;
+	return effectiveVerdictSettlementItems(receipt, unclaimed).length ===
+		unclaimed.length
+		? receipt
+		: undefined;
+}
+
+/**
+ * The effective (receipt ∩ current-unclaimed) item ids of an admitted N-of-M
+ * verdict settlement for a phase, with exactly ONE receipt read per call site
+ * (the earlier inline pattern read the receipt twice per site). Empty when no
+ * settlement covers every currently-unclaimed item — the fail-closed default.
+ */
+function verdictSettlementEffectiveIdsForGate(
+	directory: string,
+	state: PrWorkflowGateState,
+	phase: PrReviewVerdictSettlementPhase,
+	ctx: PrReviewGateContext,
+): Set<string> {
+	const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+	const receipt = settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		phase,
+		composed.unclaimed,
+		ctx.revisionDigest,
+	);
+	if (!receipt) return new Set<string>();
+	return new Set(
+		effectiveVerdictSettlementItems(receipt, composed.unclaimed).map(
+			(item) => item.itemId,
+		),
+	);
+}
+
+/**
+ * Issue #3101: whether an admitted N-of-M verdict settlement currently
+ * downgrades the verdict matrix — OR-ed into the same
+ * `disclosedCoverageDegradation` boolean the reducer and the policy matrix
+ * consume (DEGRADED_DISCLOSED never approves).
+ */
+async function verdictSettlementDegradesReport(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx?: PrReviewGateContext,
+): Promise<boolean> {
+	const gateCtx = ctx ?? (await createPrReviewGateContext(directory, state));
+	return verdictSettlementDegradationActive({
+		directory,
+		runId: state.prReviewArtifactRunId ?? state.prReviewReservedRunId,
+		prHeadSha: state.prHeadSha,
+		revisionDigest: gateCtx.revisionDigest,
+		reviewerUnclaimed: composePrReviewPhaseVerdicts(
+			directory,
+			state,
+			'reviewer',
+			gateCtx,
+		).unclaimed,
+		criticUnclaimed: composePrReviewPhaseVerdicts(
+			directory,
+			state,
+			'critic',
+			gateCtx,
+		).unclaimed,
+	});
+}
+
+/**
+ * Reviewer claims only when the reviewer phase is item-complete — or settled
+ * N-of-M under an admitted, receipt-backed settlement whose effective set
+ * still covers every unclaimed item (issue #3101). Every other unsettled
+ * shape keeps the fail-closed empty map.
  */
 function authoritativeReviewerClaims(
 	directory: string,
@@ -15850,7 +16741,16 @@ function authoritativeReviewerClaims(
 		'reviewer',
 		ctx,
 	);
-	return composed.unclaimed.length === 0 ? composed.claims : new Map();
+	if (composed.unclaimed.length === 0) return composed.claims;
+	return settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		'reviewer',
+		composed.unclaimed,
+		ctx.revisionDigest,
+	)
+		? composed.claims
+		: new Map();
 }
 
 /**
@@ -15928,7 +16828,11 @@ function derivePrReviewCriticInventory(
 		.sort();
 }
 
-/** Thin projection of the composed critic phase. Empty unless item-complete. */
+/**
+ * Thin projection of the composed critic phase. Empty unless item-complete —
+ * or settled N-of-M under an admitted, receipt-backed settlement covering
+ * every unclaimed critic item (issue #3101).
+ */
 function deriveLatestPrReviewCriticVerdicts(
 	directory: string,
 	state: PrWorkflowGateState,
@@ -15940,7 +16844,18 @@ function deriveLatestPrReviewCriticVerdicts(
 		'critic',
 		ctx,
 	);
-	if (composed.unclaimed.length > 0) return new Map();
+	if (
+		composed.unclaimed.length > 0 &&
+		!settlementCoveringAllUnclaimed(
+			directory,
+			state,
+			'critic',
+			composed.unclaimed,
+			ctx.revisionDigest,
+		)
+	) {
+		return new Map();
+	}
 	return new Map(
 		[...composed.claims].map(([itemId, claim]) => [
 			itemId,
@@ -15962,8 +16877,29 @@ function deriveAuthoritativeCriticSettlements(
 	criticInventory: readonly string[],
 ): Array<{ findingId: string; terminal: boolean; status: CriticOutcome }> {
 	const verdicts = deriveLatestPrReviewCriticVerdicts(directory, state, ctx);
+	// Issue #3101: under an admitted critic-phase N-of-M settlement, a
+	// receipt-covered item with no critic verdict projects to a terminal,
+	// disclosed CRITIC_UNAVAILABLE disposition (the finding keeps its reviewer
+	// verdict; it is never a synthesized UPHELD/DOWNGRADED/DISPROVED).
+	const criticSettlement = verdictSettlementEffectiveIdsForGate(
+		directory,
+		state,
+		'critic',
+		ctx,
+	);
+	const unavailableIds = criticSettlement;
 	return criticInventory.map((findingId) => {
 		const verdict = verdicts.get(findingId);
+		if (
+			unavailableIds.has(findingId) &&
+			(!verdict || verdict.status === 'NEEDS_MORE_EVIDENCE')
+		) {
+			return {
+				findingId,
+				terminal: true,
+				status: 'CRITIC_UNAVAILABLE' as CriticOutcome,
+			};
+		}
 		if (!verdict || verdict.status === 'NEEDS_MORE_EVIDENCE') {
 			return {
 				findingId,
@@ -15984,6 +16920,82 @@ function deriveAuthoritativeCriticSettlements(
 			status: 'NEEDS_MORE_EVIDENCE',
 		};
 	});
+}
+
+/**
+ * Issue #3101: the per-item disclosure rows of admitted N-of-M verdict
+ * settlements (both phases, effective sets), for additive tool-response echoes.
+ */
+export async function readPrReviewVerdictSettlementReceiptItems(
+	directory: string,
+	sessionID: string,
+): Promise<
+	Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}>
+> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const rows: Array<{
+		itemId: string;
+		sourceBatchId: string;
+		sourceLaneId: string;
+		disposition: string;
+		evidenceClass: string;
+		terminalStatus: string;
+	}> = [];
+	for (const phase of ['reviewer', 'critic'] as const) {
+		const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+		const receipt = settlementCoveringAllUnclaimed(
+			directory,
+			state,
+			phase,
+			composed.unclaimed,
+			ctx.revisionDigest,
+		);
+		if (!receipt) continue;
+		for (const item of effectiveVerdictSettlementItems(
+			receipt,
+			composed.unclaimed,
+		)) {
+			rows.push({ ...item });
+		}
+	}
+	return rows;
+}
+
+/**
+ * Issue #3101: the effective (receipt ∩ current-unclaimed) item ids of an
+ * admitted N-of-M verdict settlement for a phase; empty when no covering
+ * settlement exists. Consumers: the artifact writer's critic-settlement
+ * injection, the exact-cover exemption, and the tool-response echoes.
+ */
+export async function readPrReviewVerdictSettlementEffectiveIds(
+	directory: string,
+	sessionID: string,
+	phase: PrReviewVerdictSettlementPhase,
+): Promise<ReadonlySet<string>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+	const receipt = settlementCoveringAllUnclaimed(
+		directory,
+		state,
+		phase,
+		composed.unclaimed,
+		ctx.revisionDigest,
+	);
+	if (!receipt) return new Set<string>();
+	return new Set(
+		effectiveVerdictSettlementItems(receipt, composed.unclaimed).map(
+			(item) => item.itemId,
+		),
+	);
 }
 
 /** Read the durable critic settlement projection used by terminal readiness. */
@@ -16038,13 +17050,16 @@ function deriveLatestPrReviewReviewerVerdicts(
  * unchallenged, with the only surface symptom a downstream
  * `no authoritative reviewer verdict` that names a consequence, not the cause.
  *
- * Composition currently makes this unreachable by construction: settlement *is*
+ * Under plain composition this is unreachable by construction: settlement *is*
  * `unclaimed.length === 0` over the very map derivation projects, and claims are
  * filtered to `requiredInventory`, so `unclaimed === []` implies the map covers
- * every required item. This assertion deliberately does **not** rely on that
- * adjacency. It states the property directly so a future refactor that re-splits
- * settlement from derivation fails loudly at the gate instead of silently
- * skipping the critic phase.
+ * every required item. Under an admitted N-of-M verdict settlement (issue
+ * #3101) a settled phase can still carry unclaimed items, and this guard
+ * early-returns for them — on that path the settlement receipt, not this
+ * assertion, is the coverage proof. The property check still stands for every
+ * plain-composition settle so a future refactor that re-splits settlement from
+ * derivation fails loudly at the gate instead of silently skipping the critic
+ * phase.
  *
  * Fail-closed and always on; never downgraded to a warning, because the failure
  * it catches is invisible in the passing direction. Pure over values the caller
@@ -16142,6 +17157,115 @@ export async function readAuthoritativePrReviewCriticVerdicts(
 }
 
 /**
+ * Issue #2906: the presentation order the NEXT reviewer batch will be
+ * counterbalanced into — 'A' when the reviewer window holds an even number of
+ * batches, 'B' when odd. Pure function of the persisted window state; the
+ * dispatch tool derives it before prompt assembly and passes the same value to
+ * `recordPrReviewValidationBatch` as `expectedPresentationOrder`, which
+ * re-derives and fails closed on divergence.
+ *
+ * Issue #2906 review finding F-03: at the `MAX_WORKFLOW_BATCHES` cap the
+ * record guard counts the window of the PRUNED state (its read-prune-append
+ * transaction applies `prunePrWorkflowBatchesForCapacity` before deriving the
+ * stamped ordinal), while this derivation used to count the unpruned persisted
+ * window. When the prune flipped the window parity the guard threw — before
+ * `persistState`, so the prune was never durable — and every retry re-derived
+ * the same divergent value: a permanent liveness wedge that failed closed.
+ * This derivation therefore applies the SAME pure prune under the SAME
+ * >= cap condition, so both sides count the identical window. The prune is
+ * pure with respect to durable state (it reads artifacts and returns a
+ * candidate state; only the record path persists it), so running it here
+ * cannot violate the BL-6 single-transaction rule. Every prune-abort path
+ * (inventory inequality, unreadable delegation store, ledger overflow) returns
+ * the state unchanged here AND inside the record guard, so the two sides agree
+ * on those paths as well; a divergence that still reaches the guard means the
+ * state genuinely changed between derivation and recording, which fails closed
+ * and is recoverable by re-deriving.
+ */
+export async function derivePrReviewPresentationOrder(
+	directory: string,
+	sessionID: string,
+): Promise<'A' | 'B'> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const previous = state.prReviewValidationBatches ?? [];
+	const effective =
+		previous.length >= MAX_WORKFLOW_BATCHES
+			? await prunePrWorkflowBatchesForCapacity(directory, state, undefined)
+			: state;
+	return prReviewPhaseWindow(effective, 'reviewer').length % 2 === 0
+		? 'A'
+		: 'B';
+}
+
+/**
+ * Issue #2906: every currently-composed reviewer item whose verdict flipped
+ * across counterbalanced presentation orders (`orderAgreement: 'disagree'`).
+ * The critic dispatch tool renders these as `order_unstable_item_ids` so the
+ * critic prioritizes them.
+ */
+export async function derivePrReviewOrderUnstableItems(
+	directory: string,
+	sessionID: string,
+): Promise<string[]> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	// The order-unstable ids are STAMPED AT RECORD TIME onto the CRITIC batch's
+	// coherence record (the critic record is the only writer — see
+	// recordPrReviewValidationBatch), so that stamp is the receipt-of-record
+	// for what a critic dispatch is about to be told. Prefer the newest
+	// critic-phase stamp, and recompute from the composed claims only when no
+	// stamped set exists yet (pre-stamping batches, or a critic dispatch that
+	// precedes its own record). Reading the stamp is therefore never stale
+	// relative to the composition: both derive from the same window.
+	const newestStampedBatchId = [...(state.prReviewValidationBatches ?? [])]
+		.reverse()
+		.find(
+			(batch) =>
+				(state.prReviewBatchCoherence?.[batch.batchId]?.orderUnstableItemIds
+					?.length ?? 0) > 0,
+		)?.batchId;
+	const stamped = newestStampedBatchId
+		? state.prReviewBatchCoherence?.[newestStampedBatchId]?.orderUnstableItemIds
+		: undefined;
+	if (stamped && stamped.length > 0) return [...new Set(stamped)].sort();
+	return [...composition.claims.entries()]
+		.filter(([, claim]) => claim.orderAgreement === 'disagree')
+		.map(([itemId]) => itemId)
+		.sort();
+}
+
+/**
+ * Issue #2906: the authoritative per-item order-agreement map for the findings
+ * writer — the same reader shape as `readAuthoritativePrReviewCriticVerdicts`,
+ * so a model-supplied `order_agreement` on a findings row can be cross-checked
+ * against the composed reviewer claims instead of being taken on trust.
+ */
+export async function readAuthoritativePrReviewOrderAgreement(
+	directory: string,
+	sessionID: string,
+): Promise<Map<string, 'agree' | 'disagree' | 'single'>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const agreements = new Map<string, 'agree' | 'disagree' | 'single'>();
+	for (const [itemId, claim] of composition.claims) {
+		if (claim.orderAgreement) agreements.set(itemId, claim.orderAgreement);
+	}
+	return agreements;
+}
+
+/**
  * The critic-coverage gate's input, with the "empty" case made provable.
  *
  * `completePrWorkflow` and the `post_critic` artifact boundary both branch on
@@ -16178,14 +17302,28 @@ function derivePrReviewCriticInventoryForCoverageGate(
 		ctx,
 	);
 	if (reviewer.unclaimed.length > 0) {
-		const named = reviewer.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
-		const overflow = reviewer.unclaimed.length - named.length;
-		throw new Error(
-			`BLOCKED: PR_REVIEW internal invariant violated at ${origin}: the critic-coverage decision requires a settled reviewer phase, ` +
-				`but ${reviewer.unclaimed.length} reviewer item(s) lack an authenticated verdict; an unsettled reviewer phase derives an empty ` +
-				`critic inventory, which would skip critic coverage instead of demanding it; unsettled reviewer items: ${named.join(', ')}` +
-				(overflow > 0 ? ` (+${overflow} more)` : ''),
-		);
+		// Issue #3101: an admitted, receipt-backed N-of-M reviewer settlement
+		// whose effective set still covers every unclaimed item settles the
+		// phase truthfully — the partial reviewer map still derives the critic
+		// inventory over the surviving items. Anything else keeps blocking.
+		if (
+			!settlementCoveringAllUnclaimed(
+				directory,
+				state,
+				'reviewer',
+				reviewer.unclaimed,
+				ctx.revisionDigest,
+			)
+		) {
+			const named = reviewer.unclaimed.slice(0, MAX_UNCLAIMED_ITEMS_IN_MESSAGE);
+			const overflow = reviewer.unclaimed.length - named.length;
+			throw new Error(
+				`BLOCKED: PR_REVIEW internal invariant violated at ${origin}: the critic-coverage decision requires a settled reviewer phase, ` +
+					`but ${reviewer.unclaimed.length} reviewer item(s) lack an authenticated verdict; an unsettled reviewer phase derives an empty ` +
+					`critic inventory, which would skip critic coverage instead of demanding it; unsettled reviewer items: ${named.join(', ')}` +
+					(overflow > 0 ? ` (+${overflow} more)` : ''),
+			);
+		}
 	}
 	return derivePrReviewCriticInventory(directory, state, ctx);
 }
@@ -18021,6 +19159,17 @@ export interface PrWorkflowGateRecoveryRead {
 	 * availability one.
 	 */
 	armedShapeUnreadable: boolean;
+	/**
+	 * true when the salvage reconstructed ONLY the abort-relevant fields and
+	 * every `prReview*` projection field (base dispatches, artifact
+	 * boundaries, run id, findings path, settlement digests) was dropped
+	 * because the shadow bytes failed schema validation. The status tool uses
+	 * this to mark its derived PR_REVIEW sections `unavailable` instead of
+	 * reporting healthy-but-empty coverage — an absent field on a salvaged
+	 * state proves nothing about the workflow. Present only when true; a
+	 * schema-valid shadow (or an ordinary healthy read) keeps full fidelity.
+	 */
+	prReviewProjectionDropped?: boolean;
 }
 
 /**
@@ -18248,5 +19397,8 @@ export async function readPrWorkflowGateStateForRecovery(
 		disclosure,
 		revisionSalvageable: salvagedRevision.success,
 		armedShapeUnreadable,
+		// Every prReview* field was dropped by this minimal reconstruction; the
+		// status projection must not read their absence as "no dispatches yet".
+		prReviewProjectionDropped: true,
 	};
 }
