@@ -599,6 +599,15 @@ export const PrReviewFindingSchema = z
 			.array(z.enum(PR_REVIEW_RISK_TAGS))
 			.max(PR_REVIEW_RISK_TAGS.length)
 			.optional(),
+		/**
+		 * Issue #2906: whether this finding's reviewer verdict was stable across
+		 * the counterbalanced presentation orders. Model-supplied per the skill,
+		 * enum-validated, and cross-checked against the composed reviewer claims
+		 * at write time (`readAuthoritativePrReviewOrderAgreement`): a supplied
+		 * value that contradicts the composed one, or an affirmative
+		 * 'agree'/'disagree' with no composed authority, fails closed.
+		 */
+		order_agreement: z.enum(['agree', 'disagree', 'single']).optional(),
 	})
 	.strict()
 	.superRefine((value, ctx) => {

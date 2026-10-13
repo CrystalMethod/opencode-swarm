@@ -125,6 +125,41 @@ const DECLARED_SITES: DeclaredSite[] = [
 			'and src/config/lane-context.ts pre-resolves permissions for that lane instance.',
 	},
 	{
+		file: 'src/host/v2/session-client.ts',
+		directoryExpr: 'stash.directory',
+		classification: 'same-instance',
+		note:
+			'#3169 Phase 2 v2 session-client shim, the DEFERRED placeholder create ' +
+			'(prompt-time). stash.directory is the v1 caller query.directory, re-issued ' +
+			'verbatim as the v2 create location.directory. Only same-directory parented ' +
+			'creates and parentless creates reach this site: a CONFIRMED parent-directory ' +
+			'divergence (the worktree-isolation lane shape) is routed to the EAGER site ' +
+			'declared below since #3169 Phase 3, and an unverifiable parent placement is ' +
+			'refused before any create. A parentless create with a foreign directory would ' +
+			'inherit the classification of its v1 call site (each of which is declared in ' +
+			'this inventory); v2 permission-partition behavior is a recorded ' +
+			'live-verification item on #3169.',
+	},
+	{
+		file: 'src/host/v2/session-client.ts',
+		directoryExpr: 'directory',
+		classification: 'foreign',
+		disposition: 'lane-permission-handled',
+		note:
+			'#3169 Phase 3 eager parentless lane create. Reached only on a CONFIRMED ' +
+			'parent-directory divergence; `directory` is the validated v1 caller ' +
+			'query.directory. Receives BOTH value classes: swarm worktree lane paths ' +
+			'(worktree-isolation handle.worktreePath — the lane directory resolves in its ' +
+			'own instance, where the plugin config hook pre-resolves lane permissions via ' +
+			'src/config/lane-permissions.ts, same as the v1 lane sites above) and, for ' +
+			'factory-from-lane callers, plugin-root directories (same-instance VALUES ' +
+			'arriving at this foreign-capable site; the disposition covers the lane case ' +
+			'and this sentence names the other). The create is parentless by design ' +
+			'(Phase 0 C1: a parented child would inherit the parent directory and ignore ' +
+			'the requested one); placement is verified post-create and mismatches are ' +
+			'removed and fail closed.',
+	},
+	{
 		file: 'src/hooks/full-auto-intercept.ts',
 		directoryExpr: 'directory',
 		classification: 'same-instance',

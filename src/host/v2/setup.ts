@@ -107,6 +107,10 @@ import {
 	clearV2AgentTransformSurface,
 	registerV2AgentTransformSurface,
 } from './model-apply';
+import {
+	clearV2SessionClientState,
+	createV2SessionClient,
+} from './session-client';
 import { registerV2Tools } from './tools';
 import type { V1HooksSubset, V2PluginContext, V2Registration } from './types';
 
@@ -169,11 +173,12 @@ export async function openCodeSwarmV2Setup(
 	const state: CollectedState = { registrations: [] };
 
 	// v1 PluginInput view — the init core consumes only `directory` and
-	// `client`; the v2 Context carries no OpencodeClient, so background
-	// managers take their client-absent paths (per-consumer dispositions in
-	// docs/host/v2-hook-inventory.md).
+	// `client`. #3169 Phase 2: the session-client shim bridges the v2
+	// `ctx.session` domain into the v1 client subset Epic's dispatch paths use
+	// (feature-detected; a host lacking the required surface keeps
+	// `undefined`, preserving every client-absent path).
 	const input = {
-		client: undefined,
+		client: createV2SessionClient(ctx),
 		directory,
 		worktree: directory,
 	} as unknown as Parameters<V2SetupDependencies['runInit']>[0];
@@ -278,6 +283,11 @@ export async function openCodeSwarmV2Setup(
 
 	return async function cleanupV2Plugin(): Promise<void> {
 		if (typeof state.pumpStop === 'function') state.pumpStop();
+		// #3169 Phase 2: drop the shim's bounded registries immediately after
+		// the pump stop flag — an in-flight pump iteration can still record one
+		// error envelope afterwards; that bounded residue is re-cleared on the
+		// next cleanup (documented in the trace).
+		clearV2SessionClientState();
 		clearV2AgentTransformSurface();
 		for (const registration of state.registrations) {
 			try {

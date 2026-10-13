@@ -67,3 +67,15 @@ Before declaring the issue ready:
 - [ ] Publication (commit/push/PR) followed the repo's canonical publish protocol.
 - [ ] Merge itself was not performed by this skill; an explicit, quoted, SHA-bound user approval is recorded (`10b-merge-approval.md`).
 - [ ] PR-ready summary is complete.
+
+## Contract addendum (2026-10-12)
+
+- **Closure reconciliation.** Closure is a reconciliation against the final
+  PUBLISHED artifacts: every requirement and every source finding keeps a
+  stable identity through to the closure ledger; each disposition names what
+  was actually discharged (a mutant identity, a file, a published sentence)
+  and is grep-verified against the artifact it claims; any partial closure
+  carries explicit deferment authority (a filed follow-up issue or a quoted
+  user decision). A ledger that keeps the FIXED label while the obligation
+  changed shape is a false closure even when the code is correct, and a
+  mutation identity must never be substituted between obligation and proof.

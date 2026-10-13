@@ -3,7 +3,7 @@ name: swarm-pr-review
 audience: swarm-plugin
 description: Run a graph-guided, tool-augmented PR review using context packing, parallel exploration, mandatory repository-agnostic risk-family coverage with dispatch scaled to diff size and risk, independent reviewer validation, critic challenge, and metrics writeback. Use for deep pull request review with low false-positive tolerance and high recall in any repository, on any agent harness (structured lane controller, native parallel subagents, or single-context sequential passes).
 disable-model-invocation: true
-swarm-contract-digest: a191a66d5a4d
+swarm-contract-digest: 66db247ce302
 ---
 
 # /swarm-pr-review
@@ -167,7 +167,7 @@ receipt; persist post-explorer findings; run reviewers;
 run critics; then persist the final artifact and complete the workflow. Transcript
 `[CANDIDATE]` / `[CLEAN]` rows are deprecated legacy compatibility only for
 lanes whose snapped `pr_review_legacy_transcript_compatibility` contract
-explicitly enables them.
+explicitly enables them. Candidate rows are defect claims only — never verification notes or INFO-severity confirmations (see `references/prompt-templates.md`, ## Contract addendum (2026-10-12)).
 The **initial** micro dispatch MUST supply the complete trigger-evaluation
 ledger; that dispatch freezes it for the session.
 Any subsequent micro batch in that same session MAY omit `trigger_evaluation`
@@ -1444,24 +1444,25 @@ Reviewer output format:
 [REVIEWED] | item_id | classification | evidence_type | severity | introduced_by_pr | file:line | rationale | probe | reviewer_notes | risk_impact | risk_tags
 ```
 
-For the mechanically derived `CLEAN-REVIEW` sentinel, use the same exact row
-with `DISPROVED | STRUCTURALLY_PROVEN | NONE | UNKNOWN | N/A` and concrete
-rationale/probe/reviewer fields; the sentinel means the reviewer independently
-found no surviving actionable candidate, not that reviewer validation was
-skipped.
+CLEAN-REVIEW sentinel and DISPROVED/PRE_EXISTING row details: see
+`references/parser-dry-run.md`.
 
 Every reviewer response must end with one parseable `[REVIEWED]` row per
 assigned candidate. A malformed `[REVIEWED]` row is not a verdict: re-dispatch
 with the exact contract (max 2), then mark the reviewer dimension BLOCKED if no
 valid row returns.
 
-`DISPROVED` reviewer rows must use `NONE` for `final_severity`. `PRE_EXISTING`
-findings must include the base-branch evidence if available.
-
 After reviewer lanes settle, persist the post-reviewer finding ledger before
 critic routing or synthesis. The artifact must preserve `CONFIRMED`,
 `DISPROVED`, `PRE_EXISTING`, and still-`PENDING` records with reviewer IDs and
 next actions.
+
+Counterbalanced reviewer passes (#2906): when the candidate inventory holds more
+than one item, dispatch the reviewer phase as two batches over the same inventory;
+the controller alternates presentation order A (canonical) / B (reversed), stamps
+`presentation_order` on each batch receipt, and marks each merged verdict
+`order_agreement` (agree/disagree/single); unstable items are auto-flagged to the
+critic and the report marks and counts them. Detail: references/counterbalancing.md.
 
 ---
 
