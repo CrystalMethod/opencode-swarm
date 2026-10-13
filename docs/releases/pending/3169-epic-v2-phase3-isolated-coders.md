@@ -81,6 +81,11 @@ phase implements it inside the shim.
 - The epic ENTRY POINT stays double-gated on v2 (`human-only` toolPolicy + no v2 command
   dispatch); enabling, docs, and the dual-host CI lane are Phase 4.
 
+  > **Superseded in part by `3169-epic-v2-phase4-command-dispatch.md` (same release).** The
+  > "no v2 command dispatch" half is closed — the Phase 4 dispatch landed and the epic entry
+  > point is open on OpenCode 2. The dual-host CI lane remains with #2910, and the
+  > live-host verification legs remain open on #3169.
+
 ## Migration
 
 No user action. v1 hosts are untouched.

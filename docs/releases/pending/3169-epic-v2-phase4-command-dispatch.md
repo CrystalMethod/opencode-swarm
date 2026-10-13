@@ -56,8 +56,18 @@ on code path provenance instead of prompt-text markers a model could replay.
   1–3): (a) the TUI command `prompt.text` carries arguments only (the `$ARGUMENTS`
   convention both the dispatch and the fallback share); (b) no model-reachable surface
   invokes a `CommandDefinition.execute` (the vendored `SessionDomain.command` is
-  deliberately omitted from the session-client shim's subset); (c) a full epic journey
-  (start → waves → phase review → close) on v2.
+  deliberately omitted from the session-client shim's subset) — the human-only property
+  rests on this host contract, and the plugin itself sends model-controlled text through
+  the session prompt surface, so this leg is load-bearing; (c) a full epic journey
+  (start → waves → phase review → close) on v2; (d) whether the host also submits the
+  user's original typed line after `execute` resolves is not yet live-verified (the
+  dispatched text and the typed line are byte-identical for the default templates, so a
+  duplication would be invisible in the Phase-1 A/B).
+- The fixed 300 s dispatch budget is not cancellation: a handler that legitimately runs
+  longer (commands that make sequential model dispatches — `review`, `harness-opt` — can
+  need more than 2×120 s) keeps running past the notice, its eventual output is not
+  delivered, and re-running is the remedy. Handlers carry their own confirmation gates
+  and `startEpic` re-entry is serialized and idempotent.
 - The dual-host CI lane that would run the Epic smoke on OpenCode 2 is owned by #2910.
 - Phase 3's disclosed registry degradation stands (a live eager lane record can be
   FIFO-evicted after 64 later insertions).
