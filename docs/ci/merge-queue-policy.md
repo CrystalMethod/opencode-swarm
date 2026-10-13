@@ -31,14 +31,14 @@ missing, stale, mismatched, renamed, or event-skipped required contexts. The
 `drift` remains an intended-required notice until an authorized operator has
 observed its merge-group runs and promotes it in active ruleset `17809658`.
 The current capture deliberately separates facts: `captureSha` pins the
-external workflow/event observation to base `b21cdce17b8731143ed5fab7fdf32dd8ad5f7a7f`,
-where the pinned Contents blob for `drift-check.yml` has no `merge_group`, while
-the proposed local workflow has the trigger and is checked by its separate
-local hash. The capture includes concrete CI and PR Standards merge-group run
-receipts `34639685905` and `34639685670`. Therefore the missing external drift
-event is a visible nonblocking promotion divergence; missing events for any
-already-required context remain blocking, and the local proposed workflow must
-still carry the new trigger.
+external workflow/event observation to base `012c4e40db4a63dd9b771cb99d57c565949d2931`,
+where the pinned Contents blob for `drift-check.yml` already declares the
+`merge_group` trigger, yet the run map records no successful drift merge-group
+run at that capture. The capture includes concrete CI and PR Standards
+merge-group run receipts `38204222229` and `38204222210`. Therefore the
+missing external drift run is a visible nonblocking promotion divergence;
+missing events for any already-required context remain blocking, and the local
+proposed workflow must still carry the trigger.
 
 The merge-group release-please ride-along is intentional: the guard uses the
 anchored head commit's release predicate, not the user who queued the group.

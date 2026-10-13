@@ -58,6 +58,8 @@ const MODULE_COUNTER_RE =
  *   shadow    — test-only in-memory shadow synced FROM the durable allocator
  */
 const CLASSIFIED: Record<string, string> = {
+	'src/host/v2/session-client.ts':
+		'ordering: placeholderCounter sequences placeholder minting; the v2shim-<n>-<random> ids ARE persisted by v2 callers (dispatch_lanes writes them as background-delegations correlationId/subagentSessionId), but durable uniqueness across restarts comes from the random suffix, never the counter — the host-minted session id is tracked only in the in-session placeholder map',
 	'src/telemetry.ts': 'metrics: _emitCount (emit budget telemetry)',
 	'src/index.ts':
 		'metrics: instanceExitCleanupCounter / serverInitInvocations (init telemetry)',

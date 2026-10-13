@@ -8,13 +8,12 @@
  * apparently successful — response, and its retry / model-fallback path
  * never runs. The consumers that import this module (full-auto oversight and
  * intercept, the curator / skill-improver LLM factories, the ephemeral agent
- * dispatcher, the mutation generator and the Lean integration) read
- * `info.error` through it and turn it into an error on their existing error
- * path. Not every `session.prompt` consumer does yet: the Lean lane runner
- * (`src/turbo/lean/runner.ts`, #3162) still checks only `promptResult.data`,
- * the PR wake-prompt senders (`pr-workflow-response-gate.ts`,
- * `pr-event-delivery.ts`) do not read the reply, and `dispatch-lanes.ts`
- * reads `info.error` with its own lane-error mapping.
+ * dispatcher, the mutation generator, the Lean integration and the Lean lane
+ * runner) read `info.error` through it and turn it into an error on their
+ * existing error path. Not every `session.prompt` consumer does: the PR
+ * wake-prompt senders (`pr-workflow-response-gate.ts`, `pr-event-delivery.ts`)
+ * do not read the reply, and `dispatch-lanes.ts` reads `info.error` with its
+ * own lane-error mapping.
  */
 import { classifyProviderFailure } from './invocation-failure';
 
@@ -28,7 +27,33 @@ export type ProviderMessageError = {
 };
 
 /**
- * Read the provider error OpenCode records on an assistant message, or
+ * A reply the host ended early records `finish: 'length'` (output limit) or
+ * `finish: 'content-filter'` on the assistant message, with the partial text
+ * and no `info.error`. A truncated `VERDICT: APPROVED` is still a cut-off
+ * reply, so report it as a provider error too. `dispatch-lanes.ts` already
+ * treats these two finish values as terminal.
+ */
+function readEarlyFinish(info: object): ProviderMessageError | null {
+	const finish = (info as { finish?: unknown }).finish;
+	const reason = typeof finish === 'string' ? finish.toLowerCase() : '';
+	if (reason === 'length')
+		return {
+			name: 'MessageOutputLengthError',
+			message: 'reply cut off by the output limit (finish=length)',
+			category: 'provider.output_length',
+		};
+	if (reason === 'content-filter')
+		return {
+			name: 'MessageContentFilterError',
+			message: 'reply withheld by the content filter (finish=content-filter)',
+			category: 'provider.content_filter',
+		};
+	return null;
+}
+
+/**
+ * Read the provider error OpenCode records on an assistant message
+ * (`info.error`, or an early `finish` of `length` / `content-filter`), or
  * `null` when the message carries none.
  */
 export function readProviderMessageError(
@@ -36,7 +61,7 @@ export function readProviderMessageError(
 ): ProviderMessageError | null {
 	if (!info || typeof info !== 'object') return null;
 	const error = (info as { error?: unknown }).error;
-	if (!error || typeof error !== 'object') return null;
+	if (!error || typeof error !== 'object') return readEarlyFinish(info);
 	const { name, data } = error as { name?: unknown; data?: unknown };
 	const details = (data && typeof data === 'object' ? data : {}) as {
 		message?: unknown;

@@ -49,6 +49,13 @@ const ALLOWLIST: Record<string, string> = {
 	// evaluation callers intentionally use bounded same-model retry.
 	'src/evaluation/ephemeral-agent-dispatcher.ts':
 		'policy-free primitive: callers own fallback or same-model retry policy',
+	// #3169 Phase 2: the v2 session-client shim is the host adapter below the
+	// policy-free primitive — it emulates the v1 BLOCKING session.prompt over
+	// ctx.session (prompt -> bounded wait -> context). It executes the ONE
+	// already-resolved prompt per dispatch (same semantics as the SDK call the
+	// primitive allowlist covers); model fallback stays with the callers above.
+	'src/host/v2/session-client.ts':
+		'#3169 v2 host adapter: executes the single already-resolved prompt per dispatch; callers own fallback policy',
 	// Issue #1927 "out of scope": generateMutants dispatches with agent:undefined
 	// (no role/chain), so it gets bounded same-model retry only and still cannot
 	// consume any role-scoped fallback chain or override state.

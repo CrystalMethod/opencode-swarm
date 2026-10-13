@@ -171,3 +171,11 @@ format above remains the extraction contract. Explorers emit structured
 records regardless of which harness runs them.
 
 Do not let speed degrade validation quality.
+
+## Contract addendum (2026-10-12)
+
+- **Candidate rows are defect claims only.** Never emit verification notes,
+  confirmations, or coverage observations as CANDIDATE rows, and no
+  INFO-severity candidates — confirmations belong in the lane's
+  attestation/CLEAN row. A misattributed or confirmatory candidate inflates
+  reviewer adjudication for zero signal.

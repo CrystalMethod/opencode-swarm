@@ -149,7 +149,7 @@ These are invoked as `/swarm <subcommand>`, NOT as bare `/subcommand`. The list 
 - `/swarm sdd status` — show OpenSpec-compatible SDD status
 - `/swarm sdd validate` — validate OpenSpec-compatible artifacts
 - `/swarm sdd project` — materialize the effective spec into `.swarm/spec.md`
-- `/swarm epic` — toggle Epic Mode (autonomous coupling-aware parallel activation)
+- `/swarm epic` — open an epic session (human-only: a model/tool invocation is refused; autonomous coupling-aware parallel activation)
 - `/swarm turbo` — toggle Turbo Mode strategy `[on|off|lean|standard|epic|status]`
 - `/swarm full-auto` — toggle Full-Auto Mode; accepts `on [mode]`, `off`, or `status`
 - `/swarm guardrail reset` — reset an action-local guardrail circuit after external repair
