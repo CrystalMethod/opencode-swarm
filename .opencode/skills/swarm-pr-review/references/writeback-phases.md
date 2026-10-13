@@ -1,7 +1,3 @@
-
-
----
-
 # Phase 10 Metrics and Knowledge Writeback / Phase 11 Post-Fix Re-verification
 
 ## Phase 10: Metrics and Knowledge Writeback

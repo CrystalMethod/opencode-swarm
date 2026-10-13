@@ -437,7 +437,7 @@ gh pr ready <number>
 gh pr checks <number> --watch --fail-fast
 ```
 
-Detailed reference material moved to `.claude/skills/commit-pr/references/closeout-playbook.md` (issue #2907 progressive-disclosure budget).
+Detailed reference material moved to `.claude/skills/commit-pr/references/closeout-playbook.md` (issue #2907 progressive-disclosure budget), including the pre-queue merge-group CI simulation: before queueing, run `file:.swarm/bundled-skills/merge-queue-readiness/SKILL.md` per the playbook's Merge queue section.
 
 ## Step 8 - Cancelled jobs and skipped dependents
 

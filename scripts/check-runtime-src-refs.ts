@@ -341,22 +341,20 @@ export function collectFindings(repoRoot: string): Finding[] {
 		}
 	}
 
-	// (c) shipped skill files.
+	// (c) shipped skill files: SKILL.md plus every markdown file in the
+	// skill directory (references/ material is shipped in the npm tarball
+	// and agent-read at runtime, so it is equally runtime-surfaced).
 	const packageJsonPath = path.join(repoRoot, 'package.json');
 	const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
 	const skillNames = deriveShippedSkillNames(packageJson);
 	for (const name of skillNames) {
-		const skillFile = path.join(
-			repoRoot,
-			'.opencode',
-			'skills',
-			name,
-			'SKILL.md',
-		);
-		if (!fs.existsSync(skillFile)) continue;
-		const source = fs.readFileSync(skillFile, 'utf-8');
-		for (const match of findSrcRefs(source)) {
-			add(skillFile, match);
+		const skillDir = path.join(repoRoot, '.opencode', 'skills', name);
+		if (!fs.existsSync(skillDir)) continue;
+		for (const file of walkFiles(skillDir, ['.md'])) {
+			const source = fs.readFileSync(file, 'utf-8');
+			for (const match of findSrcRefs(source)) {
+				add(file, match);
+			}
 		}
 	}
 

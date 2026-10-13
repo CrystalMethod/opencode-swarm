@@ -11,7 +11,12 @@
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { readSkillContractStamp } from '../../../src/config/skill-contract-digest.js';
+import {
+	readSkillContractStamp,
+	skillContractDigest,
+	splitSkillFrontmatter,
+} from '../../../src/config/skill-contract-digest.js';
+import { parseSkillFrontmatter } from '../../../src/hooks/skill-scoring.js';
 import { _internals as usageLogInternals } from '../../../src/hooks/skill-usage-log.js';
 import { parsePromotedExternalFrontmatter } from '../../../src/services/skill-optimizer/promoted-external-staleness.js';
 import { buildDeterministicRevision } from '../../../src/services/skill-reviser.js';
@@ -46,14 +51,19 @@ describe('readSkillContractStamp (issue #2907 shapes)', () => {
 		expect(readSkillContractStamp(legacy)).toBe('103ae1c77229');
 	});
 
-	test('the migrated stamped skills in-tree remain readable', () => {
+	test('the migrated stamped skills in-tree carry a stamp matching their body digest', () => {
+		// Self-consistent invariant (not value-pinned): whatever the current
+		// body is, the stamp must digest it exactly (PRR-017 — decouples the
+		// suite from live-file edits while asserting more than "any 12-hex").
 		for (const slug of ['swarm-pr-review', 'swarm-pr-feedback']) {
 			const content = readFileSync(
 				join(process.cwd(), '.opencode/skills', slug, 'SKILL.md'),
 				'utf-8',
+			).replace(/\r\n/g, '\n');
+			const { frontmatter, body } = splitSkillFrontmatter(content);
+			expect(readSkillContractStamp(frontmatter)).toBe(
+				skillContractDigest(body),
 			);
-			const fm = content.split(/^---$/m)[1] ?? '';
-			expect(readSkillContractStamp(`---${fm}---\n`)).toMatch(/^[0-9a-f]{12}$/);
 		}
 	});
 });
@@ -152,29 +162,44 @@ describe('parseGeneratedFromKnowledge (issue #2907 shapes)', () => {
 	});
 });
 
-describe('migration round-trip: folded descriptions survive verbatim', () => {
-	test('folded (>) description blocks keep their original lines and indent', () => {
-		const content = readFileSync(
-			join(process.cwd(), '.claude/skills/research-first/SKILL.md'),
-			'utf-8',
-		).replace(/\r\n/g, '\n');
-		expect(content).toMatch(/^description: >\n(?: .+\n)+/m);
-		// The folded block must still carry its full body (4 lines here).
-		const folded = content.match(/^description: >\n((?: .+\n)+)/m);
-		expect(
-			folded?.[1].split('\n').filter(Boolean).length,
-		).toBeGreaterThanOrEqual(4);
+describe('folded description handling (inline fixtures — decoupled from live prose, PRR-017)', () => {
+	test('the reader parses a folded description block followed by metadata children', () => {
+		const content = [
+			'---',
+			'name: folded-demo',
+			'description: >',
+			'  First folded line that mentions audience: nowhere.',
+			'  Second folded line.',
+			'  Third folded line.',
+			'  Fourth folded line.',
+			'context: fork',
+			'metadata:',
+			'  audience: swarm-plugin',
+			'  provenance_note: >',
+			'    Folded provenance body line one',
+			'    with a second line.',
+			'---',
+			'Body.',
+		].join('\n');
+		const parsed = parseSkillFrontmatter(content, 'folded-demo');
+		// The folded description must be joined, not truncated at the first
+		// indented line, and its prose must NOT be reinterpreted as keys.
+		expect(parsed.description).toContain('First folded line');
+		expect(parsed.description).toContain('Fourth folded line');
+		// A `key: value`-shaped PROSE line inside the folded block stays prose.
+		expect(parsed.audience).toEqual({
+			status: 'valid',
+			values: ['swarm-plugin'],
+		});
 	});
 
-	test('a second folded frontmatter (parallel-work-check) is intact', () => {
+	test('folded (>) values under metadata keep their continuation lines', () => {
 		const content = readFileSync(
 			join(process.cwd(), '.opencode/skills/parallel-work-check/SKILL.md'),
 			'utf-8',
 		).replace(/\r\n/g, '\n');
-		expect(content).toMatch(/^description: >\n(?: .+\n)+/m);
-		expect(content).toMatch(/^\s+audience: swarm-plugin$/m);
-		// The folded provenance_note block must have survived the migration
-		// under metadata, not been dropped.
-		expect(content).toMatch(/^\s+provenance_note: >\n(?:\s{4}.+\n)+/m);
+		// Structural, not prose-coupled: a folded value under the metadata
+		// block must have indented continuation lines.
+		expect(content).toMatch(/^\s+[a-z_]+: >\n(?:\s+.+\n)+/m);
 	});
 });

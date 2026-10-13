@@ -46,14 +46,18 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 		drift += 1;
 		continue;
 	}
+	const { frontmatter: fmSlice, body: bodySlice } =
+		splitSkillFrontmatter(normalized);
 	const next = existing
-		? normalized.replace(
+		? // Re-stamp in place: bound the replace to the frontmatter slice so a
+		  // body line shaped like the stamp can never be rewritten (PRR-006).
+			fmSlice.replace(
 				new RegExp(
-					`^(\\s*)${SKILL_CONTRACT_DIGEST_KEY}: ?"?[0-9a-f]{12}"?$`,
+					`^(\\s*)${SKILL_CONTRACT_DIGEST_KEY}: ?"?[0-9a-f]{12}"?[ \\t]*$`,
 					'm',
 				),
 				`$1${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"`,
-			)
+			) + bodySlice
 		: insertStamp(normalized, digest);
 	// N-3 (PR #2863 review): a skill without a frontmatter fence made the
 	// helper return the input unchanged and the loop still wrote it and
@@ -77,12 +81,17 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
  * pre-#2907 runtime closure asserted `audience:` directly after `name:`.
  */
 function insertStamp(content: string, digest: string): string {
-	const metadataLabel = /^metadata:[ \t]*$/m.exec(content);
+	// Search the FRONTMATTER slice only: a column-0 `metadata:` in the skill
+	// body must never capture the stamp (PRR-006) — an unbounded whole-file
+	// match produced a self-invalidating stamp inside body text.
+	const { frontmatter: fmSlice, body: bodySlice } =
+		splitSkillFrontmatter(content);
+	const metadataLabel = /^metadata:[ \t]*$/m.exec(fmSlice);
 	if (metadataLabel?.index !== undefined) {
 		// +1 skips the line terminator (content is LF-normalized above).
 		const afterLabel = metadataLabel.index + metadataLabel[0].length + 1;
 		const child = `  ${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"\n`;
-		return content.slice(0, afterLabel) + child + content.slice(afterLabel);
+		return fmSlice.slice(0, afterLabel) + child + fmSlice.slice(afterLabel) + bodySlice;
 	}
 	const close = content.indexOf('\n---\n');
 	if (close === -1) return content;

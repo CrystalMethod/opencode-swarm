@@ -1,7 +1,3 @@
-
-
----
-
 # Step 7 closeout playbook
 
 ### Conflict closeout

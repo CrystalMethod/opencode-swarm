@@ -1,7 +1,3 @@
-
-
----
-
 # Semantic extraction (Part B)
 
 #### Part B - Semantic extraction (parallel subagents)

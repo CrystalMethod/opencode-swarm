@@ -1,7 +1,3 @@
-
-
----
-
 # Manifest, cost tracker, cleanup, and reporting (Step 9)
 
 ### Step 9 - Save manifest, update cost tracker, clean up, and report

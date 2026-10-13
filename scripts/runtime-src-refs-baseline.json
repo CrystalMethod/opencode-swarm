@@ -138,37 +138,37 @@
 		"justification": "Illustrative mock.module() code sample inside the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/mock-tiers.md",
 		"match": "src/tools/formatter.ts",
 		"category": "repo-development",
 		"justification": "Illustrative source-file code sample inside the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/mock-tiers.md",
 		"match": "src/services/my-service.ts",
 		"category": "repo-development",
 		"justification": "Illustrative source-file code sample inside the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/mock-tiers.md",
 		"match": "src/state.ts",
 		"category": "repo-development",
 		"justification": "Real repo-internal reference used as a documentation example of the _internals DI seam pattern, in the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/mock-tiers.md",
 		"match": "src/path/to/module.ts",
 		"category": "repo-development",
 		"justification": "Placeholder path inside a worked `grep` command example in the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/mock-tiers.md",
 		"match": "src/config/schema.js",
 		"category": "repo-development",
 		"justification": "Illustrative mock.module() code sample inside the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/cross-platform-patterns.md",
 		"match": "src/hooks/knowledge-store.ts",
 		"category": "repo-development",
 		"justification": "Real repo-internal reference cited as a documented platform-quirk example (os.homedir() caching) in the repo-development writing-tests conventions guide."
@@ -192,7 +192,7 @@
 		"justification": "Real repo-internal reference used as a documentation example of sibling-parity test coverage, in the repo-development writing-tests conventions guide."
 	},
 	{
-		"file": ".opencode/skills/writing-tests/SKILL.md",
+		"file": ".opencode/skills/writing-tests/references/cross-platform-patterns.md",
 		"match": "src/utils/bun-compat.ts",
 		"category": "repo-development",
 		"justification": "Real repo-internal reference describing this repo's temp-file/fsync helper, in the repo-development writing-tests conventions guide."
@@ -280,5 +280,119 @@
 		"match": "src/sandbox/executor.ts",
 		"category": "repo-development",
 		"justification": "Real repo-internal reference to this repo's SandboxExecutor interface, in the repo-development engineering-conventions guide."
+	},
+	{
+		"file": ".opencode/skills/swarm-pr-review/references/findings-persistence-contract.md",
+		"match": "src/background/pr-review-contract.ts",
+		"category": "provenance",
+		"justification": "The findings-persistence contract document mirrors src/background/pr-review-contract.ts; the reference states the machine-readable block must stay in lockstep with the executable schema."
+	},
+	{
+		"file": ".opencode/skills/swarm-pr-review/references/parser-dry-run.md",
+		"match": "src/utils/cache.ts",
+		"category": "illustrative-example",
+		"justification": "Dry-run transcript example inside the parser documentation; the path is sample data, not a runtime remediation pointer."
+	},
+	{
+		"file": ".opencode/skills/swarm-pr-review/references/parser-dry-run.md",
+		"match": "src/services/queue.ts",
+		"category": "illustrative-example",
+		"justification": "Dry-run transcript example inside the parser documentation; the path is sample data, not a runtime remediation pointer."
+	},
+	{
+		"file": ".opencode/skills/swarm-pr-feedback/references/bot-claim-verification.md",
+		"match": "src/config/schema.ts",
+		"category": "repo-development",
+		"justification": "Bot-claim verification guidance documents real zod schema validators for verifying bot claims against the repo."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/tools/secretscan.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/tools/knowledge-recall.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/tools/lint.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/tools/sast-scan.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/tools/sast-baseline.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/mutation/gate.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/mutation/equivalence.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/mutation/engine.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/db/qa-gate-profile.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/config/schema.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/config/index.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/commands/registry.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/background/manager.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/background/event-bus.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
+	},
+	{
+		"file": ".opencode/skills/writing-tests/references/mock-and-seam-inventory.md",
+		"match": "src/agents/critic.ts",
+		"category": "repo-development",
+		"justification": "The mock-and-seam inventory intentionally enumerates real src modules and their test seams for repo developers writing tests."
 	}
 ]

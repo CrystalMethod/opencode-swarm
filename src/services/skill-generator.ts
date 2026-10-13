@@ -17,6 +17,7 @@ import { existsSync, unlinkSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
 import { BUNDLED_PROJECT_SKILLS } from '../config/bundled-skills.js';
+import { splitSkillFrontmatter } from '../config/skill-contract-digest.js';
 import {
 	effectiveRetrievalOutcomes,
 	readAuthoritativeKnowledgeCounterRollups,
@@ -896,6 +897,13 @@ function injectMissingIdsIntoFrontmatter(
 ): string {
 	if (missingIds.length === 0) return content;
 
+	// Caller-supplied ids are interpolated into frontmatter text: strip line
+	// breaks so a crafted id cannot forge frontmatter structure (PRR-014).
+	const safeIds = missingIds
+		.map((id) => id.replace(/[\r\n]+/g, ' ').trim())
+		.filter((id) => id.length > 0);
+	if (safeIds.length === 0) return content;
+
 	const stripped =
 		content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
 	const openFence = stripped.match(/^---[ \t]*\r?\n/);
@@ -936,14 +944,14 @@ function injectMissingIdsIntoFrontmatter(
 
 	let insertIdx: number;
 	if (childIndent.length > 0) {
-		// Spec metadata-child shape: emit the missing block one level deeper.
+		// Spec metadata-child shape: a string-typed child (the metadata map
+		// must stay string->string per the Agent Skills spec — a YAML block
+		// list here would violate it, PRR-010).
 		insertIdx = labelIdx + 1;
-		const itemIndent = `${childIndent}  `;
 		lines.splice(
 			insertIdx,
 			0,
-			`${childIndent}missing_source_knowledge_ids:`,
-			...missingIds.map((id) => `${itemIndent}- ${id}`),
+			`${childIndent}missing_source_knowledge_ids: ${yamlJsonString(safeIds)}`,
 		);
 	} else {
 		// Legacy top-level shape: insert after the end of its `- item` block.
@@ -953,7 +961,7 @@ function injectMissingIdsIntoFrontmatter(
 			end,
 			0,
 			'missing_source_knowledge_ids:',
-			...missingIds.map((id) => `  - ${id}`),
+			...safeIds.map((id) => `  - ${id}`),
 			'',
 		);
 	}
@@ -1102,7 +1110,12 @@ export function parseDraftFrontmatter(content: string): {
 			} else {
 				const child = line.match(/^\s+([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
 				if (child) {
-					metadataChildren.set(child[1], stripGeneratedYamlQuotes(child[2]));
+					// Lowercase keys and keep the FIRST value, matching
+					// parseSkillFrontmatter's metadata handling (PRR-021).
+					const key = child[1].toLowerCase();
+					if (!metadataChildren.has(key)) {
+						metadataChildren.set(key, stripGeneratedYamlQuotes(child[2]));
+					}
 				}
 				continue;
 			}
@@ -1192,11 +1205,16 @@ export function parseDraftFrontmatter(content: string): {
 				} catch {
 					// fall through to comma split
 				}
-				return value
-					.slice(1, -1)
-					.split(',')
-					.map((entry) => entry.trim())
-					.filter(Boolean);
+				return (
+					value
+						.slice(1, -1)
+						.split(',')
+						// Strip per-item quotes so a hand-authored flow list
+						// matches the reader's output for the same input
+						// (PRR-021c, PR #3207 feedback round).
+						.map((entry) => stripGeneratedYamlQuotes(entry.trim()))
+						.filter(Boolean)
+				);
 			}
 			return null;
 		};
@@ -1232,7 +1250,9 @@ function stripGeneratedYamlQuotes(value: string): string {
 		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
 		(trimmed.startsWith("'") && trimmed.endsWith("'"))
 	) {
-		return trimmed.slice(1, -1).trim();
+		// YAML single-quote escaping doubles '' for a literal apostrophe;
+		// un-double so writer output round-trips (PRR-007, PR #3207 review).
+		return trimmed.slice(1, -1).replace(/''/g, "'").trim();
 	}
 	return trimmed;
 }
@@ -1338,12 +1358,17 @@ export async function activateProposal(
 			reason: 'previously rejected equivalent content',
 		};
 	}
-	// Re-stamp status: active in frontmatter (proposals carry status: draft).
-	// Spec shape nests status under `metadata:` (issue #2907); the legacy
-	// column-0 form stays supported for pre-migration proposals.
-	const flipped = proposalContent
-		.replace(/^(\s*)status:\s*"?draft"?\s*$/m, '$1status: active')
-		.replace(/^status:\s*draft\s*$/m, 'status: active');
+	// Re-stamp status: active in FRONTMATTER ONLY (proposals carry
+	// status: draft). Bounded to the frontmatter slice so an indented
+	// `status: draft` line inside a body example can never be rewritten
+	// instead of the real declaration (PRR-004); the dead second replace
+	// was removed (`(\s*)` already matched column 0).
+	const proposalSplit = splitSkillFrontmatter(proposalContent);
+	const flipped =
+		proposalSplit.frontmatter.replace(
+			/^(\s*)status:\s*"?draft"?\s*[ \t]*$/m,
+			'$1status: active',
+		) + proposalSplit.body;
 	let evaluation: SkillEvaluationResult | undefined;
 	if (options.evaluate) {
 		let incumbentContent: string | undefined;
@@ -2377,6 +2402,7 @@ export const _internals = {
 	renderSkillMarkdown,
 	generateSkills,
 	activateProposal,
+	injectMissingIdsIntoFrontmatter,
 	listSkills,
 	findSkillsBySourceKnowledgeId,
 	findStaleSkillsBySourceKnowledgeId,

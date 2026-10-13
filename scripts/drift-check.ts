@@ -822,7 +822,13 @@ export function detectSkillFrontmatterSpecDrift(
 		'.agents/skills',
 	]) {
 		for (const slug of listDirNames(skillRoot)) {
-			if (skillRoot === '.opencode/skills' && slug === 'generated') continue;
+			// The generated tree stays exempt, matching detectSkillAudienceDrift
+			// (:743): generated SKILL.md files are machine-written by
+			// renderSkillMarkdown and their repository audience/provenance
+			// cannot be guessed safely (issue #2907 review — PRR-009).
+			if (skillRoot === '.opencode/skills' && slug === 'generated') {
+				continue;
+			}
 			const skillPath = `${skillRoot}/${slug}/SKILL.md`;
 			if (!fileExists(skillPath)) continue;
 			const content = readFile(skillPath).replace(/\r\n/g, '\n');
@@ -846,11 +852,49 @@ export function detectSkillFrontmatterSpecDrift(
 							/^(\s+)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/,
 						);
 						if (child) {
-							const value = child[3].trim();
+							// Strip a trailing YAML comment (unquoted scalars
+							// only — a quoted string may contain '#') so
+							// `key: true # note` is still judged as a bare
+							// scalar (PRR-011b).
+							let value = child[3].trim();
+							const startsQuoted =
+								value.startsWith('"') || value.startsWith("'");
+							if (!startsQuoted && value.includes(' #')) {
+								value = value.slice(0, value.indexOf(' #')).trim();
+							}
 							const quoted =
 								(value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
 								(value.startsWith("'") && value.endsWith("'") && value.length >= 2);
-							if (
+							// A declared-but-empty child followed by `- item`
+							// lines is a YAML sequence — not a string (PRR-011c).
+							if (value === '') {
+								const childIndent = child[1].length;
+								for (let j = i + 1; j < end; j++) {
+									const next = lines[j] ?? '';
+									if (!next.trim()) continue;
+									if (!/^\s/.test(next)) break;
+									const nextIndent = next.length - next.trimStart().length;
+									if (nextIndent > childIndent && /^\s+-\s/.test(next)) {
+										findings.push({
+											category,
+											severity: 'error',
+											file: skillPath,
+											message: `metadata child "${child[2]}" is a YAML sequence — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+										});
+									}
+									break;
+								}
+							} else if (
+								!quoted &&
+								(/^\[.*\]$/.test(value) || /^\{.*\}$/.test(value))
+							) {
+								findings.push({
+									category,
+									severity: 'error',
+									file: skillPath,
+									message: `metadata child "${child[2]}" is a flow collection — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+								});
+							} else if (
 								value !== '' &&
 								!quoted &&
 								SKILL_METADATA_NON_STRING_SCALAR.test(value)

@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "4bdb26fcfa10"
+  swarm-contract-digest: "a7fade5b1c40"
 ---
 
 # Swarm PR Feedback

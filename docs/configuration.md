@@ -1264,7 +1264,13 @@ Skill frontmatter may declare one domain or a bounded list of domain and runner 
 ```yaml
 metadata:
   audience: ragappv3
-  # or
+```
+
+or, with a runner constraint (a single `audience` key — a second `audience`
+child under the same `metadata:` block is a duplicate key and fails closed):
+
+```yaml
+metadata:
   audience: '["ragappv3", "runner:opencode"]'
 ```
 

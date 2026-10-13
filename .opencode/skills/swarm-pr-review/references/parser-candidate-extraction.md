@@ -1,7 +1,3 @@
-
-
----
-
 # Candidate extraction via parser
 
 ### Candidate extraction via parser

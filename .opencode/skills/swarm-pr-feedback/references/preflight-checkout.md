@@ -1,7 +1,3 @@
-
-
----
-
 # Pre-flight PR branch checkout
 
 ## Pre-flight: Check Out the PR Branch Locally

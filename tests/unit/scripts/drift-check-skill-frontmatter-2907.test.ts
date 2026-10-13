@@ -15,10 +15,16 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 function makeTree(files: Record<string, string>): string {
 	const root = canonicalMkdtemp('skill-fm-2907-');
-	for (const [rel, content] of Object.entries(files)) {
-		const target = join(root, rel);
-		mkdirSync(join(target, '..'), { recursive: true });
-		writeFileSync(target, content, 'utf-8');
+	try {
+		for (const [rel, content] of Object.entries(files)) {
+			const target = join(root, rel);
+			mkdirSync(join(target, '..'), { recursive: true });
+			writeFileSync(target, content, 'utf-8');
+		}
+	} catch (error) {
+		// Never orphan the temp root when a fixture write fails (PRR-025).
+		rmSync(root, { recursive: true, force: true });
+		throw error;
 	}
 	return root;
 }
@@ -28,6 +34,8 @@ const CLEAN = [
 	'name: demo-skill',
 	'description: A conformant skill.',
 	'license: MIT',
+	'compatibility: Designed for opencode-swarm hosts',
+	'allowed-tools: Bash(git:*) Read',
 	'metadata:',
 	'  audience: swarm-plugin',
 	'  version: "2"',

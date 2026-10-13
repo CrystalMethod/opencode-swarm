@@ -1,7 +1,3 @@
-
-
----
-
 # Council Mode Workflow detail
 
 

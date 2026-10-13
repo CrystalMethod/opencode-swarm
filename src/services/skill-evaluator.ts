@@ -392,7 +392,14 @@ function hashContent(content: string | undefined): string | undefined {
 
 function normalizeRejectedContent(content: string): string {
 	return content
-		.replace(/^\s*generated_at:\s*\S+\s*$/gim, 'generated_at: <generated>')
+		.replace(
+			// Horizontal whitespace only: `[^\S\n]` cannot cross newlines, so
+			// the scan stays linear over attacker-controlled content (a `\s`
+			// prefix under the /m flag made every line-start rescan the whole
+			// remaining whitespace run — O(n^2)).
+			/^[^\S\n]*generated_at:[^\n]*/gim,
+			'generated_at: <generated>',
+		)
 		.replace(/\s+/g, ' ')
 		.trim()
 		.toLowerCase();
@@ -577,4 +584,5 @@ export const _internals = {
 	evaluateContent,
 	rejectedEditsPath,
 	hashNormalizedContent,
+	normalizeRejectedContent,
 };

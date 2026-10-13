@@ -44,9 +44,12 @@ export function skillContractDigest(body: string): string {
 
 /**
  * Read the stamped contract digest from a frontmatter block, if present.
- * Accepts the spec shape (an indented child under the `metadata:` map,
+ * Accepts the spec shape (a two-space-indented child of the `metadata:` map,
  * issue #2907) and the legacy column-0 form so consumer installs generated
- * before the migration keep verifying.
+ * before the migration keep verifying. Deeper-indented lines (e.g. stamp-
+ * shaped text inside a `description: |` block scalar) do NOT match — the
+ * indent is anchored to exactly the two forms the stamp writer emits
+ * (PRR-020, PR #3207 review).
  * String.match rather than RegExp.exec: the SAST callee-binding classifier
  * (issue #2300) flags an unresolved .exec member call as exec-like.
  */
@@ -57,9 +60,11 @@ export function readSkillContractStamp(
 		.replace(/\r\n/g, '\n')
 		.match(
 			new RegExp(
-				`^\\s*${SKILL_CONTRACT_DIGEST_KEY}: ?"([0-9a-f]{12})"$|^\\s*${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})$`,
+				`^ {2}${SKILL_CONTRACT_DIGEST_KEY}: "([0-9a-f]{12})"[ \\t]*$` +
+					`|^ {2}${SKILL_CONTRACT_DIGEST_KEY}: ([0-9a-f]{12})[ \\t]*$` +
+					`|^${SKILL_CONTRACT_DIGEST_KEY}: "?([0-9a-f]{12})"?[ \\t]*$`,
 				'm',
 			),
 		);
-	return match?.[1] ?? match?.[2];
+	return match?.[1] ?? match?.[2] ?? match?.[3];
 }

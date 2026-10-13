@@ -394,7 +394,9 @@ function collectMetadataChildren(
 				continue;
 			}
 			const child: SkillMetadataChild = {
-				inline: stripQuotes(childMatch[2].trim()),
+				// Un-double YAML single-quote escaping ('' -> ') so the
+				// writer's doubled output round-trips (PRR-007).
+				inline: stripQuotes(childMatch[2].trim()).replace(/''/g, "'"),
 				listItems: [],
 			};
 			children.set(key, child);

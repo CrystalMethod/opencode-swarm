@@ -1,7 +1,3 @@
-
-
----
-
 # PR publication flow (issue-trace receipt, PR monitoring subscription, issue comment, commit messages)
 
 

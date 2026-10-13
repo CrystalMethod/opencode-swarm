@@ -1,7 +1,3 @@
-
-
----
-
 # Interpreter detection and install (Step 1)
 
 ### Step 1 - Ensure graphify is installed

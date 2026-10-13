@@ -1,7 +1,3 @@
-
-
----
-
 # Two-Tier Mock Convention and mock.module() Export Completeness
 
 ## mock.module() Export Completeness

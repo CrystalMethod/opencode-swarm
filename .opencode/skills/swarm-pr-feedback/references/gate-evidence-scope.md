@@ -1,10 +1,4 @@
-
-
----
-
 # Why gate evidence is not item-scoped
-
-### Why gate evidence is not item-scoped
 
 Stage A, Stage B, and closeout evidence invalidate as whole gate batches, not
 per feedback item, and that is a deliberate design decision, not unfinished

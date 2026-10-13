@@ -1,7 +1,3 @@
-
-
----
-
 # Intake Surfaces detail (async advisory lanes, CI matrix cascade, PR body claim verification)
 
 ### Async advisory verification lanes

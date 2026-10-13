@@ -1,7 +1,3 @@
-
-
----
-
 # Explorer output format
 
 ### Explorer output format

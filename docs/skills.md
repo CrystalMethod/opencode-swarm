@@ -44,7 +44,14 @@ issue #2907):
 ```yaml
 metadata:
   audience: ragappv3
-  # or a domain plus runner constraint (lists serialize as JSON strings)
+```
+
+or, with a runner constraint (a single `audience` key whose value is a JSON
+array string — a second `audience` child under the same `metadata:` block is
+a duplicate key and fails closed):
+
+```yaml
+metadata:
   audience: '["ragappv3", "runner:codex"]'
 ```
 
@@ -92,8 +99,12 @@ switches the host runtimes read at the top level of skill frontmatter — moving
 them under `metadata:` would delete host behavior. Shipped skills therefore
 remain intentionally non-spec in exactly these four keys; the drift-check
 `skill-frontmatter` detector's `HOST_CONSUMED_TOP_LEVEL_KEYS` allowlist
-documents the same set, and every other non-spec top-level key is an error
-under `bun run drift:check --enforce`.
+documents the same set, and every other non-spec top-level key in a shipped
+(tracked, non-generated) skill is an error under
+`bun run drift:check --enforce`. The generated tree
+(`.opencode/skills/generated/`) is exempt from the detector, matching the
+audience detector's precedent — regenerated skills converge on the spec shape
+through the generator, but legacy keys there are not CI-enforced.
 
 **Progressive-disclosure budgets.** The spec recommends keeping `SKILL.md`
 under 500 lines with detail in `references/`. `writing-tests`, `graphify`,

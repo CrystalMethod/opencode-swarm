@@ -1,7 +1,3 @@
-
-
----
-
 # Cross-Platform Test Patterns and Requirements
 
 ## Cross-Platform Requirements

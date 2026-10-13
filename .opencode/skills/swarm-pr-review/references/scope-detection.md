@@ -1,7 +1,3 @@
-
-
----
-
 # Scope Detection, pre-flight git ref availability, and shell rules under the PR_REVIEW gate
 
 ### Shell rules under the PR_REVIEW gate

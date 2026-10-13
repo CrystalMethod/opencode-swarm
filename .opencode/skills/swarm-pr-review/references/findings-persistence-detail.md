@@ -1,7 +1,3 @@
-
-
----
-
 # Review Finding Persistence enforced order and error reporting
 
 

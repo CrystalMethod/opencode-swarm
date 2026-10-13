@@ -1,7 +1,3 @@
-
-
----
-
 # Phase 0A signal-intake steps (fetch, classify, merge) and anti-patterns
 
 ### Step 1 — Fetch all PR feedback surfaces
