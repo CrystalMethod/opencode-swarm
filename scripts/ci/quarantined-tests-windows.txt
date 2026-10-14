@@ -12,7 +12,7 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 4 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), tests/unit/session/hydration-populate-guard.test.ts and tests/unit/hooks/delegation-gate-rework-remediation.test.ts (both re-quarantined 2026-10-14 per #3261; blocks below
+# STATUS: 5 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), tests/unit/session/hydration-populate-guard.test.ts and tests/unit/hooks/delegation-gate-rework-remediation.test.ts (both re-quarantined 2026-10-14 per #3261; blocks below
 # #2973 on 2026-09-27: rows with their named root fixes already in-tree —
 # pr-monitor-status (PR #2190 freezeClock + EBUSY-retry), 2602-lifecycle and
 # phase-complete.lock-adversarial (PR #2807 safeRmRecursive) — and rows whose
@@ -161,3 +161,11 @@ tests/unit/session/hydration-populate-guard.test.ts
 #   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
 #   or platform-safe cleanup).
 tests/unit/hooks/delegation-gate-rework-remediation.test.ts
+
+# OWNER: zaxbysauce — issue #3261 (same windows EBUSY teardown storm as the
+#   two entries above; PR #3242 pull_request run 38617312185, shard
+#   windows-latest/1: delegation-gate-reentry-bypass EBUSY on aftereach
+#   rm of dg-reentry-test-* scratch, 3x retries, assertions passing)
+# EXPIRY: 2026-10-28 — retire with the two EBUSY entries above (shared
+#   root fix: retry-with-backoff or platform-safe temp cleanup).
+tests/unit/hooks/delegation-gate-reentry-bypass.test.ts
