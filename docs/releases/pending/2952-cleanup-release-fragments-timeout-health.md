@@ -35,7 +35,9 @@ workflow-touching PR.
   directive is a violation (deliberate strengthening: every wait must declare its
   target).
 - **CI wiring**: the lint runs in the `drift` job of `drift-check.yml` (pull_request,
-  push, merge_group, workflow_dispatch) and as `check:workflow-timeouts` in
+  push, merge_group, workflow_dispatch) via direct script invocation — the same
+  pattern as the drift check step beside it. A `package.json` script alias is not
+  added: the release-owner guard (#2677) forbids non-release PRs from touching
   `package.json`.
 - **Tests** (`tests/unit/scripts/check-workflow-timeouts.test.ts`): 22 tests covering
   the pre-fix red shape, the fixed green shape, the exact shipped parameterized helper
