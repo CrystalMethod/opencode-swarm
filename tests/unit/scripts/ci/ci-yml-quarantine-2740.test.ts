@@ -27,21 +27,17 @@ const INTEGRATION_LEDGER_PATH = join(
 // land in the macOS ledger (windows ledger re-add policy requires a windows
 // merge-group confirmed failure; sibling OS shards were green).
 //
-// Re-quarantine note (2026-10-14, tracker #3261): bun-compat-exit-first-2530
-// was RE-ADDED to the macOS ledger with fresh merge-group macos-latest
-// failure evidence (run 38590114992 — the #2973 absence guard's own escape
-// clause) after its environmental kill-probe flake recurred on a #3242
-// merge-queue candidate. Its re-quarantine is pinned by
-// ci-yml-quarantine-2730.test.ts; the retirement pins below cover the two
-// paths that remain retired.
+// Re-quarantine notes (2026-10-14, tracker #3261): two of the three #2740
+// paths were RE-ADDED to their ledgers with fresh failure evidence —
+// bun-compat-exit-first-2530 to the macOS ledger (run 38590114992, pinned by
+// ci-yml-quarantine-2730.test.ts) and evidence-summary-adversarial to the
+// GENERAL ledger (run 38623951150, ubuntu-latest unit-shard 3 heap-growth
+// probe; the general ledger is honored by unit AND coverage jobs on every
+// OS). promote-registration remains retired and stays pinned below.
 const ISSUE_2740_QUARANTINED_PATHS: ReadonlyArray<{
 	path: string;
 	expectedLedger: string;
 }> = [
-	{
-		path: 'tests/unit/services/evidence-summary-adversarial.test.ts',
-		expectedLedger: GENERAL_LEDGER_PATH,
-	},
 	{
 		path: 'tests/unit/commands/promote-registration.test.ts',
 		expectedLedger: MACOS_LEDGER_PATH,
