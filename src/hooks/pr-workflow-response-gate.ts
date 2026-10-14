@@ -46,6 +46,10 @@ export const _internals: {
 	// Issue #2601: seam for the wake-path skill-contract verification so
 	// fake-timer wake suites can stub the real (fs-bound) verifier.
 	ensurePrWorkflowSkillContractsFresh: typeof ensurePrWorkflowSkillContractsFresh;
+	// Issue #3199: seam for pinning the wake-progress token's revision
+	// sensitivity — a journal-only (non-transitioning) observability write
+	// must not count as wake progress, while a real state write must.
+	workflowProgressSnapshot: typeof workflowProgressSnapshot;
 } = {
 	readPrWorkflowGateState,
 	claimPrFeedbackMonitorEvents,
@@ -53,6 +57,7 @@ export const _internals: {
 	observePrWorkflowAutoWakeEvent,
 	scanDelegationsForRecovery,
 	ensurePrWorkflowSkillContractsFresh,
+	workflowProgressSnapshot,
 };
 
 /**
@@ -1361,7 +1366,11 @@ export function createPrWorkflowResponseGate(options: {
 			}
 			const madeProgress = observeWorkflowProgress(
 				budget,
-				workflowProgressSnapshot(options.directory, sessionID, state),
+				_internals.workflowProgressSnapshot(
+					options.directory,
+					sessionID,
+					state,
+				),
 			);
 			if (madeProgress) {
 				budget.consecutiveUnproductive = 0;
@@ -1553,7 +1562,7 @@ export function createPrWorkflowResponseGate(options: {
 						madeProgress ||
 						observeWorkflowProgress(
 							budget,
-							workflowProgressSnapshot(
+							_internals.workflowProgressSnapshot(
 								options.directory,
 								sessionID,
 								postWakeState,

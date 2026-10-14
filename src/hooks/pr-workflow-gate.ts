@@ -173,6 +173,7 @@ import {
 // `_test_exports` object and its full state codec at module init below; all
 // seam properties are read at call time through the bound reference.
 import {
+	appendObservabilityStateWhileLocked,
 	bindPrReviewPersistenceHooks,
 	bindPrReviewStateCodec,
 	CHECKOUT_MUTATION_ACTION_TIMEOUT_MS,
@@ -2038,7 +2039,10 @@ export async function appendPrWorkflowSkillContractAdvisories(
 				if (!merged.includes(advisory)) merged.push(advisory);
 			}
 			if (merged.length === current.length) return;
-			await writeStateWhileLocked(directory, {
+			// Issue #3199: non-transitioning append — an advisory write must not
+			// advance the durable revision (same class as the two rejection
+			// journals; see recordPrReviewSubmitRejection).
+			await appendObservabilityStateWhileLocked(directory, {
 				...existing,
 				skillContractAdvisories: merged,
 				updatedAt: isoNow(),
@@ -2115,6 +2119,12 @@ function isLivenessTerminalLaneRecord(
  * state. Observability only — never changes the rejection outcome, never
  * creates gate state for a parent that has none (the pre-read outside the
  * session-state lock means a non-gated parent gets no lock file either).
+ *
+ * Issue #3199: the journal write is a NON-TRANSITIONING append
+ * (`appendObservabilityStateWhileLocked`) — it does not advance the durable
+ * gate revision, so it cannot invalidate a concurrent gate operation's
+ * revision CAS, and state-machine writes preserve the journal
+ * durable-wins (it can never be clobbered by a stale snapshot).
  */
 export async function recordPrReviewSubmitRejection(
 	directory: string,
@@ -2179,7 +2189,10 @@ export async function recordPrReviewSubmitRejection(
 					message: bounded,
 				},
 			].slice(-MAX_PR_REVIEW_SUBMIT_REJECTIONS);
-			await writeStateWhileLocked(directory, {
+			// Issue #3199: non-transitioning append — the journal write must not
+			// advance the durable revision, or it trips a concurrent gate
+			// operation's read-check-write CAS.
+			await appendObservabilityStateWhileLocked(directory, {
 				...locked,
 				prReviewSubmitRejections: journal,
 				updatedAt: isoNow(),
@@ -2218,6 +2231,12 @@ export function latestPrReviewSubmitRejectionMessage(
  * Observability only — never changes the rejection outcome, never creates
  * gate state for a session that has none (the pre-read outside the
  * session-state lock means a non-gated caller gets no lock file either).
+ *
+ * Issue #3199: the journal write is a NON-TRANSITIONING append
+ * (`appendObservabilityStateWhileLocked`) — it does not advance the durable
+ * gate revision, so it cannot invalidate a concurrent gate operation's
+ * revision CAS, and state-machine writes preserve the journal
+ * durable-wins (it can never be clobbered by a stale snapshot).
  */
 export async function recordPrReviewVerdictRejection(
 	directory: string,
@@ -2273,7 +2292,9 @@ export async function recordPrReviewVerdictRejection(
 					message: bounded,
 				},
 			].slice(-MAX_PR_REVIEW_VERDICT_REJECTIONS);
-			await writeStateWhileLocked(directory, {
+			// Issue #3199: non-transitioning append — see the matching comment in
+			// recordPrReviewSubmitRejection above.
+			await appendObservabilityStateWhileLocked(directory, {
 				...locked,
 				prReviewVerdictRejections: journal,
 				updatedAt: isoNow(),
@@ -14327,10 +14348,23 @@ Object.assign(_test_exports, legacyTranscriptAdapterTestSurface);
 // so test-time mutation of `_test_exports.<prop>` and `resetTrackedStateCache`
 // remain fully visible inside src/pr-review/persistence.ts.
 bindPrReviewPersistenceHooks(_test_exports);
-bindPrReviewStateCodec<PrWorkflowGateState>({
-	safeParse: (data) => PrWorkflowGateStateSchema.safeParse(data),
-	parse: (data) => PrWorkflowGateStateSchema.parse(data),
-});
+bindPrReviewStateCodec<PrWorkflowGateState>(
+	{
+		safeParse: (data) => PrWorkflowGateStateSchema.safeParse(data),
+		parse: (data) => PrWorkflowGateStateSchema.parse(data),
+	},
+	// Issue #3199: these observability-only fields are durable-wins on every
+	// state-machine write. Write ownership: the no-bump append path
+	// (`appendObservabilityStateWhileLocked`, runtime-enforced), activation's
+	// CREATE write seeding `skillContractAdvisories` (merge inert — no durable
+	// row exists), and instance-replacement writes, which deliberately start
+	// the new instance with clean observability state.
+	[
+		'prReviewSubmitRejections',
+		'prReviewVerdictRejections',
+		'skillContractAdvisories',
+	],
+);
 
 // Issue #2385: bind the completion boundary's gate-owned derivation helpers
 // (src/pr-review/completion.ts reads them through this binding and never
