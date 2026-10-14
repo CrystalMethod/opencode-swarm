@@ -67,7 +67,9 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 // Collect the contiguous comment block directly above an active entry,
-// the same walk scripts/check-invariants.ts Check 7 performs.
+// the same walk scripts/check-invariants.ts Check 7 performs: break at the
+// first blank OR non-comment line (a blank line between an entry and its
+// metadata block must fail the walk exactly as it fails Check 7 — PRR-019).
 function metadataBlock(ledgerPath: string, entry: string): string {
 	const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
 	const lines = raw.split('\n');
@@ -76,7 +78,7 @@ function metadataBlock(ledgerPath: string, entry: string): string {
 	const blockAbove: string[] = [];
 	for (let i = entryIdx - 1; i >= 0; i -= 1) {
 		const above = lines[i] ?? '';
-		if (above.trim() === '' || /^\s*#/.test(above)) {
+		if (above.trim() !== '' && above.trimStart().startsWith('#')) {
 			blockAbove.push(above);
 		} else {
 			break;
@@ -185,26 +187,31 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 		});
 	});
 
-	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 5, hard fail) — retired per #2973', () => {
-		test('is retired from the macOS ledger (#2973)', () => {
-			// #2973 retirement (2026-09-27): the #2740 probe-timeout flake's
-			// named remedy landed (PROBE_TIMEOUT_MS raised to 30s by the
-			// retiring PR; also reproduced under load on a Windows host).
-			// Absence guard: no silent re-add without fresh merge-group
-			// macos-latest failure evidence.
+	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 5, hard fail) — re-added per #3248', () => {
+		test('is an active entry in the macOS ledger (#3248 re-add)', () => {
+			// #2973 retired this entry on 2026-09-27 with the absence-guard
+			// "no silent re-add without fresh merge-group macos-latest failure
+			// evidence". That evidence arrived (issue #3248): hard failures on
+			// merge-group runs 38449931439 + 38421990284, both
+			// `unit (macos-latest, 5)`, with a DIFFERENT signature than the
+			// timeout flake the retirement cured — the overflow child exits 0
+			// before the kill lands, so the 30s PROBE_TIMEOUT_MS remedy does
+			// not apply. The re-add is documented in the ledger block.
 			expect(existsSync(MACOS_LEDGER_PATH)).toBe(true);
-			expect(activeEntries(MACOS_LEDGER_PATH)).not.toContain(
-				BUN_COMPAT_EXIT_FIRST,
-			);
+			expect(activeEntries(MACOS_LEDGER_PATH)).toContain(BUN_COMPAT_EXIT_FIRST);
 		});
 
-		test('leaves no stale entry line or OWNER/EXPIRY block in the macOS ledger (#2973)', () => {
-			const raw = readFileSync(MACOS_LEDGER_PATH, 'utf8').replace(
-				/\r\n/g,
-				'\n',
+		test('the re-added macOS entry carries the Check 7 OWNER/EXPIRY metadata (#3248)', () => {
+			expectCarriesOwnerExpiry(MACOS_LEDGER_PATH, BUN_COMPAT_EXIT_FIRST);
+		});
+
+		test('the re-added macOS entry is present exactly once (PRR-029)', () => {
+			// A duplicate entry with its own OWNER/EXPIRY block would leave two
+			// competing renewal owners while membership pins stay green.
+			const dupes = activeEntries(MACOS_LEDGER_PATH).filter(
+				(entry) => entry === BUN_COMPAT_EXIT_FIRST,
 			);
-			const lines = raw.split('\n');
-			expect(lines.some((l) => l.trim() === BUN_COMPAT_EXIT_FIRST)).toBe(false);
+			expect(dupes.length).toBe(1);
 		});
 
 		test('is scoped to the macOS ledger only (not general, not windows, not integration)', () => {

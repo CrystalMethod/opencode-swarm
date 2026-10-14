@@ -10,7 +10,7 @@
  */
 
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 
 import { beginHydrationScope } from '../../../src/session/hydration-ownership';
@@ -21,6 +21,7 @@ import {
 	startAgentSession,
 	swarmState,
 } from '../../../src/state';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 const tempDirs: string[] = [];
@@ -55,7 +56,12 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-	for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+	// Issue #3248 class 2b: raw rmSync here had no EBUSY/EPERM retry, so a
+	// windows-latest AV/cold-FS handle on a guard-live-populate-* temp dir
+	// failed the whole file from this teardown 3/3 attempts (run 38425263922,
+	// unit windows-latest 6). Route through safeRmRecursive — the bounded
+	// retry pattern established by PR #2190 / #2807.
+	for (const dir of tempDirs) safeRmRecursive(dir);
 });
 
 describe('population guard for live newer-stamped sessions (PRR-001)', () => {

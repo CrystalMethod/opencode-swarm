@@ -8,10 +8,20 @@ import { collectGarbageBestEffort } from '../../src/utils/bun-compat.js';
 export const _internals: {
 	realpathSyncNative: (path: fs.PathLike) => string;
 	realpathSync: typeof fs.realpathSync;
+	rmSync: typeof fs.rmSync;
+	collectGarbageBestEffort: () => void;
+	wait: (ms: number) => void;
 } = {
 	realpathSyncNative: fs.realpathSync.native,
 	realpathSync: fs.realpathSync,
+	rmSync: fs.rmSync,
+	collectGarbageBestEffort,
+	wait: (ms: number) => {
+		Atomics.wait(RETRY_WAIT, 0, 0, ms);
+	},
 };
+
+const RETRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 
 function canonicalRealpath(targetPath: fs.PathLike): string {
 	try {
@@ -157,21 +167,27 @@ export function safeRmRecursive(targetPath: string): void {
 	closeProjectDb(lexicalTarget);
 
 	// Bun does not consistently honor fs.rmSync's maxRetries on Windows. Retry
-	// transient handle-release failures explicitly, bounded to two seconds.
-	const retryWait = new Int32Array(new SharedArrayBuffer(4));
+	// transient handle-release failures explicitly on a ~10 s deadline
+	// (100 attempts at 100 ms cadence). Issue #3248 class 2: windows-latest
+	// cold-FS/AV handle holds on fresh sqlite temp dirs outlived the previous
+	// ~2 s budget and hard-failed merge-group shards (close-active's
+	// close-query-cache-* teardown, run 38507292215 windows-latest 1; 3/3
+	// attempts). collectGarbageBestEffort runs on EVERY failed attempt: a
+	// hedge for GC-reclaimable handles (Bun sqlite statement caches), not a
+	// cure for AV-held handles — only elapsed time helps those.
 	for (let attempt = 0; ; attempt += 1) {
 		try {
-			fs.rmSync(lexicalTarget, { recursive: true, force: true });
+			_internals.rmSync(lexicalTarget, { recursive: true, force: true });
 			return;
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (
-				attempt >= 20 ||
+				attempt >= 99 ||
 				(code !== 'EBUSY' && code !== 'EPERM' && code !== 'ENOTEMPTY')
 			)
 				throw error;
-			if (attempt === 0) collectGarbageBestEffort();
-			Atomics.wait(retryWait, 0, 0, 100);
+			_internals.collectGarbageBestEffort();
+			_internals.wait(100);
 		}
 	}
 }
