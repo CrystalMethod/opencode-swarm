@@ -37,11 +37,12 @@ workflow-touching PR.
 - **CI wiring**: the lint runs in the `drift` job of `drift-check.yml` (pull_request,
   push, merge_group, workflow_dispatch) and as `check:workflow-timeouts` in
   `package.json`.
-- **Tests** (`tests/unit/scripts/check-workflow-timeouts.test.ts`): 19 tests covering
+- **Tests** (`tests/unit/scripts/check-workflow-timeouts.test.ts`): 22 tests covering
   the pre-fix red shape, the fixed green shape, the exact shipped parameterized helper
   (anti-vacuousness: the lint demonstrably sees the workflow it ships with, and a
-  dropped-directive mutation reds), all fail-closed findings, partial parameterization,
-  parser edges, and a ratchet over the repository's real workflows.
+  dropped-directive mutation reds), all fail-closed findings (including non-literal
+  wait-call arguments), partial parameterization, parser edges, and a ratchet over the
+  repository's real workflows.
 
 ## User-visible effect
 
