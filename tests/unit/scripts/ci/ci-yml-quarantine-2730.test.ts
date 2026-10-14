@@ -185,26 +185,35 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 		});
 	});
 
-	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 5, hard fail) — retired per #2973', () => {
-		test('is retired from the macOS ledger (#2973)', () => {
-			// #2973 retirement (2026-09-27): the #2740 probe-timeout flake's
-			// named remedy landed (PROBE_TIMEOUT_MS raised to 30s by the
-			// retiring PR; also reproduced under load on a Windows host).
-			// Absence guard: no silent re-add without fresh merge-group
-			// macos-latest failure evidence.
+	describe('bun-compat-exit-first-2530.test.ts (macos-latest, unit-shard 1) — re-quarantined per #3261 with fresh merge-group evidence', () => {
+		test('is an active entry in the macOS ledger exactly once (re-quarantine)', () => {
+			// Re-quarantined 2026-10-14 per tracker #3261 with exactly the
+			// fresh evidence this file's absence guard demanded: a
+			// deterministic macos-latest merge-group failure (run
+			// 38590114992, unit-shard 1 — the native-Bun output-overflow
+			// probe did not observe the child kill/signal, 3 retries,
+			// assertions themselves passing; the same head passed
+			// pull_request CI 45/45). The #2973 named remedy stayed
+			// landed; the flake recurred environmentally.
 			expect(existsSync(MACOS_LEDGER_PATH)).toBe(true);
-			expect(activeEntries(MACOS_LEDGER_PATH)).not.toContain(
-				BUN_COMPAT_EXIT_FIRST,
-			);
+			const entries = activeEntries(MACOS_LEDGER_PATH);
+			expect(entries).toContain(BUN_COMPAT_EXIT_FIRST);
+			expect(
+				entries.filter((e) => e === BUN_COMPAT_EXIT_FIRST).length,
+			).toBe(1);
 		});
 
-		test('leaves no stale entry line or OWNER/EXPIRY block in the macOS ledger (#2973)', () => {
-			const raw = readFileSync(MACOS_LEDGER_PATH, 'utf8').replace(
-				/\r\n/g,
-				'\n',
-			);
-			const lines = raw.split('\n');
-			expect(lines.some((l) => l.trim() === BUN_COMPAT_EXIT_FIRST)).toBe(false);
+		test('carries OWNER + EXPIRY metadata (issue #2477 Check 7)', () => {
+			expectCarriesOwnerExpiry(MACOS_LEDGER_PATH, BUN_COMPAT_EXIT_FIRST);
+		});
+
+		test('the entry block cites the fresh merge-group evidence (#3261)', () => {
+			// The #2973 absence guard allowed re-adds only with fresh
+			// merge-group failure evidence; the re-quarantine block must
+			// carry that provenance so the next retirement has it.
+			const block = metadataBlock(MACOS_LEDGER_PATH, BUN_COMPAT_EXIT_FIRST);
+			expect(block).toContain('#3261');
+			expect(block).toContain('38590114992');
 		});
 
 		test('is scoped to the macOS ledger only (not general, not windows, not integration)', () => {

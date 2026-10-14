@@ -12,7 +12,7 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 2 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826) and tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867; OWNER/EXPIRY blocks below. The 9-entry I3 renewal cohort was retired per issue (the 9-entry I3 renewal cohort was retired per issue
+# STATUS: 4 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), tests/unit/session/hydration-populate-guard.test.ts and tests/unit/hooks/delegation-gate-rework-remediation.test.ts (both re-quarantined 2026-10-14 per #3261; blocks below
 # #2973 on 2026-09-27: rows with their named root fixes already in-tree —
 # pr-monitor-status (PR #2190 freezeClock + EBUSY-retry), 2602-lifecycle and
 # phase-complete.lock-adversarial (PR #2807 safeRmRecursive) — and rows whose
