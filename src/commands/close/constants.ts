@@ -274,5 +274,24 @@ export const ACTIVE_STATE_DIRS_TO_CLEAN = [
  * (archive-first guard), plus stale config-backup/ledger-sibling/SWARM_PLAN/.tmp
  * artifacts. Resets context.md for the next session. All state mutations are
  * written back to ctx so the caller can build the close summary.
+ *
+ * Issue #3248 (production follow-on to the class-2 teardown fixes): the old
+ * [25, 50, 100, 200] budget (~375 ms) was too short for Bun sqlite handle
+ * release after closeProjectDb on Windows. Local instrumented Windows runs
+ * (same fixture as close-active-state-unlink-retry.test.ts case 4) show the
+ * release is BIMODAL: instant (~5 ms) in most runs, ~11 s in roughly a
+ * quarter of runs, and in those runs the pre-change production path threw
+ * EBUSY from unlinkActiveStateFileWithRetry after ~375 ms (observed frame:
+ * fs-helpers.ts, not the teardown helper). The schedule therefore spans
+ * ~15.2 s so the observed tail is covered; the release has always eventually
+ * happened in every instrumented run. The success path is unchanged
+ * (first-attempt unlink costs nothing extra); the budget is only spent where
+ * the old budget produced an EBUSY error from `/swarm close`'s clean stage.
+ * (The merge-group hard failure in run 38507292215 surfaced the *teardown*
+ * helper's budget — that evidence belongs to the safeRmRecursive fix, not
+ * this schedule.)
  */
-export const ACTIVE_STATE_UNLINK_RETRY_DELAYS_MS = [25, 50, 100, 200] as const;
+export const ACTIVE_STATE_UNLINK_RETRY_DELAYS_MS = [
+	25, 50, 100, 200, 400, 600, 800, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+	1000, 1000, 1000, 1000, 1000, 1000,
+] as const;

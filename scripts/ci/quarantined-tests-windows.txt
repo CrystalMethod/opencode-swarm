@@ -12,7 +12,7 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 5 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), tests/unit/session/hydration-populate-guard.test.ts and tests/unit/hooks/delegation-gate-rework-remediation.test.ts (both re-quarantined 2026-10-14 per #3261; blocks below
+# STATUS: 6 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), and tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts (issue #3248); OWNER/EXPIRY blocks below. The 9-entry I3 renewal cohort was retired per issue
 # #2973 on 2026-09-27: rows with their named root fixes already in-tree —
 # pr-monitor-status (PR #2190 freezeClock + EBUSY-retry), 2602-lifecycle and
 # phase-complete.lock-adversarial (PR #2807 safeRmRecursive) — and rows whose
@@ -142,6 +142,40 @@ tests/unit/hooks/delegation-gate-background-coder.test.ts
 #   hard-fails on day 15.
 tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts
 
+#
+# tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts (issue #3248)
+# ---------------------------------------------------------------------------
+# Retry-only windows-latest flake from the 2026-10 flake-detection cohort
+# (9 detections 2026-09-11..2026-10-13, issues #2718/#2729/#2847/#3055/#3117/
+# #3125/#3208/#3213/#3234). Sampled check-run annotation evidence
+# (2026-10-13/14, 16 failed merge-group runs): windows/unit `Passed on
+# retry 1` notices in 5 distinct runs, ZERO hard failures, ZERO macos/ubuntu
+# annotations for this file — single-OS windows-latest evidence, so the
+# windows ledger is the placement (a general-ledger entry would suppress the
+# file on every RUNNER_OS and falsely imply cross-OS evidence). The ci.yml
+# retry loop discards attempt-1 output when a retry passes, so no assertion
+# text exists to drive a root-cause fix from CI alone (the #2730 /
+# delegation-gate-background-coder precedent for retry-only entries). Not an
+# infra signature (annotation prefix is `Passed on retry N`, not a
+# Runner-offline / no-space / waiting-for-a-runner marker). The file last
+# changed 2026-09-26 (PR #2982) — the flake spans that change, so it is not a
+# fresh-code regression. Human-review requirement of the windows-ledger
+# re-add policy: the failure class is confirmed real (attempt-1 assertion or
+# teardown failure that a clean rerun clears — windows-latest cold-FS/AV
+# contention class per docs/testing/test-stability.md), not currently
+# root-fixable without reproducing assertion text, hence this bounded
+# quarantine rather than an open queue-blocking flake.
+# OWNER: swarm-triage (#3248 cohort) — issue #3248; evidence: windows-latest
+#   retry-only annotations across 5 sampled merge-group runs 2026-10-13/14
+#   plus the 9 detection issues above
+# EXPIRY: 2026-11-15 — retire when the windows retry-flake has a
+#   reproducible diagnosis or a root fix and the file passes on
+#   windows-latest merge-group runs; no re-add after retirement without a
+#   fresh merge-group windows-latest failure that cannot be fixed at the
+#   root. After EXPIRY, Check 7 warns for 14 days, then hard-fails on day 15.
+tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts
+
+
 # Quarantined 2026-10-14 per auto-flake tracker #3261; evidence from PR #3242
 #   merge-queue candidates (runs 38574480126, 38583979646): both files failed
 #   windows-only with "EBUSY: resource busy or locked, rm <temp scratch>" in
@@ -155,12 +189,14 @@ tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts
 #   or platform-safe cleanup).
 tests/unit/session/hydration-populate-guard.test.ts
 
+
 # OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
 #   closeout evidence in comments)
 # EXPIRY: 2026-10-28 — retire when the file passes a windows-latest
 #   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
 #   or platform-safe cleanup).
 tests/unit/hooks/delegation-gate-rework-remediation.test.ts
+
 
 # OWNER: zaxbysauce — issue #3261 (same windows EBUSY teardown storm as the
 #   two entries above; PR #3242 pull_request run 38617312185, shard

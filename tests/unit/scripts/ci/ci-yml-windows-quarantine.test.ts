@@ -72,10 +72,12 @@ describe('ci.yml integration — windows quarantine ledger entry for win32-wrapp
 		// "# STATUS: N active entr(y|ies)" header line. Drift between the
 		// declared count and the actual active-entry count (e.g. an entry
 		// removed without updating the header, or a count bumped without the
-		// matching entries) makes the header lie to triage. Post-#2973 the
-		// ledger is empty (0 active entries), the tests above are absence
-		// guards, and this test pins the header's declared 0 against the
-		// actual active-entry count.
+		// matching entries) makes the header lie to triage. Post-#3248 the
+		// ledger holds 3 active entries (j02-failure-rejection-distinct,
+		// delegation-gate-background-coder, and the #3248
+		// dispatch-lanes-pr-review-resilience-followups entry pinned by
+		// ci-yml-quarantine-3248-windows.test.ts); this test pins the header's
+		// declared count against the actual active-entry count, whatever it is.
 		const raw = readFileSync(WINDOWS_LEDGER_PATH, 'utf8').replace(
 			/\r\n/g,
 			'\n',

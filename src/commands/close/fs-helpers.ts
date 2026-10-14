@@ -63,7 +63,12 @@ export async function copyDirRecursive(
  * Delete one archived active-state artifact, tolerating the short-lived file
  * locks Windows antivirus and SQLite sidecars can retain after handle close.
  * Non-transient errors fail immediately; the retry budget is bounded to
- * 375 ms so `/swarm close` remains responsive.
+ * ~15.2 s (issue #3248 production follow-on to the class-2 teardown fixes —
+ * instrumented Windows runs show the Bun sqlite handle release is bimodal:
+ * ~5 ms or ~11 s; the old ~375 ms budget threw EBUSY from this function on
+ * the long tail). collectGarbageBestEffort runs on every failed attempt as a
+ * hedge for GC-reclaimable statement handles; only elapsed time helps
+ * AV-held ones.
  */
 export async function unlinkActiveStateFileWithRetry(
 	filePath: string,
@@ -78,7 +83,7 @@ export async function unlinkActiveStateFileWithRetry(
 			if ((code !== 'EBUSY' && code !== 'EPERM') || delay === undefined) {
 				throw error;
 			}
-			if (attempt === 0) _internals.collectGarbageBestEffort();
+			_internals.collectGarbageBestEffort();
 			await _internals.sleep(delay);
 		}
 	}

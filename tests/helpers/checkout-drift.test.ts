@@ -96,6 +96,17 @@ describe('checkout drift: pre-existing .swarm', () => {
 		fs.writeFileSync(path.join(reports, 'unit-shard-1-0.json'), '{}');
 		expect(diffCheckout(before, snapshotCheckout(root)).swarm).toEqual([]);
 	});
+
+	test("CI's coverage-gate shard manifests are ignored (issue #3248)", () => {
+		const before = snapshotCheckout(root);
+		const manifests = path.join(root, '.swarm', 'coverage-gate');
+		fs.mkdirSync(manifests);
+		fs.writeFileSync(
+			path.join(manifests, 'shard-3-expected-files.txt'),
+			'a.test.ts\n',
+		);
+		expect(diffCheckout(before, snapshotCheckout(root)).swarm).toEqual([]);
+	});
 });
 
 describe('checkout drift: modes and reporting', () => {

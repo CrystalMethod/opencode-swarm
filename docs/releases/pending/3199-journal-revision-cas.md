@@ -1,0 +1,26 @@
+---
+type: fix
+issue: 3199
+---
+
+# PR-review observability journals no longer advance the durable gate revision
+
+## What changed
+
+- **Rejection-journal and advisory writes are non-transitioning appends.** The PR-review observability state — `prReviewSubmitRejections` (written when a lane child's `submit_pr_review_result` is rejected), `prReviewVerdictRejections` (written when the gate owner's `write_pr_review_artifact` is rejected), and `skillContractAdvisories` (the skill-contract/gh-readiness advisory list) — is observability-only, but was persisted through the same CAS-checked write path the state machine uses for real transitions, so every journaled rejection bumped the durable gate `revision`. Those three writers now persist through `appendObservabilityStateWhileLocked`, which keeps the state-machine revision (and the coordination row's coupled generation) in place while still CAS-writing the row atomically and syncing the shadow projection.
+- **State-machine writes preserve observability state.** Every `writeStateWhileLocked` write takes the three registered fields from the DURABLE state (durable-present wins; durable-absent is dropped), so a snapshot that predates an append can neither clobber appended entries nor resurrect cleared ones. Two sanctioned exceptions: activation's CREATE write seeds `skillContractAdvisories` before any durable row exists (the merge is inert there), and workflow-instance replacements (the PR_REVIEW→PR_FEEDBACK handoff) deliberately start the new instance with clean observability state instead of inheriting the previous instance's entries.
+- **The append path's contract is runtime-enforced.** An append may change only the registered observability fields plus `updatedAt` relative to the durable state; a payload that also mutates any other field is rejected with `BLOCKED` instead of silently writing unversioned state-machine drift.
+- **Journal writes stop failing adjacent generation checks.** Because the durable revision no longer moves on a journal write, journal-heavy failure loops can no longer spuriously fail the dispatch workflow-generation binding or the armed-recovery generation check — those compares now see only real state-machine transitions.
+
+## Why
+
+A journaled rejection landing inside another gate operation's read-check-write window invalidated that operation's revision CAS with a spurious `BLOCKED: ... state changed ...` failure (#3199). Because same-session tool calls execute as parallel tool parts, the window was real; the failure was safe but wrong — nothing about the workflow had actually changed.
+
+## Behavior note (auto-resume wake brake)
+
+The wake brake's progress token hashes the gate revision, so observability-only writes no longer count as "wake progress": a loop that only journals rejections — or a wake cycle that only records a skill-contract advisory — now accrues unproductive wakes, and after the configured consecutive limit auto-resume is **suspended terminally** for that session (sticky until the gate clears; the suspension notice names `/swarm abort-pr-workflow`). Previously every journal or advisory write reset the unproductive counter, defeating the brake in exactly the failure loop it exists to stop. Real controller activity — actual state-machine writes, lane transitions, receipt digests — still counts as progress.
+
+## Notes
+
+- No schema, row-shape, file-layout, or migration change: the append writes the same coordination-row payload the existing readers parse; mixed-version operation (old binary reading new rows, new binary reading old rows) is unchanged. Rollback is a single revert.
+- The `skillContractAdvisories` schema cap (8) and both journal caps (24) are unchanged.

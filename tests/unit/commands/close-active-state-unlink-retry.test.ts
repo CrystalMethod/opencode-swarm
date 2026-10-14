@@ -38,7 +38,9 @@ describe('active-state unlink retry', () => {
 
 		expect(unlink).toHaveBeenCalledTimes(3);
 		expect(sleep).toHaveBeenCalledTimes(2);
-		expect(collectGarbage).toHaveBeenCalledTimes(1);
+		// #3248: GC now runs on EVERY failed attempt (a hedge for
+		// GC-reclaimable Bun sqlite statement handles), not just the first.
+		expect(collectGarbage).toHaveBeenCalledTimes(2);
 		expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([25, 50]);
 	});
 
@@ -70,9 +72,17 @@ describe('active-state unlink retry', () => {
 		await expect(
 			_internals.unlinkActiveStateFileWithRetry('swarm.db'),
 		).rejects.toBe(failure);
-		expect(unlink).toHaveBeenCalledTimes(5);
+		// #3248: the production budget grew from [25,50,100,200] (~375 ms) to
+		// ~15.2 s. Local instrumented Windows runs of case 4 below show the
+		// Bun sqlite handle release is bimodal — instant (~5 ms) or ~11 s —
+		// and on the long tail the old budget threw EBUSY from
+		// unlinkActiveStateFileWithRetry itself (~3/10 runs). (The merge-group
+		// hard failure in run 38507292215 evidenced the TEARDOWN helper's
+		// budget; see tests/helpers/safe-test-dir.ts.)
+		expect(unlink).toHaveBeenCalledTimes(21);
 		expect(sleep.mock.calls.map(([delay]) => delay)).toEqual([
-			25, 50, 100, 200,
+			25, 50, 100, 200, 400, 600, 800, 1000, 1000, 1000, 1000, 1000, 1000, 1000,
+			1000, 1000, 1000, 1000, 1000, 1000,
 		]);
 	});
 
@@ -93,5 +103,9 @@ describe('active-state unlink retry', () => {
 			closeProjectDb(directory);
 			safeRmRecursive(directory);
 		}
-	});
+		// #3248: the production retry budget spans ~15.2 s (the handle
+		// release tail measured ~11 s), so the case needs an explicit
+		// per-test budget above bun's 5 s default (CI already passes
+		// --timeout 120000; local runs do not).
+	}, 30000);
 });

@@ -237,9 +237,23 @@ The script:
 2. Drops candidates that are already quarantined, have an infra-signature
    failure (runner starvation, cancellation), or are in core trees
    (`tests/unit/{scope,agents,hooks}/**` — flagged for human review).
-3. Writes survivors to a `flake-suggestions` artifact and best-effort opens a
-   tracking issue (best-effort because the Actions token's `issues:write` may
-   be restricted by repo settings).
+3. Writes survivors to a `flake-suggestions` artifact and best-effort reports
+   them (best-effort because the Actions token's `issues:write` may be
+   restricted by repo settings). Since issue #3248 the report is **deduped**:
+   the script first searches for an OPEN issue with the exact tracking title
+   that is bot-authored (`author.is_bot`, the structural flag — the gh CLI
+   renders this workflow's own actor as `app/github-actions` while the REST
+   API renders `github-actions[bot]`, so a login literal matches only one
+   serializer; this is the v7.188.0 lookalike-issue guard: user-titled
+   issues never adopt the bot's comments) and comments
+   the per-run candidate list (plus the triggering CI run URL) there. A new
+   issue is created when no bot-authored match is open — and also, with a
+   `::warning::`, when the lookup itself fails or the only same-titled
+   issues are not bot-authored, so a silent resumption of duplicate filing
+   is visible in the run log. Previously every failed merge-group run filed
+   a fresh duplicate (97 filed in the 2026-09/10 cohort). Two detection runs
+   finishing concurrently can still race a duplicate into existence; that is
+   an accepted, warn-only limitation.
 
 **The detection is advisory — it never fails a run.** A maintainer reviews the
 suggestion and, if warranted, appends the line to the appropriate quarantine
