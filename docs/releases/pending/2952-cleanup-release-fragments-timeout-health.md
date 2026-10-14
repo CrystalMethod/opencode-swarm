@@ -25,8 +25,8 @@ workflow-touching PR.
   overhead plus margin); every release run was cancelled at ~10 minutes mid-wait,
   `release-health-summary` went red, and each run stranded a cleanup PR awaiting manual
   rescue.
-- **New static lint** `scripts/check-workflow-timeouts.ts` (`bun run
-  check:workflow-timeouts`): for every job that polls via a seq×sleep wait loop, asserts
+- **New static lint** `scripts/check-workflow-timeouts.ts` (direct invocation
+  `bun scripts/check-workflow-timeouts.ts`, as CI runs it): for every job that polls via a seq×sleep wait loop, asserts
   `timeout-minutes ≥ ceil(Σ wait budgets × 1.2) + 5 min` and every wait budget ≥ its
   declared `# target-duration`. Fail-closed throughout: parameterized helpers with
   `${N:-default}` defaults resolve; unresolvable defaults, expression-valued timeouts,
