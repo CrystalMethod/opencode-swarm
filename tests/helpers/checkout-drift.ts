@@ -51,6 +51,12 @@ export const IGNORED_TOP_LEVEL: ReadonlySet<string> = new Set([
 /** `.swarm/` subtrees owned by tooling, not by tests. */
 export const IGNORED_SWARM_PREFIXES: readonly string[] = [
 	'repository-validation',
+	// The coverage gate's shard manifests (issue #3248 class 1): pre-created
+	// before any test file runs so each file's checkout snapshot sees an
+	// existing .swarm/, mirroring the unit job's repository-validation
+	// posture. Ignored here so CI's own manifests never reach the warn
+	// worklist.
+	'coverage-gate',
 ];
 
 /** Bound on the recursive `.swarm/` walk (a developer's live dir can be big). */

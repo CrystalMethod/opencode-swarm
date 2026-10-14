@@ -237,9 +237,15 @@ The script:
 2. Drops candidates that are already quarantined, have an infra-signature
    failure (runner starvation, cancellation), or are in core trees
    (`tests/unit/{scope,agents,hooks}/**` — flagged for human review).
-3. Writes survivors to a `flake-suggestions` artifact and best-effort opens a
-   tracking issue (best-effort because the Actions token's `issues:write` may
-   be restricted by repo settings).
+3. Writes survivors to a `flake-suggestions` artifact and best-effort reports
+   them (best-effort because the Actions token's `issues:write` may be
+   restricted by repo settings). Since issue #3248 the report is **deduped**:
+   the script first searches for an OPEN issue with the exact tracking title
+   and comments the per-run candidate list (plus the triggering CI run URL)
+   there, creating a new issue only when none is open — previously every
+   failed merge-group run filed a fresh duplicate (84 in the 2026-09/10
+   cohort). Two detection runs finishing concurrently can still race a
+   duplicate into existence; that is an accepted, warn-only limitation.
 
 **The detection is advisory — it never fails a run.** A maintainer reviews the
 suggestion and, if warranted, appends the line to the appropriate quarantine

@@ -1,13 +1,18 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isCanonicalPathWithinRoot } from '../../../src/utils/path-security.js';
 import {
+	_internals,
 	createSafeTestDir,
 	safeRmRecursive,
 	withSafeTestDir,
 } from '../../helpers/safe-test-dir';
 import { canonicalTmpDir } from '../../helpers/tmpdir';
+
+const realRmSync = _internals.rmSync;
+const realCollectGarbageBestEffort = _internals.collectGarbageBestEffort;
+const realWait = _internals.wait;
 
 describe('createSafeTestDir', () => {
 	it('creates a directory that exists', () => {
@@ -167,6 +172,110 @@ describe('safeRmRecursive', () => {
 			expect(fs.existsSync(outsideTarget)).toBe(true);
 			expect(fs.existsSync(linkPath)).toBe(true);
 		} finally {
+			cleanup();
+		}
+	});
+});
+
+describe('safeRmRecursive retry shape (issue #3248 class 2)', () => {
+	afterEach(() => {
+		// Restore the real implementations (AGENTS.md invariant 7: restore the
+		// _internals seam after each test).
+		_internals.rmSync = realRmSync;
+		_internals.collectGarbageBestEffort = realCollectGarbageBestEffort;
+		_internals.wait = realWait;
+	});
+
+	const restoreInternals = (): void => {
+		_internals.rmSync = realRmSync;
+		_internals.collectGarbageBestEffort = realCollectGarbageBestEffort;
+		_internals.wait = realWait;
+	};
+
+	it('retries transient EBUSY until the handle frees, GC-ing and waiting per attempt', () => {
+		const { dir, cleanup } = createSafeTestDir('safe-rm-retry-');
+		let rmCalls = 0;
+		let gcCalls = 0;
+		let waitCalls = 0;
+		_internals.rmSync = ((target: fs.PathLike, options?: fs.RmOptions) => {
+			rmCalls += 1;
+			if (rmCalls <= 3) {
+				const error = new Error(
+					`EBUSY: resource busy or locked, rm '${target}'`,
+				) as NodeJS.ErrnoException;
+				error.code = 'EBUSY';
+				throw error;
+			}
+			return realRmSync(target, options);
+		}) as typeof fs.rmSync;
+		_internals.collectGarbageBestEffort = () => {
+			gcCalls += 1;
+		};
+		_internals.wait = () => {
+			waitCalls += 1;
+		};
+
+		try {
+			safeRmRecursive(dir);
+			expect(fs.existsSync(dir)).toBe(false);
+			expect(rmCalls).toBe(4);
+			// The hedge runs on EVERY failed attempt (not just the first).
+			expect(gcCalls).toBe(3);
+			expect(waitCalls).toBe(3);
+		} finally {
+			restoreInternals();
+			cleanup();
+		}
+	});
+
+	it('exhausts the bounded 100-attempt (~10 s) budget and rethrows the original error', () => {
+		const { dir, cleanup } = createSafeTestDir('safe-rm-exhaust-');
+		let rmCalls = 0;
+		_internals.rmSync = ((target: fs.PathLike) => {
+			rmCalls += 1;
+			const error = new Error(
+				`EBUSY: resource busy or locked, rm '${target}'`,
+			) as NodeJS.ErrnoException;
+			error.code = 'EBUSY';
+			throw error;
+		}) as typeof fs.rmSync;
+		_internals.collectGarbageBestEffort = () => {};
+		_internals.wait = () => {};
+
+		try {
+			expect(() => safeRmRecursive(dir)).toThrow(/EBUSY/);
+			// 100 rmSync attempts (the old budget was 21 ≈ 2 s; #3248 raised it
+			// because windows-latest AV handle holds outlived it).
+			expect(rmCalls).toBe(100);
+		} finally {
+			restoreInternals();
+			cleanup();
+		}
+	});
+
+	it('does not retry non-transient error codes', () => {
+		const { dir, cleanup } = createSafeTestDir('safe-rm-eacces-');
+		let rmCalls = 0;
+		let waitCalls = 0;
+		_internals.rmSync = (() => {
+			rmCalls += 1;
+			const error = new Error(
+				'EACCES: permission denied',
+			) as NodeJS.ErrnoException;
+			error.code = 'EACCES';
+			throw error;
+		}) as typeof fs.rmSync;
+		_internals.collectGarbageBestEffort = () => {};
+		_internals.wait = () => {
+			waitCalls += 1;
+		};
+
+		try {
+			expect(() => safeRmRecursive(dir)).toThrow(/EACCES/);
+			expect(rmCalls).toBe(1);
+			expect(waitCalls).toBe(0);
+		} finally {
+			restoreInternals();
 			cleanup();
 		}
 	});

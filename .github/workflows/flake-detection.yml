@@ -80,6 +80,9 @@ jobs:
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Issue #3248: the report body cites the triggering CI run so a
+          # deduped comment thread still points at per-run evidence.
+          DETECTION_RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           chmod +x scripts/ci/detect-and-quarantine-flakes.sh
           bash scripts/ci/detect-and-quarantine-flakes.sh detection-out/flake-annotations.txt

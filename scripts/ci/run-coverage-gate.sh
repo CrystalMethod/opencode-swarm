@@ -113,6 +113,28 @@ wc -l < quarantined.txt > quarantined-count.txt
 read -r quarantined_count < quarantined-count.txt
 echo "${quarantined_count} file(s) quarantined repo-wide, issue #1705"
 
+# Checkout-drift posture alignment (issue #3248 class 1): the unit job
+# pre-writes .swarm/repository-validation/ manifests BEFORE any test file
+# runs, so .swarm/ already exists when each file's bun test process
+# snapshots the checkout (tests/preload/prod-store-tripwire.ts) and the
+# .swarm/ writes made by the writers tracked in #3165-A are warn-only.
+# This script never created .swarm/, so on a fresh shard the FIRST file
+# whose execution materialized .swarm/ failed attempt 1 under the enforced
+# "creating .swarm where none existed" rule and passed the in-job retry —
+# the ubuntu/coverage-only retry-flake wave behind the 2026-10
+# flake-detection issue flood (e.g. cli-version/commands/run-command/
+# delegation-gate-scope/guardrails-modified-files, 22/22/22/16/16
+# detections). Pre-creating .swarm/coverage-gate/ with the shard file list
+# mirrors the unit job's manifest posture. Interim alignment, not the end
+# state: #3165-A retires the writers and then flips the .swarm diff from
+# warn to enforce, which restores creation detection.
+if [ -L .swarm ] || { [ -e .swarm ] && [ ! -d .swarm ]; }; then
+	echo "::error::.swarm must be a real directory; symlinks, junctions, and non-directories are rejected"
+	exit 1
+fi
+mkdir -p .swarm/coverage-gate
+cp gated-tests.txt ".swarm/coverage-gate/shard-${shard_index:-all}-expected-files.txt"
+
 failed=0
 index=0
 while IFS= read -r test_file; do

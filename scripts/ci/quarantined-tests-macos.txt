@@ -57,3 +57,33 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 #   merge-group runs (#2973 cohort row 16).
 # Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/hooks/pr-feedback-scope-controller.test.ts
+
+#
+# tests/unit/utils/bun-compat-exit-first-2530.test.ts (re-add, issue #3248)
+# ---------------------------------------------------------------------------
+# RE-ADDED per the #2973 retirement absence-guard ("no silent re-add without
+# fresh merge-group macos-latest failure evidence") — that fresh evidence now
+# exists, and it is a DIFFERENT signature from the timeout flake the #2973
+# retirement cured (PROBE_TIMEOUT_MS 30s). The file hard-failed
+# `unit (macos-latest, 5)` on merge-group run 38449931439 (2026-10-13T18:49,
+# flake-annotations-unit-shard-5 artifact 11856873923: `::error
+# file=tests/unit/utils/bun-compat-exit-first-2530.test.ts::FAILED`, 3/3
+# attempts) and again on run 38421990284 (2026-10-13T15:25, same cell), plus
+# passed-on-retry notices in runs 38412286118 (retry 2), 3221/3222-era runs
+# and the 2026-10-12 cohort (10 flake detections 2026-09-15..2026-10-14
+# overall). Failing case: 'native Bun reports bounded output overflow and
+# terminates the child' — `expect(receipt.exitCode !== 0 ||
+# receipt.signalCode !== null)` receives false because the overflow child
+# EXITS 0 before the kill lands; not an infra signature (no Runner-offline /
+# no-space markers; ubuntu and windows siblings green in the same runs), so
+# this is a real assertion race in nativeOutputLimitProbe, not a timeout.
+# Root fix deferred (tracked by #3248 retirement criteria): the probe must
+# not treat an early clean exit as termination evidence.
+# OWNER: swarm-triage (#3248 cohort) — issue #3248; original quarantine
+#   #2740 / retirement #2973 (cohort row 5); re-add evidence: merge-group
+#   runs 38449931439 + 38421990284, unit (macos-latest, 5), hard failures
+# EXPIRY: 2026-11-15 — retire when nativeOutputLimitProbe is root-fixed
+#   (an early-exiting overflow child must count as failure, not pass) or
+#   three consecutive merge-group macos-latest runs execute the file green.
+#   After EXPIRY, Check 7 warns for 14 days, then hard-fails on day 15.
+tests/unit/utils/bun-compat-exit-first-2530.test.ts
