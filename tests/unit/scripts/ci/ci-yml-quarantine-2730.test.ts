@@ -198,9 +198,7 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 			expect(existsSync(MACOS_LEDGER_PATH)).toBe(true);
 			const entries = activeEntries(MACOS_LEDGER_PATH);
 			expect(entries).toContain(BUN_COMPAT_EXIT_FIRST);
-			expect(
-				entries.filter((e) => e === BUN_COMPAT_EXIT_FIRST).length,
-			).toBe(1);
+			expect(entries.filter((e) => e === BUN_COMPAT_EXIT_FIRST).length).toBe(1);
 		});
 
 		test('carries OWNER + EXPIRY metadata (issue #2477 Check 7)', () => {
