@@ -21,7 +21,13 @@
  * construct the parser cannot attribute exactly — an inline (non-function)
  * seq/sleep pair inside a job, a pair outside every job, unresolvable
  * defaults, an expression-valued job `timeout-minutes`, an oversized file —
- * is a fail-closed finding, never a silent pass.
+ * is a fail-closed finding, never a silent pass. The same holds for parser
+ * ambiguity: an unparsable jobs region, an unterminated wait function, an
+ * empty scan, a dangling `--workflows-dir` flag, and a findings overflow all
+ * produce findings (or a non-zero exit) instead of a green result.
+ *
+ * Exit-code contract: 0 = no findings; 1 = any finding, unreadable target,
+ * or malformed arguments.
  *
  * Modeled on `scripts/check-required-check-contract.ts`: pure text scan, no
  * YAML dependency, no network, no git, no subprocess.
@@ -86,9 +92,11 @@ export function parseWorkflowJobs(lines: string[]): JobBlock[] {
 	const jobs: JobBlock[] = [];
 	let inJobs = false;
 	let current: JobBlock | null = null;
+	let jobIndent: string | null = null;
+	let regionEnd: number | null = null;
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
-		if (/^jobs:\s*$/.test(line)) {
+		if (/^jobs:(\s*#.*)?$/.test(line)) {
 			inJobs = true;
 			current = null;
 			continue;
@@ -98,14 +106,19 @@ export function parseWorkflowJobs(lines: string[]): JobBlock[] {
 			if (inJobs && !line.startsWith('#')) {
 				inJobs = false;
 				current = null;
+				regionEnd = i;
 			}
 			continue;
 		}
 		if (!inJobs) continue;
-		const jobMatch = /^ {2}([A-Za-z0-9_-]+):\s*(?:#.*)?$/.exec(line);
-		if (jobMatch) {
+		// Indent-tolerant job keys: the first child line fixes the job
+		// indentation (2-space and 4-space YAML are both legal); sibling jobs
+		// must match it so nested map keys are never mistaken for jobs.
+		const jobMatch = /^(\s+)([A-Za-z0-9_-]+):\s*(?:#.*)?$/.exec(line);
+		if (jobMatch && (jobIndent === null || jobMatch[1] === jobIndent)) {
+			if (jobIndent === null) jobIndent = jobMatch[1];
 			current = {
-				name: jobMatch[1],
+				name: jobMatch[2],
 				start: i,
 				end: lines.length,
 				timeoutMinutes: null,
@@ -114,8 +127,10 @@ export function parseWorkflowJobs(lines: string[]): JobBlock[] {
 			jobs.push(current);
 			continue;
 		}
-		if (current) {
-			const timeoutMatch = /^ {4}timeout-minutes:\s*(.+?)\s*$/.exec(line);
+		if (current && jobIndent !== null) {
+			const timeoutMatch = new RegExp(
+				`^ {${jobIndent.length + 2}}timeout-minutes:\\s*(.+?)\\s*$`,
+			).exec(line);
 			if (timeoutMatch) {
 				const raw = timeoutMatch[1].trim();
 				const numeric = /^-?\d+(?:\.\d+)?$/.exec(raw);
@@ -127,9 +142,11 @@ export function parseWorkflowJobs(lines: string[]): JobBlock[] {
 			}
 		}
 	}
-	// Close each block at the next job's start (jobs are pushed in order).
+	// Close each block at the next job's start (jobs are pushed in order), and
+	// never let a block extend past the end of the jobs region.
 	for (let j = 0; j < jobs.length; j++) {
 		if (j + 1 < jobs.length) jobs[j].end = jobs[j + 1].start;
+		if (regionEnd !== null) jobs[j].end = Math.min(jobs[j].end, regionEnd);
 	}
 	return jobs;
 }
@@ -141,21 +158,48 @@ export function parseWaitFunctions(lines: string[]): WaitFunction[] {
 		const def = FUNC_DEF_RE.exec(lines[i]);
 		if (!def) continue;
 		const indent = def[1];
-		const closing = new RegExp(`^${indent}}\\s*$`);
-		let end = lines.length - 1;
-		for (let j = i + 1; j < lines.length; j++) {
-			if (closing.test(lines[j])) {
-				end = j;
-				break;
+		const closing = new RegExp(`^${indent}}(?:\\s*#.*)?$`);
+		let end = -1;
+		const braceIdx = lines[i].indexOf('{');
+		if (braceIdx !== -1 && lines[i].slice(braceIdx + 1).includes('}')) {
+			// One-line function (`fn() { ...; }`): terminated on the def line.
+			end = i;
+		} else {
+			for (let j = i + 1; j < lines.length; j++) {
+				if (closing.test(lines[j])) {
+					end = j;
+					break;
+				}
 			}
 		}
-		const body = lines.slice(i, end + 1).join('\n');
+		// An unterminated function region must not swallow the rest of the
+		// file: register a stub with end = -1 so scanWorkflowLines can flag it
+		// and exclude it, letting every construct inside fall through to the
+		// loud seq/sleep disposition instead of being exempted by fnAt.
+		if (end === -1) {
+			fns.push({
+				name: def[2],
+				start: i,
+				end: -1,
+				defaultIterations: null,
+				defaultSleep: null,
+				defaultsUnresolvable: true,
+			});
+			continue;
+		}
+		// Budget resolution reads code, not prose: strip comments so a
+		// commented-out loop can never shadow the real loop's numbers
+		// (first-match resolution would otherwise take the comment's values).
+		const bodyLines = lines
+			.slice(i, end + 1)
+			.map((l) => l.replace(/(^|\s)#.*$/, '$1'));
+		const body = bodyLines.join('\n');
 		const seq = SEQ_RE.exec(body);
 		const sleep = SLEEP_RE.exec(body);
 		if (!seq || !sleep) continue;
 		const defaults = new Map<string, number>();
 		const varDefaultRe = /^\s*([A-Za-z_][A-Za-z0-9_]*)="\$\{[0-9]+:-([0-9]+)\}"\s*$/;
-		for (const bodyLine of lines.slice(i, end + 1)) {
+		for (const bodyLine of bodyLines) {
 			const m = varDefaultRe.exec(bodyLine);
 			if (m) defaults.set(m[1], Number.parseInt(m[2], 10));
 		}
@@ -199,23 +243,81 @@ function fnAt(fns: WaitFunction[], line: number): WaitFunction | null {
 	return null;
 }
 
-const DIRECTIVE_RE = /#\s*target-duration:\s*([0-9]+(?:\.[0-9]+)?)/;
+// The numeric token must end at a token boundary: a trailing `.` or letter
+// (`30.`, `12abc`) is a malformed value, while whitespace-led prose after the
+// number is deliberate documentation (the shipped directives carry it). The
+// digit in the lookahead class blocks regex backtracking (otherwise `30.`
+// would silently match as `3`).
+const DIRECTIVE_RE = /#\s*target-duration:\s*([0-9]+(?:\.[0-9]+)?)(?![.a-zA-Z0-9])/;
+
+/**
+ * Shell backslash continuations join a logical statement across physical
+ * lines; the parser works on logical lines so a continued `seq` cannot hide,
+ * and `phys` maps every logical index back to its first physical line for
+ * finding messages.
+ */
+function joinContinuations(rawLines: string[]): { lines: string[]; phys: number[] } {
+	const lines: string[] = [];
+	const phys: number[] = [];
+	let i = 0;
+	while (i < rawLines.length) {
+		let text = rawLines[i];
+		const start = i;
+		i++;
+		while (text.trimEnd().endsWith('\\') && i < rawLines.length) {
+			text = `${text.trimEnd().replace(/\\$/, '')} ${rawLines[i].trim()}`;
+			i++;
+		}
+		lines.push(text);
+		phys.push(start);
+	}
+	return { lines, phys };
+}
 
 /** Scan one workflow file's lines; append findings. */
 export function scanWorkflowLines(
-	lines: string[],
+	rawLines: string[],
 	file: string,
 	findings: TimeoutFinding[],
 ): void {
+	const { lines, phys } = joinContinuations(rawLines);
+	const at = (logicalIndex: number): string => String(phys[logicalIndex] + 1);
 	const jobs = parseWorkflowJobs(lines);
-	const fns = parseWaitFunctions(lines);
+	const parsedFns = parseWaitFunctions(lines);
+	// An unterminated function region is itself a finding; unregistering it
+	// lets every construct inside fall through to the loud disposition paths
+	// instead of being exempted by fnAt.
+	for (const fn of parsedFns) {
+		if (fn.end < 0 || fn.end >= lines.length || !/^[\t ]*\}/.test(lines[fn.end])) {
+			pushFinding(
+				findings,
+				file,
+				'unterminated-wait-function',
+				`wait function ${fn.name} (defined at line ${at(fn.start)}) has no closing brace at its own indentation — its extent cannot be determined, so nothing inside it is accounted`,
+			);
+		}
+	}
+	const fns = parsedFns.filter(
+		(fn) => fn.end >= 0 && fn.end < lines.length && /^[\t ]*\}/.test(lines[fn.end]),
+	);
 
-	// Wait-construct disposition: every seq occurrence must land in exactly
-	// one accounted bucket (inside a wait function, inline-in-job, orphan).
+	// Fail-closed net: a workflow file with wait constructs but zero parsable
+	// job blocks (exotic YAML spellings) must never pass vacuously.
 	const seqLines: number[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		if (SEQ_RE.test(lines[i])) seqLines.push(i);
 	}
+	if (jobs.length === 0 && seqLines.length > 0) {
+		pushFinding(
+			findings,
+			file,
+			'jobs-region-unparsed',
+			`file contains seq/sleep wait constructs but no parsable job blocks — the timeout/wait arithmetic cannot be verified for this file`,
+		);
+	}
+
+	// Wait-construct disposition: every seq occurrence must land in exactly
+	// one accounted bucket (inside a wait function, inline-in-job, orphan).
 	for (const line of seqLines) {
 		if (fnAt(fns, line)) continue; // accounted via its function's call sites
 		const job = jobAt(jobs, line);
@@ -228,7 +330,7 @@ export function scanWorkflowLines(
 					findings,
 					file,
 					'uncounted-wait-construct',
-					`job ${job.name}: seq/sleep wait construct at line ${line + 1} is not inside a recognized wait function — factor it into a wait function with a # target-duration directive`,
+					`job ${job.name}: seq/sleep wait construct at line ${at(line)} is not inside a recognized wait function — factor it into a wait function with a # target-duration directive`,
 				);
 			}
 		} else {
@@ -236,7 +338,7 @@ export function scanWorkflowLines(
 				findings,
 				file,
 				'unattributable-wait-construct',
-				`seq/sleep wait construct at line ${line + 1} is not attributable to any job`,
+				`seq/sleep wait construct at line ${at(line)} is not attributable to any job`,
 			);
 		}
 	}
@@ -258,13 +360,24 @@ export function scanWorkflowLines(
 				const argRe = new RegExp(`\\b${fn.name}\\s+([A-Za-z0-9._/-]+)(?:\\s+([0-9]+))?(?:\\s+([0-9]+))?`);
 				const args = argRe.exec(line);
 				const job = jobAt(jobs, i) ?? jobAt(jobs, fn.start);
-				if (!job) continue; // orphan call: the seq disposition above already flagged the loop
+				if (!job) {
+					// Fail closed: an invocation outside every parsed job is a
+					// finding, never a silent skip (its seq loop is separately
+					// flagged only when it sits inside a recognized function).
+					pushFinding(
+						findings,
+						file,
+						'unattributable-wait-call',
+						`${fn.name} invocation at line ${at(i)} is not attributable to any parsed job — static budget accounting cannot verify it`,
+					);
+					continue;
+				}
 				if (!args) {
 					pushFinding(
 						findings,
 						file,
 						'unparseable-wait-call',
-						`job ${job.name}: ${fn.name} invocation at line ${i + 1} does not match the literal call convention "${fn.name} <workflow> [<iterations>] [<sleep>] (text-static budget accounting needs literal tokens)"`,
+						`job ${job.name}: ${fn.name} invocation at line ${at(i)} does not match the literal call convention "${fn.name} <workflow> [<iterations>] [<sleep>] (text-static budget accounting needs literal tokens)"`,
 					);
 					continue;
 				}
@@ -280,7 +393,7 @@ export function scanWorkflowLines(
 						findings,
 						file,
 						'unparseable-wait-call',
-						`job ${job.name}: ${fn.name} invocation at line ${i + 1} has non-literal budget arguments ("${afterWorkflow}") that static budget accounting cannot resolve`,
+						`job ${job.name}: ${fn.name} invocation at line ${at(i)} has non-literal budget arguments ("${afterWorkflow}") that static budget accounting cannot resolve`,
 					);
 					continue;
 				}
@@ -356,7 +469,7 @@ export function scanWorkflowLines(
 					findings,
 					file,
 					'unresolvable-wait-defaults',
-					`job ${jobName}: parameterless call to ${call.fn} (${call.workflow}) at line ${call.line + 1} has no resolvable iteration/sleep defaults`,
+					`job ${jobName}: parameterless call to ${call.fn} (${call.workflow}) at line ${at(call.line)} has no resolvable iteration/sleep defaults`,
 				);
 				continue;
 			}
@@ -367,7 +480,7 @@ export function scanWorkflowLines(
 					findings,
 					file,
 					'missing-target-duration',
-					`job ${jobName}: ${call.fn} call for ${call.workflow} at line ${call.line + 1} has no "# target-duration: <minutes>" directive on the call line or the line immediately above`,
+					`job ${jobName}: ${call.fn} call for ${call.workflow} at line ${at(call.line)} has no "# target-duration: <minutes>" directive on the call line or the line immediately above`,
 				);
 			} else {
 				const budgetMinutes = budgetSeconds / 60;
@@ -454,19 +567,52 @@ export function scanWorkflowsDir(dir: string): ScanResult {
 			continue;
 		}
 		filesScanned++;
-		const text = fs.readFileSync(full, 'utf-8');
+		let text: string;
+		try {
+			text = fs.readFileSync(full, 'utf-8');
+		} catch {
+			pushFinding(findings, name, 'file-unreadable', `cannot read ${full}`);
+			continue;
+		}
 		scanWorkflowLines(text.split(/\r?\n/), name, findings);
+	}
+	if (filesScanned === 0 && findings.length === 0) {
+		// A gate that examined nothing must not certify anything: an empty
+		// (or all-filtered) workflows directory is a fail-closed finding, not
+		// a vacuous pass.
+		pushFinding(
+			findings,
+			dir,
+			'no-workflows-scanned',
+			`no workflow files were scanned in ${dir} — refusing to pass vacuously`,
+		);
+	}
+	if (findings.length >= MAX_FINDINGS) {
+		findings.push({
+			file: '(multiple)',
+			code: 'findings-truncated',
+			message: `output truncated at ${MAX_FINDINGS} findings; additional findings were dropped (exit status is unaffected)`,
+		});
 	}
 	return { findings, filesScanned };
 }
 
 export function main(argv: string[] = process.argv.slice(2), root = process.cwd()): number {
 	let dirArg: string | null = null;
+	let danglingDirFlag = false;
 	for (let i = 0; i < argv.length; i++) {
-		if (argv[i] === '--workflows-dir' && i + 1 < argv.length) {
-			dirArg = argv[i + 1];
-			i++;
+		if (argv[i] === '--workflows-dir') {
+			if (i + 1 < argv.length) {
+				dirArg = argv[i + 1];
+				i++;
+			} else {
+				danglingDirFlag = true;
+			}
 		}
+	}
+	if (danglingDirFlag) {
+		console.log('::error::[check-workflow-timeouts:unparseable-arguments] --workflows-dir was given without a value; refusing to guess the scan target');
+		return 1;
 	}
 	const dir = dirArg
 		? path.resolve(root, dirArg)
