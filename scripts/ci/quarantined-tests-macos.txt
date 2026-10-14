@@ -57,3 +57,14 @@ tests/unit/scripts/ci/repository-validation-real-process-2675.test.ts
 #   merge-group runs (#2973 cohort row 16).
 # Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-14.
 tests/unit/hooks/pr-feedback-scope-controller.test.ts
+
+# Quarantined 2026-10-14 per auto-flake tracker #3261; evidence from PR #3242
+#   merge-queue candidate (run 38590114992, macos-latest shard 1): native Bun
+#   output-overflow probe did not observe the child kill/signal on macos
+#   (bun-compat exit-first #2530 suite; 7 pass / 1 fail, deterministic within
+#   the shard, 3 retries); same head passed pull_request CI 45/45.
+# OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
+#   closeout evidence in comments)
+# EXPIRY: 2026-10-28 — retire when the file passes a macos-latest merge-group
+#   run clean, or root-fix the native-Bun kill-detection probe.
+tests/unit/utils/bun-compat-exit-first-2530.test.ts

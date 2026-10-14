@@ -141,3 +141,23 @@ tests/unit/hooks/delegation-gate-background-coder.test.ts
 #   with an updated criterion. After EXPIRY, Check 7 warns for 14 days, then
 #   hard-fails on day 15.
 tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts
+
+# Quarantined 2026-10-14 per auto-flake tracker #3261; evidence from PR #3242
+#   merge-queue candidates (runs 38574480126, 38583979646): both files failed
+#   windows-only with "EBUSY: resource busy or locked, rm <temp scratch>" in
+#   afterAll/afterEach recursive rm, retried 3x per shard with assertions
+#   passing; same head passed pull_request CI 45/45. Environmental handle
+#   contention, not diff-caused (#3242 touches workflow CI + a new lint only).
+# OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
+#   closeout evidence in comments)
+# EXPIRY: 2026-10-28 — retire when each file passes a windows-latest
+#   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
+#   or platform-safe cleanup).
+tests/unit/session/hydration-populate-guard.test.ts
+
+# OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
+#   closeout evidence in comments)
+# EXPIRY: 2026-10-28 — retire when the file passes a windows-latest
+#   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
+#   or platform-safe cleanup).
+tests/unit/hooks/delegation-gate-rework-remediation.test.ts
