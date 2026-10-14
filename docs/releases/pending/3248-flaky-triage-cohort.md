@@ -68,11 +68,17 @@ follow-on the evidence demanded:
    per the delegation-gate-background-coder retry-only precedent; the ledger's
    STATUS header now declares 3 active entries.
 5. **Detector dedupe (stops the flood).** detect-and-quarantine-flakes.sh
-   created a new issue per failed merge-group run. It now searches for an OPEN
-   issue with the exact title (server-side `--search in:title`, gh
-   `--template` extraction, no jq) and comments the full per-run candidate
-   list plus the triggering run URL there, creating only when none is open.
-   Concurrent detections can still race one duplicate (accepted, warn-only).
+   created a new issue per failed merge-group run. It now searches for an
+   OPEN issue with the exact title that is bot-authored (the structural
+   `author.is_bot` flag — the gh CLI and the REST API render the Actions
+   actor with different login strings, so the flag is the only portable
+   identity; the v7.188.0 lookalike-issue guard; server-side
+   `--search in:title`, gh `--template` extraction, no jq) and comments the
+   full per-run candidate
+   list plus the triggering run URL there. A new issue is created when no
+   bot-authored match is open — and, with a `::warning::`, when the lookup
+   fails or the only same-titled issues are not bot-authored. Concurrent
+   detections can still race one duplicate (accepted, warn-only).
 
 All 86 open detection issues (84 cohort + 2 in-flight filings) are
 dispositioned in the tracker with per-file
@@ -81,8 +87,8 @@ evidence (root-fixed-by / quarantined-by / already-ledgered / stale).
 ## Why
 
 Failed merge-group runs were being filed as duplicate issues continuously
-(22 runs flagged the coverage cohort alone during 2026-10-09..14; 24 failed
-runs in the final 36 hours of the triage window), and the two Windows/macOS
+(22 runs flagged the coverage cohort alone during 2026-10-09..14, out of 34
+failed merge-group runs in those five days), and the two Windows/macOS
 hard-failers were repeatedly ejecting PR groups from the queue. The classes
 had concrete, evidenced root causes; quarantining the coverage-shard cohort
 (5+ files including two core hooks suites) would have suppressed them

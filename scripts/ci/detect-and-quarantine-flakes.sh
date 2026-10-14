@@ -147,10 +147,16 @@ echo "Suggestions written to:       $SUGGESTIONS_FILE"
 
 # --- Best-effort tracking issue (plan critic C2: may fail on token perms) ---
 # Issue #3248: dedupe before creating. Every failed merge-group run used to
-# file a NEW issue with this same title (84 duplicates in the 2026-09/10
-# cohort), so first look for an OPEN issue with the exact title and comment
-# the candidates there instead. The comment carries the full per-run
-# candidate list, so no detection evidence is lost by reusing one issue.
+# file a NEW issue with this same title (97 duplicates filed in the
+# 2026-09/10 cohort), so first look for an OPEN issue with the exact title
+# and comment the candidates there instead. The comment carries the full
+# per-run candidate list, so no detection evidence is lost by reusing one
+# issue.
+# Trust rule (PRR-001, the v7.188.0 lookalike-issue class — see
+# scripts/check-host-contract.ts and scripts/ci/quarantine-aging.ts
+# isBotAuthored): only adopt issues authored by this workflow's own bot
+# identity. Issue titles are user-controllable in a public repo; a lookalike
+# issue MUST NOT absorb the bot's detection comments.
 # Known limitation (accepted, warn-only): two detection runs finishing
 # concurrently can both find no open issue and both create — a rare duplicate
 # that the next run's comment merges back onto one thread.
@@ -163,23 +169,60 @@ if [ "$suggestion_count" -gt 0 ]; then
     # the repo's other tracking scripts, which parse --json output
     # themselves); --search 'in:title <phrase>' filters server-side so the
     # 100+ open issues in the repo cannot crowd the window the way a plain
-    # --limit list would. Tab-separated number+title rows are then matched
-    # against the exact title (search is token-based; the em-dash title must
-    # be byte-compared). First exact match wins (gh lists newest-first).
+    # --limit list would.
+    # Row + trust contract (review round 2, findings 1+2): rows are
+    # number<TAB>TITLE with the title LAST (a 2-var read makes the title the
+    # absorbing remainder, so interior tabs survive byte comparison). Titles
+    # may contain tabs AND newlines (both round-trip through the API — probe
+    # issue #3258), so NO positional field after the title is trustworthy: a
+    # newline title can synthesize entire fake rows naming any issue number
+    # with any flag values. The title byte-match therefore only SELECTS a
+    # candidate number; adoption is decided by a separate AUTHORITATIVE
+    # per-issue fetch (gh issue view → author.is_bot, the structural flag —
+    # the gh CLI renders this workflow's own actor as `app/github-actions`
+    # while the REST API renders `github-actions[bot]`, so a login literal
+    # matches only one serializer; quarantine-aging.ts:13-14 observed the
+    # same). A forged selection can therefore only route to an issue whose
+    # REAL author is then checked — a hijacker's own issue fails the check.
     if issue_matches="$(gh issue list --repo "$REPO" --state open \
         --search "in:title \"Auto-detected flaky tests (merge-group)\"" \
         --json number,title --limit 20 \
         --template '{{range .}}{{.number}}	{{.title}}
 {{end}}' 2>/dev/null)"; then
+        matched_title=0
         while IFS="	" read -r cand_number cand_title; do
             [ -n "$cand_number" ] || continue
+            case "$cand_number" in
+                '' | *[!0-9]*) continue ;;
+            esac
             if [ "$cand_title" = "$TRACKING_TITLE" ]; then
-                existing_issue="$cand_number"
-                break
+                matched_title=1
+                # Authoritative bot check on the SELECTED number (PRR-001):
+                # the title match only nominates; the issue's real author
+                # decides. is_bot is structural and serializer-independent.
+                author_flag="$(gh issue view "$cand_number" --repo "$REPO" \
+                    --json author --template '{{.author.is_bot}}' 2>/dev/null || true)"
+                if [ "$author_flag" = "true" ]; then
+                    existing_issue="$cand_number"
+                    break
+                fi
             fi
         done <<EOF
 $issue_matches
 EOF
+        if [ -z "$existing_issue" ]; then
+            if [ "$matched_title" -eq 1 ]; then
+                # A same-titled open issue exists but is NOT bot-authored:
+                # never comment there (PRR-001). Say why we are not deduping.
+                echo "::warning::open same-titled issue is not bot-authored (authoritative author.is_bot != true); not adopting it (lookalike-issue guard). Creating a fresh tracking issue."
+            else
+                # Lookup succeeded but zero exact-title matches inside the
+                # window: the dedupe is inert this run. Say so — a silent
+                # fall-through to create would quietly resume duplicate
+                # filing with no signal (PRR-006).
+                echo "::warning::no open bot-authored issue with the exact tracking title; creating a new tracking issue."
+            fi
+        fi
     else
         # The lookup itself failed (rate limit, network): fall through to
         # create, but say so — a silent lookup failure would quietly resume

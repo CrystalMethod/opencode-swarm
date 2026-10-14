@@ -120,10 +120,22 @@ describe('ci.yml integration — quarantine ledger entries for issue #2740', () 
 		expect(activeEntries(MACOS_LEDGER_PATH)).toContain(BUN_COMPAT_EXIT_FIRST);
 	});
 
+	test(`${BUN_COMPAT_EXIT_FIRST} is present exactly once in its ledger (PRR-029)`, () => {
+		// A duplicate entry with its own OWNER/EXPIRY block would leave two
+		// competing owners for renewal while every membership pin stays green
+		// (the sibling 2730 pins enforce exactly-once for their entries).
+		const entries = activeEntries(MACOS_LEDGER_PATH).filter(
+			(entry) => entry === BUN_COMPAT_EXIT_FIRST,
+		);
+		expect(entries.length).toBe(1);
+	});
+
 	test(`${BUN_COMPAT_EXIT_FIRST} re-add carries the Check 7 OWNER/EXPIRY metadata`, () => {
-		// Same contiguous-comment-block walk scripts/check-invariants.ts
-		// Check 7 performs: the block directly above the active entry must
-		// carry `# OWNER:` and a dated `# EXPIRY:` line.
+		// The SAME contiguous-comment-block walk scripts/check-invariants.ts
+		// Check 7 performs (check-invariants.ts:1442): walk upward from the
+		// active entry and BREAK at the first blank or non-comment line —
+		// a blank line between the metadata block and the entry must fail
+		// this pin exactly as it fails Check 7 (PRR-019 mutation parity).
 		const raw = readFileSync(MACOS_LEDGER_PATH, 'utf8').replace(/\r\n/g, '\n');
 		const lines = raw.split('\n');
 		const entryIdx = lines.findIndex(
@@ -133,11 +145,10 @@ describe('ci.yml integration — quarantine ledger entries for issue #2740', () 
 		const blockAbove: string[] = [];
 		for (let i = entryIdx - 1; i >= 0; i -= 1) {
 			const above = lines[i] ?? '';
-			if (above.trim() === '' || /^#/.test(above)) {
-				blockAbove.unshift(above);
-				continue;
+			if (above.trim() === '' || !above.trimStart().startsWith('#')) {
+				break;
 			}
-			break;
+			blockAbove.unshift(above);
 		}
 		const block = blockAbove.join('\n');
 		expect(/^#\s*OWNER:\s*\S/m.test(block)).toBe(true);

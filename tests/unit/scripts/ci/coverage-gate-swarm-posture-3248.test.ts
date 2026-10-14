@@ -39,31 +39,51 @@ describe('coverage-gate checkout-drift posture (issue #3248)', () => {
 
 	test('the gate pre-creates .swarm/coverage-gate before the per-file loop', () => {
 		expect(script).toContain('mkdir -p .swarm/coverage-gate');
-		// The manifest copy must happen BEFORE the per-file loop starts
-		// (the `failed=0` sentinel directly precedes `index=0` / the loop).
+		// PRR-024: pin the mkdir itself BEFORE the loop — a reorder that
+		// leaves the cp before `failed=0` but moves the mkdir after it would
+		// make the cp target a nonexistent directory at runtime.
+		const mkdirAt = script.indexOf('mkdir -p .swarm/coverage-gate');
 		const manifestAt = script.indexOf(
 			'cp gated-tests.txt ".swarm/coverage-gate/shard-${shard_index:-all}-expected-files.txt"',
 		);
 		const loopAt = script.indexOf('failed=0');
-		expect(manifestAt).toBeGreaterThan(-1);
+		expect(mkdirAt).toBeGreaterThan(-1);
+		expect(manifestAt).toBeGreaterThan(mkdirAt);
 		expect(loopAt).toBeGreaterThan(manifestAt);
 	});
 
 	test('the gate refuses a symlinked or non-directory .swarm before writing', () => {
 		expect(script).toContain('[ -L .swarm ]');
-		// The refusal must bite: the guard exits non-zero, not just logs.
+		// The refusal must bite: the guard's OWN exit 1, bounded to the guard
+		// block — an unrelated `exit 1` later in the file must not satisfy
+		// this pin (PRR-022's unbounded-indexOf gap).
 		const guardAt = script.indexOf('[ -L .swarm ]');
-		const exitAt = script.indexOf('exit 1', guardAt);
 		expect(guardAt).toBeGreaterThan(-1);
-		expect(exitAt).toBeGreaterThan(guardAt);
+		const guardWindow = script.slice(guardAt, guardAt + 400);
+		expect(guardWindow).toContain('exit 1');
 	});
 
 	test('the drift helper ignores the coverage-gate prefix alongside repository-validation', () => {
 		expect(helper).toContain("'coverage-gate'");
-		// Both CI-owned prefixes must be in the same ignore list.
+		// Both CI-owned prefixes must be in the SAME ignore list (PRR-023:
+		// assert inside the slice, not file-wide — the literal elsewhere in
+		// the file must not satisfy this).
 		const listStart = helper.indexOf('IGNORED_SWARM_PREFIXES');
 		const listEnd = helper.indexOf('];', listStart);
 		const list = helper.slice(listStart, listEnd);
 		expect(list).toContain("'repository-validation'");
+		expect(list).toContain("'coverage-gate'");
+	});
+
+	test('the posture trade-off stays tied to its retirement plan (#3165-A, PRR-036)', () => {
+		// The pre-creation disables the drift tripwire's creation enforcement
+		// for coverage shards until #3165-A retires the writers; the gate
+		// comment must keep naming that plan so removing the acknowledgment
+		// (or the trade-off itself) fails a pin.
+		const postureComment = script.indexOf('Checkout-drift posture alignment');
+		expect(postureComment).toBeGreaterThan(-1);
+		expect(script.slice(postureComment, postureComment + 1600)).toContain(
+			'#3165-A',
+		);
 	});
 });

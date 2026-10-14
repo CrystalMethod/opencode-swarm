@@ -125,15 +125,30 @@ echo "${quarantined_count} file(s) quarantined repo-wide, issue #1705"
 # flake-detection issue flood (e.g. cli-version/commands/run-command/
 # delegation-gate-scope/guardrails-modified-files, 22/22/22/16/16
 # detections). Pre-creating .swarm/coverage-gate/ with the shard file list
-# mirrors the unit job's manifest posture. Interim alignment, not the end
-# state: #3165-A retires the writers and then flips the .swarm diff from
-# warn to enforce, which restores creation detection.
+# mirrors the unit job's manifest posture — POSTURE ONLY: unlike the unit
+# job's manifest (consumed by verify-repository-validation-reports.ts and
+# uploaded as an artifact), nothing reads or verifies this file; its whole
+# job is to make .swarm/ exist before the first per-file snapshot, and the
+# directory is left in place (gitignored, prefix-ignored by the drift
+# helper). Interim alignment, not the end state: #3165-A retires the writers
+# and then flips the .swarm diff from warn to enforce, which restores
+# creation detection.
 if [ -L .swarm ] || { [ -e .swarm ] && [ ! -d .swarm ]; }; then
 	echo "::error::.swarm must be a real directory; symlinks, junctions, and non-directories are rejected"
 	exit 1
 fi
-mkdir -p .swarm/coverage-gate
-cp gated-tests.txt ".swarm/coverage-gate/shard-${shard_index:-all}-expected-files.txt"
+# Annotate these setup failures: under set -e a bare mkdir/cp failure would
+# abort the gate with no ::error:: line, no flake-annotations entry, and the
+# parts dir leaked — indistinguishable from a clean run to annotation-based
+# consumers (PRR-017).
+mkdir -p .swarm/coverage-gate || {
+	echo "::error::Failed to pre-create .swarm/coverage-gate (checkout-drift posture alignment)"
+	exit 1
+}
+cp gated-tests.txt ".swarm/coverage-gate/shard-${shard_index:-all}-expected-files.txt" || {
+	echo "::error::Failed to stage the coverage-gate shard manifest"
+	exit 1
+}
 
 failed=0
 index=0

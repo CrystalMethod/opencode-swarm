@@ -1,16 +1,17 @@
 /**
- * Pins the flake-detection issue dedupe (issue #3248 AC6).
+ * Pins the flake-detection issue dedupe (issue #3248 AC6 + PR #3254 review
+ * PRR-001/002/003/006/020/021/022 hardening).
  *
- * Before this change, scripts/ci/detect-and-quarantine-flakes.sh created a
- * NEW tracking issue after every failed merge-group run — 84 same-titled
- * duplicates in the 2026-09/10 cohort, one per failed run, because the
- * flake-detection workflow only fires when a run fails and every failing run
- * carries retry-flake annotations. The script now searches for an OPEN issue
- * with the exact title first and comments there instead.
+ * Before the dedupe, scripts/ci/detect-and-quarantine-flakes.sh created a
+ * NEW tracking issue after every failed merge-group run — 97 same-titled
+ * duplicates filed in the 2026-09/10 cohort. The script now searches for an
+ * OPEN bot-authored issue with the exact title and comments there instead.
  *
- * Source-text pins (executing the script needs a gh binary + network; the
- * repo's precedent for pinning CI-script wiring by source scan is
- * tests/unit/scripts/ci/ci-yml-integration.test.ts for the workflow).
+ * Trust rule pinned here (the v7.188.0 lookalike-issue class): issue titles
+ * are user-controllable in a public repo, so adoption requires BOTH the
+ * byte-exact title AND author == github-actions[bot], and the routed issue
+ * number must be bare numeric. Source-text pins (executing the script needs
+ * a gh binary + network; precedent: ci-yml-integration.test.ts).
  */
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
@@ -41,14 +42,56 @@ describe('flake-detection tracking-issue dedupe (issue #3248)', () => {
 	});
 
 	test('searches for an existing OPEN issue before creating (server-side filter)', () => {
-		// The search phrase must be title-scoped so the repo's 100+ other
-		// open issues cannot crowd the result window; --json + --template
-		// extraction avoids a jq dependency.
+		// PRR-021: --state open and --limit are load-bearing — `--state all`
+		// would byte-match a CLOSED tracker and comment into a dead thread;
+		// a truncated limit silently empties the window. The search phrase
+		// must be title-scoped so the repo's other open issues cannot crowd
+		// the result window; --json + --template extraction avoids jq.
+		expect(script).toContain('--state open');
 		expect(script).toContain(
 			'--search "in:title \\"Auto-detected flaky tests (merge-group)\\""',
 		);
+		// Selection rows carry ONLY number+title — the trust decision comes
+		// from the authoritative per-issue fetch, not a row field.
 		expect(script).toContain('--json number,title');
+		expect(script).not.toContain('--json number,title,author');
+		expect(script).toContain('--limit 20');
 		expect(script).toContain('--template');
+	});
+
+	test('adopts only bot-authored same-titled issues via the AUTHORITATIVE is_bot check (PRR-001, round 2 findings 1+2)', () => {
+		// gh renders this workflow's own actor as `app/github-actions` while
+		// the REST API renders `github-actions[bot]` (quarantine-aging.ts
+		// :13-14) — a login literal matches only one serializer. And titles
+		// may contain tabs AND newlines (probe issue #3258 round-tripped
+		// both), so NO field positioned after the title in a rendered row is
+		// trustworthy: a newline title can synthesize entire fake rows naming
+		// any issue number with any flag values. The design must therefore
+		// be two-phase: the title byte-match on 2-field rows only NOMINATES a
+		// number, and a separate authoritative `gh issue view` of that
+		// number's real author decides adoption.
+		expect(script).toContain('{{range .}}{{.number}}\t{{.title}}');
+		expect(script).toContain('read -r cand_number cand_title');
+		// The authoritative per-issue check — not a row field — decides.
+		expect(script).toContain('gh issue view "$cand_number" --repo "$REPO"');
+		expect(script).toContain("--template '{{.author.is_bot}}'");
+		expect(script).toContain('[ "$author_flag" = "true" ]');
+		// The row must NOT carry a positional trust field after the title.
+		expect(script).not.toContain('{{.author.is_bot}}\t');
+		expect(script).not.toContain('cand_is_bot');
+	});
+
+	test('the adoption assignment itself is pinned (PRR-020)', () => {
+		// Deleting `existing_issue="$cand_number"` kills the dedupe entirely
+		// (always-create) while every substring pin still passes — pin the
+		// assignment, not just the comparison.
+		expect(script).toContain('existing_issue="$cand_number"');
+	});
+
+	test('routes comments only to bare-numeric issue numbers (PRR-003)', () => {
+		// A crafted multi-line/tab title must not desync an attacker-chosen
+		// value into `gh issue comment`.
+		expect(script).toContain('*[!0-9]*');
 	});
 
 	test('exact-title matching selects the existing issue (em-dash title is byte-compared)', () => {
@@ -83,9 +126,25 @@ describe('flake-detection tracking-issue dedupe (issue #3248)', () => {
 		expect(script).toContain('Triggering CI run: ${DETECTION_RUN_URL}');
 	});
 
-	test('every gh call stays warn-only (detection never fails the workflow)', () => {
+	test('non-adoption paths are loud (PRR-006): lookalike, zero-match, lookup-failure', () => {
+		// All three create-while-open-ish paths must emit a ::warning:: so a
+		// silent resumption of duplicate filing is visible in the run log.
+		expect(script).toContain(
+			'::warning::open same-titled issue is not bot-authored',
+		);
+		expect(script).toContain(
+			'::warning::no open bot-authored issue with the exact tracking title',
+		);
+		expect(script).toContain('::warning::gh issue list lookup failed');
+	});
+
+	test('detection stays advisory: the script never exits non-zero (PRR-022)', () => {
+		// STRONGER than the old endsWith pin: the detector must contain NO
+		// `exit 1` anywhere — an inserted intermediate failure branch fails
+		// this pin even though the file still ends with `exit 0`.
 		expect(script.trimEnd().endsWith('exit 0')).toBe(true);
-		// The two lookup/create/comment failure paths must not exit non-zero.
+		expect(script).not.toContain('exit 1');
+		// The three failure paths warn instead of exiting.
 		expect(script).toContain('::warning::gh issue comment');
 		expect(script).toContain('::warning::gh issue create');
 	});

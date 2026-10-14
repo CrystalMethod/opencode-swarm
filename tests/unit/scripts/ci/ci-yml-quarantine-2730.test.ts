@@ -67,7 +67,9 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 // Collect the contiguous comment block directly above an active entry,
-// the same walk scripts/check-invariants.ts Check 7 performs.
+// the same walk scripts/check-invariants.ts Check 7 performs: break at the
+// first blank OR non-comment line (a blank line between an entry and its
+// metadata block must fail the walk exactly as it fails Check 7 — PRR-019).
 function metadataBlock(ledgerPath: string, entry: string): string {
 	const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
 	const lines = raw.split('\n');
@@ -76,7 +78,7 @@ function metadataBlock(ledgerPath: string, entry: string): string {
 	const blockAbove: string[] = [];
 	for (let i = entryIdx - 1; i >= 0; i -= 1) {
 		const above = lines[i] ?? '';
-		if (above.trim() === '' || /^\s*#/.test(above)) {
+		if (above.trim() !== '' && above.trimStart().startsWith('#')) {
 			blockAbove.push(above);
 		} else {
 			break;
@@ -201,6 +203,15 @@ describe('ci.yml integration — quarantine ledger disposition for issue #2730 m
 
 		test('the re-added macOS entry carries the Check 7 OWNER/EXPIRY metadata (#3248)', () => {
 			expectCarriesOwnerExpiry(MACOS_LEDGER_PATH, BUN_COMPAT_EXIT_FIRST);
+		});
+
+		test('the re-added macOS entry is present exactly once (PRR-029)', () => {
+			// A duplicate entry with its own OWNER/EXPIRY block would leave two
+			// competing renewal owners while membership pins stay green.
+			const dupes = activeEntries(MACOS_LEDGER_PATH).filter(
+				(entry) => entry === BUN_COMPAT_EXIT_FIRST,
+			);
+			expect(dupes.length).toBe(1);
 		});
 
 		test('is scoped to the macOS ledger only (not general, not windows, not integration)', () => {
