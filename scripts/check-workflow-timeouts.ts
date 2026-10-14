@@ -241,7 +241,12 @@ export function scanWorkflowLines(
 		}
 	}
 
-	// Call sites per job (function-definition lines excluded).
+	// Call sites per job (function-definition lines excluded). The call
+	// convention is literal tokens only — `fn <workflow> [<iterations>]
+	// [<sleep>]` — because a text-static parser cannot account budgets through
+	// shell variables. An invocation whose arguments do not fit that shape is
+	// a fail-closed finding, never a silent skip: silently dropping it would
+	// exclude a real wait from the job's sum and let the lint pass vacuously.
 	const calls: WaitCall[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i];
@@ -252,9 +257,33 @@ export function scanWorkflowLines(
 				if (FUNC_DEF_RE.test(line)) continue;
 				const argRe = new RegExp(`\\b${fn.name}\\s+([A-Za-z0-9._/-]+)(?:\\s+([0-9]+))?(?:\\s+([0-9]+))?`);
 				const args = argRe.exec(line);
-				if (!args) continue;
 				const job = jobAt(jobs, i) ?? jobAt(jobs, fn.start);
 				if (!job) continue; // orphan call: the seq disposition above already flagged the loop
+				if (!args) {
+					pushFinding(
+						findings,
+						file,
+						'unparseable-wait-call',
+						`job ${job.name}: ${fn.name} invocation at line ${i + 1} does not match the literal call convention "${fn.name} <workflow> [<iterations>] [<sleep>] (text-static budget accounting needs literal tokens)"`,
+					);
+					continue;
+				}
+				// Trailing non-numeric tokens after the workflow argument (e.g.
+				// variable budgets like "$n") must not be reinterpreted as the
+				// function defaults — that would silently under- or over-count.
+				const afterWorkflow = line
+					.slice(args.index + args[0].length)
+					.replace(/\)[^)]*$/, '')
+					.trim();
+				if (afterWorkflow !== '' && !/^([0-9]+\s*)+$/.test(afterWorkflow)) {
+					pushFinding(
+						findings,
+						file,
+						'unparseable-wait-call',
+						`job ${job.name}: ${fn.name} invocation at line ${i + 1} has non-literal budget arguments ("${afterWorkflow}") that static budget accounting cannot resolve`,
+					);
+					continue;
+				}
 				calls.push({
 					job: job.name,
 					fn: fn.name,
@@ -268,7 +297,6 @@ export function scanWorkflowLines(
 			}
 		}
 	}
-
 
 	// Directives: call line or the line immediately above.
 	for (const call of calls) {

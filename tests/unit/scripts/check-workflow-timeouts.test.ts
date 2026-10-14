@@ -171,6 +171,48 @@ describe('check-workflow-timeouts (#2952)', () => {
 		expect(out).toContain('timeout-unparsable');
 	});
 
+	test('reds on an expression-valued timeout even for a job with no waits', () => {
+		const waitless = `name: release
+on:
+  workflow_dispatch:
+jobs:
+  plain-job:
+    runs-on: ubuntu-latest
+    timeout-minutes: \${{ matrix.minutes }}
+    steps:
+      - name: No waits
+        run: echo hello
+`;
+		const repo = makeWorkflowRepo(waitless);
+		const { code, out } = runMain([], repo);
+		expect(code).toBe(1);
+		expect(out).toContain('timeout-unparsable');
+	});
+
+	test('reds on a wait call with a variable workflow argument (fail closed)', () => {
+		const variableHead = SHIPPED_SHAPE.replace(
+			'# target-duration: 30\n          ci_record="$(wait_for_dispatched_run ci.yml 360 5)"',
+			'          ci_record="$(wait_for_dispatched_run "$wf" 360 5)"',
+		);
+		const repo = makeWorkflowRepo(variableHead);
+		const { code, out } = runMain([], repo);
+		expect(code).toBe(1);
+		expect(out).toContain('unparseable-wait-call');
+		expect(out).toContain('literal call convention');
+	});
+
+	test('reds on a wait call with variable budget arguments (fail closed)', () => {
+		const variableBudget = SHIPPED_SHAPE.replace(
+			'# target-duration: 30\n          ci_record="$(wait_for_dispatched_run ci.yml 360 5)"',
+			'# target-duration: 30\n          ci_record="$(wait_for_dispatched_run ci.yml "$n" 5)"',
+		);
+		const repo = makeWorkflowRepo(variableBudget);
+		const { code, out } = runMain([], repo);
+		expect(code).toBe(1);
+		expect(out).toContain('unparseable-wait-call');
+		expect(out).toContain('non-literal budget arguments');
+	});
+
 	test('reds on a wait construct outside every job (unattributable)', () => {
 		const orphan = `name: release
 on:
