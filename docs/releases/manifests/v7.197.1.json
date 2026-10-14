@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.197.1",
+  "tagCommit": "b94acae84ddd750a4aa50d455cb123fa5ed50cb4",
+  "targetCommitish": "b94acae84ddd750a4aa50d455cb123fa5ed50cb4",
+  "releaseBodySha256": "e1ce275266444d8203f0547f41f206662971d1f833e089e9c1062adbaa5b3f29",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3199-journal-revision-cas.md",
+      "sha256": "5003ebd68342347887fe10a351fa4e008ae7bc0bc15519329b40d10e430bf58d"
+    }
+  ]
+}
