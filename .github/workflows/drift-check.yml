@@ -64,6 +64,11 @@ jobs:
           # drift:check` stays offline/deterministic.
           SWARM_DEP_FRESHNESS_CHECK: "1"
         run: bun run scripts/drift-check.ts --enforce --report drift-report.md
+      # Issue #2952: static gate asserting every job that polls a dispatched
+      # run declares timeout-minutes >= sum(wait budgets) + margin and every
+      # wait budget covers its declared # target-duration.
+      - name: Check workflow timeout budgets
+        run: bun run check:workflow-timeouts
       - name: Enforce release-fragment retention
         run: node scripts/release-notes-fragments.mjs verify-retention
       - name: Preserve drift report for PR comment job

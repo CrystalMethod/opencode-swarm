@@ -210,7 +210,12 @@ jobs:
     needs: [release-please, update-release-notes]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Issue #2952: the three dispatched-run waits below declare 30 + 10 + 10 = 50 min
+    # of poll budget; at the observed ~1.2x per-iteration gh round-trip overhead the
+    # job needs ceil(50 x 1.2) + 5 min of margin = 65 min, so 70 min keeps 5 min of
+    # slack beyond the formula. The previous value (10) was below a single wait's own
+    # budget and killed the job mid-wait on every release.
+    timeout-minutes: 70
     concurrency:
       group: cleanup-release-fragments
       cancel-in-progress: false
@@ -366,9 +371,16 @@ jobs:
           gh workflow run pr-standards.yml --ref "$branch" -f pr_number="$pr_number"
           gh workflow run drift-check.yml --ref "$branch"
 
+          # Issue #2952: the poll budget is per-call (iterations x sleep seconds);
+          # each call site below declares its target duration via a
+          # `# target-duration: <minutes>` comment, and
+          # scripts/check-workflow-timeouts.ts asserts the job timeout covers the
+          # sum of these budgets (with round-trip overhead and margin).
           wait_for_dispatched_run() {
             workflow="$1"
-            for _attempt in $(seq 1 120); do
+            max_attempts="${2:-120}"
+            poll_seconds="${3:-5}"
+            for _attempt in $(seq 1 "$max_attempts"); do
               record="$(gh run list \
                 --workflow "$workflow" \
                 --branch "$branch" \
@@ -387,15 +399,18 @@ jobs:
                   return 0
                 fi
               fi
-              sleep 5
+              sleep "$poll_seconds"
             done
             echo "::error::Timed out finding $workflow run for cleanup head $head_sha" >&2
             return 1
           }
 
-          ci_record="$(wait_for_dispatched_run ci.yml)"
-          standards_record="$(wait_for_dispatched_run pr-standards.yml)"
-          drift_record="$(wait_for_dispatched_run drift-check.yml)"
+          # target-duration: 30 — dispatched ci.yml observed 16m05s (workflow_dispatch runs the ubuntu-only 6-shard matrix, 40m per-shard ceiling)
+          ci_record="$(wait_for_dispatched_run ci.yml 360 5)"
+          # target-duration: 10 — dispatched pr-standards.yml observed 46s
+          standards_record="$(wait_for_dispatched_run pr-standards.yml 120 5)"
+          # target-duration: 10 — dispatched drift-check.yml observed 42s
+          drift_record="$(wait_for_dispatched_run drift-check.yml 120 5)"
           IFS=$'\t' read -r ci_run_id ci_run_url ci_run_sha ci_run_status ci_run_conclusion <<< "$ci_record"
           IFS=$'\t' read -r standards_run_id standards_run_url standards_run_sha standards_run_status standards_run_conclusion <<< "$standards_record"
           IFS=$'\t' read -r drift_run_id drift_run_url drift_run_sha drift_run_status drift_run_conclusion <<< "$drift_record"
