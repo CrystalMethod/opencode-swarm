@@ -5,13 +5,18 @@
  * (workflowProgressSnapshot); before #3199 the observability journals rode
  * the revision-bumping write path, so a journaled rejection masqueraded as
  * workflow activity and reset the unproductive-wake counter. After #3199,
- * journal writes are non-transitioning appends and must leave the token
- * unchanged, while a real state-machine write must still count as progress.
+ * journal AND advisory writes are non-transitioning appends and must leave
+ * the token unchanged, while a real state-machine write must still count as
+ * progress.
  *
- * GREEN at base ONLY in the sense that the token mechanics are what they
- * are; the DISCRIMINATING direction is the journal leg — at base it FAILED
- * (the journal write moved the token), after the fix it passes. Pinned in
- * both directions per the critic's requirement.
+ * Base-run caveat: the `_internals.workflowProgressSnapshot` seam is added by
+ * this PR, so on the pre-#3199 tree this test cannot run at all (first call
+ * raises TypeError) — the journal-bumps-the-token mechanism it pins was
+ * demonstrated instead by the #3199 Phase 2 reproduction (a journal write
+ * moved the durable revision 0→1) and mutation probe M1. The suite-level
+ * backstop for "the append actually persists" is AC1 in
+ * tests/unit/pr-review/journal-revision-cas-3199.test.ts; leg 1 below still
+ * asserts persistence locally so a no-op writer cannot pass this file alone.
  *
  * Seeding pattern: hand-written legacy gate-state JSON, matching
  * tests/unit/pr-review/journal-revision-cas-3199.test.ts.
@@ -21,6 +26,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import {
+	appendPrWorkflowSkillContractAdvisories,
 	prWorkflowSessionFileStem,
 	readPrWorkflowGateState,
 	recordPrReviewVerdictRejection,
@@ -87,15 +93,20 @@ test('a journal-only write leaves the wake-progress token unchanged; a real stat
 	expect(tokenBefore.kind).toBe('valid');
 
 	// Leg 1 — journal-only write (the #3199 fix makes it non-transitioning):
-	// the token must NOT change, so the wake brake correctly counts the next
-	// wake as unproductive. At base this FAILED (the journal write bumped the
-	// revision inside the token).
+	// the entry must actually persist (a no-op writer must fail here) AND the
+	// token must NOT change, so the wake brake correctly counts the next wake
+	// as unproductive.
 	await recordPrReviewVerdictRejection(
 		directory,
 		session,
 		'3199 journal write is not wake progress',
 	);
 	const afterJournal = await readPrWorkflowGateState(directory, session);
+	expect(
+		afterJournal?.prReviewVerdictRejections?.some((entry) =>
+			entry.message.includes('journal write is not wake progress'),
+		),
+	).toBe(true);
 	const tokenAfterJournal = _internals.workflowProgressSnapshot(
 		directory,
 		session,
@@ -103,6 +114,23 @@ test('a journal-only write leaves the wake-progress token unchanged; a real stat
 	);
 	expect(tokenAfterJournal.kind).toBe('valid');
 	expect(tokenAfterJournal.token).toBe(tokenBefore.token);
+
+	// Leg 1b — advisory-only write (the wake cycle's own skill-contract
+	// append): equally non-progress.
+	await appendPrWorkflowSkillContractAdvisories(directory, session, [
+		'3199 advisory write is not wake progress',
+	]);
+	const afterAdvisory = await readPrWorkflowGateState(directory, session);
+	expect(afterAdvisory?.skillContractAdvisories).toContain(
+		'3199 advisory write is not wake progress',
+	);
+	const tokenAfterAdvisory = _internals.workflowProgressSnapshot(
+		directory,
+		session,
+		afterAdvisory!,
+	);
+	expect(tokenAfterAdvisory.kind).toBe('valid');
+	expect(tokenAfterAdvisory.token).toBe(tokenBefore.token);
 
 	// Leg 2 — a real state-machine write (revision bump): the token must
 	// change, so genuine controller activity still resets the brake.

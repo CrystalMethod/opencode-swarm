@@ -14354,8 +14354,11 @@ bindPrReviewStateCodec<PrWorkflowGateState>(
 		parse: (data) => PrWorkflowGateStateSchema.parse(data),
 	},
 	// Issue #3199: these observability-only fields are durable-wins on every
-	// state-machine write and are exclusively owned by the no-bump append
-	// path (`appendObservabilityStateWhileLocked`).
+	// state-machine write. Write ownership: the no-bump append path
+	// (`appendObservabilityStateWhileLocked`, runtime-enforced), activation's
+	// CREATE write seeding `skillContractAdvisories` (merge inert — no durable
+	// row exists), and instance-replacement writes, which deliberately start
+	// the new instance with clean observability state.
 	[
 		'prReviewSubmitRejections',
 		'prReviewVerdictRejections',

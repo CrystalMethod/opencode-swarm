@@ -1366,7 +1366,11 @@ export function createPrWorkflowResponseGate(options: {
 			}
 			const madeProgress = observeWorkflowProgress(
 				budget,
-				workflowProgressSnapshot(options.directory, sessionID, state),
+				_internals.workflowProgressSnapshot(
+					options.directory,
+					sessionID,
+					state,
+				),
 			);
 			if (madeProgress) {
 				budget.consecutiveUnproductive = 0;
@@ -1558,7 +1562,7 @@ export function createPrWorkflowResponseGate(options: {
 						madeProgress ||
 						observeWorkflowProgress(
 							budget,
-							workflowProgressSnapshot(
+							_internals.workflowProgressSnapshot(
 								options.directory,
 								sessionID,
 								postWakeState,

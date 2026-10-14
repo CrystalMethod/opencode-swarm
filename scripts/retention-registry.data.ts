@@ -1083,6 +1083,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writerModules: ['src/pr-review/persistence.ts', 'src/hooks/pr-workflow-gate.ts'],
 		writerCitations: [
 			'src/pr-review/persistence.ts:writeStateWhileLocked — SQLite coordination authority with revision/CAS and post-commit JSON projection',
+			'src/pr-review/persistence.ts:appendObservabilityStateWhileLocked — observability-only no-revision-bump append through the same coordination authority and projection',
 			'src/pr-review/persistence.ts:deleteStateWhileLocked — terminal coordination-state delete followed by projection delete',
 			'src/hooks/pr-workflow-gate.ts:activatePrWorkflow:1661-1665 — project checkout-mutation lock before per-session state-mutation lock',
 			'src/hooks/pr-workflow-gate.ts:clearPrWorkflowGateState:2234-2272 — terminal delete under per-session state-mutation lock only; no checkout lock',
