@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.197.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.0...v7.197.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **pr-review:** harden the observability append path per PR [#3226](https://github.com/ZaxbyHub/opencode-swarm/issues/3226) review ([0873150](https://github.com/ZaxbyHub/opencode-swarm/commit/0873150647104ab5c7860933dd54d4f62a16eea1))
+* **pr-review:** journal and advisory writes no longer advance the durable gate revision ([5a869a1](https://github.com/ZaxbyHub/opencode-swarm/commit/5a869a1f46086aed2071470c393ae9ef95489685))
+
 ## [7.197.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.196.0...v7.197.0) (2026-10-13)
 
 
