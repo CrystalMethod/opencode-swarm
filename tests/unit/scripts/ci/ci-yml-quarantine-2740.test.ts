@@ -18,7 +18,13 @@ const INTEGRATION_LEDGER_PATH = join(
 	'scripts/ci/quarantined-integration-tests.txt',
 );
 
-// Three paths quarantined by issue #2740. The merge-group flake-detection
+// Originally three paths quarantined by issue #2740; two were since
+// RE-QUARANTINED with fresh failure evidence — bun-compat-exit-first-2530
+// per #3248 (pinned by ci-yml-quarantine-2730.test.ts) and
+// evidence-summary-adversarial per #3261 (2026-10-14, run 38623951150,
+// ubuntu-latest unit-shard 3 heap-growth probe; re-added to the general
+// ledger, which the unit job honors on every OS). Only promote-registration
+// remains retired and pinned below. Originally: The merge-group flake-detection
 // workflow (#1782) flagged all three with `Passed on retry` annotations in
 // run 34726206593; per the quarantine-placement policy in
 // docs/testing/test-stability.md, the
@@ -38,10 +44,6 @@ const ISSUE_2740_RETIRED_PATHS: ReadonlyArray<{
 	path: string;
 	expectedLedger: string;
 }> = [
-	{
-		path: 'tests/unit/services/evidence-summary-adversarial.test.ts',
-		expectedLedger: GENERAL_LEDGER_PATH,
-	},
 	{
 		path: 'tests/unit/commands/promote-registration.test.ts',
 		expectedLedger: MACOS_LEDGER_PATH,

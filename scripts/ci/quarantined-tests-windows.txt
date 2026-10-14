@@ -12,7 +12,7 @@
 # gate; an EXPIRY more than 14 days in the past also fails (inside the grace
 # window it only warns).
 #
-# STATUS: 3 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), and tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts (issue #3248); OWNER/EXPIRY blocks below. The 9-entry I3 renewal cohort was retired per issue
+# STATUS: 6 active entries — tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts (issue #2826), tests/unit/hooks/delegation-gate-background-coder.test.ts (issue #2867), and tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts (issue #3248); OWNER/EXPIRY blocks below. The 9-entry I3 renewal cohort was retired per issue
 # #2973 on 2026-09-27: rows with their named root fixes already in-tree —
 # pr-monitor-status (PR #2190 freezeClock + EBUSY-retry), 2602-lifecycle and
 # phase-complete.lock-adversarial (PR #2807 safeRmRecursive) — and rows whose
@@ -174,3 +174,34 @@ tests/unit/execute-journey/j02-failure-rejection-distinct.test.ts
 #   fresh merge-group windows-latest failure that cannot be fixed at the
 #   root. After EXPIRY, Check 7 warns for 14 days, then hard-fails on day 15.
 tests/unit/tools/dispatch-lanes-pr-review-resilience-followups.test.ts
+
+
+# Quarantined 2026-10-14 per auto-flake tracker #3261; evidence from PR #3242
+#   merge-queue candidates (runs 38574480126, 38583979646): both files failed
+#   windows-only with "EBUSY: resource busy or locked, rm <temp scratch>" in
+#   afterAll/afterEach recursive rm, retried 3x per shard with assertions
+#   passing; same head passed pull_request CI 45/45. Environmental handle
+#   contention, not diff-caused (#3242 touches workflow CI + a new lint only).
+# OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
+#   closeout evidence in comments)
+# EXPIRY: 2026-10-28 — retire when each file passes a windows-latest
+#   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
+#   or platform-safe cleanup).
+tests/unit/session/hydration-populate-guard.test.ts
+
+
+# OWNER: zaxbysauce — issue #3261 (merge-queue flake candidates; PR #3242
+#   closeout evidence in comments)
+# EXPIRY: 2026-10-28 — retire when the file passes a windows-latest
+#   merge-group run clean, or root-fix the EBUSY teardown (retry-with-backoff
+#   or platform-safe cleanup).
+tests/unit/hooks/delegation-gate-rework-remediation.test.ts
+
+
+# OWNER: zaxbysauce — issue #3261 (same windows EBUSY teardown storm as the
+#   two entries above; PR #3242 pull_request run 38617312185, shard
+#   windows-latest/1: delegation-gate-reentry-bypass EBUSY on aftereach
+#   rm of dg-reentry-test-* scratch, 3x retries, assertions passing)
+# EXPIRY: 2026-10-28 — retire with the two EBUSY entries above (shared
+#   root fix: retry-with-backoff or platform-safe temp cleanup).
+tests/unit/hooks/delegation-gate-reentry-bypass.test.ts

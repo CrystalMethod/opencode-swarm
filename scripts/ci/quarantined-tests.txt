@@ -48,3 +48,15 @@
 #   (#2973 cohort row 12).
 # Renewed 2026-09-25 per issue #2900 (Workstream I3); previous EXPIRY 2026-10-15.
 tests/unit/telemetry/init-rehome.test.ts
+
+# OWNER: zaxbysauce — re-quarantined 2026-10-14 per tracker #3261 comments;
+#   fresh evidence: PR #3242 pull_request run 38623951150, ubuntu-latest
+#   unit-shard 3 — "rapid event publishing without memory leak" heap-growth
+#   probe failed deterministically (3x retries) while the same head passed
+#   this shard in earlier runs; the #2973 remedy (probe budget 2000ms) did
+#   not prevent recurrence under runner load. (#2740 original quarantine;
+#   #2973 retirement 2026-09-27.)
+# EXPIRY: 2026-11-13 — retire when the file passes an ubuntu-latest unit
+#   shard clean across a full merge-group run, or root-fix/retire the
+#   heap-growth probe.
+tests/unit/services/evidence-summary-adversarial.test.ts
