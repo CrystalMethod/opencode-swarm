@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.197.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.1...v7.197.2) (2026-10-15)
+
+
+### Bug Fixes
+
+* **ci:** cleanup-release-fragments timeout covers its wait budgets + a workflow timeout lint ([#2952](https://github.com/ZaxbyHub/opencode-swarm/issues/2952)) ([5d9912a](https://github.com/ZaxbyHub/opencode-swarm/commit/5d9912a7552a7318e276ee20556775443049a8f7))
+* **ci:** close the fail-open parser shapes in the workflow-timeout lint ([#2952](https://github.com/ZaxbyHub/opencode-swarm/issues/2952) review) ([59997ed](https://github.com/ZaxbyHub/opencode-swarm/commit/59997ed5566512f7f71b4ed4a857b3df21e5e9f7))
+* **ci:** harden the [#3248](https://github.com/ZaxbyHub/opencode-swarm/issues/3248) cohort per the PR [#3254](https://github.com/ZaxbyHub/opencode-swarm/issues/3254) swarm review ([10774d1](https://github.com/ZaxbyHub/opencode-swarm/commit/10774d145b10e951649352652795c2fd80bfc585))
+* **ci:** resolve the 2026-10 flaky-test cohort ([#3248](https://github.com/ZaxbyHub/opencode-swarm/issues/3248)) ([79d97dd](https://github.com/ZaxbyHub/opencode-swarm/commit/79d97ddabf1d8b0ad9eec447b7545ff5f2f0841b))
+* **ci:** resolve the 2026-10 flaky-test cohort ([#3248](https://github.com/ZaxbyHub/opencode-swarm/issues/3248)) ([3bffa02](https://github.com/ZaxbyHub/opencode-swarm/commit/3bffa0295c2ef5fe4a1c99b2f4470569e0918efd))
+
 ## [7.197.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.0...v7.197.1) (2026-10-14)
 
 
