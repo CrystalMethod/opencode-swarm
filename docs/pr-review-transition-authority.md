@@ -90,11 +90,17 @@ scanner `tests/helpers/terminal-writer-scanner.ts`:
 
 - `scan` — the identity owns at least one scanner hit from the ten call
   patterns: the settle and claim primitives, the sweep invocations in any
-  textual form (including the `_test_exports` seam form), terminal-carrying
-  `appendDelegationTransition` calls, `buildTypedDelegationTerminal`
+  textual form (including the `_test_exports` seam form),
+  `appendDelegationTransition` calls carrying a terminal status literal OR
+  whose payload status the scanner cannot statically resolve to a literal
+  (fail closed: a bare-identifier payload is censused; only a payload
+  resolving to a non-terminal literal such as `status: 'running'` stays
+  excluded), `buildTypedDelegationTerminal`
   constructions, the lane-settlement trigger, the admission sinks
-  (definitions AND call sites), and the two whole-ledger raw writers
-  (`writeDelegationShadowProjection`, `compactDelegationsLocked`). A
+  (definitions AND call sites, including the
+  `admitPrReviewPartialBaseCoverageFromCompletion` alias), and the two
+  whole-ledger raw writers (`writeDelegationShadowProjection`,
+  `compactDelegationsLocked`). A
   `scan` row's authority is `routed` (through the claim primitive or a named
   admission authority) or `deliberate-second-authority` (a direct write whose
   structural reason is cited in the row).
@@ -122,9 +128,11 @@ line-anchored regex; a hit with no enclosing named declaration attributes to
 that identity as `:NNNN, :NNNN`. The ratchet enforces the coupling in three
 directions: every scanner identity owns exactly one row of the right class;
 every `scan`/`inventory` row's cited hit lines equal that identity's actual
-hit lines (so a NEW call site inside an already-inventoried function fails as
-an un-cited hit, and a stale citation fails as a phantom); and every
-disposition is a census token with zero `straggler` rows.
+hit lines compared as a MULTISET of lines — each cited `:NNNN` occurrence
+consumes exactly one actual hit occurrence, so a NEW call site inside an
+already-inventoried function fails as an un-cited hit even when it lands on
+a line the row already cites, and a stale citation fails as a phantom; and
+every disposition is a census token with zero `straggler` rows.
 
 ### Replication-writer seam
 
@@ -148,7 +156,7 @@ instead of through a censused authority.
 | src/background/completion-observer.ts:createBackgroundCompletionObserver | :293, :468 | claimTerminalResult for the terminal; appendDelegationTransition for the staleness flip | scan | routed | Task-side terminal (:293) routes through the claim primitive; the Stage-B staleness flip (:468) is an INTENTIONAL-EVENTLESS #2700 post-claim terminal-to-terminal transition (the record already carries its typed terminal event) that emits an advisory and discards scope |
 | src/background/completion-observer.ts:settleCoder | :913 | appendDelegationTransition (preserved -> stale) | scan | deliberate-second-authority | INTENTIONAL-EVENTLESS #2700 post-claim flip: the typed terminal came from the claim that opened the coder settlement, so the transition establishes no new first-terminal event |
 | src/background/delegation-lifecycle.ts:settleDelegationTerminal | :192 | claimTerminalResult via _internals | scan | routed | #2045: the lane lifecycle wraps the SAME claim primitive the Task completion observer calls directly (one claim implementation, no second lifecycle state machine) |
-| src/background/pending-delegations.ts:<module> | :1217, :2569, :4170 | claimTerminalResult plus the two whole-ledger raw writers | scan | routed | module-scope declarations: the terminal-claim authority itself, the coordination shadow projection, and checkpoint/ledger compaction, all replication-only (the records they carry were already decided by a censused authority) |
+| src/background/pending-delegations.ts:<module> | :1217, :2569, :4170 | claimTerminalResult plus the two whole-ledger raw writers | scan | routed | module-scope declarations. :4170 is the terminal-claim authority itself — it DECIDES the terminal, so it is not a replication writer. :1217 and :2569 are replication-only: the coordination shadow projection and checkpoint/ledger compaction carry records an already-censused authority decided |
 | src/background/pending-delegations.ts:acknowledgeObservedBackgroundAdvisories | :5340 | appendRecord (delegation store raw writer) | inventory | routed | advisory acknowledgment payload write; no terminal status |
 | src/background/pending-delegations.ts:appendDelegationTransition | :3621, :3652 | typed transition write (buildTypedDelegationTerminal) | scan | deliberate-second-authority | the CAS transition primitive the deliberate writers use; it carries the typed terminal event with identity rules identical to the claim path |
 | src/background/pending-delegations.ts:appendRecord | :3288 | raw append sink plus coordination replication | scan | routed | the single append sink every censused authority flows through; its coordination row under the background.pending-delegation namespace is a replica of the just-decided record |
@@ -171,8 +179,9 @@ instead of through a censused authority.
 | src/background/pending-delegations.ts:sweepStaleLocked | :5552, :5558 | direct typed-terminal append | scan | deliberate-second-authority | the claim primitive refuses ingestion_error records and requires per-record claimable state, so this bulk stale flip cannot route through it; the typed terminal is written atomically with the disposition and the #2482/#2244 eventless-terminal-end observer fires |
 | src/background/pending-delegations.ts:updateCoderSettlement | :4596 | appendRecord (delegation store raw writer) | inventory | routed | the coderSettlement terminal settlement state (settled/preserved) written for an already-claimed terminal |
 | src/background/pending-delegations.ts:updateLegacyCoderSettlementTransfer | :4784 | appendRecord (delegation store raw writer) | inventory | routed | legacy settlement transfer state; no terminal status |
-| src/hooks/pr-workflow-gate.ts:<module> | :7442 | admitPrReviewPartialBaseCoverage (completion module) | scan | routed | the gate admission wrapper delegates to the completion-module authority below; coverage admission state is written by that state-snapshot authority |
+| src/hooks/pr-workflow-gate.ts:<module> | :7442 | admitPrReviewPartialBaseCoverage (completion module) | scan | routed | module-scope admission wrapper DEFINITION (the definition-name match sits outside the body span, so it attributes here); the wrapper's body dispatches to the completion-module authority below, so coverage admission state is written by that state-snapshot authority |
 | src/hooks/pr-workflow-gate.ts:abortPrWorkflow | :4545 | settlePresumedStalePrWorkflowLanes sweep | scan | routed | force-abort entry point; its lane settlement routes through the sweep authority and its pr_feedback_publication_cancelled terminal events are the publication surface own vocabulary |
+| src/hooks/pr-workflow-gate.ts:admitPrReviewPartialBaseCoverage | :7448 | admitPrReviewPartialBaseCoverageFromCompletion (completion module) | scan | routed | the wrapper's body dispatches to the completion-module admission authority through the aliased import admitPrReviewPartialBaseCoverageFromCompletion (src/pr-review/completion.ts) — an aliased dispatch pattern 8 censuses by name; coverage admission state is written by that state-snapshot authority |
 | src/hooks/pr-workflow-gate.ts:assertPrReviewTerminalReady | :12169 | settlePresumedStalePrWorkflowLanes sweep | scan | routed | terminal-readiness ladder; lane settlement routes through the sweep authority |
 | src/hooks/pr-workflow-gate.ts:assertPrReviewValidationSettled | :7911 | persistVerdictSettlementReceipt | scan | routed | #3101: N-of-M verdict-settlement admission with a durable receipt written by the verdict-settlement store |
 | src/hooks/pr-workflow-gate.ts:completePrWorkflow | :13399, :13601 | settlePresumedStalePrWorkflowLanes sweep plus admitPrReviewPartialBaseCoverage | scan | routed | completion triggers lane settlement through the sweep authority and admits partial coverage through the completion-module authority; its coverage finalization dispatches coverage_finalization_requested (wire-or-retire table above) |
@@ -228,5 +237,7 @@ census on every test run: every scanner identity has a row of the right class,
 every row's cited hit lines equal the scanner's actual hit lines for that
 identity, every disposition is a census token, no row is a `straggler`, and
 every scanner pattern is non-empty. Disclosed boundaries (the census states the
-same list): dynamic-dispatch aliases are invisible to a text scanner, and a
-symlinked source entry is skipped rather than diagnosed.
+same list): a dynamic-dispatch alias that no pattern names is invisible to a
+text scanner, and a symlinked source entry is skipped rather than diagnosed.
+A transition whose terminal status cannot be resolved statically is NOT a
+boundary — it is inventoried, because the scan fails closed there.

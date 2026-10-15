@@ -28,8 +28,9 @@
  *     disclosed degradation can never finalize APPROVE even on COMPLETE
  *     coverage, and a live lane blocks coverage outright.
  *   #2666 — a stale foreign-authorization armed-recovery binding is always
- *     rejected without mutating state; an authorized binding persists the
- *     operator's reason verbatim.
+ *     rejected without mutating state, independently across all four binding
+ *     dimensions (session, workflow instance, head, generation); an
+ *     authorized binding persists the operator's reason verbatim.
  *   #2402 — no rejected transition ever mutates state, across random event
  *     sequences (the general no-advance invariant the incidents violate).
  */
@@ -284,18 +285,40 @@ describe('settlement invariant properties, reducer layer (issue #2908)', () => {
 		fc.assert(
 			fc.property(
 				fc.integer({ min: 1, max: 5 }),
+				// The four binding dimensions are generated INDEPENDENTLY, so a
+				// generated cell can be foreign in session, workflow-instance,
+				// head, or generation ALONE (or in any combination). The
+				// production fences live in bindingRejection (src/pr-review/
+				// reducer.ts): session, workflow-instance, head, generation —
+				// one per dimension. When only workflowInstanceId was ever made
+				// foreign, mutation-probes showed the property stayed GREEN with
+				// any of the other three fences deleted; every cell still
+				// asserts its EXACT outcome (applied iff all four dimensions
+				// match, else rejected stale_foreign_authorization).
+				fc.boolean(),
+				fc.boolean(),
+				fc.boolean(),
 				fc.boolean(),
 				fc.string({ minLength: 1, maxLength: 8 }),
-				(revision, authorized, reason) => {
+				(
+					revision,
+					sessionMatches,
+					workflowInstanceMatches,
+					headMatches,
+					generationMatches,
+					reason,
+				) => {
 					const state = deepFreeze(baseState(revision));
 					const snapshot = JSON.stringify(state);
 					const event: PrReviewEvent = {
 						type: 'armed_recovery_requested',
 						binding: {
-							sessionID: 'ses_2908',
-							workflowInstanceId: authorized ? 'wfi_2908' : 'wfi_OTHER',
-							prHeadSha: 'head',
-							generation: revision,
+							sessionID: sessionMatches ? 'ses_2908' : 'ses_FOREIGN',
+							workflowInstanceId: workflowInstanceMatches
+								? 'wfi_2908'
+								: 'wfi_FOREIGN',
+							prHeadSha: headMatches ? 'head' : 'head_FOREIGN',
+							generation: generationMatches ? revision : revision + 3,
 						},
 						dimensionsToCancel: ['security-trust'],
 						nowIso: '2026-01-01T00:00:00.000Z',
@@ -303,7 +326,12 @@ describe('settlement invariant properties, reducer layer (issue #2908)', () => {
 					};
 					const result = reducePrReviewEvent(state, event);
 					expect(JSON.stringify(state)).toBe(snapshot);
-					if (authorized) {
+					if (
+						sessionMatches &&
+						workflowInstanceMatches &&
+						headMatches &&
+						generationMatches
+					) {
 						// The applied arm makes the reason arbitrary load-bearing:
 						// the recorded cancellation carries it verbatim.
 						expect(result.status).toBe('applied');

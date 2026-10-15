@@ -17,13 +17,20 @@
  *      sweepStaleLocked(, and the _test_exports seam form
  *      sweepStaleDelegationsAsync(
  *   4  appendDelegationTransition( calls whose balanced argument object carries
- *      a terminal status literal or a terminalResult: key
+ *      a terminal status literal or a terminalResult: key — plus, FAIL CLOSED,
+ *      calls whose payload status the scanner cannot statically resolve to a
+ *      literal (a bare identifier argument like
+ *      `appendDelegationTransition(dir, id, transition)` is censused as a
+ *      potential terminal writer; only a payload resolving to a non-terminal
+ *      literal such as `{ status: 'running' }` stays excluded)
  *   5  buildTypedDelegationTerminal( construction sites (definition excluded)
  *   6  appendRecord( sites, scoped to the delegation store
  *      (src/background/pending-delegations.ts) - its raw record writer
  *   7  settlePresumedStalePrWorkflowLanes( trigger call sites
  *      (definition and re-export lines excluded)
  *   8  admission-sink references - admitPrReviewPartialBaseCoverage,
+ *      admitPrReviewPartialBaseCoverageFromCompletion (the completion-module
+ *      alias the gate's module-scope wrapper dispatches to),
  *      rollbackPrReviewPartialBaseCoverageAdmission,
  *      persistVerdictSettlementReceipt (definitions AND call sites)
  *   9  writeDelegationShadowProjection( - the coordination shadow projection,
@@ -53,6 +60,15 @@ export const TERMINAL_STATUS_LITERALS = [
 	'cancelled',
 	'stale',
 	'consumed',
+] as const;
+
+/** The non-terminal members of `BackgroundDelegationStatus` (src/background). */
+export const NON_TERMINAL_STATUS_LITERALS = [
+	'pending',
+	'running',
+	'ingesting',
+	'ingestion_error',
+	'rejected',
 ] as const;
 
 export const SCANNER_ROOT = 'src';
@@ -122,7 +138,7 @@ export const PATTERNS: PatternDef[] = [
 	{
 		pattern: 8,
 		regex:
-			/(?:admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
+			/(?:admitPrReviewPartialBaseCoverageFromCompletion|admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
 	},
 	{ pattern: 9, regex: /writeDelegationShadowProjection\s*\(/g },
 	{ pattern: 10, regex: /compactDelegationsLocked\s*\(/g },
@@ -420,6 +436,25 @@ export function payloadIsTerminal(span: string): boolean {
 	);
 }
 
+/**
+ * True when the balanced call span statically resolves the payload's status
+ * to a string LITERAL — a `status: "..."` key, or a standalone known-status
+ * literal in the value shape `payloadIsTerminal` recognizes — whatever the
+ * literal's value (terminal or not). A payload carrying neither, such as a
+ * bare identifier argument (`appendDelegationTransition(dir, id,
+ * transition)`), a variable, or a computed object, is UNRESOLVABLE by a
+ * text scanner; the census fails closed on it and inventories the call as a
+ * potential terminal writer (issue #2908: only a payload that provably
+ * resolves to a non-terminal literal like `{ status: 'running' }` stays
+ * excluded).
+ */
+export function payloadResolvesToLiteralStatus(span: string): boolean {
+	if (/\bstatus\s*:\s*["'][^"']+["']/.test(span)) return true;
+	return [...TERMINAL_STATUS_LITERALS, ...NON_TERMINAL_STATUS_LITERALS].some(
+		(status) => new RegExp(`["']${status}["']\\s*[,}]`).test(span),
+	);
+}
+
 export function listSrcFiles(rootDir: string): {
 	files: string[];
 	depthLimited: boolean;
@@ -468,7 +503,17 @@ export function scanSource(file: string, source: string): ScanHit[] {
 			if (def.payloadCheck) {
 				const openParen = m.index + m[0].length - 1;
 				const span = balancedCallSpan(blanked, openParen);
-				if (!payloadIsTerminal(span.text)) continue;
+				// Fail closed: a terminal-carrying payload hits, and so does a
+				// payload whose status cannot be statically resolved to a
+				// literal (a bare identifier can smuggle a terminal past the
+				// census). Only a payload that resolves to a NON-terminal
+				// literal (e.g. `{ status: 'running' }`) stays excluded.
+				if (
+					!payloadIsTerminal(span.text) &&
+					payloadResolvesToLiteralStatus(span.text)
+				) {
+					continue;
+				}
 			}
 			hits.push({
 				pattern: def.pattern,

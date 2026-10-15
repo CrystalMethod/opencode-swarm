@@ -79,13 +79,28 @@ function classify(hits: ScanResult, identity: string): 'scan' | 'inventory' {
 }
 
 function hitLinesFor(hits: ScanResult, identity: string): number[] {
-	return [
-		...new Set(
-			hits.hits
-				.filter((hit) => hit.identity === identity)
-				.map((hit) => hit.line),
-		),
-	].sort((a, b) => a - b);
+	// MULTISET, not a set: `new Set(...)` here collapsed two terminal writers
+	// on one line into a single census obligation, so a second writer added on
+	// a line the census already cited was invisible to the ratchet. Each hit
+	// occurrence is one obligation; the doc-side citation list parses with the
+	// same occurrence semantics (every `:NNNN` match counts).
+	return hits.hits
+		.filter((hit) => hit.identity === identity)
+		.map((hit) => hit.line)
+		.sort((a, b) => a - b);
+}
+
+/** Occurrence-aware excess of `a` over `b` (multiset difference). */
+function multisetExcess(a: number[], b: number[]): number[] {
+	const counts = new Map<number, number>();
+	for (const line of b) counts.set(line, (counts.get(line) ?? 0) + 1);
+	const excess: number[] = [];
+	for (const line of a) {
+		const left = counts.get(line) ?? 0;
+		if (left > 0) counts.set(line, left - 1);
+		else excess.push(line);
+	}
+	return excess;
 }
 
 export interface CensusFindings {
@@ -129,22 +144,42 @@ export function censusFindings(
 	for (const row of rows) {
 		if (row.rowClass !== 'scan' && row.rowClass !== 'inventory') continue;
 		const actual = hitLinesFor(hits, row.site);
-		for (const line of actual) {
-			if (!row.hitLines.includes(line)) uncited.push(`${row.site}:${line}`);
-		}
-		for (const line of row.hitLines) {
-			if (!actual.includes(line)) stale.push(`${row.site}:${line}`);
-		}
+		// Multiset reconciliation in both directions: each cited `:NNNN`
+		// occurrence consumes exactly one actual hit occurrence and vice
+		// versa, so a SECOND writer on an already-cited line surfaces as an
+		// un-cited hit instead of being absorbed by the existing citation.
+		for (const line of multisetExcess(actual, row.hitLines))
+			uncited.push(`${row.site}:${line}`);
+		for (const line of multisetExcess(row.hitLines, actual))
+			stale.push(`${row.site}:${line}`);
 	}
 	return { missingScan, missingInventory, phantom, uncited, stale };
 }
 
 describe('settle/admit census ratchet (issue #2908)', () => {
-	const scan = scanSrc(REPO_ROOT);
+	// ONE lazily-memoized full scan, shared by every test in this file. A
+	// full-tree scan is ~25 s; when the demos each called scanSrc(REPO_ROOT)
+	// afresh the file performed three full scans and both demos exceeded
+	// bun's default 5 s per-test timeout — the file only passed because CI
+	// appends --timeout 120000. The memo is first forced here at describe
+	// scope (collection time, not inside any test's timeout budget); the
+	// demos below clone it so their synthetic pushes never pollute each
+	// other or the shared findings.
+	let memoScan: ScanResult | undefined;
+	const fullScan = (): ScanResult => {
+		memoScan ??= scanSrc(REPO_ROOT);
+		return memoScan;
+	};
+	const cloneScan = (): ScanResult => ({
+		...fullScan(),
+		hits: [...fullScan().hits],
+		identities: [...fullScan().identities],
+	});
 	const rows = parseCensusRows();
-	const findings = censusFindings(scan, rows);
+	const findings = censusFindings(fullScan(), rows);
 
 	test('non-vacuity: the scan covers the real src tree with every pattern live', () => {
+		const scan = fullScan();
 		expect(scan.fileCount).toBeGreaterThan(1000);
 		expect(scan.skippedFiles, 'no source file may be skipped').toEqual([]);
 		expect(scan.depthLimited).toBe(false);
@@ -219,7 +254,7 @@ describe('settle/admit census ratchet (issue #2908)', () => {
 	});
 
 	test('demo: an un-inventoried writer is flagged', () => {
-		const synthetic = scanSrc(REPO_ROOT);
+		const synthetic = cloneScan();
 		synthetic.identities.push('src/tools/rogue.ts:rogueSettle');
 		synthetic.hits.push({
 			pattern: 1,
@@ -234,7 +269,7 @@ describe('settle/admit census ratchet (issue #2908)', () => {
 	});
 
 	test('demo: an uncited hit inside an inventoried function is flagged', () => {
-		const synthetic = scanSrc(REPO_ROOT);
+		const synthetic = cloneScan();
 		const target = 'src/tools/dispatch-lanes.ts:runLane';
 		synthetic.hits.push({
 			pattern: 1,
@@ -245,6 +280,33 @@ describe('settle/admit census ratchet (issue #2908)', () => {
 		});
 		const rogue = censusFindings(synthetic, rows);
 		expect(rogue.uncited).toContain(`${target}:9999`);
+		expect(
+			rogue.missingScan,
+			'the identity itself is still inventoried',
+		).toEqual([]);
+	});
+
+	test('demo: a SECOND writer on an already-cited line is flagged (multiset reconciliation)', () => {
+		// The hole this demo pins: when hit lines were compared as a SET, a
+		// second terminal writer added on a line the census already cited
+		// produced no new set member, so the ratchet passed. Occurrence-aware
+		// comparison must surface it as an un-cited hit.
+		const synthetic = cloneScan();
+		const target = 'src/tools/dispatch-lanes.ts:runLane';
+		const citedLine = rows.find((row) => row.site === target)?.hitLines[0];
+		expect(
+			citedLine,
+			'the runLane row must cite at least one line',
+		).toBeDefined();
+		synthetic.hits.push({
+			pattern: 1,
+			file: 'src/tools/dispatch-lanes.ts',
+			line: citedLine as number,
+			identity: target,
+			matched: 'settleDelegationTerminal(',
+		});
+		const rogue = censusFindings(synthetic, rows);
+		expect(rogue.uncited).toContain(`${target}:${citedLine}`);
 		expect(
 			rogue.missingScan,
 			'the identity itself is still inventoried',
@@ -268,6 +330,25 @@ describe('settle/admit census ratchet (issue #2908)', () => {
 			),
 			'a comment mention must never produce a hit',
 		).toEqual([]);
+	});
+
+	test('demo: an unresolvable transition payload is censused fail-closed', () => {
+		// The hole this demo pins: a transition payload passed as a bare
+		// identifier (resolved elsewhere to a terminal) was invisible to the
+		// guard. Fail closed — only a payload the scanner can statically
+		// resolve to a NON-terminal literal (e.g. `status: 'running'`) stays
+		// outside the census.
+		const hits = scanSource(
+			'src/hooks/probe.ts',
+			[
+				'async function flip(d: string, id: string, transition: object) {',
+				'\tawait appendDelegationTransition(d, id, transition);',
+				'\tawait appendDelegationTransition(d, id, { status: "running" });',
+				'\tawait appendDelegationTransition(d, id, { status: "stale" });',
+				'}',
+			].join('\n'),
+		).filter((hit) => hit.pattern === 4);
+		expect(hits.map((hit) => hit.line)).toEqual([2, 4]);
 	});
 
 	test('demo: identity attribution uses the innermost enclosing declaration', () => {
