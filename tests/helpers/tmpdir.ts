@@ -41,3 +41,37 @@ export function canonicalMkdtemp(prefix: string): string {
 	const rawDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 	return fs.realpathSync(rawDir);
 }
+
+const RM_SYNC_ATTEMPTS = 4;
+const RM_SYNC_RETRY_WAIT_MS = 25;
+
+const sleepSync = (ms: number): void => {
+	// Bounded synchronous wait via Atomics (no clock read). Keeps cleanup inside
+	// afterAll so a retry cannot outlive the test process and hold the temp
+	// store open.
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/**
+ * Recursively removes a temp directory, retrying the Windows EBUSY/EPERM class
+ * (a directory handle that is briefly still open after the test body finishes).
+ * If every attempt fails it THROWS — a leaked temp store is a test failure to
+ * surface, not environmental noise to swallow behind an empty `catch`.
+ */
+export function removeTreeWithRetry(dir: string): void {
+	let lastError: unknown;
+	for (let attempt = 1; attempt <= RM_SYNC_ATTEMPTS; attempt++) {
+		try {
+			fs.rmSync(dir, { recursive: true, force: true });
+			lastError = undefined;
+			break;
+		} catch (error) {
+			lastError = error;
+			sleepSync(RM_SYNC_RETRY_WAIT_MS);
+		}
+	}
+	if (lastError !== undefined) throw lastError;
+	if (fs.existsSync(dir)) {
+		throw new Error(`temp store still present after removal: ${dir}`);
+	}
+}
