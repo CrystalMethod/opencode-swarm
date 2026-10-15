@@ -9,13 +9,19 @@ committed content rather than a checkout's line-ending translation.
 ## Why
 
 The evidence file records one sha256 per contract-owned workflow, and the checker compares
-it against the file on disk. Two of the three workflows (`ci.yml`, `drift-check.yml`) are
-committed with CRLF, so a `core.autocrlf=true` Windows checkout serves them byte-identical
-to the Linux runner and they match. `pr-standards.yml` is committed LF: the same checkout
-serves it CRLF, so its hash never matched — a Windows contributor sees
-`WORKFLOW_CHANGED_AFTER_CAPTURE` as a blocking `drift` error on an entirely unchanged
-tree. That is the inverse of the failure the capture refresh fixed: CI green, local red,
-with no way to tell a real workflow edit from a line-ending artifact.
+it against the file on disk. Before this change the checker hashed the working-tree bytes
+exactly as they were, while the recorded hashes describe the committed content: all three
+contract-owned workflows (`ci.yml`, `drift-check.yml`, `pr-standards.yml`) carry LF-only
+blobs — zero CR bytes — and `.gitattributes` carries `* text=auto eol=lf`, so each recorded
+hash is the sha256 of the committed LF content. A Windows checkout whose working copies
+carry CRLF bytes therefore mismatched the recorded hash on an entirely unchanged tree: a
+Windows contributor saw `WORKFLOW_CHANGED_AFTER_CAPTURE` as a `drift` error while CI
+stayed green (its Linux runners hash the same LF bytes), with no way to tell a real
+workflow edit from a line-ending artifact. Which files on any given checkout carry CRLF,
+and the contributor-side configuration that produced them, is checkout state the
+repository cannot reconstruct; what the repository proves is that the committed blobs are
+LF, that the recorded hashes describe that LF content, and that the mismatch followed the
+working copy, not the committed file.
 
 ## Change
 
