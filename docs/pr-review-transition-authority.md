@@ -108,6 +108,20 @@ ships with none: every direct write below carries a verifiable structural
 reason (the claim primitive refuses `ingestion_error` records and record-less
 correlations, so some sweep/CAS shapes cannot route through it).
 
+**Replication-writer seam (implementation-review finding, in scope):** the
+coordination layer replicates already-decided records through two additional
+raw sinks — `writeDelegationShadowProjection` (whole-ledger rewrite of the
+store file) and `transitionCoordinationState` under the
+`background.pending-delegation` namespace (`src/db/coordination-store.ts`, a
+generic coordination API shared by other subsystems and therefore out of
+per-call-site scope here). Both are REPLICATION writers: every record they
+carry was already terminalized by a censused authority above (the claim, the
+sweep, or a typed transition), and the append-only ledger remains the fold
+authority (`readDelegationsDetailed`). The projection writer and its callers
+are censused above; a future writer that introduces a NEW terminal decision
+through this seam would bypass the census's decision authorities and is the
+residual risk this paragraph discloses.
+
 | Site | Writes or admits | Authority | Row class | Disposition | Reason |
 |---|---|---|---|---|---|
 | src/background/pending-delegations.ts:claimTerminalResult | the terminal-claim primitive itself (append at :4289) | claim authority definition | inventory | routed | establishes an immutable trusted terminal exactly once; same-event replays get resume/retry dispositions; different events rejected and audited |
@@ -150,6 +164,9 @@ correlations, so some sweep/CAS shapes cannot route through it).
 | src/pr-review/completion.ts:admitPrReviewPartialBaseCoverage | the partial-base-coverage admission writer (:1324) | withSessionStateMutation state snapshot | scan | routed | admits partial coverage plus its disclosure under the session-state authority (the state-snapshot admission class named in the census contract) |
 | src/pr-review/completion.ts:rollbackPrReviewPartialBaseCoverageAdmission | compare-and-clear of a newly admitted disclosure (:1505) | writeStateWhileLocked state snapshot | scan | routed | rolls back a raced admission under the same state-snapshot authority |
 | src/pr-review/verdict-settlement.ts:persistVerdictSettlementReceipt | durable verdict-settlement receipt writer (:286) | verdict-settlement store | scan | routed | #3101 N-of-M verdict admission persistence |
+| src/background/pending-delegations.ts:writeDelegationShadowProjection | whole-ledger shadow rewrite (:1217, fs.writeFileSync of storePath) | coordination shadow projection | scan | routed | replication-only: rewrites the ledger file from already-decided records (its callers are the coordination import and the raw writer below); no settle/admit decision originates here |
+| src/background/pending-delegations.ts:ensureDelegationCoordinationImported | coordination DB import + shadow rewrite (:1308/:1354) | coordination store + shadow projection | scan | routed | one-time legacy import of already-decided records into the coordination DB, then shadow projection |
+| src/background/pending-delegations.ts:appendRecord | the store's raw record writer (:3250) — every censused authority's appends flow through it; coordination replication fires beneath it (:3267/:3288) | appendRecord + coordination transition | scan | routed | the single append sink behind the claim/sweep/transition authorities above; the coordination row it writes under the background.pending-delegation namespace is a replica of the just-decided record |
 | src/pr-review (reducer dispatch sites) | lane_structured_result_submitted, circuit, admission, rollback, recovery, finalization, critic events | reducePrReviewEvent | cross-reference | routed | censused by the wire-or-retire table above and tests/unit/pr-review/reducer-adapter-authority.test.ts |
 | src/workflow/coder-settlement.ts | the coder-settlement WAL authority family | its own state machine (DISPATCHED vocabulary) | cross-reference | routed | the #2214/#2402 incident surface; pinned by tests/unit/workflow/coder-settlement-2214.test.ts and siblings, not re-pinned here |
 | src/background/stage-b-dispatch-binding-store.ts | Stage-B dispatch-generation bindings | durable binding store | cross-reference | routed | the #2829 incident surface (PR #2883); fail-closed consumer behavior at warnStageBSettlementDropped in src/hooks/delegation-gate.ts |

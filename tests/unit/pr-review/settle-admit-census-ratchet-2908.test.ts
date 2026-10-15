@@ -60,7 +60,7 @@ function parseCensusRows(): CensusRow[] {
 describe('settle/admit census ratchet (issue #2908)', () => {
 	const scan = scanSrc(REPO_ROOT);
 	const rows = parseCensusRows();
-	const directPats = new Set([1, 2, 3, 4, 5, 7, 8]);
+	const directPats = new Set([1, 2, 3, 4, 5, 7, 8, 9]);
 	const identitiesByClass = new Map<string, string[]>();
 	for (const identity of scan.identities) {
 		const ownsDirect = scan.hits.some(
@@ -74,7 +74,7 @@ describe('settle/admit census ratchet (issue #2908)', () => {
 
 	test('non-vacuity: the scan covers the real src tree', () => {
 		expect(scan.fileCount).toBeGreaterThan(1000);
-		expect(SCANNER_PATTERN_COUNT).toBe(8);
+		expect(SCANNER_PATTERN_COUNT).toBe(9);
 		for (let pattern = 1; pattern <= SCANNER_PATTERN_COUNT; pattern += 1) {
 			expect(
 				scan.hits.filter((hit) => hit.pattern === pattern).length,

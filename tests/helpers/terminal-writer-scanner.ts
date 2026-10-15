@@ -105,6 +105,13 @@ const PATTERNS: PatternDef[] = [
 		regex:
 			/(?:admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
 	},
+	{
+		// Issue #2908 implementation-review finding: the coordination shadow
+		// projection rewrites the whole ledger file — a terminal-bearing raw
+		// writer that must own census rows (definitions AND call sites).
+		pattern: 9,
+		regex: /writeDelegationShadowProjection\s*\(/g,
+	},
 ];
 
 /**

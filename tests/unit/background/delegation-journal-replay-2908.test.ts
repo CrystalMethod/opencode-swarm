@@ -4,11 +4,17 @@
  * Provenance: tests/fixtures/background-delegations-2908.jsonl is a sanitized
  * capture of a REAL review run's delegation ledger (36 swarm-pr-* lanes plus
  * one blocking record; captured 2026-09-09 from a live plugin checkout's
- * .swarm/background-delegations.jsonl). Sanitization replaced every
- * prose-like string (result text/error, receipts, workspace descriptions)
- * with placeholders, recomputed the sanitized text digests/chars, and left
- * ids, statuses, typed terminals (eventIds opaque), timestamps and lanes
- * verbatim — the fold surface is byte-faithful to the live capture.
+ * .swarm/background-delegations.jsonl). Sanitization rules, exactly as
+ * executed: (1) every prose-bearing string in results, receipts (finding
+ * title/body/evidence, attestation coverageScope/evidence), location detail
+ * fields, and workspace descriptions is replaced by a length-preserving,
+ * space-free '[sanitized]---' placeholder; (2) workspace.directory is
+ * redacted to '<redacted>'; (3) receipt envelope digests are recomputed
+ * canonically over the sanitized envelopes; (4) structured identity fields
+ * are preserved verbatim - ids, statuses, timestamps, opaque eventIds,
+ * digest fields, and finding location.file paths (repo-relative references
+ * inside this public repository, retained so structured location shapes stay
+ * real). The fold surface is faithful to the live capture.
  *
  * The EXPECTED_TERMINALS table below is derived from the PRE-sanitization
  * raw capture (folded at authoring time), NOT recomputed from the fixture,
