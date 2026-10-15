@@ -23,20 +23,28 @@ unreachable by construction (issues #2214, #2402, #2666, #2840, #2829).
   test pins, and where the incident surface's own regression suite lives.
 - **Census ratchet** — `tests/helpers/terminal-writer-scanner.ts` +
   `tests/unit/pr-review/settle-admit-census-ratchet-2908.test.ts`: a
-  comment-blanked source scan of `src/` (eight call-shape patterns, including
+  comment-blanked source scan of `src/` (ten call-shape patterns, including
   the `_test_exports`/`_internals` seam forms and raw `appendRecord` writers
-  scoped to the delegation store) cross-checked bidirectionally against the
-  census table on every CI run — an un-inventoried terminal writer fails CI
-  (demonstrated by synthetic flagged-writer tests). Disclosed boundary:
-  dynamic-dispatch aliases are invisible to a text scanner.
-- **Property tests** — `fast-check` (now a direct devDependency; previously
-  only transitively resolved) runs >= 1,000 cases per property: stale-generation
-  results and stale foreign-authorization bindings never advance reducer state;
-  a disclosed coverage degradation can never finalize APPROVE (#2840); rejected
-  transitions never mutate state; and, over the real delegation store, a
-  claimed terminal is never lost/overwritten/re-opened by any claim interleaving
-  (#2214 ledger layer) and survives a restart-fold across real forced
-  compaction (#2829 ledger/checkpoint layer).
+  scoped to the delegation store, plus the two whole-ledger terminal-bearing
+  raw writers — the `writeDelegationShadowProjection` coordination shadow
+  projection and the `compactDelegationsLocked` checkpoint/ledger compaction
+  writer) cross-checked bidirectionally against the census table on every CI
+  run — an un-inventoried terminal writer fails CI (demonstrated by synthetic
+  flagged-writer tests). Disclosed boundary: dynamic-dispatch aliases are
+  invisible to a text scanner.
+- **Property tests** — `fast-check` (pinned at 4.9.0 in `bun.lock`; it still
+  resolves transitively — `package.json` is release-please-owned
+  (release-owner-guard), so the direct devDependency declaration is deferred
+  to follow-up issue #3285) runs >= 1,000 cases per property, and every
+  generator cell asserts its exact expected outcome (rejection code or
+  applied status): stale-generation results and stale foreign-authorization
+  bindings never advance reducer state; a disclosed coverage degradation can
+  never finalize APPROVE (#2840); rejected transitions never mutate state;
+  and, over the real delegation store, a claimed terminal is never
+  lost/overwritten/re-opened by any claim interleaving (#2214 ledger layer)
+  and survives a restart-fold across real forced compaction (#2829
+  ledger/checkpoint layer, asserted against the full accumulated terminal
+  set per rotated store).
 - **Wedge reproductions** — four hand-written reproductions, one per historical
   shape, including the load-bearing publisher `expectedWorkflowRevision` fence
   and the Stage-B binding store's restart reconstruction (the #2829 surface).

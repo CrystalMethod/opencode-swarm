@@ -11,9 +11,16 @@
  * settle-wedge-shapes-2908.test.ts — see the wedge-shape layer map in
  * docs/pr-review-transition-authority.md.
  *
- * Batches rotate every 15 runs; compaction fires on every 5th run so both the
- * legacy fold and the checkpoint+tail fold are exercised at scale while the
- * property stays inside the CI per-file budget.
+ * Batches rotate every 15 runs; compaction fires on every 5th RUN — the
+ * cadence is keyed off the run index, not the record counter (which advances
+ * by the generated extraRecords) — so both the legacy fold and the
+ * checkpoint+tail fold are exercised at scale while the property stays inside
+ * the CI per-file budget. Every forced compaction must publish a durable
+ * checkpoint file. The expectation set is PER-ROTATED-DIR and cumulative:
+ * after every fold, the FULL accumulated id -> terminal set for that dir is
+ * re-asserted, so a compaction that evicts an earlier record in the same
+ * rotating dir fails immediately. The property runs under a pinned fast-check
+ * seed so a CI counterexample reproduces exactly.
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
@@ -22,13 +29,16 @@ import * as path from 'node:path';
 import fc from 'fast-check';
 import { settleDelegationTerminal } from '../../../src/background/delegation-lifecycle.js';
 import {
+	BACKGROUND_DELEGATIONS_CHECKPOINT_FILE,
 	compactBackgroundDelegations,
 	readDelegationsDetailed,
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
-let runCounter = 0;
+const PROPERTY_SEED = 2908;
+const ROTATE_EVERY_RUNS = 15;
+const COMPACT_EVERY_RUNS = 5;
 
 function terminalInput(status: 'completed' | 'error', nonce: string) {
 	const text = `payload-${nonce}`;
@@ -45,14 +55,22 @@ function terminalInput(status: 'completed' | 'error', nonce: string) {
 
 describe('settlement restart property, ledger/checkpoint layer (issue #2908, #2829)', () => {
 	const dirs: string[] = [];
+	// Per-rotated-dir accumulated expectation: correlationId -> the exact
+	// terminal identity the claim established. Asserted IN FULL after every
+	// fold, so eviction of any earlier record in this dir fails at once.
+	const expectedByDir = new Map<
+		string,
+		Map<string, { status: string; eventId: string }>
+	>();
 	let current: string | null = null;
 	let uses = 0;
 	const nextDir = (): string => {
-		if (current === null || uses >= 15) {
+		if (current === null || uses >= ROTATE_EVERY_RUNS) {
 			const dir = canonicalMkdtemp('settle-restart-2829-');
 			fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
 			fs.mkdirSync(path.join(dir, '.swarm'), { recursive: true });
 			dirs.push(dir);
+			expectedByDir.set(dir, new Map());
 			current = dir;
 			uses = 0;
 		}
@@ -70,18 +88,19 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 	});
 
 	test('claimed terminals survive a restart-fold across real compaction', async () => {
-		const expected = new Map<string, { status: string; eventId: string }>();
+		// The run index keys both the compaction cadence and the record ids; a
+		// mutable module counter would drift under generator re-runs.
+		let runIndex = 0;
 		await fc.assert(
 			fc.asyncProperty(
 				fc.integer({ min: 1, max: 2 }),
 				fc.constantFrom('completed', 'error'),
 				async (extraRecords, status) => {
+					runIndex += 1;
 					const dir = nextDir();
-					const ids: string[] = [];
+					const expected = expectedByDir.get(dir)!;
 					for (let i = 0; i < extraRecords; i += 1) {
-						runCounter += 1;
-						const id = `restart-${runCounter}`;
-						ids.push(id);
+						const id = `restart-${runIndex}-${i}`;
 						const pending = await recordPendingDelegation(dir, {
 							correlationId: id,
 							jobId: null,
@@ -99,9 +118,9 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 							pending!,
 							terminalInput(status, `${id}-t`),
 							{},
-							runCounter,
+							runIndex * 10 + i,
 						);
-						expect(claimed.kind).toBe('claimed');
+						expect(claimed.kind, `claim failed for ${id}`).toBe('claimed');
 						if (claimed.kind === 'claimed') {
 							expected.set(id, {
 								status,
@@ -109,11 +128,25 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 							});
 						}
 					}
-					if (runCounter % 5 === 0) {
+					// Cadence keyed off the RUN index: every 5th run forces the
+					// real compaction and must publish its durable checkpoint.
+					if (runIndex % COMPACT_EVERY_RUNS === 0) {
 						const compact = await compactBackgroundDelegations(dir, {
 							force: true,
 						});
-						expect(compact.status).toBe('compacted');
+						expect(compact.status, `compaction at run ${runIndex}`).toBe(
+							'compacted',
+						);
+						expect(
+							fs.existsSync(
+								path.join(
+									dir,
+									'.swarm',
+									BACKGROUND_DELEGATIONS_CHECKPOINT_FILE,
+								),
+							),
+							`compaction at run ${runIndex} must publish a checkpoint`,
+						).toBe(true);
 					}
 					const outcome = readDelegationsDetailed(dir);
 					expect(outcome.status).toBe('ok');
@@ -121,10 +154,12 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 					const folded = new Map(
 						outcome.records.map((record) => [record.correlationId, record]),
 					);
-					for (const id of ids) {
-						const want = expected.get(id)!;
+					// The FULL accumulated set for THIS rotated dir — not just the
+					// current run's ids — so an eviction or loss of any earlier
+					// record in the dir fails at the very next fold.
+					for (const [id, want] of expected) {
 						const record = folded.get(id);
-						expect(record, `restart-fold lost ${id}`).toBeDefined();
+						expect(record, `restart-fold lost ${id} in ${dir}`).toBeDefined();
 						if (!record) continue;
 						expect(record.status, id).toBe(want.status);
 						expect(record.terminalResult?.status, id).toBe(want.status);
@@ -132,7 +167,7 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 					}
 				},
 			),
-			{ numRuns: 1000 },
+			{ numRuns: 1000, seed: PROPERTY_SEED },
 		);
 	}, 120_000);
 });

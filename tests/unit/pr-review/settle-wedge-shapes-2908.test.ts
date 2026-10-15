@@ -21,7 +21,10 @@ import {
 	readDelegationsDetailed,
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
-import { prReviewLaneResultEnvelopeDigest } from '../../../src/background/pr-review-contract.js';
+import {
+	encodePrReviewWorkflowBinding,
+	prReviewLaneResultEnvelopeDigest,
+} from '../../../src/background/pr-review-contract.js';
 import {
 	readStageBDispatchBindings,
 	recordStageBDispatchBindings,
@@ -149,10 +152,19 @@ describe('settlement wedge-shape reproductions (issue #2908)', () => {
 			expect(rejected.rejection.code).toBe('stale_generation_result');
 			expect(rejected.state).toBe(state);
 		}
-		// The load-bearing publisher lock fence: a receipt whose expected
-		// workflow revision does not match the durable record's is refused.
+		// The load-bearing publisher lock fence: publishPrReviewResultReceipt
+		// validates PrReviewResultReceiptSchema FIRST, so the receipt below is
+		// schema-valid — real hex baseSha/headSha (6-64 hex per the contract
+		// regexes), a 64-hex dispatchRevisionDigest, and a
+		// semanticEnvelopeDigest recomputed through
+		// prReviewLaneResultEnvelopeDigest. With placeholder SHAs the publish
+		// refuses at 'receipt schema validation failed' and the
+		// expectedWorkflowRevision fence (the immutable-identity conjunction in
+		// publishPrReviewResultReceipt) is never evaluated.
 		const dir = newDir();
 		const child = 'wedge-2666-child';
+		const baseSha = 'ab'.repeat(20);
+		const headSha = 'cd'.repeat(20);
 		const envelope = {
 			schemaVersion: 1 as const,
 			outcome: 'CLEAN' as const,
@@ -169,7 +181,9 @@ describe('settlement wedge-shape reproductions (issue #2908)', () => {
 		};
 		const pending = await recordPendingDelegation(dir, {
 			correlationId: child,
-			jobId: null,
+			// Async PR-review lanes carry the workflow-instance identity in the
+			// retained jobId slot; the fence decodes it.
+			jobId: encodePrReviewWorkflowBinding('wfi_2908_wedge'),
 			subagentSessionId: child,
 			parentSessionId: 'wedge-parent',
 			callID: `call-${child}`,
@@ -181,43 +195,84 @@ describe('settlement wedge-shape reproductions (issue #2908)', () => {
 			laneId: 'wedge-lane',
 			mode: 'swarm-pr-review:base',
 			workflowLane: 'security-trust',
+			ownedWorkflowLanes: ['security-trust'],
 			workflowGeneration: 4,
+			generation: 1,
+			workspace: {
+				directory: dir,
+				gitHead: headSha,
+				dirtyHash: null,
+				prHeadSha: headSha,
+				scope: null,
+			},
 		});
 		expect(pending).not.toBeNull();
-		const outcome = await publishPrReviewResultReceipt(dir, {
+		const receipt = {
+			schemaVersion: 1 as const,
+			mode: 'swarm-pr-review:base' as const,
+			workflowInstanceId: 'wfi_2908_wedge',
+			workflowRevision: 4,
+			batchId: 'wedge-batch',
+			laneId: 'wedge-lane',
+			workflowLane: 'security-trust',
+			ownedWorkflowLanes: ['security-trust'],
+			baseSha,
+			headSha,
+			dispatchRevisionDigest: 'dd'.repeat(32),
+			childSessionId: child,
+			generation: 1,
+			semanticEnvelopeDigest: prReviewLaneResultEnvelopeDigest(envelope),
+			envelope,
+		};
+		// 1) MISMATCHED revision: the receipt is refused. The fence's refusal is
+		// observable through the public return type only as the shared
+		// 'receipt does not match immutable delegation identity' conflict — the
+		// fence is one conjunction — so the matching publish below is the
+		// differential pin: it proves the receipt is schema-valid and every
+		// other identity disjunct holds, leaving expectedWorkflowRevision the
+		// only failing disjunct here.
+		const refused = await publishPrReviewResultReceipt(dir, {
 			parentSessionId: 'wedge-parent',
 			childSessionId: child,
 			batchId: 'wedge-batch',
 			laneId: 'wedge-lane',
 			expectedWorkflowInstanceId: 'wfi_2908_wedge',
 			expectedWorkflowRevision: 3,
-			expectedBaseSha: 'base-sha',
-			receipt: {
-				schemaVersion: 1,
-				mode: 'swarm-pr-review:base',
-				workflowInstanceId: 'wfi_2908_wedge',
-				workflowRevision: 4,
-				batchId: 'wedge-batch',
-				laneId: 'wedge-lane',
-				workflowLane: 'security-trust',
-				ownedWorkflowLanes: ['security-trust'],
-				baseSha: 'base-sha',
-				headSha: 'head-sha',
-				dispatchRevisionDigest: 'wedge-revision-digest',
-				childSessionId: child,
-				generation: 1,
-				semanticEnvelopeDigest: prReviewLaneResultEnvelopeDigest(envelope),
-				envelope,
-			},
+			expectedBaseSha: baseSha,
+			receipt,
 		});
-		expect(outcome.status, 'stale-revision receipt must be refused').toBe(
+		expect(refused.status, 'stale-revision receipt must be refused').toBe(
 			'conflict',
 		);
-		const after = readDelegationsDetailed(dir).records.find(
+		if (refused.status === 'conflict') {
+			expect(refused.reason).toBe(
+				'receipt does not match immutable delegation identity',
+			);
+		}
+		let after = readDelegationsDetailed(dir).records.find(
 			(record) => record.correlationId === child,
 		);
 		expect(after?.status).toBe('pending');
 		expect(after?.result?.prReviewResultReceipt).toBeUndefined();
+		// 2) MATCHING revision: the same schema-valid receipt publishes
+		// (advance) and the durable record carries it.
+		const published = await publishPrReviewResultReceipt(dir, {
+			parentSessionId: 'wedge-parent',
+			childSessionId: child,
+			batchId: 'wedge-batch',
+			laneId: 'wedge-lane',
+			expectedWorkflowInstanceId: 'wfi_2908_wedge',
+			expectedWorkflowRevision: 4,
+			expectedBaseSha: baseSha,
+			receipt,
+		});
+		expect(published.status, 'matching-revision receipt must publish').toBe(
+			'recorded',
+		);
+		after = readDelegationsDetailed(dir).records.find(
+			(record) => record.correlationId === child,
+		);
+		expect(after?.result?.prReviewResultReceipt?.workflowRevision).toBe(4);
 	});
 
 	test('#2840 shape: APPROVE with a disclosed degradation is rejected, REQUEST_CHANGES admitted', () => {
