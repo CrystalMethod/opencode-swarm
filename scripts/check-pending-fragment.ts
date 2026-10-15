@@ -265,7 +265,10 @@ function parsePrintRequirementArgs(
  * FRAGMENT_CHECK_ENFORCE escape hatch does not apply (the caller owns its
  * messaging).
  */
-async function printRequirement(args: readonly string[]): Promise<number> {
+export async function printRequirement(
+	args: readonly string[],
+	stdinText?: string,
+): Promise<number> {
 	const parsed = parsePrintRequirementArgs(args);
 	if ('error' in parsed) {
 		console.error(
@@ -273,8 +276,8 @@ async function printRequirement(args: readonly string[]): Promise<number> {
 		);
 		return 2;
 	}
-	const stdinText = await Bun.stdin.text();
-	const changed = stdinText
+	const raw = stdinText ?? (await Bun.stdin.text());
+	const changed = raw
 		.split('\n')
 		.map((line) => line.replace(/\r$/, ''))
 		.filter((line) => line.length > 0);

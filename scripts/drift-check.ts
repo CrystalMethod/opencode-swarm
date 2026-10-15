@@ -1799,11 +1799,14 @@ export function detectFragmentPathParity(
 			});
 			continue;
 		}
+		// Count only non-comment lines: a YAML comment quoting the full
+		// invocation form must not keep the count green after a real
+		// consumer is reverted (comment decoys are visible in review, but
+		// the counter should not depend on that).
 		let invocations = 0;
-		let index = text.indexOf(FRAGMENT_CLASSIFIER_ANCHOR);
-		while (index !== -1) {
-			invocations++;
-			index = text.indexOf(FRAGMENT_CLASSIFIER_ANCHOR, index + 1);
+		for (const line of text.split('\n')) {
+			if (line.trimStart().startsWith('#')) continue;
+			if (line.includes(FRAGMENT_CLASSIFIER_ANCHOR)) invocations++;
 		}
 		if (invocations < site.minInvocations) {
 			findings.push({

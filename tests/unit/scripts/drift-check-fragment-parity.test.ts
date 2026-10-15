@@ -121,4 +121,29 @@ describe('drift-check: fragment-path-parity detection (issue #2955)', () => {
 			),
 		).toBe(true);
 	});
+
+	test('a comment quoting the full invocation form is not a consumer anchor either', () => {
+		const root = makeTempRoot();
+		// One real invocation plus a decoy comment carrying the FULL form:
+		// the counter skips comment lines, so the count stays at 1 (< 2).
+		writeFile(
+			root,
+			'.github/workflows/pr-standards.yml',
+			`# runs via ${anchor} in the other arm
+jobs:
+  a:
+    steps:
+      - run: x | ${anchor}
+`,
+		);
+		const findings = detectFragmentPathParity(root);
+		expect(
+			findings.some(
+				(f) =>
+					f.severity === 'error' &&
+					f.file === '.github/workflows/pr-standards.yml' &&
+					f.message.includes('minimum 2'),
+			),
+		).toBe(true);
+	});
 });
