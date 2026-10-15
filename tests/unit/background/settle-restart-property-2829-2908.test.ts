@@ -34,7 +34,7 @@ import {
 	readDelegationsDetailed,
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir.js';
 
 const PROPERTY_SEED = 2908;
 const ROTATE_EVERY_RUNS = 15;
@@ -78,13 +78,7 @@ describe('settlement restart property, ledger/checkpoint layer (issue #2908, #28
 		return current;
 	};
 	afterAll(() => {
-		for (const dir of dirs.splice(0)) {
-			try {
-				fs.rmSync(dir, { recursive: true, force: true });
-			} catch {
-				// Windows EBUSY on cleanup is environmental.
-			}
-		}
+		for (const dir of dirs.splice(0)) removeTreeWithRetry(dir);
 	});
 
 	test('claimed terminals survive a restart-fold across real compaction', async () => {

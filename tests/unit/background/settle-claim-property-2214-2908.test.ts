@@ -25,9 +25,12 @@ import {
 	readDelegationsDetailed,
 	recordPendingDelegation,
 } from '../../../src/background/pending-delegations.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir.js';
 
 let runCounter = 0;
+
+/** Pinned so a #2214 property failure is reproducible from the run alone. */
+const PROPERTY_SEED = 2908;
 
 function terminalInput(
 	status: 'completed' | 'error' | 'cancelled' | 'stale',
@@ -62,13 +65,7 @@ describe('settlement claim property, ledger layer (issue #2908, #2214)', () => {
 		return current;
 	};
 	afterAll(() => {
-		for (const dir of dirs.splice(0)) {
-			try {
-				fs.rmSync(dir, { recursive: true, force: true });
-			} catch {
-				// Windows EBUSY on cleanup is environmental.
-			}
-		}
+		for (const dir of dirs.splice(0)) removeTreeWithRetry(dir);
 	});
 
 	test('a claimed terminal is never lost, overwritten, or re-opened by any interleaving', async () => {
@@ -135,7 +132,7 @@ describe('settlement claim property, ledger layer (issue #2908, #2214)', () => {
 					);
 				},
 			),
-			{ numRuns: 1000 },
+			{ numRuns: 1000, seed: PROPERTY_SEED },
 		);
 	}, 120_000);
 });

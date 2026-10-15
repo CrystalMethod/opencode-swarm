@@ -65,7 +65,7 @@ import {
 	readDelegationsDetailed,
 } from '../../../src/background/pending-delegations.js';
 import { prReviewLaneResultEnvelopeDigest } from '../../../src/background/pr-review-contract.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir.js';
 
 const FIXTURE = path.join(
 	import.meta.dir,
@@ -151,35 +151,6 @@ const sha256Hex = (value: string): string =>
 
 const sha256File = (file: string): string =>
 	createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-
-const RM_SYNC_ATTEMPTS = 4;
-const RM_SYNC_RETRY_WAIT_MS = 25;
-
-const sleepSync = (ms: number): void => {
-	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-};
-
-/**
- * Windows can briefly hold directory handles (EBUSY/EPERM) after a test body
- * finishes. Retry the removal a bounded number of times with a short
- * synchronous wait, then ASSERT the directory is gone — a temp-store leak is a
- * failure to surface, not environmental noise to swallow.
- */
-const removeTreeWithRetry = (dir: string): void => {
-	let lastError: unknown;
-	for (let attempt = 1; attempt <= RM_SYNC_ATTEMPTS; attempt++) {
-		try {
-			fs.rmSync(dir, { recursive: true, force: true });
-			lastError = undefined;
-			break;
-		} catch (error) {
-			lastError = error;
-			sleepSync(RM_SYNC_RETRY_WAIT_MS);
-		}
-	}
-	if (lastError !== undefined) throw lastError;
-	expect(fs.existsSync(dir), `temp store must be removed: ${dir}`).toBe(false);
-};
 
 describe('captured-journal replay (issue #2908)', () => {
 	const dirs: string[] = [];

@@ -34,7 +34,7 @@ import type {
 	PrReviewEvent,
 	PrReviewWorkflowState,
 } from '../../../src/pr-review/types.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir.js';
 
 const POLICY = {
 	enabled: true,
@@ -78,13 +78,7 @@ describe('settlement wedge-shape reproductions (issue #2908)', () => {
 		return dir;
 	};
 	afterEach(() => {
-		for (const dir of dirs.splice(0)) {
-			try {
-				fs.rmSync(dir, { recursive: true, force: true });
-			} catch {
-				// Windows EBUSY on cleanup is environmental.
-			}
-		}
+		for (const dir of dirs.splice(0)) removeTreeWithRetry(dir);
 	});
 
 	test('#2214 shape: a claimed lane terminal can never be re-opened or overwritten', async () => {
