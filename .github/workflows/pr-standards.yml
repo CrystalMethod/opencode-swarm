@@ -69,6 +69,10 @@ jobs:
 
   pr-standards:
     runs-on: ubuntu-latest
+    # Bound the job: a hung git fetch or classifier run must not hold a
+    # runner to the default ceiling (issue #3290; cleanup-release-fragments
+    # carries 70 for its wait budgets — this job has no waits, 15 is generous).
+    timeout-minutes: 15
     steps:
       - name: Validate PR body contract
         if: github.event_name == 'pull_request'
@@ -132,6 +136,10 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           fetch-depth: 0
+          # This job executes PR-head-controlled TypeScript (the classifier
+          # below); do not leave the job token on disk for it to read
+          # (issue #3290 — the workflow_dispatch checkout already did this).
+          persist-credentials: false
 
       # Classifier runtime for both fragment-gate consumers below (issue
       # #2955). Conditioned off merge_group so the documented vacuous-success
@@ -169,29 +177,25 @@ jobs:
           # (issue #2955): changed/added lists go to the shared classifier,
           # which prints one verdict line and maps the exit code to gate
           # semantics (0 = no violation, 1 = violation, else unusable).
-          # --no-renames matches the quality gate's changed-list semantics and
-          # --diff-filter=A --find-renames=100% matches its added-only
-          # fragment-satisfaction semantics. core.quotePath=false keeps git
-          # from C-quoting non-ASCII names (a quoted "src/caf\303\251.ts" would
-          # match no class); the quality gate reaches the same paths through
-          # NUL framing instead, so the two stay in agreement.
-          changed="$(git -c core.quotePath=false diff --name-only --no-renames "origin/${BASE_REF}...HEAD")"
-          added="$(git -c core.quotePath=false diff --name-only --diff-filter=A --find-renames=100% "origin/${BASE_REF}...HEAD")"
+          # The lists travel NUL-framed through temp files (issue #3290):
+          # `git diff -z` never C-quotes a name — quote, backslash, and
+          # control characters stay verbatim — and a NUL delimiter survives
+          # names containing newlines, so this arm agrees with the quality
+          # gate's own `-z` view instead of a lossy line-delimited transport.
+          tmp_changed="$(mktemp)"
+          tmp_added="$(mktemp)"
+          trap 'rm -f "${tmp_changed:-}" "${tmp_added:-}"' EXIT
+          git diff --name-only --no-renames -z "origin/${BASE_REF}...HEAD" > "$tmp_changed"
+          git diff --name-only --diff-filter=A --find-renames=100% -z "origin/${BASE_REF}...HEAD" > "$tmp_added"
 
           # No file changes -> nothing to gate.
-          if [ -z "$changed" ]; then
+          if [ ! -s "$tmp_changed" ]; then
             echo "No changed files detected; release fragment not required."
             exit 0
           fi
 
-          classifier_args=()
-          while IFS= read -r added_file; do
-            [ -n "$added_file" ] || continue
-            classifier_args+=(--added "$added_file")
-          done <<< "$added"
-
           rc=0
-          verdict="$(printf '%s\n' "$changed" | bun scripts/check-pending-fragment.ts --print-requirement "${classifier_args[@]}")" || rc=$?
+          verdict="$(bun scripts/check-pending-fragment.ts --print-requirement --paths-format nul --changed-file "$tmp_changed" --added-file "$tmp_added")" || rc=$?
 
           case "$rc" in
             0)
@@ -201,7 +205,7 @@ jobs:
                   ;;
                 *)
                   echo "Release fragment present:"
-                  printf '%s\n' "$added" | grep -E '^docs/releases/pending/.+\.md$' || true
+                  tr '\0' '\n' < "$tmp_added" | grep -E '^docs/releases/pending/.+\.md$' || true
                   ;;
               esac
               ;;
@@ -261,31 +265,54 @@ jobs:
           fi
 
           # Path classification is owned by scripts/user-visible-paths.ts
-          # (issue #2955). Renames contribute BOTH paths in the changed list,
-          # matching the git-side --no-renames view (the rename-scoped
-          # previous_filename guard matters: it is also populated for copied
-          # entries, where the git side sees only the new path).
-          changed="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[] | .filename, (select(.status == "renamed") | .previous_filename // empty)')"
-          if [ -z "$changed" ]; then
+          # (issue #2955). Listing integrity (issue #3290): ONE paginated
+          # snapshot feeds both lists — two back-to-back calls could describe
+          # two different commits after a push between them. The snapshot's
+          # completeness is proven against the PR's own changed_files count,
+          # and the head guard from above is re-asserted AFTER the listing so
+          # a push during the listing fails closed instead of classifying a
+          # stale or partial change set. `--jq '.[]'` emits exactly one
+          # compact JSON entry per line across all pages (jq terminates every
+          # line, so wc -l counts entries exactly); the derived lists stay
+          # JSON-encoded end to end, so a name containing a quote, backslash,
+          # control character, or newline survives to the classifier instead
+          # of corrupting a line-delimited transport.
+          #
+          # Renames contribute BOTH paths in the changed list, matching the
+          # git-side --no-renames view (the rename-scoped previous_filename
+          # guard matters: it is also populated for copied entries, where the
+          # git side sees only the new path). The added set mirrors git's
+          # `--diff-filter=A --find-renames=100%`: "added" and "copied"
+          # count, an exact rename does NOT, and a rename WITH content edits
+          # DOES (git reports that as A+D because only a 100%-similarity
+          # rename is suppressed). Keying the rename branch on .changes > 0
+          # is what keeps this arm in agreement with the pull_request arm and
+          # the quality gate for every rename band.
+          rc=0
+          tmp_entries="$(mktemp)"
+          tmp_changed="$(mktemp)"
+          tmp_added="$(mktemp)"
+          trap 'rm -f "${tmp_entries:-}" "${tmp_changed:-}" "${tmp_added:-}"' EXIT
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[]' > "$tmp_entries" || { echo "::error::files listing failed."; exit 1; }
+          listed="$(wc -l < "$tmp_entries")"
+          expected="$(jq -r '.changed_files' <<< "$pr_json")"
+          if [ "$listed" -ne "$expected" ]; then
+            echo "::error::Files listing incomplete: $listed entries listed but the PR reports $expected changed files — refusing to classify a truncated or partial listing."
+            exit 1
+          fi
+          head_now="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          if [ "$head_now" != "$GITHUB_SHA" ]; then
+            echo "::error::PR head moved to $head_now while the listing was built (workflow ref $GITHUB_SHA) — refusing to classify a stale snapshot."
+            exit 1
+          fi
+          jq -c '.filename, (select(.status == "renamed") | .previous_filename // empty)' "$tmp_entries" > "$tmp_changed"
+          jq -c 'select(.status == "added" or .status == "copied" or (.status == "renamed" and .changes > 0)) | .filename' "$tmp_entries" > "$tmp_added"
+          if [ ! -s "$tmp_changed" ]; then
             echo "::error::Dispatched PR has no changed files."
             exit 1
           fi
-          # Added set mirrors git's `--diff-filter=A --find-renames=100%`:
-          # "added" and "copied" count, an exact rename does NOT, and a rename
-          # WITH content edits DOES (git reports that as A+D because only a
-          # 100%-similarity rename is suppressed). Keying the rename branch on
-          # .changes > 0 is what keeps this arm in agreement with the
-          # pull_request arm and the quality gate for every rename band.
-          added="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[] | select(.status == "added" or .status == "copied" or (.status == "renamed" and .changes > 0)) | .filename')"
 
-          classifier_args=()
-          while IFS= read -r added_file; do
-            [ -n "$added_file" ] || continue
-            classifier_args+=(--added "$added_file")
-          done <<< "$added"
-
-          rc=0
-          verdict="$(printf '%s\n' "$changed" | bun scripts/check-pending-fragment.ts --print-requirement "${classifier_args[@]}")" || rc=$?
+          verdict="$(bun scripts/check-pending-fragment.ts --print-requirement --paths-format jsonl --changed-file "$tmp_changed" --added-file "$tmp_added")" || rc=$?
           case "$rc" in
             0)
               ;;

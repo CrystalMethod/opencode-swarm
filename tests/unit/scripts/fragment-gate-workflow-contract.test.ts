@@ -1,5 +1,5 @@
-import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'node:fs';
+import { afterAll, describe, expect, test } from 'bun:test';
+import { readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { parse } from 'yaml';
 import { bashCommand } from '../../helpers/bash';
@@ -84,17 +84,84 @@ function classifierMapping(block: string): string {
 /** Run an extracted mapping with a stubbed classifier (rc + verdict). */
 function runMapping(
 	mapping: string,
-	opts: { rc: number; verdict: string; added?: string },
+	opts: {
+		rc: number;
+		verdict: string;
+		added?: string;
+		/** Dispatched-arm (issue #3290) stub inputs. */
+		entries?: string[];
+		changedFiles?: number;
+		headSha?: string;
+		/** When set, the stubbed bun's argv is appended to this file. */
+		captureBunArgs?: string;
+		/** When set, the stubbed gh's argv is appended to this file. */
+		captureGhArgs?: string;
+	},
 ): { exitCode: number; stdout: string; stderr: string } {
+	// Seeds for the #3290 mapping slices. The temp files carry the SAME
+	// bytes the arms write (NUL-framed for the pull_request arm's slice);
+	// the legacy changed/added/classifier_args seeds stay for shape
+	// compatibility with any residual references.
+	const tmpChanged = `${import.meta.dir}/.tmp-3290-changed-${process.pid}`;
+	const tmpAdded = `${import.meta.dir}/.tmp-3290-added-${process.pid}`;
+	writeFileSync(
+		tmpChanged,
+		Buffer.from(`src/index.ts${'\0'}docs/other.ts${'\0'}`, 'utf8'),
+	);
+	writeFileSync(
+		tmpAdded,
+		Buffer.from(
+			`${opts.added ?? 'docs/releases/pending/mine.md'}${'\0'}`,
+			'utf8',
+		),
+	);
+	const entries = opts.entries ?? [
+		'{"filename":"src/index.ts","status":"modified","changes":3}',
+		'{"filename":"docs/releases/pending/mine.md","status":"added","changes":10}',
+	];
+	const changedFiles = opts.changedFiles ?? entries.length;
+	const headSha = opts.headSha ?? 'deadbeefcafe';
 	const script = [
 		'changed="src/index.ts"',
-		`added="${opts.added ?? 'docs/releases/pending/mine.md'}"`,
+		// Single-quoted so an adversarial fragment name containing a double
+		// quote (the #3290 display test) survives the seed line.
+		`added='${opts.added ?? 'docs/releases/pending/mine.md'}'`,
 		'classifier_args=()',
-		'while IFS= read -r added_file; do',
-		'  [ -n "$added_file" ] || continue',
-		'  classifier_args+=(--added "$added_file")',
-		'done <<< "$added"',
+		`tmp_changed='${tmpChanged}'`,
+		`tmp_added='${tmpAdded}'`,
+		`pr_json='{"changed_files":${changedFiles},"head":{"sha":"deadbeefcafe"}}'`,
+		'PR_NUMBER=1234',
+		'GITHUB_SHA=deadbeefcafe',
+		'GITHUB_REPOSITORY=example/example',
+		`TEST_ENTRIES='${entries.join('\n')}'`,
+		`TEST_HEAD_SHA='${headSha}'`,
+		opts.captureBunArgs
+			? `CAPTURE_BUN='${opts.captureBunArgs}'`
+			: 'CAPTURE_BUN=',
+		opts.captureGhArgs ? `CAPTURE_GH='${opts.captureGhArgs}'` : 'CAPTURE_GH=',
+		'gh() {',
+		'  local line="$*"',
+		'  [ -n "$CAPTURE_GH" ] && printf \'%s\\n\' "$@" >> "$CAPTURE_GH"',
+		'  case "$line" in',
+		"    *'files?per_page=100'*)",
+		'      printf \'%s\\n\' "$TEST_ENTRIES"',
+		'      return 0',
+		'      ;;',
+		'    *)',
+		'      printf \'%s\\n\' "$TEST_HEAD_SHA"',
+		'      return 0',
+		'      ;;',
+		'  esac',
+		'}',
 		'bun() {',
+		'  [ -n "$CAPTURE_BUN" ] && { printf \'%s\\n\' "$@" >> "$CAPTURE_BUN"',
+		// The arm's EXIT trap deletes the temp files when the mapping script
+		// ends, so the stub snapshots their CONTENTS at call time.
+		'    printf \'<<<CHANGED\\n\' >> "$CAPTURE_BUN"',
+		'    cat "${tmp_changed:-/dev/null}" >> "$CAPTURE_BUN" 2>/dev/null || true',
+		'    printf \'\\n<<<ADDED\\n\' >> "$CAPTURE_BUN"',
+		'    cat "${tmp_added:-/dev/null}" >> "$CAPTURE_BUN" 2>/dev/null || true',
+		'  }',
 		`  [ -n '${opts.verdict}' ] && printf '%s\\n' '${opts.verdict}'`,
 		`  return ${opts.rc}`,
 		'}',
@@ -117,6 +184,16 @@ function runMapping(
 
 const VIOLATION = 'required=true satisfied=false';
 const SATISFIED = 'required=true satisfied=true';
+
+afterAll(() => {
+	// The pull_request mapping slice carries no cleanup trap (the arm's trap
+	// lives before the extraction seed), so sweep the harness temp files.
+	for (const p of readdirSync(import.meta.dir)) {
+		if (p.startsWith('.tmp-3290-')) {
+			unlinkSync(path.join(import.meta.dir, p));
+		}
+	}
+});
 const NOT_REQUIRED = 'required=false satisfied=false';
 
 describe('fragment-gate workflow exit mapping (issue #2955)', () => {
@@ -225,5 +302,101 @@ describe('fragment-gate workflow exit mapping (issue #2955)', () => {
 		const result = runMapping(cleanupMapping, { rc: 2, verdict: '' });
 		expect(result.exitCode).toBe(1);
 		expect(result.stdout).toContain('Fragment classifier unusable (exit 2)');
+	});
+
+	// ---- issue #3290: dispatched-arm listing integrity + transports ----
+	// These execute the REAL extracted dispatched-arm block (now including
+	// the mktemp/trap/listing/completeness/head-re-assertion/derivation
+	// preamble between the rc=0 seed and the classifier call) against the
+	// call-sensitive gh() stub and real jq/wc/mktemp.
+
+	test('dispatched arm 3290: a truncated listing fails closed with both counts', () => {
+		const result = runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: '',
+			entries: ['{"filename":"src/index.ts","status":"modified","changes":3}'],
+			changedFiles: 5,
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('Files listing incomplete');
+		expect(result.stdout).toContain('1 entries');
+		expect(result.stdout).toContain('5 changed files');
+	});
+
+	test('dispatched arm 3290: a head move after the listing fails closed', () => {
+		const result = runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: '',
+			headSha: 'moved0ff0',
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('PR head moved');
+		expect(result.stdout).toContain('moved0ff0');
+	});
+
+	test('dispatched arm 3290: happy path derives both lists from the one listing', () => {
+		const capture = `${import.meta.dir}/.tmp-3290-bunargs-${process.pid}`;
+		writeFileSync(capture, '');
+		const result = runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: 'required=true satisfied=true',
+			entries: [
+				'{"filename":"src/index.ts","status":"modified","changes":3}',
+				'{"filename":"docs/releases/pending/mine.md","status":"added","changes":10}',
+				'{"filename":"src/old.ts","status":"renamed","changes":4,"previous_filename":"src/older.ts"}',
+			],
+			changedFiles: 3,
+			captureBunArgs: capture,
+		});
+		expect(result.exitCode).toBe(0);
+		const captureText = readFileSync(capture, 'utf8');
+		const args = captureText.split('\n');
+		expect(args).toContain('--paths-format');
+		expect(args[args.indexOf('--paths-format') + 1]).toBe('jsonl');
+		// The stub snapshots the derived files at call time (the arm's EXIT
+		// trap deletes them when the mapping script ends).
+		const changedContent = captureText
+			.split('<<<CHANGED\n')[1]
+			.split('\n<<<ADDED')[0];
+		const addedContent = captureText.split('<<<ADDED\n')[1];
+		// The rename contributes BOTH paths to the changed list and (because
+		// .changes > 0) its new path to the added list.
+		expect(changedContent).toContain('"src/index.ts"');
+		expect(changedContent).toContain('"src/old.ts"');
+		expect(changedContent).toContain('"src/older.ts"');
+		expect(addedContent).toContain('"docs/releases/pending/mine.md"');
+		expect(addedContent).toContain('"src/old.ts"');
+		unlinkSync(capture);
+	});
+
+	test('dispatched arm 3290: the listing uses --jq .[] exactly', () => {
+		const capture = `${import.meta.dir}/.tmp-3290-ghargs-${process.pid}`;
+		writeFileSync(capture, '');
+		runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: 'required=true satisfied=true',
+			captureGhArgs: capture,
+		});
+		const args = readFileSync(capture, 'utf8').split('\n');
+		const listingIndex = args.findIndex((a) =>
+			a.includes('files?per_page=100'),
+		);
+		expect(listingIndex).toBeGreaterThanOrEqual(0);
+		// `--jq` followed by `.[]`: `--jq '.'` (per-page arrays) and
+		// `--jq -c '.'` (invalid gh syntax) both fail this.
+		expect(args[listingIndex + 1]).toBe('--jq');
+		expect(args[listingIndex + 2]).toBe('.[]');
+		unlinkSync(capture);
+	});
+
+	test('pull_request arm 3290: the display renders an adversarial added fragment name', () => {
+		const result = runMapping(pullRequestMapping, {
+			rc: 0,
+			verdict: 'required=true satisfied=true',
+			added: 'docs/releases/pending/we"ird-3290.md',
+		});
+		expect(result.exitCode).toBe(0);
+		expect(result.stdout).toContain('Release fragment present:');
+		expect(result.stdout).toContain('docs/releases/pending/we"ird-3290.md');
 	});
 });
