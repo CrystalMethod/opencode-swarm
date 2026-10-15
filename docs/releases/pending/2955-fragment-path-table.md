@@ -24,4 +24,4 @@ The TS gate and the triplicated bash regex implemented the same AGENTS.md mandat
 
 ## Verification
 
-Frozen acceptance checks C1-C7 (issue-trace 2955-fragment-path-table) RED→GREEN at the PR head; parity matrix (21 rows), regex ratchet, AMR/A semantics, detector fixtures (re-introduction, single-arm reversion, trimmed-fork notice, bare-flag non-anchor), and the MUT-1 red/green mutation demo all pinned by test; `bun run drift:check --enforce` and `bun run check:invariants` green.
+Frozen acceptance checks C1-C7 (issue-trace 2955-fragment-path-table) RED→GREEN at the PR head; parity matrix (22 rows: 9 divergent classes, 3 agree rows, 10 behavior/coverage rows) plus a table-shape guard for the four never-prefix rows, regex ratchet, AMR/A semantics, detector fixtures (re-introduction, single-arm reversion, trimmed-fork notice, bare-flag non-anchor), and the MUT-1 red/green mutation demo all pinned by test; `bun run drift:check --enforce` and `bun run check:invariants` green.

@@ -10,6 +10,7 @@ import {
 	FRAGMENT_SATISFACTION,
 	isPendingFragment,
 	isUserVisiblePath,
+	USER_VISIBLE_PATH_CLASSES,
 } from '../../../scripts/user-visible-paths';
 
 /**
@@ -113,17 +114,45 @@ const MATRIX: Array<{ label: string; file: string; userVisible: boolean }> = [
 		file: './src/index.ts',
 		userVisible: true,
 	},
-	// The tests/ never-prefix row made load-bearing: tests/fixtures/** SHIPS
-	// (package.json#files), so it must match no later class. Without a row
-	// like this, deleting the never-prefix row leaves every recorded verdict
-	// unchanged (the classifier's fallthrough returns false anyway), which is
-	// how that row could be silently dropped without a test going red.
+	// tests/fixtures/** SHIPS (package.json#files), so it is pinned here as a
+	// covered surface. Note this row does NOT by itself make the tests/
+	// never-prefix row load-bearing — see the table-shape assertion below,
+	// which is what actually prevents that row from being dropped.
 	{
 		label: 'behavior tests/fixtures/** (ships, still not user-visible)',
 		file: 'tests/fixtures/memory-recall/corpus.jsonl',
 		userVisible: false,
 	},
 ];
+
+describe('issue #2955 table shape', () => {
+	// A verdict alone cannot protect a never-prefix row: with the row gone the
+	// classifier's fallthrough returns the SAME answer, so deleting it is
+	// invisible. (Verified by mutation: dropping the tests/ row left every
+	// verdict-level test green.) These assertions pin the rows themselves —
+	// the resolution each one records is part of the shared table's contract.
+	test.each([
+		{ pattern: 'tests/' },
+		{ pattern: 'scripts/' },
+		{ pattern: '.zcode/' },
+		{ pattern: 'node_modules/' },
+	])('the never-prefix row for $pattern exists and is recorded as never user-visible', ({
+		pattern,
+	}) => {
+		const row = USER_VISIBLE_PATH_CLASSES.find(
+			(entry) => entry.kind === 'never-prefix' && entry.pattern === pattern,
+		);
+		expect(row).toBeDefined();
+		expect(row?.userVisible).toBe(false);
+		// Every never-prefix row carries its #2955 resolution note.
+		expect(row?.note.length ?? 0).toBeGreaterThan(20);
+	});
+
+	test('every class row is reachable: no duplicate pattern/kind pair', () => {
+		const keys = USER_VISIBLE_PATH_CLASSES.map((r) => `${r.kind}:${r.pattern}`);
+		expect(new Set(keys).size).toBe(keys.length);
+	});
+});
 
 describe('issue #2955 parity matrix', () => {
 	test.each(MATRIX)('$label yields the single recorded verdict ($file)', ({

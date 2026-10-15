@@ -4,10 +4,12 @@ import * as path from 'node:path';
 import { detectFragmentPathParity } from '../../../scripts/drift-check.ts';
 import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
-// Issue #2955: the fragment-path-parity detector test battery. Split out of
-// drift-check.test.ts to stay under the FR-006 500-line cap; the harness
-// mirrors the parent file's makeTempRoot/writeFile pattern (fresh temp root
-// per test, removed in afterEach), on canonicalMkdtemp per FR-011.
+// Issue #2955: the fragment-path-parity detector test battery. Kept in its own
+// file rather than appended to drift-check.test.ts, which already sat at 422
+// lines against the FR-006 500-line cap. The harness mirrors the parent
+// file's makeTempRoot/writeFile pattern (fresh temp root per test, removed in
+// afterEach), on canonicalMkdtemp per FR-011. drift-check.test.ts itself is
+// untouched by #2955 — nothing was moved out of it.
 
 const tempRoots: string[] = [];
 
@@ -61,7 +63,7 @@ describe('drift-check: fragment-path-parity detection (issue #2955)', () => {
 		writeFile(
 			root,
 			'.github/workflows/pr-standards.yml',
-			cleanPrStandards().replace(anchor, 'echo reverted', ''),
+			cleanPrStandards().replace(anchor, 'echo reverted'),
 		);
 		writeFile(
 			root,
