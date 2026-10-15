@@ -17,6 +17,7 @@ import {
 	evaluateFragmentCheck,
 	isPendingFragment,
 	isUserVisiblePath,
+	printRequirement,
 	resolveEnforce,
 } from '../../../scripts/check-pending-fragment.ts';
 
@@ -199,5 +200,66 @@ describe('resolveEnforce', () => {
 		['off', false],
 	])('%p → %s', (raw, expected) => {
 		expect(resolveEnforce(raw)).toBe(expected);
+	});
+});
+
+describe('check-pending-fragment --print-requirement (issue #2955)', () => {
+	test('required + satisfied exits 0 with the verdict line', async () => {
+		const logs: string[] = [];
+		const originalLog = console.log;
+		console.log = (line: string) => {
+			logs.push(line);
+		};
+		try {
+			const rc = await printRequirement(
+				['--added', 'docs/releases/pending/mine.md'],
+				'src/index.ts\ndocs/releases/pending/mine.md\n',
+			);
+			expect(rc).toBe(0);
+			expect(logs).toEqual(['required=true satisfied=true']);
+		} finally {
+			console.log = originalLog;
+		}
+	});
+
+	test('required + unsatisfied exits 1', async () => {
+		const logs: string[] = [];
+		const originalLog = console.log;
+		console.log = (line: string) => {
+			logs.push(line);
+		};
+		try {
+			const rc = await printRequirement(
+				[],
+				'src/index.ts\ndocs/releases/pending/other-pr.md\n',
+			);
+			expect(rc).toBe(1);
+			expect(logs).toEqual(['required=true satisfied=false']);
+		} finally {
+			console.log = originalLog;
+		}
+	});
+
+	test('not required exits 0', async () => {
+		const logs: string[] = [];
+		const originalLog = console.log;
+		console.log = (line: string) => {
+			logs.push(line);
+		};
+		try {
+			const rc = await printRequirement(
+				[],
+				'scripts/foo.ts\ntests/x.test.ts\n',
+			);
+			expect(rc).toBe(0);
+			expect(logs).toEqual(['required=false satisfied=false']);
+		} finally {
+			console.log = originalLog;
+		}
+	});
+
+	test('unknown flag exits 2 (usage error, no stdin read)', async () => {
+		const rc = await printRequirement(['--bogus'], '');
+		expect(rc).toBe(2);
 	});
 });

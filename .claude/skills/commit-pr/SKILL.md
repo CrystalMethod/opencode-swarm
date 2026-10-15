@@ -141,7 +141,7 @@ Remove or correct any reference that does not resolve. AI-generated
 fragments frequently hallucinate paths and names — this step is not
 optional.
 
-Bot authors (e.g. `[bot]`, Copilot) and docs/workflow/meta-only changes (no `src/`, `tests/`, `scripts/`, `package.json`, etc.) are exempt from this requirement by CI; all other PRs that touch code must include a fragment.
+Bot authors (e.g. `[bot]`, Copilot) are exempt from this requirement by CI. The user-visible surface is defined once, in `scripts/user-visible-paths.ts`, and covers `src/`, `bin/`, `binaries/`, `runners/`, `.github/workflows/`, the three native skill trees, `package.json`, and `docs/configuration.md` — so a workflow, skills, or `docs/configuration.md` PR **does** need a fragment. Tests-, scripts-, examples-, and dependency-manifest-only PRs do not: those paths never reach users.
 
 Do not manually edit:
 

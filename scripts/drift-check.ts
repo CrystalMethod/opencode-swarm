@@ -1695,6 +1695,132 @@ export function detectRequiredCheckContractDrift(
 }
 
 // ---------------------------------------------------------------------------
+// Fragment path-class parity (issue #2955)
+// ---------------------------------------------------------------------------
+
+/**
+ * The legacy hand-maintained fragment-requirement predicate that used to be
+ * triplicated across the workflows. Detected as a literal substring on ANY
+ * line of ANY workflow file (including comments) so a re-introduced copy —
+ * or a comment quoting it — fails parity. Kept as a substring (not a full
+ * regex reconstruction) so partial re-introductions are caught too.
+ */
+export const LEGACY_FRAGMENT_REGEX_SUBSTRING =
+	'src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/';
+
+/** Per-site minimum counts of shared-classifier invocations (issue #2955). */
+export const FRAGMENT_CLASSIFIER_ANCHOR_SITES: ReadonlyArray<{
+	file: string;
+	minInvocations: number;
+}> = [
+	{ file: '.github/workflows/pr-standards.yml', minInvocations: 2 },
+	{ file: '.github/workflows/release-and-publish.yml', minInvocations: 1 },
+];
+
+/** The full invocation form anchors a real consumer, not a comment mention. */
+const FRAGMENT_CLASSIFIER_ANCHOR =
+	'check-pending-fragment.ts --print-requirement';
+
+const WORKFLOW_READ_MAX_BYTES = 512 * 1024;
+
+function readWorkflowBounded(absolute: string): string | null {
+	try {
+		const stat = fs.statSync(absolute);
+		if (!stat.isFile()) return null;
+		if (stat.size > WORKFLOW_READ_MAX_BYTES) {
+			throw new Error(
+				`workflow exceeds the ${WORKFLOW_READ_MAX_BYTES}-byte read bound`,
+			);
+		}
+		return fs.readFileSync(absolute, 'utf8');
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Fragment-gate parity detector (#2955): the user-visible path verdict is
+ * single-sourced in scripts/user-visible-paths.ts and consumed via
+ * check-pending-fragment.ts --print-requirement. Errors when (a) the legacy
+ * hand-maintained regex reappears under .github/workflows/ (any file, any
+ * line, comments included) or (b) any pinned consumer file drops below its
+ * minimum classifier invocations (reverting a single arm trips this).
+ * Missing pinned files are notices (trimmed forks fail open), matching the
+ * absence-handling shape of the other detectors.
+ */
+export function detectFragmentPathParity(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const workflowsDir = path.join(root, '.github', 'workflows');
+	let entries: fs.Dirent[] = [];
+	try {
+		entries = fs.readdirSync(workflowsDir, { withFileTypes: true });
+	} catch {
+		return findings;
+	}
+	const contents = new Map<string, string | null>();
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.endsWith('.yml') && !entry.name.endsWith('.yaml')) continue;
+		const rel = `.github/workflows/${entry.name}`;
+		contents.set(rel, readWorkflowBounded(path.join(workflowsDir, entry.name)));
+	}
+	for (const [rel, text] of contents) {
+		if (text === null) continue;
+		if (text.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING)) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: rel,
+				message:
+					'[FRAGMENT_PATH_PARITY] hand-maintained fragment-requirement path predicate re-introduced — path classification must consume scripts/user-visible-paths.ts via check-pending-fragment.ts --print-requirement (issue #2955)',
+			});
+		}
+	}
+	for (const site of FRAGMENT_CLASSIFIER_ANCHOR_SITES) {
+		const text = contents.get(site.file);
+		if (text === undefined) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'notice',
+				file: site.file,
+				message:
+					'[FRAGMENT_PATH_PARITY] pinned fragment-gate workflow absent; skipping anchor count',
+			});
+			continue;
+		}
+		if (text === null) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: site.file,
+				message: '[FRAGMENT_PATH_PARITY] pinned fragment-gate workflow unreadable',
+			});
+			continue;
+		}
+		// Count only non-comment lines: a YAML comment quoting the full
+		// invocation form must not keep the count green after a real
+		// consumer is reverted (comment decoys are visible in review, but
+		// the counter should not depend on that).
+		let invocations = 0;
+		for (const line of text.split('\n')) {
+			if (line.trimStart().startsWith('#')) continue;
+			if (line.includes(FRAGMENT_CLASSIFIER_ANCHOR)) invocations++;
+		}
+		if (invocations < site.minInvocations) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: site.file,
+				message: `[FRAGMENT_PATH_PARITY] only ${invocations} shared-classifier invocations (minimum ${site.minInvocations}) — a fragment-gate arm was reverted to hand-maintained classification (issue #2955)`,
+			});
+		}
+	}
+	return findings;
+}
+
+// ---------------------------------------------------------------------------
 // User-global skill staleness (issue #2859 F6)
 // ---------------------------------------------------------------------------
 
@@ -1884,6 +2010,7 @@ export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['config-docs', detectConfigDocsKeysDrift],
 	['gates-docs', detectGatesConfigDrift],
 	['required-check-contract', detectRequiredCheckContractDrift],
+	['fragment-path-parity', detectFragmentPathParity],
 	['user-global-skill-staleness', detectUserGlobalSkillStaleness],
 	['bundled-skill-staleness', detectBundledSkillStaleness],
 ];

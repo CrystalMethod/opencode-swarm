@@ -191,4 +191,96 @@ describe('issue #2677 acceptance checks', () => {
 		expect(ownerWithFragment.ok).toBe(false);
 		expect(ownerWithFragment.code).toBe('UNAUTHORIZED_RELEASE_OWNER_EDIT');
 	});
+
+	test('AC5: a demoted previous context is named even when no other arm can fire (MUT-1, issue #2955)', async () => {
+		const { evaluateRequiredCheckContract } = await requiredCheckContract();
+
+		// Isolating fixture for the CONTRACT_BUCKET_DEMOTION baseline arm
+		// (scripts/check-required-check-contract.ts:425-436): 'drift' is in
+		// NEITHER requiredContexts NOR intendedRequiredContexts NOR the
+		// captured ruleset, so only the :427 baseline loop can emit the
+		// finding. The wiring-2677 "stale or demoted" test is OR-shaped — its
+		// fixture (previous ['quality'], required [], intended ['quality'])
+		// is also satisfied by the :702 intended-only arm, which is why the
+		// G2 `false &&` mutation at :427 survived the whole suite before
+		// this test (issue #2955 MUT-1).
+		//
+		// Coverage note: the evidence shape is deliberately minimal (mirrors
+		// the wiring-2677 precedent in the same family) so some
+		// malformed-evidence co-findings fire alongside; those arms are
+		// covered by the evidence/wiring 2677 suites. The assertions are
+		// code-filtered so they pin THIS arm exactly.
+		const base = {
+			contract: { requiredContexts: ['unit'], intendedRequiredContexts: [] },
+			previousRequiredContexts: ['unit', 'drift'],
+			workflows: [
+				{
+					file: 'ci.yml',
+					events: ['pull_request', 'merge_group'],
+					contexts: ['unit'],
+				},
+			],
+			evidence: {
+				schemaVersion: 1,
+				capturedAt: '2020-01-01T00:00:00Z',
+				captureSha: 'b21cdce',
+				repository: 'ZaxbyHub/opencode-swarm',
+				branch: { name: 'main', protected: true, rulesetId: '17809658' },
+				ruleset: {
+					id: '17809658',
+					enforcement: 'active',
+					requiredContexts: ['unit'],
+				},
+				mergeGroup: { known: true, contexts: ['unit'] },
+				workflowEvents: { 'ci.yml': ['pull_request', 'merge_group'] },
+				sources: [{ endpoint: 'https://api.github.com/example' }],
+			},
+		};
+
+		const demoted = evaluateRequiredCheckContract(base, {
+			now: new Date('2020-01-02T00:00:00Z'),
+		});
+		const demotionFindings = demoted.findings.filter(
+			(finding) => finding.code === 'CONTRACT_BUCKET_DEMOTION',
+		);
+		expect(demotionFindings.length).toBe(1);
+		expect(demotionFindings[0]?.severity).toBe('error');
+		// addFinding flattens the per-finding detail payload (here
+		// { context: previous }) onto the finding itself.
+		expect(
+			demotionFindings.some(
+				(finding) => (finding as { context?: string }).context === 'drift',
+			),
+		).toBe(true);
+
+		// Negative control: with 'drift' still required, no demotion fires.
+		const healthy = evaluateRequiredCheckContract(
+			{
+				...base,
+				previousRequiredContexts: ['unit', 'drift'],
+				contract: {
+					requiredContexts: ['unit', 'drift'],
+					intendedRequiredContexts: [],
+				},
+				workflows: [
+					{
+						file: 'ci.yml',
+						events: ['pull_request', 'merge_group'],
+						contexts: ['unit'],
+					},
+					{
+						file: 'drift-check.yml',
+						events: ['pull_request', 'merge_group'],
+						contexts: ['drift'],
+					},
+				],
+			},
+			{ now: new Date('2020-01-02T00:00:00Z') },
+		);
+		expect(
+			healthy.findings.filter(
+				(finding) => finding.code === 'CONTRACT_BUCKET_DEMOTION',
+			),
+		).toEqual([]);
+	});
 });
