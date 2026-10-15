@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.197.2",
+  "tagCommit": "8757b77a679c703e95d71f60cb4886ae3328e813",
+  "targetCommitish": "8757b77a679c703e95d71f60cb4886ae3328e813",
+  "releaseBodySha256": "dcffd2fce4ca3224d7896a23e150638f5dffc59c30746c81e0f68e2243185075",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/2952-cleanup-release-fragments-timeout-health.md",
+      "sha256": "d87862f922381d36cbb8044133324e109a6c95a4890f5e33b4fcbe490fb27d6f"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3248-flaky-triage-cohort.md",
+      "sha256": "2e6cc1417144669da6615456a6024ab5115f10aa3bd2ce37b08d66e443b3c1d7"
+    }
+  ]
+}
