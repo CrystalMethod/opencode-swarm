@@ -1,42 +1,51 @@
 /**
  * Terminal-writer scanner for the settle/admit call-site census (issue #2908).
  *
- * Pure text scan over the src tree (all .ts files) that enumerates every call
- * site able to
+ * Pure text scan over the src tree that enumerates every call site able to
  * write a terminal delegation status, trigger a lane settlement, or admit
- * PR-review coverage. Source is comment-blanked before matching so a mention
- * inside a comment can never satisfy the census. Hits are attributed to the
- * nearest enclosing NAMED function declaration (const-arrow handlers are not
- * identities; a hit with no enclosing named function attributes to the module
- * top level) and aggregated into `file:function` identities.
+ * PR-review coverage. The source is lexed (comments blanked, literal bodies
+ * excluded) before matching, so a mention inside a comment can never satisfy
+ * the census. Hits are attributed to the innermost ENCLOSING named function
+ * declaration by brace-depth span tracking, and aggregated into
+ * `file:function` identities.
  *
  * Patterns (mirrors docs/pr-review-transition-authority.md "Settle/admit
  * call-site census"):
- *   1 settleDelegationTerminal( call sites (definition excluded)
- *   2 claimTerminalResult( call sites (definition excluded)
- *   3 sweep invocations in any textual form — sweepStaleDelegations(,
- *     sweepStaleLocked(, and the _test_exports seam form
- *     sweepStaleDelegationsAsync( (definitions excluded)
- *   4 appendDelegationTransition( calls whose balanced argument object carries
- *     a terminal status literal or a terminalResult: key
- *   5 buildTypedDelegationTerminal( construction sites (definition excluded)
- *   6 appendRecord( sites, scoped to src/background/pending-delegations.ts
- *     (the delegation store's raw writer; cross-module appendRecord homonyms
- *     belong to other subsystems)
- *   7 settlePresumedStalePrWorkflowLanes( trigger call sites (definition and
- *     re-export lines excluded)
- *   8 admission-sink references — admitPrReviewPartialBaseCoverage,
- *     rollbackPrReviewPartialBaseCoverageAdmission,
- *     persistVerdictSettlementReceipt (definitions AND call sites)
+ *   1  settleDelegationTerminal( call sites (definition excluded)
+ *   2  claimTerminalResult( call sites (definition excluded)
+ *   3  sweep invocations in any textual form - sweepStaleDelegations(,
+ *      sweepStaleLocked(, and the _test_exports seam form
+ *      sweepStaleDelegationsAsync(
+ *   4  appendDelegationTransition( calls whose balanced argument object carries
+ *      a terminal status literal or a terminalResult: key
+ *   5  buildTypedDelegationTerminal( construction sites (definition excluded)
+ *   6  appendRecord( sites, scoped to the delegation store
+ *      (src/background/pending-delegations.ts) - its raw record writer
+ *   7  settlePresumedStalePrWorkflowLanes( trigger call sites
+ *      (definition and re-export lines excluded)
+ *   8  admission-sink references - admitPrReviewPartialBaseCoverage,
+ *      rollbackPrReviewPartialBaseCoverageAdmission,
+ *      persistVerdictSettlementReceipt (definitions AND call sites)
+ *   9  writeDelegationShadowProjection( - the coordination shadow projection,
+ *      a whole-ledger terminal-bearing raw writer (definitions AND call sites)
+ *  10  compactDelegationsLocked( - the checkpoint/ledger compaction writer,
+ *      the second whole-ledger terminal-bearing raw writer (definitions AND
+ *      call sites)
  *
- * Disclosed boundary (same class as the eventless-terminal-write-ratchet-2700
- * precedent): a text scanner cannot see dynamic-dispatch aliases, so a writer
- * routed through an alias variable escapes every pattern above. The census
- * table plus this scan still close every statically visible call shape.
+ * Disclosed boundaries (the census states the same list):
+ *   - dynamic-dispatch aliases: a writer routed through an alias variable
+ *     (`const s = settleDelegationTerminal`) is invisible to a text scanner.
+ *   - a class method or const-arrow handler has no named-function declaration
+ *     of its own, so it attributes to its nearest enclosing named function
+ *     (or `<module>` at top level); a NEW writer there is caught by the
+ *     census ratchet's per-row hit-line reconciliation, not by identity.
+ *   - symlinked source entries are skipped (never read, never diagnosed);
+ *     the store is tracked without symlinks today.
  */
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import ts from 'typescript';
 
 export const TERMINAL_STATUS_LITERALS = [
 	'completed',
@@ -49,6 +58,8 @@ export const TERMINAL_STATUS_LITERALS = [
 export const SCANNER_ROOT = 'src';
 const P6_FILE = 'src/background/pending-delegations.ts';
 const MODULE_IDENTITY = '<module>';
+const MAX_SCAN_BYTES = 4 * 1024 * 1024;
+const MAX_WALK_DEPTH = 32;
 
 export interface ScanHit {
 	pattern: number;
@@ -60,8 +71,16 @@ export interface ScanHit {
 
 export interface ScanResult {
 	fileCount: number;
+	skippedFiles: string[];
+	depthLimited: boolean;
 	hits: ScanHit[];
 	identities: string[];
+}
+
+export interface NamedFunctionSpan {
+	name: string;
+	start: number;
+	end: number;
 }
 
 interface PatternDef {
@@ -71,12 +90,12 @@ interface PatternDef {
 	payloadCheck?: boolean;
 }
 
-const CALLEE_EXCLUDING_DEFINITION =
-	'(?<![\\w$.])(?:%NAMES%)\\s*\\((?=[^)]*\\))?';
-
-const PATTERNS: PatternDef[] = [
+export const PATTERNS: PatternDef[] = [
 	{ pattern: 1, regex: /(?<!function )settleDelegationTerminal\s*\(/g },
-	{ pattern: 2, regex: /(?<!function )claimTerminalResult\s*\(/g },
+	// `claimTerminalResult` is the terminal-claim AUTHORITY itself, so its own
+	// definition must own a census row (issue #2908 PRR-040) — no
+	// definition-excluding lookbehind, for the same reason pattern 8 has none.
+	{ pattern: 2, regex: /claimTerminalResult\s*\(/g },
 	{
 		pattern: 3,
 		regex:
@@ -87,102 +106,169 @@ const PATTERNS: PatternDef[] = [
 		regex: /(?<!function )appendDelegationTransition\s*\(/g,
 		payloadCheck: true,
 	},
-	{ pattern: 5, regex: /(?<!function )buildTypedDelegationTerminal\s*\(/g },
+	{
+		pattern: 5,
+		regex: /(?<!function )buildTypedDelegationTerminal\s*\(/g,
+	},
 	{
 		pattern: 6,
 		regex: /(?<!function )appendRecord\s*\(/g,
-		fileFilter: (file) => file.replaceAll('\\', '/') === P6_FILE,
+		fileFilter: (file) => file === P6_FILE,
 	},
 	{
 		pattern: 7,
 		regex: /(?<!function )settlePresumedStalePrWorkflowLanes\s*\(/g,
 	},
 	{
-		// Issue #2908 plan-critic round 5: admission sinks match their DEFINITION
-		// lines too (no lookbehind) — the sink functions are admission writers in
-		// their own right and each owns a census row. Call sites still match.
 		pattern: 8,
 		regex:
 			/(?:admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
 	},
-	{
-		// Issue #2908 implementation-review finding: the coordination shadow
-		// projection rewrites the whole ledger file — a terminal-bearing raw
-		// writer that must own census rows (definitions AND call sites).
-		pattern: 9,
-		regex: /writeDelegationShadowProjection\s*\(/g,
-	},
+	{ pattern: 9, regex: /writeDelegationShadowProjection\s*\(/g },
+	{ pattern: 10, regex: /compactDelegationsLocked\s*\(/g },
 ];
 
+type LexMode =
+	| 'code'
+	| 'line'
+	| 'block'
+	| 'single'
+	| 'double'
+	| 'template'
+	| 'regex';
+
+// `+ - * %` are NOT regex-context characters: a trailing `++`/`--`/`*=`/`%=`
+// is arithmetic or assignment, so `a++ / b` is division (issue #2908 PRR-031).
+const REGEX_CONTEXT_OPERATORS = /[({[=,;:!&|?<>~^]/;
+const REGEX_CONTEXT_KEYWORDS =
+	/\b(?:return|typeof|case|in|of|new|delete|void|do|else|await|yield)$/;
+
+/** Index of the `/` that closes a regex literal starting at `from`, or -1. */
+function regexLiteralEnd(source: string, from: number): number {
+	let i = from + 1;
+	while (i < source.length) {
+		const c = source[i];
+		if (c === '\\') {
+			i += 2;
+			continue;
+		}
+		if (c === '[') {
+			// A `/` inside a character class does not close the literal.
+			i += 1;
+			while (i < source.length && source[i] !== ']') {
+				i += source[i] === '\\' ? 2 : 1;
+			}
+			i += 1;
+			continue;
+		}
+		if (c === '/') return i;
+		if (c === '\n') return -1;
+		i += 1;
+	}
+	return -1;
+}
+
 /**
- * Replace every comment byte with a space so comment text can never match.
- * Tracks single/double/template strings and regex literals (division-vs-regex
- * disambiguated by the previous significant character, the standard heuristic)
- * so a `//` inside a string or regex is not mistaken for a line comment.
+ * Blank comment bytes (preserving newlines and length) and exclude string,
+ * template, and regex literal bodies from code matching. Template literals
+ * keep a `${}` substitution stack so a backtick inside a substitution cannot
+ * close the outer template and comment syntax inside a substitution is lexed
+ * as code (issue #2908 PRR-005). Regex literals are consumed whole — including
+ * the `/\\/g` idiom, whose closing slash follows an escaped backslash
+ * (issue #2908 PRR-003) — and the division-vs-regex heuristic accepts a
+ * keyword before arbitrary whitespace or a line break
+ * (issue #2908 PRR-004).
  */
-export function blankComments(source: string): string {
+export function blankLiteralsAndComments(source: string): string {
 	let out = '';
-	let mode:
-		| 'code'
-		| 'line'
-		| 'block'
-		| 'single'
-		| 'double'
-		| 'template'
-		| 'regex' = 'code';
+	// Frames model template `${...}` substitutions (issue #2908 PRR-005): the
+	// substitution is lexed as code and the frame is popped when its closing
+	// brace returns to the template, so a nested backtick inside `${...}`
+	// cannot close the outer template.
+	const frames: { mode: LexMode; depth: number }[] = [
+		{ mode: 'code', depth: 0 },
+	];
 	let prevSignificant = '';
+	let atLineStart = true;
+	let depth = 0;
+	const mode = (): LexMode => frames[frames.length - 1].mode;
+	const setMode = (next: LexMode) => {
+		frames[frames.length - 1].mode = next;
+	};
 	for (let i = 0; i < source.length; i += 1) {
 		const c = source[i];
 		const next = source[i + 1];
-		if (mode === 'code') {
+		const current = mode();
+		if (current === 'code') {
+			if (c === '\n') {
+				atLineStart = true;
+				out += c;
+				continue;
+			}
 			if (c === '/' && next === '/') {
-				mode = 'line';
+				setMode('line');
 				out += '  ';
 				i += 1;
 				continue;
 			}
 			if (c === '/' && next === '*') {
-				mode = 'block';
+				setMode('block');
 				out += '  ';
 				i += 1;
 				continue;
 			}
 			if (c === "'") {
-				mode = 'single';
+				setMode('single');
 			} else if (c === '"') {
-				mode = 'double';
+				setMode('double');
 			} else if (c === '`') {
-				mode = 'template';
+				setMode('template');
+			} else if (c === '{') {
+				depth += 1;
+			} else if (c === '}') {
+				if (depth === 0 && frames.length > 1) {
+					frames.pop();
+					out += c;
+					atLineStart = false;
+					continue;
+				}
+				depth -= 1;
 			} else if (c === '/') {
+				const tail = out.replace(/\s+$/, '');
 				const regexContext =
 					prevSignificant === '' ||
-					/[({[=,;:!&|?+\-*%<>~^]/.test(prevSignificant) ||
-					/\b(?:return|typeof|case|in|of|new|delete|void|do|else)\s$/.test(
-						out.slice(-12),
-					);
+					REGEX_CONTEXT_OPERATORS.test(prevSignificant) ||
+					REGEX_CONTEXT_KEYWORDS.test(tail);
 				if (regexContext) {
-					mode = 'regex';
-					out += c;
-					prevSignificant = c;
-					continue;
+					const close = regexLiteralEnd(source, i);
+					if (close !== -1) {
+						out += source.slice(i, close + 1);
+						prevSignificant = source[close];
+						i = close;
+						atLineStart = false;
+						continue;
+					}
 				}
 			}
 			out += c;
-			if (!/\s/.test(c)) prevSignificant = c;
+			if (!/\s/.test(c)) {
+				prevSignificant = c;
+				atLineStart = false;
+			}
 			continue;
 		}
-		if (mode === 'line') {
+		if (current === 'line') {
 			if (c === '\n' || c === '\r') {
-				mode = 'code';
+				setMode('code');
 				out += c;
 			} else {
 				out += ' ';
 			}
 			continue;
 		}
-		if (mode === 'block') {
+		if (current === 'block') {
 			if (c === '*' && next === '/') {
-				mode = 'code';
+				setMode('code');
 				out += '  ';
 				i += 1;
 			} else {
@@ -190,52 +276,115 @@ export function blankComments(source: string): string {
 			}
 			continue;
 		}
-		// string / template / regex literal: emit verbatim, watch terminators.
-		const isTemplate = mode === 'template';
+		// string / template / regex literal
 		if (c === '\\' && next !== undefined) {
 			out += c + next;
 			i += 1;
 			continue;
 		}
-		if (
-			(mode === 'single' && c === "'") ||
-			(mode === 'double' && c === '"') ||
-			(isTemplate && c === '`') ||
-			(mode === ('regex' as never) &&
-				c === '/' &&
-				!/[[(\\]/.test(source[i - 1] ?? ''))
-		) {
-			mode = 'code';
+		if (current === 'single' && c === "'") {
+			setMode('code');
 			prevSignificant = c;
+		} else if (current === 'double' && c === '"') {
+			setMode('code');
+			prevSignificant = c;
+		} else if (current === 'template') {
+			if (c === '`') {
+				setMode('code');
+				prevSignificant = c;
+			} else if (c === '$' && next === '{') {
+				out += '${';
+				frames.push({ mode: 'code', depth: 0 });
+				i += 1;
+				continue;
+			}
 		}
 		out += c;
 	}
 	return out;
 }
 
-const NAMED_FUNCTION =
-	/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)/;
-
-/** `file:function` for the nearest enclosing named declaration, or `file:<module>`. */
-export function identityForLine(
-	file: string,
-	blankedLines: string[],
-	lineIndex: number,
-): string {
-	for (let i = lineIndex; i >= 0; i -= 1) {
-		const m = NAMED_FUNCTION.exec(blankedLines[i]);
-		if (m) return `${file}:${m[1]}`;
-	}
-	return `${file}:${MODULE_IDENTITY}`;
+/**
+ * Span every named function declaration over the source using the TypeScript
+ * AST, so attribution picks the innermost ENCLOSING declaration
+ * (issue #2908 PRR-027) without depending on a hand-rolled brace counter.
+ *
+ * A brace-depth implementation was tried first and silently mis-attributed
+ * every hit in src/background/pending-delegations.ts to one neighbour: a
+ * single unbalanced construct swallowed the rest of the file — exactly the
+ * failure mode a census guardrail must not have. The AST also handles inline
+ * object-type parameters, multi-line signatures, and class or arrow bodies
+ * that a line-anchored regex cannot see.
+ */
+export function collectNamedFunctionSpans(source: string): NamedFunctionSpan[] {
+	const spans: NamedFunctionSpan[] = [];
+	const file = ts.createSourceFile(
+		'scan.ts',
+		source,
+		ts.ScriptTarget.Latest,
+		true,
+		ts.ScriptKind.TS,
+	);
+	const visit = (node: ts.Node): void => {
+		if (
+			ts.isFunctionDeclaration(node) &&
+			node.name !== null &&
+			node.body !== undefined
+		) {
+			spans.push({
+				name: node.name.text,
+				start: node.body.getStart(file),
+				end: node.body.end,
+			});
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return spans;
 }
 
-function balancedCallSpan(
+/** `file:function` for the innermost named declaration enclosing `offset`. */
+export function identityForOffset(
+	file: string,
+	spans: NamedFunctionSpan[],
+	offset: number,
+): string {
+	let best: NamedFunctionSpan | null = null;
+	for (const span of spans) {
+		if (offset < span.start || offset > span.end) continue;
+		if (best === null || span.start > best.start) best = span;
+	}
+	return `${file}:${best ? best.name : MODULE_IDENTITY}`;
+}
+
+/** Kept for callers that only need the blanked text (issue #2908 PRR-003). */
+export function blankComments(source: string): string {
+	return blankLiteralsAndComments(source);
+}
+
+/**
+ * Balanced call-argument span, skipping string/template/regex literal bodies
+ * so a paren inside a message cannot shift the depth
+ * (issue #2908 PRR-032). Falls back to the rest of the line when the call
+ * does not close on it, which is the conservative direction for a guardrail.
+ */
+export function balancedCallSpan(
 	source: string,
 	openParenIndex: number,
 ): { text: string; end: number } {
 	let depth = 0;
 	for (let i = openParenIndex; i < source.length; i += 1) {
 		const c = source[i];
+		if (c === '\\') {
+			i += 1;
+			continue;
+		}
+		if (c === "'" || c === '"' || c === '`') {
+			const close = stringLiteralEnd(source, i);
+			if (close === -1) break;
+			i = close;
+			continue;
+		}
 		if (c === '(') depth += 1;
 		else if (c === ')') {
 			depth -= 1;
@@ -243,7 +392,23 @@ function balancedCallSpan(
 				return { text: source.slice(openParenIndex, i + 1), end: i };
 		}
 	}
-	return { text: source.slice(openParenIndex), end: source.length - 1 };
+	const lineEnd = source.indexOf('\n', openParenIndex);
+	const end = lineEnd === -1 ? source.length : lineEnd;
+	return { text: source.slice(openParenIndex, end), end };
+}
+
+function stringLiteralEnd(source: string, from: number): number {
+	const quote = source[from];
+	for (let i = from + 1; i < source.length; i += 1) {
+		const c = source[i];
+		if (c === '\\') {
+			i += 1;
+			continue;
+		}
+		if (c === quote) return i;
+		if (c === '\n' && quote !== '`') return -1;
+	}
+	return -1;
 }
 
 export function payloadIsTerminal(span: string): boolean {
@@ -255,26 +420,35 @@ export function payloadIsTerminal(span: string): boolean {
 	);
 }
 
-export function listSrcFiles(rootDir: string): string[] {
-	const out: string[] = [];
-	const walk = (abs: string) => {
+export function listSrcFiles(rootDir: string): {
+	files: string[];
+	depthLimited: boolean;
+} {
+	const files: string[] = [];
+	let depthLimited = false;
+	const walk = (abs: string, depth: number): void => {
+		if (depth > MAX_WALK_DEPTH) {
+			depthLimited = true;
+			return;
+		}
 		for (const entry of fs.readdirSync(abs, { withFileTypes: true })) {
 			const child = path.join(abs, entry.name);
-			if (entry.isDirectory()) walk(child);
-			else if (entry.isFile() && entry.name.endsWith('.ts')) out.push(child);
+			if (entry.isDirectory()) walk(child, depth + 1);
+			else if (entry.isFile() && entry.name.endsWith('.ts')) files.push(child);
 		}
 	};
-	walk(path.join(rootDir, SCANNER_ROOT));
-	out.sort();
-	return out;
+	walk(path.join(rootDir, SCANNER_ROOT), 0);
+	files.sort();
+	return { files, depthLimited };
 }
 
 export function scanSource(file: string, source: string): ScanHit[] {
-	const blanked = blankComments(source);
-	const lines = blanked.split('\n');
+	const blanked = blankLiteralsAndComments(source);
+	const spans = collectNamedFunctionSpans(source);
 	const lineStarts: number[] = [0];
-	for (const line of lines)
+	for (const line of blanked.split('\n')) {
 		lineStarts.push(lineStarts[lineStarts.length - 1] + line.length + 1);
+	}
 	const lineOf = (offset: number): number => {
 		let lo = 0;
 		let hi = lineStarts.length - 2;
@@ -296,12 +470,11 @@ export function scanSource(file: string, source: string): ScanHit[] {
 				const span = balancedCallSpan(blanked, openParen);
 				if (!payloadIsTerminal(span.text)) continue;
 			}
-			const line = lineOf(m.index);
 			hits.push({
 				pattern: def.pattern,
 				file,
-				line: line + 1,
-				identity: identityForLine(file, lines, line),
+				line: lineOf(m.index) + 1,
+				identity: identityForOffset(file, spans, m.index),
 				matched: m[0].trim(),
 			});
 		}
@@ -310,20 +483,26 @@ export function scanSource(file: string, source: string): ScanHit[] {
 }
 
 export function scanSrc(rootDir: string): ScanResult {
-	const files = listSrcFiles(rootDir);
+	const { files, depthLimited } = listSrcFiles(rootDir);
 	const hits: ScanHit[] = [];
+	const skippedFiles: string[] = [];
 	for (const abs of files) {
 		const rel = path.relative(rootDir, abs).replaceAll('\\', '/');
+		const stat = fs.statSync(abs);
+		if (stat.size > MAX_SCAN_BYTES) {
+			skippedFiles.push(rel);
+			continue;
+		}
 		hits.push(...scanSource(rel, fs.readFileSync(abs, 'utf-8')));
 	}
 	const identitySet = new Set(hits.map((hit) => hit.identity));
 	return {
-		fileCount: files.length,
+		fileCount: files.length - skippedFiles.length,
+		skippedFiles,
+		depthLimited,
 		hits,
 		identities: [...identitySet].sort(),
 	};
 }
 
 export const SCANNER_PATTERN_COUNT = PATTERNS.length;
-
-export const _internals = { PATTERNS, CALLEE_EXCLUDING_DEFINITION };

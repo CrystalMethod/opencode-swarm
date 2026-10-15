@@ -79,136 +79,154 @@ write a terminal delegation status, trigger a lane settlement, or admit
 PR-review coverage. Three authorities anchor it — the terminal-claim primitive
 `claimTerminalResult` (`src/background/pending-delegations.ts`), its lane
 lifecycle wrapper `settleDelegationTerminal`
-(`src/background/delegation-lifecycle.ts`, "one claim implementation, no second
-lifecycle state machine", issue #2045), and the typed reducer
+(`src/background/delegation-lifecycle.ts`, "one claim implementation, no
+second lifecycle state machine", issue #2045), and the typed reducer
 `reducePrReviewEvent` (`src/pr-review/reducer.ts`), whose emitted
 `settle_delegation` effects are executed through the claim primitive.
 
-Row classes (enforced by `tests/unit/pr-review/settle-admit-census-ratchet-2908.test.ts`
-via the scanner `tests/helpers/terminal-writer-scanner.ts`):
+Row classes, all enforced by
+`tests/unit/pr-review/settle-admit-census-ratchet-2908.test.ts` through the
+scanner `tests/helpers/terminal-writer-scanner.ts`:
 
-- `scan` — the identity owns at least one scanner hit from the call patterns
-  (settle/claim/sweep/typed-terminal/trigger/admission-sink call sites, in any
-  textual form including the `_test_exports`/`_internals` seam forms).
-  Dispositions: `routed` (through the claim primitive or a named admission
-  authority) or `deliberate-second-authority` (a direct write whose structural
-  reason is cited; every one below traces to a code comment or contract
-  docstring).
+- `scan` — the identity owns at least one scanner hit from the ten call
+  patterns: the settle and claim primitives, the sweep invocations in any
+  textual form (including the `_test_exports` seam form), terminal-carrying
+  `appendDelegationTransition` calls, `buildTypedDelegationTerminal`
+  constructions, the lane-settlement trigger, the admission sinks
+  (definitions AND call sites), and the two whole-ledger raw writers
+  (`writeDelegationShadowProjection`, `compactDelegationsLocked`). A
+  `scan` row's authority is `routed` (through the claim primitive or a named
+  admission authority) or `deliberate-second-authority` (a direct write whose
+  structural reason is cited in the row).
 - `inventory` — the identity owns only raw `appendRecord(` hits inside the
-  delegation store (`src/background/pending-delegations.ts`): the store's
-  internal record writers, inventoried so a new raw writer cannot appear
-  un-inventoried. Pattern 6 is scoped to that file; the `appendRecord(`
-  homonyms in `src/hooks/knowledge-receipt-ledger.ts` and
-  `src/training/capture.ts` belong to other subsystems with no delegation
-  terminal-write capability.
-- `cross-reference` — authority families whose own census lives elsewhere.
+  delegation store, which is the store's internal record writer. Pattern 6 is
+  scoped to that file; the `appendRecord(` homonyms in
+  `src/hooks/knowledge-receipt-ledger.ts` and `src/training/capture.ts`
+  belong to other subsystems with no delegation terminal-write capability.
+- `cross-reference` — authority families whose own census lives elsewhere
+  (the reducer's own wire-or-retire table, the coder-settlement WAL, the
+  Stage-B binding store).
 
-A disposition of `straggler` means "un-inventoried or un-justified" — the table
-ships with none: every direct write below carries a verifiable structural
-reason (the claim primitive refuses `ingestion_error` records and record-less
-correlations, so some sweep/CAS shapes cannot route through it).
+Dispositions are `routed` or `deliberate-second-authority`. A disposition of
+`straggler` means "un-inventoried or un-justified"; the table ships with
+none: every direct write carries a verifiable structural reason — most often
+that the claim primitive refuses `ingestion_error` records and record-less
+correlations, so a bulk sweep or a CAS flip cannot route through it.
 
-**Replication-writer seam (implementation-review finding, in scope):** the
-coordination layer replicates already-decided records through two additional
-raw sinks — `writeDelegationShadowProjection` (whole-ledger rewrite of the
-store file) and `transitionCoordinationState` under the
-`background.pending-delegation` namespace (`src/db/coordination-store.ts`, a
-generic coordination API shared by other subsystems and therefore out of
-per-call-site scope here). Both are REPLICATION writers: every record they
-carry was already terminalized by a censused authority above (the claim, the
-sweep, or a typed transition), and the append-only ledger remains the fold
-authority (`readDelegationsDetailed`). The projection writer and its callers
-are censused above; a future writer that introduces a NEW terminal decision
-through this seam would bypass the census's decision authorities and is the
-residual risk this paragraph discloses.
+### Coupling rule
+
+Each row's `Site` is `file:function`, where `function` is the innermost
+ENCLOSING named declaration, resolved from the TypeScript AST rather than a
+line-anchored regex; a hit with no enclosing named declaration attributes to
+`<module>`. The `Writes or admits` column lists the scanner hit lines for
+that identity as `:NNNN, :NNNN`. The ratchet enforces the coupling in three
+directions: every scanner identity owns exactly one row of the right class;
+every `scan`/`inventory` row's cited hit lines equal that identity's actual
+hit lines (so a NEW call site inside an already-inventoried function fails as
+an un-cited hit, and a stale citation fails as a phantom); and every
+disposition is a census token with zero `straggler` rows.
+
+### Replication-writer seam
+
+The coordination layer replicates already-decided records through two raw
+sinks: `writeDelegationShadowProjection` (whole-ledger rewrite) and
+`transitionCoordinationState` under the `background.pending-delegation`
+namespace (a generic coordination API shared by other subsystems, so it is out
+of per-call-site scope here). Both are REPLICATION writers — every record they
+carry was already terminalized by a censused authority above — and both are
+censused (patterns 9 and 10). Note the authority direction, which is easy to
+invert: once the coordination DB is imported, ordinary reads SERVE the SQLite
+coordination rows, and the ledger file plus the checkpoint and manifest are
+projections that `ensureDelegationCoordinationImported` re-folds as a shadow
+reconciliation on every read (`docs/sqlite-durable-state.md` records the same
+post-commit-shadow model). The residual risk this census cannot close: a future
+writer that introduces a NEW terminal decision through the coordination seam
+instead of through a censused authority.
 
 | Site | Writes or admits | Authority | Row class | Disposition | Reason |
 |---|---|---|---|---|---|
-| src/background/pending-delegations.ts:claimTerminalResult | the terminal-claim primitive itself (append at :4289) | claim authority definition | inventory | routed | establishes an immutable trusted terminal exactly once; same-event replays get resume/retry dispositions; different events rejected and audited |
-| src/background/delegation-lifecycle.ts:settleDelegationTerminal | lane terminal lifecycle wrapper | claimTerminalResult via _internals (:192) | scan | routed | #2045: wraps the SAME claim primitive the Task completion observer calls directly |
-| src/background/completion-observer.ts:createBackgroundCompletionObserver | Task-side terminal claim (:293) and Stage-B staleness flip (:468) | claim; appendDelegationTransition direct for the flip | scan | deliberate-second-authority | the claim routes through the primitive; the :468 flip is an INTENTIONAL-EVENTLESS #2700 post-claim terminal-to-terminal transition (typed terminal already on the record; advisory emitted) |
-| src/background/completion-observer.ts:settleCoder | coder-settlement preserved-to-stale flip (:913) | appendDelegationTransition direct | scan | deliberate-second-authority | INTENTIONAL-EVENTLESS #2700 post-claim flip; the typed terminal came from the claim that opened the coder settlement |
-| src/background/pending-delegations.ts:appendDelegationTransition | the typed-transition primitive (builds its typed terminal at :3621) | direct | scan | deliberate-second-authority | the CAS transition primitive the deliberate writers use; carries expectedCurrentStatuses compare-and-swap plus the claim-path identity rules |
-| src/background/pending-delegations.ts:sweepStaleLocked | the bulk stale-flip primitive (:5552) | direct typed-terminal appendRecord | scan | deliberate-second-authority | claim refuses ingestion_error and requires per-record claimable state; typed terminal written atomically with the disposition and the #2482 eventless-terminal-end observer fires; #2615 liveness class; #2971 operator override |
-| src/background/pending-delegations.ts:sweepStaleDelegations | public sweep wrapper (:5641) | sweepStaleLocked | scan | deliberate-second-authority | bulk sweep authority; status and age filters are the safety property the gate's force-override relies on (#2251) |
-| src/background/pending-delegations.ts:maintainBackgroundDelegations | startup/session maintenance sweep (:7319) | sweepStaleDelegations | scan | deliberate-second-authority | maintenance sweep through the sweep authority |
-| src/background/pending-delegations.ts:recordPendingDelegationDetailed | delegation record creation with pre-record stale sweep (:3472) | sweepStaleLocked plus appendRecord | scan | deliberate-second-authority | the pre-record sweep routes through the sweep authority; the record append itself is the initial non-terminal write |
-| src/background/pending-delegations.ts:publishPrReviewResultReceipt | #2865 claim-first receipt admission | claim-first plus typed terminal build | scan | deliberate-second-authority | documented in claimTerminalResult's own contract: deliberately supersedes a provably-stale error/contract terminal with a completed receipt-backed terminal under separate rules |
-| src/background/pending-delegations.ts:updateCoderSettlement | coderSettlement state write from input (:4596) | appendRecord | inventory | routed | terminal settlement sub-state written under the claim/settlement authorities that call it; variable payload inventoried by attribution |
-| src/background/pending-delegations.ts:updateLegacyCoderSettlementTransfer | legacy transfer write (:4784) | appendRecord | inventory | routed | migration-era settlement transfer writer |
-| src/background/pending-delegations.ts:claimCoderSettlement | coder settlement claim (:4418) | appendRecord | inventory | routed | coderSettlement claim under the claim authority |
-| src/background/pending-delegations.ts:claimDelegationIngestion | ingestion claim (:4899) | appendRecord | inventory | routed | ingestion CAS marker write |
-| src/background/pending-delegations.ts:recordDelegationIngestionResult | ingestion result write (:4973) | appendRecord | inventory | routed | ingestion status-adjacent write |
-| src/background/pending-delegations.ts:promoteDelegationFallback | fallback record promotion (:6059) | appendRecord | inventory | routed | recovery surface re-appending a fallback record that may already carry a terminal |
-| src/background/pending-delegations.ts:putPendingBackgroundAdvisory | advisory record write (:5044) | appendRecord | inventory | routed | advisory payload write, no terminal status |
-| src/background/pending-delegations.ts:replacePendingBackgroundAdvisory | advisory replacement (:5118) | appendRecord | inventory | routed | advisory payload write, no terminal status |
-| src/background/pending-delegations.ts:preparePendingBackgroundAdvisories | advisory preparation (:5200) | appendRecord | inventory | routed | advisory payload write, no terminal status |
-| src/background/pending-delegations.ts:releaseBackgroundAdvisoryPreparation | advisory release (:5267) | appendRecord | inventory | routed | advisory payload write, no terminal status |
-| src/background/pending-delegations.ts:acknowledgeObservedBackgroundAdvisories | advisory acknowledgment (:5340) | appendRecord | inventory | routed | advisory payload write, no terminal status |
-| src/hooks/pr-workflow-gate.ts:settlePresumedStalePrWorkflowLanes | the gate lane-settlement sweep (:4084, seam form) | sweepStaleDelegationsAsync | scan | deliberate-second-authority | narrowed to pending/running; probe-retained exclusions (#2251); best-effort durability after the in-memory decision |
-| src/hooks/pr-workflow-gate.ts:finalizeOverriddenProbeRetainedLanes | operator force-override sweep (:4289) | sweepStaleDelegations operator_cancelled | scan | deliberate-second-authority | #2971 explicit audited operator action; the sweep's own filters spare lanes that raced to completed (#2251) |
-| src/hooks/pr-workflow-gate.ts:abortPrWorkflow | force-abort entry point (trigger :4545) | settlePresumedStalePrWorkflowLanes | scan | routed | also emits pr_feedback_publication_cancelled publication terminal events — the feedback surface's own event vocabulary |
-| src/hooks/pr-workflow-gate.ts:recoverArmedPrWorkflow | armed-recovery entry point (trigger :5038) | settlePresumedStalePrWorkflowLanes | scan | routed | dimension cancellations go through the armed_recovery_requested reducer event |
-| src/hooks/pr-workflow-gate.ts:assertPrReviewTerminalReady | terminal-readiness ladder (trigger :12169) | settlePresumedStalePrWorkflowLanes | scan | routed | critic gate dispatches critic_result_recorded through the reducer |
-| src/hooks/pr-workflow-gate.ts:completePrWorkflow | completion (trigger :13399, admission :13601) | settlePresumedStalePrWorkflowLanes; admitPrReviewPartialBaseCoverage | scan | routed | coverage finalization dispatches coverage_finalization_requested through the reducer (cross-reference row below) |
-| src/hooks/pr-workflow-gate.ts:assertPrReviewValidationSettled | N-of-M verdict-settlement admission (:7911) | persistVerdictSettlementReceipt | scan | routed | #3101 verdict admission with durable receipt |
-| src/tools/cancel-lane-batch.ts:executeCancelLaneBatch | operator cancellation (:448) | settleDelegationTerminal | scan | routed | #2971 operator_cancelled class through the claim primitive |
-| src/tools/complete-pr-workflow.ts:executeCompletePrWorkflow | completion trigger (:101, seam form) | settlePresumedStalePrWorkflowLanes | scan | routed | tool-side completion entry point |
-| src/tools/dispatch-lanes.ts:collectOnce | no-output terminal error settle (:3109) | settleDelegationTerminal | scan | routed | classified aborted-to-cancelled or error through the claim |
-| src/tools/dispatch-lanes.ts:settleCollectedLane | contract-invalid (:3677) and normal (:3753) terminals | settleDelegationTerminal | scan | routed | the main collection terminal path with observation bundle |
-| src/tools/dispatch-lanes.ts:appendAsyncLaneLaunchError | launch-failure settle (:4061) and never-landed typed write (:4074) | settleDelegationTerminal; appendDelegationTransition direct | scan | deliberate-second-authority | the record-exists arm routes through the claim; the never-landed arm has no record for a claim to act on yet still carries the typed terminal with null identity material (#2700) |
-| src/tools/dispatch-lanes.ts:sweepStaleAsyncLaneRecords | unobservable-host settle (:4327) and idle-host CAS stale flip (:4382) | settleDelegationTerminal; appendDelegationTransition CAS | scan | deliberate-second-authority | the unobservable arm routes through the claim; the idle flip covers ingestion_error — which the claim refuses — under expectedCurrentStatuses CAS (#2615/#2700) |
-| src/tools/dispatch-lanes.ts:runLane | blocking lane success (:4995) and failure (:5041) | settleDelegationTerminal | scan | routed | blocking-lane terminals through the claim |
-| src/tools/write-pr-review-artifact.ts:executeWritePrReviewArtifact | admission callers (:583 rollback, :698 admit) | rollback/admitPrReviewPartialBaseCoverage | scan | routed | artifact-tool admission calls into the completion authorities |
-| src/hooks/pr-workflow-gate.ts:admitPrReviewPartialBaseCoverage | the gate admission wrapper (:7442, named in issue #2908's settle/admit inventory) | admitPrReviewPartialBaseCoverageFromCompletion | scan | routed | thin wrapper delegating to the completion authority below |
-| src/pr-review/completion.ts:admitPrReviewPartialBaseCoverage | the partial-base-coverage admission writer (:1324) | withSessionStateMutation state snapshot | scan | routed | admits partial coverage plus its disclosure under the session-state authority (the state-snapshot admission class named in the census contract) |
-| src/pr-review/completion.ts:rollbackPrReviewPartialBaseCoverageAdmission | compare-and-clear of a newly admitted disclosure (:1505) | writeStateWhileLocked state snapshot | scan | routed | rolls back a raced admission under the same state-snapshot authority |
-| src/pr-review/verdict-settlement.ts:persistVerdictSettlementReceipt | durable verdict-settlement receipt writer (:286) | verdict-settlement store | scan | routed | #3101 N-of-M verdict admission persistence |
-| src/background/pending-delegations.ts:writeDelegationShadowProjection | whole-ledger shadow rewrite (:1217, fs.writeFileSync of storePath) | coordination shadow projection | scan | routed | replication-only: rewrites the ledger file from already-decided records (its callers are the coordination import and the raw writer below); no settle/admit decision originates here |
-| src/background/pending-delegations.ts:ensureDelegationCoordinationImported | coordination DB import + shadow rewrite (:1308/:1354) | coordination store + shadow projection | scan | routed | one-time legacy import of already-decided records into the coordination DB, then shadow projection |
-| src/background/pending-delegations.ts:appendRecord | the store's raw record writer (:3250) — every censused authority's appends flow through it; coordination replication fires beneath it (:3267/:3288) | appendRecord + coordination transition | scan | routed | the single append sink behind the claim/sweep/transition authorities above; the coordination row it writes under the background.pending-delegation namespace is a replica of the just-decided record |
-| src/pr-review (reducer dispatch sites) | lane_structured_result_submitted, circuit, admission, rollback, recovery, finalization, critic events | reducePrReviewEvent | cross-reference | routed | censused by the wire-or-retire table above and tests/unit/pr-review/reducer-adapter-authority.test.ts |
-| src/workflow/coder-settlement.ts | the coder-settlement WAL authority family | its own state machine (DISPATCHED vocabulary) | cross-reference | routed | the #2214/#2402 incident surface; pinned by tests/unit/workflow/coder-settlement-2214.test.ts and siblings, not re-pinned here |
-| src/background/stage-b-dispatch-binding-store.ts | Stage-B dispatch-generation bindings | durable binding store | cross-reference | routed | the #2829 incident surface (PR #2883); fail-closed consumer behavior at warnStageBSettlementDropped in src/hooks/delegation-gate.ts |
+| src/background/completion-observer.ts:createBackgroundCompletionObserver | :293, :468 | claimTerminalResult for the terminal; appendDelegationTransition for the staleness flip | scan | routed | Task-side terminal (:293) routes through the claim primitive; the Stage-B staleness flip (:468) is an INTENTIONAL-EVENTLESS #2700 post-claim terminal-to-terminal transition (the record already carries its typed terminal event) that emits an advisory and discards scope |
+| src/background/completion-observer.ts:settleCoder | :913 | appendDelegationTransition (preserved -> stale) | scan | deliberate-second-authority | INTENTIONAL-EVENTLESS #2700 post-claim flip: the typed terminal came from the claim that opened the coder settlement, so the transition establishes no new first-terminal event |
+| src/background/delegation-lifecycle.ts:settleDelegationTerminal | :192 | claimTerminalResult via _internals | scan | routed | #2045: the lane lifecycle wraps the SAME claim primitive the Task completion observer calls directly (one claim implementation, no second lifecycle state machine) |
+| src/background/pending-delegations.ts:<module> | :1217, :2569, :4170 | claimTerminalResult plus the two whole-ledger raw writers | scan | routed | module-scope declarations: the terminal-claim authority itself, the coordination shadow projection, and checkpoint/ledger compaction, all replication-only (the records they carry were already decided by a censused authority) |
+| src/background/pending-delegations.ts:acknowledgeObservedBackgroundAdvisories | :5340 | appendRecord (delegation store raw writer) | inventory | routed | advisory acknowledgment payload write; no terminal status |
+| src/background/pending-delegations.ts:appendDelegationTransition | :3621, :3652 | typed transition write (buildTypedDelegationTerminal) | scan | deliberate-second-authority | the CAS transition primitive the deliberate writers use; it carries the typed terminal event with identity rules identical to the claim path |
+| src/background/pending-delegations.ts:appendRecord | :3288 | raw append sink plus coordination replication | scan | routed | the single append sink every censused authority flows through; its coordination row under the background.pending-delegation namespace is a replica of the just-decided record |
+| src/background/pending-delegations.ts:claimCoderSettlement | :4418 | appendRecord (delegation store raw writer) | inventory | routed | coderSettlement claim marker; the terminal settlement state is written by updateCoderSettlement |
+| src/background/pending-delegations.ts:claimDelegationIngestion | :4899 | appendRecord (delegation store raw writer) | inventory | routed | ingestion claim marker; no terminal status |
+| src/background/pending-delegations.ts:claimTerminalResult | :4289 | appendRecord (delegation store raw writer) | inventory | routed | the terminal-claim authority body; the append it performs is the scan-classified authority itself |
+| src/background/pending-delegations.ts:compactBackgroundDelegations | :2558 | compactDelegationsLocked | scan | routed | the public checkpoint/ledger compaction wrapper |
+| src/background/pending-delegations.ts:ensureDelegationCoordinationImported | :1308, :1354 | coordination import plus shadow projection | scan | deliberate-second-authority | replication-only: one-time import of already-decided records into the coordination DB, then projection repair |
+| src/background/pending-delegations.ts:maintainBackgroundDelegations | :7319 | sweepStaleDelegations | scan | routed | startup/session maintenance sweep through the sweep authority |
+| src/background/pending-delegations.ts:maybeCompactDelegationsLocked | :2911 | compactDelegationsLocked | scan | routed | high-water compaction trigger for the checkpoint/ledger writer |
+| src/background/pending-delegations.ts:preparePendingBackgroundAdvisories | :5200 | appendRecord (delegation store raw writer) | inventory | routed | advisory payload preparation; no terminal status |
+| src/background/pending-delegations.ts:promoteDelegationFallback | :6059 | appendRecord (delegation store raw writer) | inventory | routed | recovery surface re-appending an already-decided record from the fallback store |
+| src/background/pending-delegations.ts:publishPrReviewResultReceipt | :3815, :3877, :3925 | claim-first admission then the typed terminal | scan | deliberate-second-authority | #2865: deliberately supersedes a provably-stale error/contract terminal with a completed receipt-backed terminal under separate rules, documented in the claim primitive own contract |
+| src/background/pending-delegations.ts:putPendingBackgroundAdvisory | :5044 | appendRecord (delegation store raw writer) | inventory | routed | advisory payload write; no terminal status |
+| src/background/pending-delegations.ts:recordDelegationIngestionResult | :4973 | appendRecord (delegation store raw writer) | inventory | routed | ingestion result write; status-adjacent but not terminal |
+| src/background/pending-delegations.ts:recordPendingDelegationDetailed | :3472, :3494 | sweepStaleDelegations plus appendRecord | scan | routed | record creation pre-sweeps a stale record through the sweep authority and appends the initial non-terminal record |
+| src/background/pending-delegations.ts:releaseBackgroundAdvisoryPreparation | :5267 | appendRecord (delegation store raw writer) | inventory | routed | advisory payload write; no terminal status |
+| src/background/pending-delegations.ts:replacePendingBackgroundAdvisory | :5118 | appendRecord (delegation store raw writer) | inventory | routed | advisory payload replacement; no terminal status |
+| src/background/pending-delegations.ts:sweepStaleDelegations | :5641 | sweepStaleLocked | scan | routed | public bulk sweep wrapper; its status and age filters are the safety property the gate force-override relies on (#2251) |
+| src/background/pending-delegations.ts:sweepStaleLocked | :5552, :5558 | direct typed-terminal append | scan | deliberate-second-authority | the claim primitive refuses ingestion_error records and requires per-record claimable state, so this bulk stale flip cannot route through it; the typed terminal is written atomically with the disposition and the #2482/#2244 eventless-terminal-end observer fires |
+| src/background/pending-delegations.ts:updateCoderSettlement | :4596 | appendRecord (delegation store raw writer) | inventory | routed | the coderSettlement terminal settlement state (settled/preserved) written for an already-claimed terminal |
+| src/background/pending-delegations.ts:updateLegacyCoderSettlementTransfer | :4784 | appendRecord (delegation store raw writer) | inventory | routed | legacy settlement transfer state; no terminal status |
+| src/hooks/pr-workflow-gate.ts:<module> | :7442 | admitPrReviewPartialBaseCoverage (completion module) | scan | routed | the gate admission wrapper delegates to the completion-module authority below; coverage admission state is written by that state-snapshot authority |
+| src/hooks/pr-workflow-gate.ts:abortPrWorkflow | :4545 | settlePresumedStalePrWorkflowLanes sweep | scan | routed | force-abort entry point; its lane settlement routes through the sweep authority and its pr_feedback_publication_cancelled terminal events are the publication surface own vocabulary |
+| src/hooks/pr-workflow-gate.ts:assertPrReviewTerminalReady | :12169 | settlePresumedStalePrWorkflowLanes sweep | scan | routed | terminal-readiness ladder; lane settlement routes through the sweep authority |
+| src/hooks/pr-workflow-gate.ts:assertPrReviewValidationSettled | :7911 | persistVerdictSettlementReceipt | scan | routed | #3101: N-of-M verdict-settlement admission with a durable receipt written by the verdict-settlement store |
+| src/hooks/pr-workflow-gate.ts:completePrWorkflow | :13399, :13601 | settlePresumedStalePrWorkflowLanes sweep plus admitPrReviewPartialBaseCoverage | scan | routed | completion triggers lane settlement through the sweep authority and admits partial coverage through the completion-module authority; its coverage finalization dispatches coverage_finalization_requested (wire-or-retire table above) |
+| src/hooks/pr-workflow-gate.ts:finalizeOverriddenProbeRetainedLanes | :4289 | sweepStaleDelegations with the operator_cancelled class | scan | deliberate-second-authority | #2971: an explicit audited operator action finalizing exactly the named retained lanes; it must not force a terminal, which is why it uses the sweep status/age filters rather than a raw transition |
+| src/hooks/pr-workflow-gate.ts:recoverArmedPrWorkflow | :5038 | settlePresumedStalePrWorkflowLanes sweep plus reducePrReviewEvent | scan | routed | armed recovery settles lanes through the sweep authority and dispatches armed_recovery_requested through the reducer (wire-or-retire table above) |
+| src/hooks/pr-workflow-gate.ts:settlePresumedStalePrWorkflowLanes | :4084 | sweepStaleDelegationsAsync (sweep authority) | scan | deliberate-second-authority | narrowed to pending/running with probe-retained exclusions (#2251); durability is best-effort once the in-memory decision stands |
+| src/pr-review/completion.ts:<module> | :1324, :1505 | withSessionStateMutation / writeStateWhileLocked state snapshot | scan | routed | the coverage admission and its rollback writer: the state-snapshot admission class the census contract names, admitted under the session-state authority |
+| src/pr-review/verdict-settlement.ts:<module> | :286 | verdict-settlement store | scan | routed | #3101 durable verdict-settlement receipt persistence |
+| src/tools/cancel-lane-batch.ts:executeCancelLaneBatch | :448 | settleDelegationTerminal | scan | routed | #2971 operator cancellation through the claim primitive with the operator_cancelled failure class |
+| src/tools/complete-pr-workflow.ts:executeCompletePrWorkflow | :101 | settlePresumedStalePrWorkflowLanes (sweep authority) | scan | routed | tool-side completion entry point for the gate lane settlement |
+| src/tools/dispatch-lanes.ts:appendAsyncLaneLaunchError | :4061, :4074, :4077 | settleDelegationTerminal; appendDelegationTransition | scan | routed | the launch failure settles through the claim primitive when the record exists; the never-landed arm has no record for a claim to act on yet still carries the typed terminal with null identity material (#2700) |
+| src/tools/dispatch-lanes.ts:collectOnce | :3109 | settleDelegationTerminal | scan | routed | a classified terminal error that produced no output settles as cancelled/error through the claim primitive |
+| src/tools/dispatch-lanes.ts:runLane | :4995, :5041 | settleDelegationTerminal | scan | routed | blocking-lane success and failure terminals through the claim primitive, with the observation bundle |
+| src/tools/dispatch-lanes.ts:settleCollectedLane | :3677, :3753 | settleDelegationTerminal | scan | routed | the main collection terminal path (contract-invalid and normal) through the claim primitive, after the receipt is attached |
+| src/tools/dispatch-lanes.ts:sweepStaleAsyncLaneRecords | :4327, :4376, :4382 | settleDelegationTerminal; appendDelegationTransition CAS | scan | routed | an unobservable host settles through the claim primitive; the idle-host flip covers ingestion_error, which the claim refuses, under an expectedCurrentStatuses CAS carrying the typed terminal (#2615/#2700) |
+| src/tools/write-pr-review-artifact.ts:executeWritePrReviewArtifact | :583, :698 | admitPrReviewPartialBaseCoverage / rollbackPrReviewPartialBaseCoverageAdmission | scan | routed | artifact-tool admission and rollback into the completion-module authority |
+| src/pr-review (reducer dispatch sites) | n/a | reducePrReviewEvent | cross-reference | routed | censused by the wire-or-retire table above and `tests/unit/pr-review/reducer-adapter-authority.test.ts` |
+| src/workflow/coder-settlement.ts | n/a | its own WAL state machine | cross-reference | routed | the #2214/#2402 DISPATCHED-wedge surface, pinned by `tests/unit/workflow/coder-settlement-2214.test.ts` |
+| src/background/stage-b-dispatch-binding-store.ts | n/a | durable binding store | cross-reference | routed | the #2829 restart surface (PR #2883); fail-closed consumer `warnStageBSettlementDropped` in `src/hooks/delegation-gate.ts` |
 
 ### Wedge-shape layer map
 
-The four historical settlement-wedge shapes and where this repository now
-proves them unreachable (tests at `tests/unit/pr-review/settle-invariants-2908.test.ts`
-and `tests/unit/pr-review/settle-wedge-shapes-2908.test.ts`):
+The four historical settlement-wedge shapes and where this repository proves
+them unreachable (properties in `tests/unit/pr-review/settle-invariants-2908.test.ts`
+and the disk properties under `tests/unit/background/`; reproductions in
+`tests/unit/pr-review/settle-wedge-shapes-2908.test.ts`):
 
 - **#2214 — lane stays non-terminal after a terminal claim.** Incident
-  surface: the coder-settlement WAL (pinned by
-  `tests/unit/workflow/coder-settlement-2214.test.ts`). This census's property
-  pins the LEDGER layer's equivalent invariant: once `claimTerminalResult`
-  records a terminal, no interleaving (duplicate replay, conflicting terminal,
-  re-read) can leave the correlation folding to a non-terminal status, and a
-  conflicting terminal is rejected and audited rather than overwriting.
+  surface: the coder-settlement WAL (`DISPATCHED` vocabulary; pinned by
+  `tests/unit/workflow/coder-settlement-2214.test.ts`). This census pins the
+  LEDGER layer's equivalent invariant: once `claimTerminalResult` records a
+  terminal, no interleaving (duplicate replay, conflicting terminal, re-read)
+  can leave the correlation folding to a non-terminal status, and a conflicting
+  terminal is rejected and audited rather than overwriting.
 - **#2402 / #2666 — a late older-generation result advances the task.**
-  Load-bearing fences: the adapter's superseded-generation refusal
-  (`pr-workflow-gate.ts`), the durable publisher lock's
-  `expectedWorkflowInstanceId/Revision` conflict
-  (`pending-delegations.ts`), and the create-generation CAS
-  (`dispatch-lanes.ts`). The property pins the reducer's defense-in-depth
-  fence (`stale_generation_result`); the wedge reproduction ALSO exercises the
-  publisher fence directly.
+  Load-bearing fences: the adapter's superseded-generation refusal, the
+  durable publisher lock's `expectedWorkflowInstanceId/Revision` conflict, and
+  the create-generation CAS. The properties pin the reducer's defense-in-depth
+  fence (`stale_generation_result`); the reproduction exercises the publisher
+  fence directly with a schema-valid receipt, so the fence is what decides.
 - **#2840 — APPROVE with a disclosed degradation.** Incident surface IS the
   reducer: `degraded_disclosure_cannot_approve` (fix PR #2880) — pinned
   directly by property and reproduction.
 - **#2829 — a terminal is lost on restart.** Incident surface: the Stage-B
-  dispatch-generation binding store (PR #2883). The property pins the
-  ledger/checkpoint refold (#2034 compaction: fold of checkpoint+tail equals
-  the pre-restart terminal set); the reproduction also round-trips the binding
-  store's restart reconstruction.
+  dispatch-generation binding store (PR #2883). The properties pin the
+  ledger/checkpoint refold across real compaction; the reproduction also
+  round-trips the binding store's restart reconstruction.
 
 ### Guardrail (census ratchet)
 
 `tests/unit/pr-review/settle-admit-census-ratchet-2908.test.ts` re-runs this
-census on every test run through `tests/helpers/terminal-writer-scanner.ts`:
-every scanner identity must be a `scan` or `inventory` row above and vice
-versa, every disposition must be `routed` or `deliberate-second-authority`,
-and an un-inventoried terminal writer fails CI. Disclosed boundary (same class
-as `tests/unit/background/eventless-terminal-write-ratchet-2700.test.ts`): a
-text scanner cannot see dynamic-dispatch aliases, so a writer routed through
-an alias variable escapes these patterns; every statically visible call shape
-— including `_test_exports`/`_internals` seam forms — is covered.
+census on every test run: every scanner identity has a row of the right class,
+every row's cited hit lines equal the scanner's actual hit lines for that
+identity, every disposition is a census token, no row is a `straggler`, and
+every scanner pattern is non-empty. Disclosed boundaries (the census states the
+same list): dynamic-dispatch aliases are invisible to a text scanner, and a
+symlinked source entry is skipped rather than diagnosed.
