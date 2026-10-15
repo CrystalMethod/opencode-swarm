@@ -10,89 +10,46 @@
  * WITHOUT a fragment is silently omitted from the release notes forever —
  * this gate makes that omission a CI failure instead of a silent gap.
  *
- * Classification (deliberately conservative — only surfaces a PR actually
- * changes for users):
- *   USER-VISIBLE: src/**, bin/**, binaries/**, runners/**, package.json,
- *                 .github/workflows/**, .opencode/skills/**,
- *                 .claude/skills/**, .agents/skills/**,
- *                 docs/configuration.md
- *   NOT user-visible: tests/**, *.test.ts, docs/** (except
- *                 configuration.md), scripts/**, .zcode/**, everything
- *                 else (CI tooling, fixtures, markdown).
+ * Classification lives in scripts/user-visible-paths.ts — the single
+ * declarative path-class table (issue #2955). This module re-exports the
+ * pure classifiers so existing imports keep working; do NOT add path rules
+ * here.
  *
  * Pass conditions (any one):
  *   - The diff touches NO user-visible surface (chore/test/docs-only PR).
  *   - The diff ADDS at least one file under docs/releases/pending/ ending
- *     in .md (the mandate satisfied in the same PR).
+ *     in .md (the mandate satisfied in the same PR). Added-only by design
+ *     (FRAGMENT_SATISFACTION in user-visible-paths.ts).
  *
  * Escape hatch: FRAGMENT_CHECK_ENFORCE=0|false|no|off soft-warns (prints
  * the violation, exits 0) — same convention as TEST_CAP_ENFORCE, for a
- * deliberate exception PR.
+ * deliberate exception PR. The escape hatch does NOT apply to
+ * --print-requirement (a classification probe for workflow consumers; the
+ * caller owns its messaging and exit handling).
+ *
+ * Machine-readable mode for workflow consumers (issue #2955):
+ *   bun scripts/check-pending-fragment.ts --print-requirement [--added <path>]...
+ *     - reads the CHANGED path list from stdin (one path per line)
+ *     - prints exactly one line: required=<true|false> satisfied=<true|false>
+ *     - exit 0 = no violation (not required OR satisfied)
+ *     - exit 1 = required AND not satisfied
+ *     - exit 2 = usage error
+ *   Pure: no git, no repo-root resolution, no env enforcement.
  *
  * Portability: TypeScript + Bun only (issue #2078 — no new Bash gates).
  * Pure classification logic is exported for unit tests.
  */
 
 import * as path from 'node:path';
+import {
+	FRAGMENT_DIR,
+	isPendingFragment,
+	isUserVisiblePath,
+} from './user-visible-paths';
 
-export const FRAGMENT_DIR = 'docs/releases/pending';
-
-/** Path prefixes (posix, root-relative) that count as user-visible. */
-const USER_VISIBLE_PREFIXES: readonly string[] = [
-	'src/',
-	'bin/',
-	'binaries/',
-	'runners/',
-	'.github/workflows/',
-	'.opencode/skills/',
-	'.claude/skills/',
-	'.agents/skills/',
-];
-
-/** Exact root-relative files that count as user-visible. */
-const USER_VISIBLE_FILES: readonly string[] = [
-	'package.json',
-	'docs/configuration.md',
-];
-
-/** Path prefixes never counted as user-visible (evaluated first). */
-const NEVER_USER_VISIBLE_PREFIXES: readonly string[] = [
-	'tests/',
-	'scripts/',
-	'.zcode/',
-	'node_modules/',
-];
+export { FRAGMENT_DIR, isPendingFragment, isUserVisiblePath };
 
 const GIT_TIMEOUT_MS = 30_000;
-
-function toPosix(file: string): string {
-	return file.replace(/\\/g, '/').replace(/^\.\//, '');
-}
-
-/**
- * Does one changed path count as a user-visible surface? Pure.
- * Test files are never user-visible even under src/ (colocated *.test.ts).
- */
-export function isUserVisiblePath(file: string): boolean {
-	const p = toPosix(file);
-	if (p.endsWith('.test.ts') || p.endsWith('.test.tsx')) return false;
-	for (const prefix of NEVER_USER_VISIBLE_PREFIXES) {
-		if (p.startsWith(prefix)) return false;
-	}
-	for (const exact of USER_VISIBLE_FILES) {
-		if (p === exact) return true;
-	}
-	for (const prefix of USER_VISIBLE_PREFIXES) {
-		if (p.startsWith(prefix)) return true;
-	}
-	return false;
-}
-
-/** Is this path an ADDED pending fragment satisfying the mandate? Pure. */
-export function isPendingFragment(file: string): boolean {
-	const p = toPosix(file);
-	return p.startsWith(`${FRAGMENT_DIR}/`) && p.endsWith('.md');
-}
 
 export interface FragmentCheckInput {
 	/** Root-relative paths changed (added/modified/deleted) in the PR. */
@@ -136,6 +93,29 @@ export function evaluateFragmentCheck(
 			'release-please aggregates fragments into the GitHub Release body, so a missing fragment means this ' +
 			"PR's changes ship with no release notes. Add the fragment, or set FRAGMENT_CHECK_ENFORCE=0 for a deliberate exception.",
 	};
+}
+
+export interface RequirementVerdict {
+	/** Does the changed list contain at least one user-visible path? */
+	required: boolean;
+	/** Does the added list contain a pending fragment (added-only semantics)? */
+	satisfied: boolean;
+	/** required && !satisfied — the gate-violation predicate. */
+	violation: boolean;
+}
+
+/**
+ * Pure requirement evaluation backing --print-requirement. Same core as
+ * evaluateFragmentCheck, expressed for machine consumers that branch on the
+ * verdict themselves (workflow arms).
+ */
+export function evaluateRequirement(
+	changedFiles: readonly string[],
+	addedFiles: readonly string[],
+): RequirementVerdict {
+	const required = changedFiles.some(isUserVisiblePath);
+	const satisfied = addedFiles.some(isPendingFragment);
+	return { required, satisfied, violation: required && !satisfied };
 }
 
 export function resolveEnforce(raw: string | undefined): boolean {
@@ -259,8 +239,57 @@ export function main(startDir: string = process.cwd()): number {
 	return 1;
 }
 
+function parsePrintRequirementArgs(
+	args: readonly string[],
+): { added: string[] } | { error: string } {
+	const added: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		if (args[i] === '--added') {
+			if (i + 1 >= args.length) {
+				return { error: '--added requires a value' };
+			}
+			added.push(args[i + 1]);
+			i++;
+		} else {
+			return { error: `unknown argument: ${args[i]}` };
+		}
+	}
+	return { added };
+}
+
+/**
+ * Machine-readable mode for workflow consumers (issue #2955): reads the
+ * changed-path list from stdin (newline-delimited), the added list from
+ * repeated --added flags, prints exactly one verdict line, and maps the
+ * exit code to gate semantics. Pure: no git, no repo-root resolution; the
+ * FRAGMENT_CHECK_ENFORCE escape hatch does not apply (the caller owns its
+ * messaging).
+ */
+async function printRequirement(args: readonly string[]): Promise<number> {
+	const parsed = parsePrintRequirementArgs(args);
+	if ('error' in parsed) {
+		console.error(
+			`[check-pending-fragment] ${parsed.error} (usage: --print-requirement [--added <path>]... with changed paths on stdin)`,
+		);
+		return 2;
+	}
+	const stdinText = await Bun.stdin.text();
+	const changed = stdinText
+		.split('\n')
+		.map((line) => line.replace(/\r$/, ''))
+		.filter((line) => line.length > 0);
+	const verdict = evaluateRequirement(changed, parsed.added);
+	console.log(`required=${verdict.required} satisfied=${verdict.satisfied}`);
+	return verdict.violation ? 1 : 0;
+}
+
 // Direct invocation entry point (mirrors check-test-file-cap.ts).
 if (import.meta.main) {
-	process.exitCode = main();
+	const args = process.argv.slice(2);
+	if (args[0] === '--print-requirement') {
+		process.exitCode = await printRequirement(args.slice(1));
+	} else {
+		process.exitCode = main();
+	}
 }
 
