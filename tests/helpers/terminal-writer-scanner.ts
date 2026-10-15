@@ -98,9 +98,12 @@ const PATTERNS: PatternDef[] = [
 		regex: /(?<!function )settlePresumedStalePrWorkflowLanes\s*\(/g,
 	},
 	{
+		// Issue #2908 plan-critic round 5: admission sinks match their DEFINITION
+		// lines too (no lookbehind) — the sink functions are admission writers in
+		// their own right and each owns a census row. Call sites still match.
 		pattern: 8,
 		regex:
-			/(?<!function )(?:admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
+			/(?:admitPrReviewPartialBaseCoverage|rollbackPrReviewPartialBaseCoverageAdmission|persistVerdictSettlementReceipt)\s*\(/g,
 	},
 ];
 
