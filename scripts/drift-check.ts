@@ -1705,7 +1705,7 @@ export function detectRequiredCheckContractDrift(
  * or a comment quoting it — fails parity. Kept as a substring (not a full
  * regex reconstruction) so partial re-introductions are caught too.
  */
-const LEGACY_FRAGMENT_REGEX_SUBSTRING =
+export const LEGACY_FRAGMENT_REGEX_SUBSTRING =
 	'src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/';
 
 /** Per-site minimum counts of shared-classifier invocations (issue #2955). */

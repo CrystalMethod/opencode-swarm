@@ -104,13 +104,15 @@ describe('drift-check: fragment-path-parity detection (issue #2955)', () => {
 
 	test('a bare flag mention does not count as a consumer anchor', () => {
 		const root = makeTempRoot();
-		// A comment mentioning the flag plus one real invocation: still below
-		// the pr-standards minimum of 2 because the anchor matcher requires
-		// the full invocation form.
+		// A NON-comment line carrying only the bare flag, plus one real
+		// invocation: the anchor requires the full invocation form, so the
+		// count stays at 1 (< the pr-standards minimum of 2). Pins that a bare
+		// `--print-requirement` mention — in a string, an echo, a dead step —
+		// cannot stand in for a consumer.
 		writeFile(
 			root,
 			'.github/workflows/pr-standards.yml',
-			`# see --print-requirement\njobs:\n  a:\n    steps:\n      - run: x | ${anchor}\n`,
+			`jobs:\n  a:\n    steps:\n      - run: x | echo "--print-requirement"\n      - run: y | ${anchor}\n`,
 		);
 		const findings = detectFragmentPathParity(root);
 		expect(

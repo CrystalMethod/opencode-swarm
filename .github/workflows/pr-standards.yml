@@ -169,11 +169,14 @@ jobs:
           # (issue #2955): changed/added lists go to the shared classifier,
           # which prints one verdict line and maps the exit code to gate
           # semantics (0 = no violation, 1 = violation, else unusable).
-          # --no-renames matches the quality gate's changed-list semantics;
+          # --no-renames matches the quality gate's changed-list semantics and
           # --diff-filter=A --find-renames=100% matches its added-only
-          # fragment-satisfaction semantics.
-          changed="$(git diff --name-only --no-renames "origin/${BASE_REF}...HEAD")"
-          added="$(git diff --name-only --diff-filter=A --find-renames=100% "origin/${BASE_REF}...HEAD")"
+          # fragment-satisfaction semantics. core.quotePath=false keeps git
+          # from C-quoting non-ASCII names (a quoted "src/caf\303\251.ts" would
+          # match no class); the quality gate reaches the same paths through
+          # NUL framing instead, so the two stay in agreement.
+          changed="$(git -c core.quotePath=false diff --name-only --no-renames "origin/${BASE_REF}...HEAD")"
+          added="$(git -c core.quotePath=false diff --name-only --diff-filter=A --find-renames=100% "origin/${BASE_REF}...HEAD")"
 
           # No file changes -> nothing to gate.
           if [ -z "$changed" ]; then
@@ -203,8 +206,16 @@ jobs:
               esac
               ;;
             1)
-              echo "::error::Missing docs/releases/pending/<unique-slug>.md release fragment (see .claude/skills/commit-pr/SKILL.md Step 2)."
-              echo "Classifier verdict: $verdict"
+              # A bun crash also exits 1, so the verdict line decides whether
+              # this is a real violation or an unusable classifier.
+              case "$verdict" in
+                'required=true satisfied=false')
+                  echo "::error::Missing docs/releases/pending/<unique-slug>.md release fragment (see .claude/skills/commit-pr/SKILL.md Step 2)."
+                  ;;
+                *)
+                  echo "::error::Fragment classifier failed (exit 1, no violation verdict): ${verdict:-<no output>}"
+                  ;;
+              esac
               exit 1
               ;;
             *)
@@ -250,17 +261,22 @@ jobs:
           fi
 
           # Path classification is owned by scripts/user-visible-paths.ts
-          # (issue #2955). Renames contribute both paths (the rename-scoped
+          # (issue #2955). Renames contribute BOTH paths in the changed list,
+          # matching the git-side --no-renames view (the rename-scoped
           # previous_filename guard matters: it is also populated for copied
-          # entries, where the git-side classifier sees only the new path);
-          # "copied" counts as added, matching the quality gate's
-          # --diff-filter=A --find-renames=100% semantics.
+          # entries, where the git side sees only the new path).
           changed="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[] | .filename, (select(.status == "renamed") | .previous_filename // empty)')"
           if [ -z "$changed" ]; then
             echo "::error::Dispatched PR has no changed files."
             exit 1
           fi
-          added="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[] | select(.status == "added" or .status == "copied") | .filename')"
+          # Added set mirrors git's `--diff-filter=A --find-renames=100%`:
+          # "added" and "copied" count, an exact rename does NOT, and a rename
+          # WITH content edits DOES (git reports that as A+D because only a
+          # 100%-similarity rename is suppressed). Keying the rename branch on
+          # .changes > 0 is what keeps this arm in agreement with the
+          # pull_request arm and the quality gate for every rename band.
+          added="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[] | select(.status == "added" or .status == "copied" or (.status == "renamed" and .changes > 0)) | .filename')"
 
           classifier_args=()
           while IFS= read -r added_file; do
@@ -274,8 +290,14 @@ jobs:
             0)
               ;;
             1)
-              echo "::error::Dispatched PR is missing a pending release fragment."
-              echo "Classifier verdict: $verdict"
+              case "$verdict" in
+                'required=true satisfied=false')
+                  echo "::error::Dispatched PR is missing a pending release fragment."
+                  ;;
+                *)
+                  echo "::error::Fragment classifier failed (exit 1, no violation verdict): ${verdict:-<no output>}"
+                  ;;
+              esac
               exit 1
               ;;
             *)

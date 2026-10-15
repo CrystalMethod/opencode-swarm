@@ -5,6 +5,7 @@ import {
 	evaluateFragmentCheck,
 	evaluateRequirement,
 } from '../../../scripts/check-pending-fragment';
+import { LEGACY_FRAGMENT_REGEX_SUBSTRING } from '../../../scripts/drift-check';
 import {
 	FRAGMENT_SATISFACTION,
 	isPendingFragment,
@@ -112,6 +113,16 @@ const MATRIX: Array<{ label: string; file: string; userVisible: boolean }> = [
 		file: './src/index.ts',
 		userVisible: true,
 	},
+	// The tests/ never-prefix row made load-bearing: tests/fixtures/** SHIPS
+	// (package.json#files), so it must match no later class. Without a row
+	// like this, deleting the never-prefix row leaves every recorded verdict
+	// unchanged (the classifier's fallthrough returns false anyway), which is
+	// how that row could be silently dropped without a test going red.
+	{
+		label: 'behavior tests/fixtures/** (ships, still not user-visible)',
+		file: 'tests/fixtures/memory-recall/corpus.jsonl',
+		userVisible: false,
+	},
 ];
 
 describe('issue #2955 parity matrix', () => {
@@ -129,7 +140,7 @@ describe('issue #2955 parity matrix', () => {
 		expect(
 			MATRIX.filter((row) => isUserVisiblePath(row.file) !== row.userVisible),
 		).toEqual([]);
-		expect(MATRIX.length).toBe(21);
+		expect(MATRIX.length).toBe(22);
 	});
 });
 
@@ -153,11 +164,9 @@ describe('issue #2955 no hand-maintained fragment regex remains', () => {
 				.readFileSync(path.join(workflowsDir, entry), 'utf8')
 				.split('\n');
 			lines.forEach((line, index) => {
-				if (
-					line.includes(
-						'src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/',
-					)
-				) {
+				// The production detector constant, not a copy: weakening or
+				// renaming it in scripts/drift-check.ts must fail THIS test too.
+				if (line.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING)) {
 					offenders.push(`${entry}:${index + 1}`);
 				}
 			});

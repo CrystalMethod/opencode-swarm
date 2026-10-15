@@ -396,8 +396,10 @@ notice. See [required-check contract details](docs/ci-required-check-contract.md
 Every user-visible PR (`src/`, `package.json`, workflows, shipped skills) still
 adds a `docs/releases/pending/<slug>.md` fragment — release-please aggregates
 fragments into the release notes, so a missing fragment means the PR ships with
-no notes. Escape hatch: `FRAGMENT_CHECK_ENFORCE=0` (soft-warn). Release-please
-branches are exempt.
+no notes. Escape hatch: `FRAGMENT_CHECK_ENFORCE=0` (soft-warn) applies to
+the CI quality gate only — the PR Standards fragment gate has no soft-warn
+path, so a workflow/skills/`docs/configuration.md` PR missing a fragment is
+blocked regardless. Release-please branches are exempt.
 
 **Do not ask for a merge if any check is red.** Fix the issue first.
 

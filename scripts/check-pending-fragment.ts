@@ -43,6 +43,7 @@
 import * as path from 'node:path';
 import {
 	FRAGMENT_DIR,
+	FRAGMENT_SATISFACTION,
 	isPendingFragment,
 	isUserVisiblePath,
 } from './user-visible-paths';
@@ -108,13 +109,20 @@ export interface RequirementVerdict {
  * Pure requirement evaluation backing --print-requirement. Same core as
  * evaluateFragmentCheck, expressed for machine consumers that branch on the
  * verdict themselves (workflow arms).
+ *
+ * FRAGMENT_SATISFACTION is load-bearing here, not documentation: the
+ * 'added-only' policy is what makes `satisfied` a function of the ADDED list
+ * alone (a modified or deleted pending fragment does not satisfy the
+ * mandate). Deleting or flipping the constant changes this verdict, which
+ * the parity suite pins.
  */
 export function evaluateRequirement(
 	changedFiles: readonly string[],
 	addedFiles: readonly string[],
 ): RequirementVerdict {
 	const required = changedFiles.some(isUserVisiblePath);
-	const satisfied = addedFiles.some(isPendingFragment);
+	const satisfied =
+		FRAGMENT_SATISFACTION === 'added-only' && addedFiles.some(isPendingFragment);
 	return { required, satisfied, violation: required && !satisfied };
 }
 

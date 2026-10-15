@@ -63,13 +63,13 @@ export const USER_VISIBLE_PATH_CLASSES: readonly UserVisiblePathClass[] = [
 		kind: 'never-prefix',
 		pattern: 'tests/',
 		userVisible: false,
-		note: '#2955 class 2: bash narrowed (dropped) — test-only PRs are not user-visible and were falsely blocked by pr-standards.',
+		note: '#2955 class 2: bash narrowed (dropped) — test-only PRs are not user-visible and were falsely blocked by pr-standards. Note two shipped subtrees live here (tests/fixtures/memory-recall*, tests/fixtures/memory-recall-heldout* are in package.json#files); they ship evaluation fixtures, not user-facing behavior, so a fragment is still not required. A shipped path needing a fragment gets its own exact/prefix row.',
 	},
 	{
 		kind: 'never-prefix',
 		pattern: 'scripts/',
 		userVisible: false,
-		note: '#2955 class 1: bash narrowed (dropped) — scripts/ is CI tooling, not shipped in the npm package; scripts-only PRs were falsely blocked.',
+		note: '#2955 class 1: bash narrowed (dropped) — scripts/ is CI tooling and is NOT in package.json#files, so scripts-only PRs never reach users; scripts-only PRs were falsely blocked.',
 	},
 	{
 		kind: 'never-prefix',

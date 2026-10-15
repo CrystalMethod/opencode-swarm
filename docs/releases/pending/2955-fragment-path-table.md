@@ -2,6 +2,8 @@
 issue: 2955
 ---
 
+# One shared path-class table for every release-fragment gate
+
 ## What changed
 
 The two required release-fragment gates no longer disagree. The "does this PR need a `docs/releases/pending/` fragment?" verdict is now single-sourced in one declarative path-class table (`scripts/user-visible-paths.ts`), and every gate consumer reads it:
@@ -17,6 +19,7 @@ The TS gate and the triplicated bash regex implemented the same AGENTS.md mandat
 
 - scripts/tests/examples-only PRs no longer require a release fragment (they never ship to users — `scripts/` is not in the npm package).
 - `.github/workflows/`, skills-tree, and `docs/configuration.md` PRs now require a fragment from BOTH gates consistently.
+- A PR that only **modifies** an existing pending fragment no longer satisfies the fragment gate (satisfaction is added-only), so a user-visible PR must add its own fragment rather than editing another PR's pending file.
 - The required-check evidence file's `localWorkflowHashes` pin for `pr-standards.yml` was refreshed for the workflow edit (one line).
 
 ## Verification
