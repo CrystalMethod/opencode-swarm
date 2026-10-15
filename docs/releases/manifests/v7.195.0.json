@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.195.0",
+  "tagCommit": "2cac4409aae46ab922bca8db55829ba7b09bc2ae",
+  "targetCommitish": "2cac4409aae46ab922bca8db55829ba7b09bc2ae",
+  "releaseBodySha256": "55ce22a9d3a8081f5bd5542a15614f0c775749b77da5b940a41dc93e8c92e767",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/2906-counterbalanced-reviewer-order.md",
+      "sha256": "977119015f2f5589d8725f23fab8f41692dcfda2d89936fe0cddb60d924ad353"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/3098-verdict-lane-predicates-journal-contract.md",
+      "sha256": "816e8f2104a18db6cdb204f0df07a9aac83f68be313be58756cc07b5f016a38d"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3169-epic-v2-phase2-session-client.md",
+      "sha256": "d2ef62759e5c228aeef3cc607c0820b4d0397e6a9a66b532d0cf1e561a3efc74"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3169-epic-v2-phase3-isolated-coders.md",
+      "sha256": "4b142e39c77870e085955859f013f8cff8a7584f2c96b88ef265cbba22ba1ddd"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/epic-mode-v2.md",
+      "sha256": "9c89fef0d3ba969b910a64d2d684013e282c9e0d6fbef7f37e854f0ff6228fd5"
+    },
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/required-check-workflow-hash-line-endings.md",
+      "sha256": "0c19bb221e5af45f035d57b39b6317755b2afc8f9fc1931afa43a5c198217342"
+    }
+  ]
+}
