@@ -270,9 +270,7 @@ describe('applyExplorerFormatSuffix', () => {
 		// format is plain marker rows overriding the fenced-JSON default.
 		expect(result.lanes[0].prompt).not.toContain('submit_pr_review_result');
 		expect(result.lanes[0].prompt).toMatch(
-			/reply[^
-]0,120plain[^
-]0,60rows/i,
+			/reply[^\n]{0,120}plain[^\n]{0,60}rows/i,
 		);
 	});
 
