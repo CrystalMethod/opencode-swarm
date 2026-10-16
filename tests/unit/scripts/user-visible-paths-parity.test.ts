@@ -123,6 +123,15 @@ const MATRIX: Array<{ label: string; file: string; userVisible: boolean }> = [
 		file: 'tests/fixtures/memory-recall/corpus.jsonl',
 		userVisible: false,
 	},
+	// #3291: a test/-prefix path whose file does NOT end in .test.ts. The
+	// class-3 row above is suffix-masked (its file hits the .test.ts suffix
+	// exclusion first), so this row is what actually pins test/-prefix
+	// classification.
+	{
+		label: '3291 test/-prefix non-test file',
+		file: 'test/helper.ts',
+		userVisible: false,
+	},
 ];
 
 describe('issue #2955 table shape', () => {
@@ -169,7 +178,73 @@ describe('issue #2955 parity matrix', () => {
 		expect(
 			MATRIX.filter((row) => isUserVisiblePath(row.file) !== row.userVisible),
 		).toEqual([]);
-		expect(MATRIX.length).toBe(22);
+		expect(MATRIX.length).toBe(23);
+	});
+});
+
+describe('issue 3291 shipped-surface census', () => {
+	test('3291 census: every package.json#files entry is a recorded decision', () => {
+		// Mirrors the frozen C1 probe's coverage predicate: an entry is covered
+		// iff a row matches under classifier semantics (with the bare-name
+		// prefix fallback for prefix/never-prefix rows), OR an ancestor is
+		// matched/named, OR the entry is literally named in the module text.
+		const repoRoot = path.resolve(import.meta.dir, '..', '..', '..');
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+		) as { files: string[] };
+		const moduleSource = fs.readFileSync(
+			path.join(repoRoot, 'scripts', 'user-visible-paths.ts'),
+			'utf8',
+		);
+		function rowMatches(candidate: string): boolean {
+			for (const row of USER_VISIBLE_PATH_CLASSES) {
+				if (row.kind === 'exact' && candidate === row.pattern) return true;
+				if (
+					(row.kind === 'prefix' || row.kind === 'never-prefix') &&
+					(candidate.startsWith(row.pattern) ||
+						candidate === row.pattern.replace(/\/$/, ''))
+				) {
+					return true;
+				}
+			}
+			return false;
+		}
+		function covered(entry: string): boolean {
+			if (rowMatches(entry)) return true;
+			let ancestor = path.posix.dirname(entry);
+			while (ancestor !== '.' && ancestor !== '/') {
+				if (rowMatches(ancestor) || moduleSource.includes(ancestor))
+					return true;
+				ancestor = path.posix.dirname(ancestor);
+			}
+			return moduleSource.includes(entry);
+		}
+		const uncovered = manifest.files.filter((entry) => !covered(entry));
+		expect(uncovered).toEqual([]);
+	});
+
+	test('3291 census: the recorded decisions classify not-user-visible', () => {
+		expect(isUserVisiblePath('evaluation-fixtures/case.json')).toBe(false);
+		expect(isUserVisiblePath('opencode-swarm.schema.json')).toBe(false);
+		expect(isUserVisiblePath('README.md')).toBe(false);
+		expect(isUserVisiblePath('LICENSE')).toBe(false);
+		expect(isUserVisiblePath('dist/index.js')).toBe(false);
+	});
+
+	test('3291 census: the bin/ row note is true of the shipping configuration', () => {
+		const repoRoot = path.resolve(import.meta.dir, '..', '..', '..');
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+		) as { files: string[]; bin: Record<string, string> };
+		expect(manifest.files).not.toContain('bin');
+		expect(manifest.files).not.toContain('bin/');
+		expect(Object.values(manifest.bin)[0]).toContain('dist/cli/index.js');
+		const binRow = USER_VISIBLE_PATH_CLASSES.find(
+			(row) => row.pattern === 'bin/',
+		);
+		expect(binRow).toBeDefined();
+		expect(binRow?.note).toContain('dist/cli/index.js');
+		expect(binRow?.note).not.toContain('shipped binaries');
 	});
 });
 

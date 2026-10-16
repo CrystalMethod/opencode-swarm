@@ -1708,6 +1708,37 @@ export function detectRequiredCheckContractDrift(
 export const LEGACY_FRAGMENT_REGEX_SUBSTRING =
 	'src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/';
 
+/**
+ * The legacy predicate's alternation tokens (issue #3291). The byte-exact
+ * substring above survives as one firing disjunct; this list powers the
+ * order/subset-tolerant purity arm: a maximal `token(|token)+` run fires
+ * when it has >= 2 members and ALL members are legacy tokens after stripping
+ * a leading `^` and a trailing `/` (so `src` == `src/`). A count-based
+ * threshold cannot work on this repo: ci.yml's 13-member path filter embeds
+ * exactly 2 exact-member legacy hits, so count-2-by-members would fire the
+ * real tree.
+ */
+export const LEGACY_FRAGMENT_TOKENS: readonly string[] =
+	LEGACY_FRAGMENT_REGEX_SUBSTRING.split('|').map((token) =>
+		token.replace(/\/$/, ''),
+	);
+
+const LEGACY_ALTERNATION_RUN =
+	/[A-Za-z0-9_.\-/*]+(?:\|[A-Za-z0-9_.\-/*]+)+/g;
+
+function isLegacyPredicateAlternation(text: string): boolean {
+	for (const run of text.match(LEGACY_ALTERNATION_RUN) ?? []) {
+		const members = run.split('|');
+		if (members.length < 2) continue;
+		const allLegacy = members.every((member) => {
+			const normalized = member.replace(/^\^/, '').replace(/\/$/, '');
+			return LEGACY_FRAGMENT_TOKENS.includes(normalized);
+		});
+		if (allLegacy) return true;
+	}
+	return false;
+}
+
 /** Per-site minimum counts of shared-classifier invocations (issue #2955). */
 export const FRAGMENT_CLASSIFIER_ANCHOR_SITES: ReadonlyArray<{
 	file: string;
@@ -1768,7 +1799,10 @@ export function detectFragmentPathParity(
 	}
 	for (const [rel, text] of contents) {
 		if (text === null) continue;
-		if (text.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING)) {
+		if (
+			text.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING) ||
+			isLegacyPredicateAlternation(text)
+		) {
 			findings.push({
 				category: 'fragment-path-parity',
 				severity: 'error',

@@ -85,6 +85,36 @@ export const USER_VISIBLE_PATH_CLASSES: readonly UserVisiblePathClass[] = [
 	},
 	{
 		kind: 'exact',
+		pattern: 'evaluation-fixtures',
+		userVisible: false,
+		note: '#3291 census: shipped in package.json#files but ships evaluation fixtures, not user-facing behavior; recorded so the not-visible verdict is a reviewed decision, not a fallthrough accident.',
+	},
+	{
+		kind: 'exact',
+		pattern: 'opencode-swarm.schema.json',
+		userVisible: false,
+		note: '#3291 census: generated editor-validation schema, shipped but not user-facing behavior.',
+	},
+	{
+		kind: 'exact',
+		pattern: 'README.md',
+		userVisible: false,
+		note: '#3291 census: shipped documentation text, not behavior.',
+	},
+	{
+		kind: 'exact',
+		pattern: 'LICENSE',
+		userVisible: false,
+		note: '#3291 census: shipped license text, not behavior.',
+	},
+	{
+		kind: 'never-prefix',
+		pattern: 'dist/',
+		userVisible: false,
+		note: '#3291 census: generated build output of src/ (package.json#files ships it), never committed, so no PR diff can touch it; recorded for census completeness.',
+	},
+	{
+		kind: 'exact',
 		pattern: 'package.json',
 		userVisible: true,
 		note: 'the npm manifest ships to users.',
@@ -105,7 +135,7 @@ export const USER_VISIBLE_PATH_CLASSES: readonly UserVisiblePathClass[] = [
 		kind: 'prefix',
 		pattern: 'bin/',
 		userVisible: true,
-		note: 'shipped binaries/scripts.',
+		note: '#3291 census correction: bin/ is NOT in package.json#files (package.json#bin points at dist/cli/index.js); classified user-visible conservatively because the legacy gate treated it as shipped.',
 	},
 	{
 		kind: 'prefix',
