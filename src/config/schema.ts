@@ -897,6 +897,27 @@ export const GitConfigSchema = z.object({
 
 export type GitConfig = z.infer<typeof GitConfigSchema>;
 
+// Spec-driven-development (SDD) provider selection. Values mirror the
+// `/swarm sdd --source <provider>` flag and the SWARM_SDD_SOURCE env var.
+export const SDD_SOURCES = ['openspec', 'speckit', 'swarm'] as const;
+export type SddSource = (typeof SDD_SOURCES)[number];
+
+export const SddConfigSchema = z.object({
+	// A malformed value (e.g. `source: "Speckit"`) is deliberately NOT swallowed
+	// here: it is an ordinary validation error, handled by the loader recovery
+	// ladder exactly like any other invalid key: leaf-only drop when no
+	// user-level config exists and guardrails are not explicitly disabled;
+	// `user_only` when a valid user-level config exists; `guardrails_defaults`
+	// when the raw config sets guardrails.enabled:false or nothing is
+	// recoverable. `/swarm doctor` surfaces it as
+	// `invalid-config-value` at `sdd.source`. The SDD resolver
+	// (`readSddSourceSetting`) additionally buffers its own advisory because it
+	// reads the raw file.
+	source: z.enum(SDD_SOURCES).optional(),
+});
+
+export type SddConfig = z.infer<typeof SddConfigSchema>;
+
 // UI/UX review configuration (designer agent — opt-in)
 export const UIReviewConfigSchema = z.object({
 	enabled: z.boolean().default(false),
@@ -4175,6 +4196,12 @@ export const PluginConfigSchema = z.object({
 		.describe(
 			'Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default.',
 		),
+
+	// Spec-driven-development provider selection (declarative alternative to the
+	// interactive `/swarm sdd --source` flag; consumed by the SDD resolver).
+	sdd: SddConfigSchema.optional().describe(
+		'Spec-driven-development (SDD) provider selection. `sdd.source` (openspec | speckit | swarm) disambiguates a repo that has both openspec/ and .specify/ without passing --source. The SWARM_SDD_SOURCE environment variable overrides it; --source overrides both.',
+	),
 
 	// Git executable resolution override (issue #2236 hardening)
 	git: GitConfigSchema.optional().describe(

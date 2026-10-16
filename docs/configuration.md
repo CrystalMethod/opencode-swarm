@@ -37,7 +37,7 @@ first key. `"$schema"` is pure metadata and is ignored at runtime.
 
 ## Environment variables
 
-Most behavior is controlled by `opencode-swarm.json`. Environment variables are reserved for credentials, diagnostics, CI bypasses, and advanced backend selection.
+Most behavior is controlled by `opencode-swarm.json`. Environment variables are reserved for credentials, diagnostics, CI bypasses, advanced backend selection, and a process-wide SDD provider override.
 
 | Variable | Used by | Description |
 |---|---|---|
@@ -50,6 +50,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 | `SWARM_ALLOW_FULL_SUITE=1` | `test_runner` | Allows `scope: "all"` in the tool. Interactive repo validation should still use shell commands from `TESTING.md`. |
 | `SWARM_SKIP_SPEC_GATE=1` | `save_plan` tests/CI | Bypasses the spec gate. Use only for tests or tightly scoped CI fixtures. |
 | `SWARM_SKIP_GATE_SELECTION=1` | `save_plan` tests/CI | Bypasses QA-gate selection validation. Use only for tests or tightly scoped CI fixtures. |
+| `SWARM_SDD_SOURCE` | SDD resolver (`readEffectiveSpecSync`, `/swarm sdd`) | Selects the SDD provider (`openspec`, `speckit` or `swarm`; case-insensitive) when no `--source` is passed. Overrides `sdd.source` in the config; a native `.swarm/spec.md` still wins. Process-wide: it applies to every repository the process works in, so prefer the per-project `sdd.source` key for pinning. An unrecognized value is reported once in `/swarm diagnose` and ignored. |
 
 ## Minimal example
 
@@ -115,6 +116,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `docs` | object | — | Documentation synthesizer (docs agent) settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
 | `design_docs` | object | — | Structured design-doc generation (issue #1080, docs_design agent) — opt-in. | src/agents/index.ts:createSwarmAgents (+3) |
 | `speckit_checkoff` | object | — | Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default. | src/sdd/speckit-checkoff.ts:maybePropagateSpeckitCheckoff (+1) |
+| `sdd` | object | — | Spec-driven-development (SDD) provider selection. `sdd.source` (openspec \| speckit \| swarm) disambiguates a repo that has both openspec/ and .specify/ without passing --source. The SWARM_SDD_SOURCE environment variable overrides it; --source overrides both. | src/config/loader.ts:readSddSourceSetting (+1) |
 | `git` | object | — | Git executable resolution override (issue #2236 hardening). | src/config/loader.ts:exposedGitBinary |
 | `ui_review` | object | — | UI/UX review (designer agent) settings. | src/agents/index.ts:createSwarmAgents (+3) |
 | `compaction_advisory` | object | — | Compaction advisory settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |

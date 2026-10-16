@@ -1778,6 +1778,20 @@
         }
       }
     },
+    "sdd": {
+      "description": "Spec-driven-development (SDD) provider selection. `sdd.source` (openspec | speckit | swarm) disambiguates a repo that has both openspec/ and .specify/ without passing --source. The SWARM_SDD_SOURCE environment variable overrides it; --source overrides both.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "openspec",
+            "speckit",
+            "swarm"
+          ]
+        }
+      }
+    },
     "git": {
       "description": "Git executable resolution override (issue #2236 hardening).",
       "type": "object",

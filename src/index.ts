@@ -288,6 +288,7 @@ import { runRetentionSweep } from './retention/sweep';
 import { createReviewModelDispatcher } from './review/contracts.js';
 import { createFindingValidationScheduler } from './review/finding-validator.js';
 import { captureReviewAgentModelRegistry } from './review/runtime.js';
+import { resetSddSelectionAdvisories } from './sdd/effective-spec';
 import { createCompactionService } from './services/compaction-service';
 import { shouldRunOnStartup } from './services/config-doctor';
 import {
@@ -1255,6 +1256,7 @@ async function initializeOpenCodeSwarm(
 	clearDeferredWarnings();
 	resetConfigAdvisoryDedup();
 	resetArchitectPromptBudgetAdvisories();
+	resetSddSelectionAdvisories();
 
 	// Project-root ownership (issue #2679): resolve ONCE, synchronously, before
 	// any init-path consumer touches a directory. This applies the same boundary

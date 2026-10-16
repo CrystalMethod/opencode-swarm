@@ -319,6 +319,12 @@ export const CONFIG_CONSUMERS: Record<
 			'src/services/config-doctor.ts:validateConfigKey',
 		],
 	},
+	sdd: {
+		consumers: [
+			'src/config/loader.ts:readSddSourceSetting',
+			'src/services/config-doctor.ts:validateConfigKey',
+		],
+	},
 	git: { consumers: ['src/config/loader.ts:exposedGitBinary'] },
 	ui_review: {
 		consumers: [

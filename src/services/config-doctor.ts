@@ -2205,6 +2205,18 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 			break;
 		}
 
+		// SDD provider selection (`sdd.source`). Leaf errors (a value outside
+		// openspec | speckit | swarm) are reported by the raw-file collectors
+		// from the schema enum (`invalid-config-value` at `sdd.source`); the
+		// loader recovery ladder then handles it like any other invalid key (the
+		// leaf is dropped from the parsed config, or the fail-secure user_only /
+		// guardrails_defaults recovery applies), so the doctor here only reports
+		// a non-object block.
+		case 'sdd': {
+			emitObjectTypeMismatch('sdd', value, findings);
+			break;
+		}
+
 		// Issue #2491: semantic-review route receipts.  Keep this explicit case
 		// beside the other top-level object checks so config-doctor's exhaustive
 		// schema ratchet observes the section and reports malformed leaf values

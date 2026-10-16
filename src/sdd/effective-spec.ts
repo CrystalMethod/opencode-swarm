@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { readSddSourceSetting } from '../config/loader';
+import { SDD_SOURCES, type SddSource } from '../config/schema';
 import { validateSpecContent } from '../config/spec-schema';
 import { advisoryWarn } from '../services/warning-buffer';
 import { log } from '../utils/logger';
@@ -1131,6 +1133,109 @@ export interface ReadEffectiveSpecOpts {
 	feature?: string;
 }
 
+/** Environment variable that declaratively selects the SDD provider. */
+export const SDD_SOURCE_ENV_VAR = 'SWARM_SDD_SOURCE';
+
+/**
+ * An SDD provider selected declaratively (environment or config) rather than
+ * by an explicit `opts.source` / `--source` argument.
+ */
+export interface SddSourceSelection {
+	source: SddSource;
+	origin: 'env' | 'project-config' | 'user-config';
+	/** Human-readable provenance for diagnostics, e.g. `SWARM_SDD_SOURCE=openspec`. */
+	label: string;
+}
+
+/**
+ * Selection advisories fire on every resolver call (gates and preflight call
+ * `readEffectiveSpecSync` repeatedly) and the deferred-warning buffer is
+ * capped, so each distinct message is buffered once. Bounded: cleared
+ * wholesale when full (diagnostic dedup, not session data).
+ */
+const selectionAdvisoriesSeen = new Set<string>();
+const MAX_SELECTION_ADVISORIES = 64;
+
+function selectionAdvisoryOnce(message: string): void {
+	if (selectionAdvisoriesSeen.has(message)) return;
+	if (selectionAdvisoriesSeen.size >= MAX_SELECTION_ADVISORIES) {
+		selectionAdvisoriesSeen.clear();
+	}
+	selectionAdvisoriesSeen.add(message);
+	advisoryWarn(message);
+}
+
+/**
+ * Forget which selection advisories were already buffered. Called at session
+ * start (src/index.ts, next to `clearDeferredWarnings`) so the dedupe state
+ * resets WITH the deferred-warning buffer — otherwise a persistent bad
+ * `SWARM_SDD_SOURCE` / `sdd.source` would be reported in the first session of a
+ * process and never again (issue #2524 PRR-007 defect class). Also the test seam.
+ */
+export function resetSddSelectionAdvisories(): void {
+	selectionAdvisoriesSeen.clear();
+}
+
+function quoteForAdvisory(value: string): string {
+	return JSON.stringify(value.length > 40 ? `${value.slice(0, 40)}…` : value);
+}
+
+/**
+ * Resolve a declarative SDD provider selection for `directory`:
+ * `SWARM_SDD_SOURCE` (case-insensitive, surrounding whitespace ignored) wins
+ * over `sdd.source` in the project (`.opencode/opencode-swarm.json`) and then
+ * user (`~/.config/opencode/opencode-swarm.json`) config. Returns `undefined`
+ * when nothing valid is configured.
+ *
+ * An unrecognized value is never silently dropped: it is reported once through
+ * the deferred-warning buffer (`/swarm diagnose`) and resolution continues
+ * with the next tier. Never throws.
+ *
+ * Callers that also accept an explicit `--source` argument must let it win
+ * over this selection.
+ */
+export function resolveSddSourceSelection(
+	directory: string,
+): SddSourceSelection | undefined {
+	const accepted = SDD_SOURCES.join(' | ');
+	const envRaw = process.env[SDD_SOURCE_ENV_VAR];
+	const envValue = envRaw?.trim().toLowerCase();
+	if (envValue) {
+		if ((SDD_SOURCES as readonly string[]).includes(envValue)) {
+			return {
+				source: envValue as SddSource,
+				origin: 'env',
+				label: `${SDD_SOURCE_ENV_VAR}=${envValue}`,
+			};
+		}
+		selectionAdvisoryOnce(
+			`[opencode-swarm] Ignoring ${SDD_SOURCE_ENV_VAR}=${quoteForAdvisory(envRaw ?? '')}: expected one of ${accepted}. Falling back to sdd.source config, then auto-detection.`,
+		);
+	}
+	try {
+		const setting = readSddSourceSetting(path.resolve(directory));
+		if (setting.rejected) {
+			selectionAdvisoryOnce(
+				`[opencode-swarm] Ignoring ${setting.rejected.field}=${quoteForAdvisory(setting.rejected.value)} in ${setting.rejected.configPath}: ${setting.rejected.field === 'sdd' ? 'expected an object like { source: <provider> }' : `expected one of ${accepted}`}.`,
+			);
+		}
+		if (setting.source) {
+			const origin =
+				setting.origin === 'user' ? 'user-config' : 'project-config';
+			return {
+				source: setting.source,
+				origin,
+				label: `sdd.source=${setting.source} (${setting.origin ?? 'project'} config)`,
+			};
+		}
+	} catch {
+		// Fail open to auto-detection: a config-read fault must never take down
+		// spec resolution. The read is deliberately silent (the full loader owns
+		// file-level diagnostics); this catch only guards unexpected faults.
+	}
+	return undefined;
+}
+
 /**
  * Read (or build) the effective spec for a directory, applying deterministic
  * source precedence (FR-009, FR-010, FR-011).
@@ -1139,11 +1244,18 @@ export interface ReadEffectiveSpecOpts {
  * a. `.swarm/spec.md` present → return the native swarm spec.  This branch is
  *    IDENTICAL to the pre-task-2.1 code and wins even over an explicit
  *    `opts.source` — native swarm spec always wins (FR-009).
- * b. `opts.source` given → use that provider: `'openspec'` calls
- *    {@link buildOpenSpecProjectionSync}; `'speckit'` calls
- *    {@link buildSpeckitProjectionSync}; `'swarm'` with no `.swarm/spec.md`
- *    returns null.
- * c. Auto-detect:
+ * b. A provider selected explicitly, in this order: `opts.source`, then the
+ *    `SWARM_SDD_SOURCE` environment variable, then `sdd.source` from the
+ *    project (`.opencode/opencode-swarm.json`) and user config (see
+ *    {@link resolveSddSourceSelection}).  The selected provider is used
+ *    directly: `'openspec'` calls {@link buildOpenSpecProjectionSync};
+ *    `'speckit'` calls {@link buildSpeckitProjectionSync}; `'swarm'` with no
+ *    `.swarm/spec.md` returns null.  Selection is FINAL — a provider that
+ *    yields nothing does not fall through to auto-detect, matching
+ *    `--source`.  When an env/config selection (not `opts.source`) yields
+ *    null, a one-time diagnostic is buffered so the suppressed enforcement is
+ *    never silent.
+ * c. Auto-detect (reached only when nothing is selected):
  *    - **No `.specify/` marker** → byte-identical to pre-task-2.1 behavior:
  *      call {@link buildOpenSpecProjectionSync} and return its result (FR-011).
  *    - **`.specify/` present but no feature dirs** (empty marker) → Spec-Kit is
@@ -1207,43 +1319,37 @@ export function readEffectiveSpecSync(
 		}
 	}
 
-	let effectiveSource = opts?.source;
-	if (!effectiveSource) {
-		const envSource = process.env.SWARM_SDD_SOURCE;
-		if (
-			envSource === 'openspec' ||
-			envSource === 'speckit' ||
-			envSource === 'swarm'
-		) {
-			effectiveSource = envSource;
-		} else {
-			try {
-				const cfgPath = path.join(root, 'opencode-swarm.json');
-				if (fs.existsSync(cfgPath)) {
-					const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-					if (
-						parsed?.sdd?.source === 'openspec' ||
-						parsed?.sdd?.source === 'speckit' ||
-						parsed?.sdd?.source === 'swarm'
-					) {
-						effectiveSource = parsed.sdd.source;
-					}
-				}
-			} catch {}
-		}
-	}
-
-	// b. Explicit source selection — use the named provider directly.
+	// b. Explicit source selection — opts.source, else SWARM_SDD_SOURCE, else
+	// sdd.source config. Use the named provider directly. An explicit
+	// opts.source skips the declarative lookup entirely (no env/config I/O).
+	const selection = opts?.source ? undefined : resolveSddSourceSelection(root);
+	const effectiveSource = opts?.source ?? selection?.source;
 	if (effectiveSource) {
+		let selected: EffectiveSpec | null = null;
 		switch (effectiveSource) {
 			case 'openspec':
-				return buildOpenSpecProjectionSync(root);
+				selected = buildOpenSpecProjectionSync(root);
+				break;
 			case 'speckit':
-				return buildSpeckitProjectionSync(root, { feature: opts?.feature });
+				selected = buildSpeckitProjectionSync(root, { feature: opts?.feature });
+				break;
 			case 'swarm':
 				// No .swarm/spec.md present (already checked above) → null.
-				return null;
+				break;
 		}
+		if (selected === null && selection) {
+			// Anti-silent-suppression (FR-010 stance): an ambient env/config
+			// selection that resolves to nothing nulls the spec for every
+			// no-opts caller (drift gate, preflight, staleness). Say so once.
+			selectionAdvisoryOnce(
+				`[opencode-swarm] SDD source "${effectiveSource}" selected via ${selection.label} produced no spec for ${root}` +
+					(effectiveSource === 'swarm'
+						? ' (no usable native .swarm/spec.md: it is missing, unreadable or over the size limit)'
+						: ` (no ${effectiveSource} sources found)`) +
+					`; enforcement/projection is suppressed. Unset ${SDD_SOURCE_ENV_VAR} / sdd.source, or select a provider this repo has, to restore auto-detection.`,
+			);
+		}
+		return selected;
 	}
 
 	// c. Auto-detect: determine which projection sources are present.
@@ -1280,7 +1386,7 @@ export function readEffectiveSpecSync(
 		advisoryWarn(
 			'[opencode-swarm] Multiple SDD sources detected (openspec and speckit). ' +
 				'Enforcement/projection is suppressed until you disambiguate. ' +
-				'Pass --source openspec or --source speckit to select a provider.',
+				'Pass --source openspec or --source speckit, set SWARM_SDD_SOURCE, or set sdd.source in .opencode/opencode-swarm.json to select a provider.',
 		);
 		return null;
 	}
