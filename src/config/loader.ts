@@ -23,6 +23,8 @@ import {
 	PluginConfigSchema,
 	resolveExternalSkillsConfig,
 	retiredEpicKeyReplacement,
+	SDD_SOURCES,
+	type SddSource,
 } from './schema';
 
 const CONFIG_FILENAME = 'opencode-swarm.json';
@@ -98,18 +100,27 @@ function getUserConfigDir(): string {
  * Returns the raw JSON object for pre-validation merging.
  * Also returns whether the file existed (vs. not existing at all).
  */
-function loadRawConfigFromPath(configPath: string): {
+function loadRawConfigFromPath(
+	configPath: string,
+	// `silent`: callers that run on every resolver call (readSddSourceSetting)
+	// suppress file-level diagnostics because the full loader already owns
+	// them; re-emitting would double the CONFIG LOAD FAILURE / SECURITY
+	// lines in the capped deferred-warning buffer on every gate call for a
+	// broken file. The full loader keeps its historical per-load behavior.
+	silent = false,
+): {
 	config: Record<string, unknown> | null;
 	fileExisted: boolean;
 	hadError: boolean;
 } {
+	const warn = silent ? () => undefined : advisoryWarn;
 	try {
 		const stats = fs.statSync(configPath);
 		if (stats.size > MAX_CONFIG_FILE_BYTES) {
-			advisoryWarn(
+			warn(
 				`[opencode-swarm] Config file too large (max 100 KB): ${configPath}`,
 			);
-			advisoryWarn(
+			warn(
 				'[opencode-swarm] ⚠️ SECURITY: Config file exceeds size limit. Falling back to safe defaults with guardrails ENABLED.',
 			);
 			return { config: null, fileExisted: true, hadError: true };
@@ -118,10 +129,10 @@ function loadRawConfigFromPath(configPath: string): {
 		const content = fs.readFileSync(configPath, 'utf-8');
 		// TOCTOU guard: re-check size after read (file may have grown between statSync and readFileSync)
 		if (content.length > MAX_CONFIG_FILE_BYTES) {
-			advisoryWarn(
+			warn(
 				`[opencode-swarm] Config file too large after read (max 100 KB): ${configPath}`,
 			);
-			advisoryWarn(
+			warn(
 				'[opencode-swarm] ⚠️ SECURITY: Config file exceeds size limit. Falling back to safe defaults with guardrails ENABLED.',
 			);
 			return { config: null, fileExisted: true, hadError: true };
@@ -140,10 +151,10 @@ function loadRawConfigFromPath(configPath: string): {
 			rawConfig === null ||
 			Array.isArray(rawConfig)
 		) {
-			advisoryWarn(
+			warn(
 				`[opencode-swarm] Invalid config at ${configPath}: expected an object`,
 			);
-			advisoryWarn(
+			warn(
 				'[opencode-swarm] ⚠️ SECURITY: Config format invalid. Falling back to safe defaults with guardrails ENABLED.',
 			);
 			return { config: null, fileExisted: true, hadError: true };
@@ -165,10 +176,10 @@ function loadRawConfigFromPath(configPath: string): {
 			// Any other error (JSON parse error, permission denied, etc.) - treat as load failure
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
-			advisoryWarn(
+			warn(
 				`[opencode-swarm] ⚠️ CONFIG LOAD FAILURE — config exists at ${configPath} but could not be loaded: ${errorMessage}`,
 			);
-			advisoryWarn(
+			warn(
 				'[opencode-swarm] ⚠️ SECURITY: Config load failed. Falling back to safe defaults with guardrails ENABLED.',
 			);
 			return { config: null, fileExisted: true, hadError: true };
@@ -1063,6 +1074,74 @@ export function loadPluginConfig(directory: string): PluginConfig {
 		loadedFromFile,
 		configHadErrors,
 	).config;
+}
+
+/** Outcome of {@link readSddSourceSetting}. */
+export interface SddSourceSetting {
+	/** The validated `sdd.source`, or `undefined` when absent or rejected. */
+	source: SddSource | undefined;
+	/** Which config file supplied `source`. */
+	origin?: 'project' | 'user';
+	/**
+	 * Set when a config file carried an `sdd.source` that is not one of
+	 * `SDD_SOURCES`. The value is truncated for display; the caller decides how
+	 * to surface it (the schema degrades a malformed value to "absent", so
+	 * without this the typo would be silent).
+	 */
+	rejected?: { value: string; configPath: string; field: 'sdd' | 'sdd.source' };
+}
+
+/**
+ * Read only the `sdd.source` setting from the user and project config files
+ * (`~/.config/opencode/opencode-swarm.json`, then
+ * `<directory>/.opencode/opencode-swarm.json`; project takes precedence).
+ *
+ * This is the lightweight sibling of {@link loadPluginConfig} for the SDD
+ * resolver, which runs on gate/preflight paths and must not pay for a full
+ * schema parse of the whole config. It reuses `loadRawConfigFromPath`, so it
+ * inherits the loader's 100 KB size cap, BOM stripping, TOCTOU re-check and
+ * parsing (file-level diagnostics stay with the full loader: this read is silent) instead of re-implementing a weaker raw read.
+ */
+export function readSddSourceSetting(directory: string): SddSourceSetting {
+	const candidates = [
+		['project', path.join(directory, '.opencode', CONFIG_FILENAME)],
+		['user', path.join(getUserConfigDir(), 'opencode', CONFIG_FILENAME)],
+	] as const;
+	let rejected: SddSourceSetting['rejected'];
+	for (const [origin, configPath] of candidates) {
+		const { config } = loadRawConfigFromPath(configPath, true);
+		const sdd = config?.sdd;
+		if (typeof sdd !== 'object' || sdd === null || Array.isArray(sdd)) {
+			if (sdd !== undefined) {
+				rejected ??= {
+					value: describeRejectedSddValue(sdd),
+					configPath,
+					field: 'sdd',
+				};
+			}
+			continue;
+		}
+		const raw = (sdd as Record<string, unknown>).source;
+		if (raw === undefined) continue;
+		if (
+			typeof raw === 'string' &&
+			(SDD_SOURCES as readonly string[]).includes(raw)
+		) {
+			return { source: raw as SddSource, origin, rejected };
+		}
+		rejected ??= {
+			value: describeRejectedSddValue(raw),
+			configPath,
+			field: 'sdd.source',
+		};
+	}
+	return { source: undefined, rejected };
+}
+
+function describeRejectedSddValue(value: unknown): string {
+	const text =
+		typeof value === 'string' ? value : (JSON.stringify(value) ?? '');
+	return text.slice(0, 40);
 }
 
 /**

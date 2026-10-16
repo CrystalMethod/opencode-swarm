@@ -21,4 +21,5 @@ preload = [
 	"./tests/preload/project-db-cleanup.ts",
 	"./tests/preload/prod-store-tripwire.ts",
 	"./tests/preload/executable-resolver-pin.ts",
+	"./tests/preload/sdd-selection-env-pin.ts",
 ]

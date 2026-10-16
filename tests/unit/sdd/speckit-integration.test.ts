@@ -17,6 +17,7 @@ import {
 	buildOpenSpecProjectionSync,
 	buildSpeckitProjectionSync,
 	readEffectiveSpecSync,
+	resetSddSelectionAdvisories,
 	writeProjectedSpecSync,
 } from '../../../src/sdd/effective-spec';
 import {
@@ -33,13 +34,36 @@ function writeFile(relPath: string, content: string): void {
 	fs.writeFileSync(abs, content, 'utf-8');
 }
 
+// Declarative SDD source selection reads process-wide state: the
+// SWARM_SDD_SOURCE env var and the user-level config under XDG_CONFIG_HOME.
+// Pin both per test so a developer shell that exports SWARM_SDD_SOURCE (or has
+// a user-level `sdd.source`) cannot turn the ambiguity/auto-detect tests below
+// red, and so the selection tests start from a known-empty slate.
+let savedSddSourceEnv: string | undefined;
+let savedXdgConfigHome: string | undefined;
+
 beforeEach(() => {
 	tempDir = fs.realpathSync(
 		fs.mkdtempSync(path.join(os.tmpdir(), 'sdd-integration-')),
 	);
+	savedSddSourceEnv = process.env.SWARM_SDD_SOURCE;
+	savedXdgConfigHome = process.env.XDG_CONFIG_HOME;
+	delete process.env.SWARM_SDD_SOURCE;
+	process.env.XDG_CONFIG_HOME = path.join(tempDir, '.xdg-config-empty');
+	resetSddSelectionAdvisories();
 });
 
 afterEach(() => {
+	if (savedSddSourceEnv === undefined) {
+		delete process.env.SWARM_SDD_SOURCE;
+	} else {
+		process.env.SWARM_SDD_SOURCE = savedSddSourceEnv;
+	}
+	if (savedXdgConfigHome === undefined) {
+		delete process.env.XDG_CONFIG_HOME;
+	} else {
+		process.env.XDG_CONFIG_HOME = savedXdgConfigHome;
+	}
 	fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -248,6 +272,30 @@ describe('3: FR-010 ambiguity diagnostic — warn count is exactly 1 per call (s
 		readEffectiveSpecSync(tempDir);
 
 		expect(getDeferredWarnings()).toHaveLength(2);
+	});
+
+	test('both-present repo with SWARM_SDD_SOURCE env: resolves selected provider without warning', () => {
+		buildBothPresentFixture();
+		clearDeferredWarnings();
+		process.env.SWARM_SDD_SOURCE = 'openspec';
+		const result = readEffectiveSpecSync(tempDir);
+		expect(result).not.toBeNull();
+		expect(result?.source).toBe('openspec_projection');
+		expect(getDeferredWarnings()).toHaveLength(0);
+	});
+
+	test('both-present repo with sdd.source in .opencode/opencode-swarm.json: resolves selected provider without warning', () => {
+		buildBothPresentFixture();
+		clearDeferredWarnings();
+		// The loader's documented project-config location — NOT the repo root.
+		writeFile(
+			path.join('.opencode', 'opencode-swarm.json'),
+			JSON.stringify({ sdd: { source: 'speckit' } }),
+		);
+		const result = readEffectiveSpecSync(tempDir);
+		expect(result).not.toBeNull();
+		expect(result?.source).toBe('speckit_projection');
+		expect(getDeferredWarnings()).toHaveLength(0);
 	});
 });
 

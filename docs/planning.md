@@ -317,10 +317,11 @@ When resolving which source feeds planning and drift enforcement:
 
 1. **Native `.swarm/spec.md` present** — always used, regardless of `--source`.
 2. **`--source <openspec|speckit>`** — explicit selection (applied after the native-spec check).
-3. **Auto-detect (no `--source`):**
+3. **`SWARM_SDD_SOURCE`** (environment variable) and then **`sdd.source`** in `.opencode/opencode-swarm.json` (or the user config) — the same values as `--source`, for non-interactive and project-pinned selection. A selection from either is final: if that provider yields no spec the repo is not re-auto-detected, and a one-time advisory in `/swarm diagnose` names the selection. An unrecognized `SWARM_SDD_SOURCE` value is reported once and ignored; an invalid `sdd.source` is a config validation error like any other invalid key (reported by the loader and `/swarm doctor`; when a user-level config exists the loader's fail-secure recovery discards the project config until it is fixed), and the SDD resolver independently buffers its own advisory and falls through to auto-detect (the resolver reads the file directly, so it can still honor `sdd.source` from any project config the loader discarded (another invalid key, or a refused prototype-pollution payload such as `__proto__`)). The `/swarm sdd` commands honor the same selection, and `status` reports where it came from.
+4. **Auto-detect (nothing selected):**
    - Only Spec-Kit detected → Spec-Kit projection used.
    - Only OpenSpec detected → OpenSpec projection used (unchanged behavior).
-   - **Both detected, no `--source`** — the two paths differ by layer. For library consumers (planning/drift), `readEffectiveSpecSync` returns no effective spec and logs a single ambiguity warning, so drift enforcement degrades to advisory rather than guessing. The `/swarm sdd` commands (`status`, `validate`, `project`) treat the same situation as a **hard error**, naming both sources and requiring `--source` to disambiguate.
+   - **Both detected, nothing selected** — the two paths differ by layer. For library consumers (planning/drift), `readEffectiveSpecSync` returns no effective spec and logs a single ambiguity warning, so drift enforcement degrades to advisory rather than guessing. The `/swarm sdd` commands (`status`, `validate`, `project`) treat the same situation as a **hard error**, naming both sources and requiring `--source` (or `SWARM_SDD_SOURCE` / `sdd.source`) to disambiguate.
 
 `--source swarm` is accepted by `status` and `validate` but is rejected by `project` — the native `.swarm/spec.md` does not require projection.
 

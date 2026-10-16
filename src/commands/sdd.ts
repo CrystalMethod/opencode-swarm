@@ -5,6 +5,7 @@ import {
 	buildOpenSpecProjectionSync,
 	detectSpeckit,
 	loadSddStatusSync,
+	resolveSddSourceSelection,
 	resolveSpeckitProjection,
 	validateSpeckit,
 	writeProjectedSpecSync,
@@ -29,6 +30,9 @@ const USAGE = `Usage:
 
 Source options (required when both openspec and speckit are detected):
   --source <swarm|openspec|speckit>  select the SDD provider explicitly
+                                     (overrides SWARM_SDD_SOURCE and sdd.source)
+  SWARM_SDD_SOURCE=<provider>        environment variable; selects the provider when no --source
+  sdd.source in .opencode/opencode-swarm.json   declarative provider (see docs/configuration.md)
   --feature <id>                     Spec-Kit feature directory name to project (one feature)
   --feature all                      project ALL detected Spec-Kit features (project only;
                                      the no-flag default with multiple features does the same)
@@ -44,7 +48,7 @@ Spec-Kit SDD support:
     when multiple features exist; --feature <id> selects one (bare FR-### ids, v1 form)
   - optional tasks.md check-off write-back on task completion: enable speckit_checkoff.enabled
     in the plugin config (off by default; see docs/planning.md)
-  - use --source speckit or --source openspec to disambiguate when both are present`;
+  - use --source speckit or --source openspec (or SWARM_SDD_SOURCE / sdd.source) to disambiguate when both are present`;
 
 interface ParsedSddArgs {
 	json: boolean;
@@ -152,6 +156,32 @@ function parseArgs(args: string[]): ParsedSddArgs {
 	return parsed;
 }
 
+/**
+ * Resolve the SDD provider for a command: an explicit `--source` wins, then
+ * `SWARM_SDD_SOURCE`, then `sdd.source` config (same order as
+ * `readEffectiveSpecSync`, so the CLI and the gates never disagree).
+ */
+function resolveCommandSource(
+	directory: string,
+	parsed: ParsedSddArgs,
+): {
+	source: 'swarm' | 'openspec' | 'speckit' | undefined;
+	selection: ReturnType<typeof resolveSddSourceSelection>;
+} {
+	const selection = parsed.source
+		? undefined
+		: resolveSddSourceSelection(directory);
+	return { source: parsed.source ?? selection?.source, selection };
+}
+
+function featureSourceError(
+	selection: ReturnType<typeof resolveSddSourceSelection>,
+): string {
+	return `Error: --feature is only valid with --source speckit${
+		selection ? ` (the selected source is ${selection.label})` : ''
+	}\n\n${USAGE}`;
+}
+
 function formatList(items: string[]): string {
 	return items.length > 0
 		? items.map((item) => `- ${item}`).join('\n')
@@ -189,10 +219,11 @@ export async function handleSddStatusCommand(
 ): Promise<string> {
 	const parsed = parseArgs(args);
 	if (parsed.error) return `Error: ${parsed.error}\n\n${USAGE}`;
+	const { source, selection } = resolveCommandSource(directory, parsed);
 
 	// --feature is only meaningful with Spec-Kit.
-	if (parsed.feature && parsed.source && parsed.source !== 'speckit') {
-		return `Error: --feature is only valid with --source speckit\n\n${USAGE}`;
+	if (parsed.feature && source && source !== 'speckit') {
+		return featureSourceError(selection);
 	}
 
 	// Call detectSpeckit directly — SddStatus/loadSddStatusSync are OpenSpec-only
@@ -211,12 +242,12 @@ export async function handleSddStatusCommand(
 	// FR-009/010: both sources present and no --source → hard error naming both.
 	// Discriminator mirrors readEffectiveSpecSync: speckitPresent = features.length > 0,
 	// openspecPresent = buildOpenSpecProjectionSync !== null.
-	if (speckitPresent && !parsed.source && !nativeSpecExists) {
+	if (speckitPresent && !source && !nativeSpecExists) {
 		const openspecProjection = buildOpenSpecProjectionSync(directory);
 		if (openspecProjection !== null) {
 			const errLines = [
 				'Error: Multiple SDD sources detected (openspec, speckit).',
-				'Pass --source openspec or --source speckit to select a provider.',
+				'Pass --source openspec or --source speckit (or set SWARM_SDD_SOURCE / sdd.source) to select a provider.',
 			];
 			return parsed.json
 				? JSON.stringify(
@@ -232,12 +263,29 @@ export async function handleSddStatusCommand(
 	// both-present case is already short-circuited above, so this only affects the
 	// explicit-selection path and never triggers the resolver's ambiguity console.warn.
 	const status = loadSddStatusSync(directory, {
-		source: parsed.source,
+		source,
 		feature: parsed.feature,
 	});
 
 	if (parsed.json) {
-		return JSON.stringify({ ...status, speckit: speckitDetection }, null, 2);
+		return JSON.stringify(
+			{
+				...status,
+				speckit: speckitDetection,
+				// Provenance only when the provider came from env/config, so the
+				// default (flag-or-auto-detect) payload stays byte-identical.
+				...(selection
+					? {
+							sourceSelection: {
+								source: selection.source,
+								via: selection.label,
+							},
+						}
+					: {}),
+			},
+			null,
+			2,
+		);
 	}
 
 	const changes = status.changes.map(
@@ -257,6 +305,7 @@ export async function handleSddStatusCommand(
 		'## SDD Status',
 		'',
 		`Provider: ${status.provider}`,
+		...(selection ? [`Source selection: ${selection.label}`] : []),
 		`Swarm spec: ${status.swSpecExists ? 'present' : 'missing'}`,
 		`OpenSpec root: ${status.openSpecExists ? 'present' : 'missing'}`,
 		`Current OpenSpec specs: ${status.currentSpecs.length}`,
@@ -289,10 +338,11 @@ export async function handleSddValidateCommand(
 ): Promise<string> {
 	const parsed = parseArgs(args);
 	if (parsed.error) return `Error: ${parsed.error}\n\n${USAGE}`;
+	const { source, selection } = resolveCommandSource(directory, parsed);
 
 	// --feature is only meaningful with Spec-Kit (same guard as status/project).
-	if (parsed.feature && parsed.source && parsed.source !== 'speckit') {
-		return `Error: --feature is only valid with --source speckit\n\n${USAGE}`;
+	if (parsed.feature && source && source !== 'speckit') {
+		return featureSourceError(selection);
 	}
 
 	// Determine whether to use the Spec-Kit validation path.
@@ -305,9 +355,9 @@ export async function handleSddValidateCommand(
 	// path below, where loadSddStatusSync resolves native-first via readEffectiveSpecSync.
 	const nativeSpecExists = fs.existsSync(path.join(directory, SWARM_SPEC_REL));
 
-	if (parsed.source === 'speckit') {
+	if (source === 'speckit') {
 		useSpeckit = true;
-	} else if (!parsed.source && !nativeSpecExists) {
+	} else if (!source && !nativeSpecExists) {
 		// Auto-detect: check for Spec-Kit marker and feature dirs.
 		const speckitDetection = detectSpeckit(directory);
 
@@ -319,7 +369,7 @@ export async function handleSddValidateCommand(
 				// Reuses the same messaging path task 2.2 added (no second messaging scheme).
 				const errLines = [
 					'Error: Multiple SDD sources detected (openspec, speckit).',
-					'Pass --source openspec or --source speckit to select a provider.',
+					'Pass --source openspec or --source speckit (or set SWARM_SDD_SOURCE / sdd.source) to select a provider.',
 				];
 				// valid:false keeps validate's --json error shape uniform across all
 				// three Spec-Kit error paths (multi-source, FR-012 empty, resolution-level).
@@ -396,7 +446,7 @@ export async function handleSddValidateCommand(
 		].join('\n');
 	}
 
-	if (parsed.source === 'swarm') {
+	if (source === 'swarm') {
 		// Native-only validation branch for --source swarm (bugfix).
 		// Placed before OpenSpec path so provider/valid reflect native spec only.
 		const status = loadSddStatusSync(directory, {
@@ -445,7 +495,7 @@ export async function handleSddValidateCommand(
 	// Thread parsed.source/feature so --source openspec on a both-present repo does not
 	// trigger the resolver's console.warn inside loadSddStatusSync (advisor item 1).
 	const status = loadSddStatusSync(directory, {
-		source: parsed.source,
+		source,
 		feature: parsed.feature,
 	});
 	const projection = buildOpenSpecProjectionSync(directory, {
@@ -495,15 +545,20 @@ export async function handleSddProjectCommand(
 ): Promise<string> {
 	const parsed = parseArgs(args);
 	if (parsed.error) return `Error: ${parsed.error}\n\n${USAGE}`;
+	const { source, selection } = resolveCommandSource(directory, parsed);
 
 	// --feature is only meaningful with Spec-Kit.
-	if (parsed.feature && parsed.source && parsed.source !== 'speckit') {
-		return `Error: --feature is only valid with --source speckit\n\n${USAGE}`;
+	if (parsed.feature && source && source !== 'speckit') {
+		return featureSourceError(selection);
 	}
 
-	// --source swarm selects the native .swarm/spec.md and cannot generate a projection.
-	if (parsed.source === 'swarm') {
-		return `Error: --source swarm selects the native .swarm/spec.md and does not generate a projection. Use --source openspec or --source speckit.\n\n${USAGE}`;
+	// A swarm selection targets the native .swarm/spec.md and cannot generate a projection.
+	if (source === 'swarm') {
+		return `Error: ${
+			selection
+				? `SDD source "swarm" (selected via ${selection.label})`
+				: '--source swarm'
+		} selects the native .swarm/spec.md and does not generate a projection. Use --source openspec or --source speckit.\n\n${USAGE}`;
 	}
 
 	// --overwrite consent gate (FR-004 Path B): the `--overwrite` flag is the
@@ -534,9 +589,9 @@ export async function handleSddProjectCommand(
 	// Determine whether to use the Spec-Kit projection path.
 	let useSpeckit = false;
 
-	if (parsed.source === 'speckit') {
+	if (source === 'speckit') {
 		useSpeckit = true;
-	} else if (!parsed.source) {
+	} else if (!source) {
 		// Auto-detect: check for Spec-Kit marker and feature dirs.
 		const speckitDetection = detectSpeckit(directory);
 
@@ -548,7 +603,7 @@ export async function handleSddProjectCommand(
 				// FR-009/010: both sources present, no --source → hard error naming both.
 				return [
 					'Error: Multiple SDD sources detected (openspec, speckit).',
-					'Pass --source openspec or --source speckit to select a provider.',
+					'Pass --source openspec or --source speckit (or set SWARM_SDD_SOURCE / sdd.source) to select a provider.',
 				].join('\n');
 			}
 			useSpeckit = true;
