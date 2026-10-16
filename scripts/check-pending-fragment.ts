@@ -27,19 +27,37 @@
  * --print-requirement (a classification probe for workflow consumers; the
  * caller owns its messaging and exit handling).
  *
- * Machine-readable mode for workflow consumers (issue #2955):
+ * Machine-readable mode for workflow consumers (issue #2955, transport
+ * hardening in issue #3290):
  *   bun scripts/check-pending-fragment.ts --print-requirement [--added <path>]...
  *     - reads the CHANGED path list from stdin (one path per line)
- *     - prints exactly one line: required=<true|false> satisfied=<true|false>
- *     - exit 0 = no violation (not required OR satisfied)
- *     - exit 1 = required AND not satisfied
- *     - exit 2 = usage error
+ *   bun scripts/check-pending-fragment.ts --print-requirement
+ *     --paths-format <newline|nul|jsonl>
+ *     --changed-file <path> --added-file <path>
+ *     - reads both lists from files in the given framing (issue #3290: a
+ *       line-delimited transport cannot represent a path containing a
+ *       newline, and `core.quotePath=false` still C-quotes quote/backslash/
+ *       control characters; `nul` matches `git diff -z` output verbatim and
+ *       `jsonl` carries one JSON-encoded path string per line, which handles
+ *       every character by construction)
+ *   - `--added` together with `--added-file` is a usage error (both name the
+ *     ADDED list — ambiguity is refused). When `--changed-file` is present,
+ *     stdin is simply not read (documented precedence: callers that pipe
+ *     stdin anyway get no error and no effect).
+ *   - prints exactly one line: required=<true|false> satisfied=<true|false>
+ *   - exit 0 = no violation (not required OR satisfied)
+ *   - exit 1 = required AND not satisfied
+ *   - exit 2 = usage error, undecodable input, or input over the byte bound
+ *   - every input read is STREAM-bounded at MAX_LIST_BYTES: stdin is consumed
+ *     incrementally and stops after the bound, so an endless stream cannot
+ *     pin the process (issue #3290 A3).
  *   Pure: no git, no repo-root resolution, no env enforcement.
  *
  * Portability: TypeScript + Bun only (issue #2078 — no new Bash gates).
  * Pure classification logic is exported for unit tests.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
 	FRAGMENT_DIR,
@@ -249,8 +267,16 @@ export function main(startDir: string = process.cwd()): number {
 
 function parsePrintRequirementArgs(
 	args: readonly string[],
-): { added: string[] } | { error: string } {
+): {
+	added: string[];
+	addedFile: string | null;
+	changedFile: string | null;
+	format: PathListFormat | null;
+} | { error: string } {
 	const added: string[] = [];
+	let addedFile: string | null = null;
+	let changedFile: string | null = null;
+	let format: PathListFormat | null = null;
 	for (let i = 0; i < args.length; i++) {
 		if (args[i] === '--added') {
 			if (i + 1 >= args.length) {
@@ -258,18 +284,189 @@ function parsePrintRequirementArgs(
 			}
 			added.push(args[i + 1]);
 			i++;
+		} else if (args[i] === '--added-file') {
+			if (i + 1 >= args.length) {
+				return { error: '--added-file requires a value' };
+			}
+			if (addedFile !== null) {
+				return { error: '--added-file may be given only once' };
+			}
+			addedFile = args[i + 1];
+			i++;
+		} else if (args[i] === '--changed-file') {
+			if (i + 1 >= args.length) {
+				return { error: '--changed-file requires a value' };
+			}
+			if (changedFile !== null) {
+				return { error: '--changed-file may be given only once' };
+			}
+			changedFile = args[i + 1];
+			i++;
+		} else if (args[i] === '--paths-format') {
+			if (i + 1 >= args.length) {
+				return { error: '--paths-format requires a value' };
+			}
+			const value = args[i + 1];
+			if (value !== 'newline' && value !== 'nul' && value !== 'jsonl') {
+				return { error: '--paths-format must be one of: newline, nul, jsonl' };
+			}
+			format = value;
+			i++;
 		} else {
 			return { error: `unknown argument: ${args[i]}` };
 		}
 	}
-	return { added };
+	if (addedFile !== null && added.length > 0) {
+		return {
+			error:
+				'--added and --added-file are mutually exclusive (both name the ADDED list)',
+		};
+	}
+	return { added, addedFile, changedFile, format };
+}
+
+/** Input framing for --print-requirement list transport (issue #3290). */
+export type PathListFormat = 'newline' | 'nul' | 'jsonl';
+
+export const MAX_LIST_BYTES = 4 * 1024 * 1024;
+
+/** Error carrying the decoder context; printRequirement maps it to exit 2. */
+export class PathListDecodeError extends Error {
+	constructor(
+		message: string,
+		public readonly source: string,
+	) {
+		super(message);
+		this.name = 'PathListDecodeError';
+	}
 }
 
 /**
- * Machine-readable mode for workflow consumers (issue #2955): reads the
- * changed-path list from stdin (newline-delimited), the added list from
- * repeated --added flags, prints exactly one verdict line, and maps the
- * exit code to gate semantics. Pure: no git, no repo-root resolution; the
+ * Decode one transported path list. `newline` is the legacy mode (split on
+ * newlines, tolerate CRLF); `nul` splits on NUL exactly like the quality
+ * gate's internal `git diff -z` reads; `jsonl` parses one JSON-encoded path
+ * string per line — the only framing that can carry quote, backslash,
+ * control, and newline characters losslessly from `jq -c` output.
+ */
+export function decodePathList(
+	raw: string,
+	format: PathListFormat,
+	source: string,
+): string[] {
+	if (format === 'nul') {
+		return raw.split('\0').filter((entry) => entry.length > 0);
+	}
+	if (format === 'jsonl') {
+		const out: string[] = [];
+		const lines = raw.split('\n');
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i].replace(/\r$/, '');
+			if (line.length === 0) continue;
+			try {
+				const value: unknown = JSON.parse(line);
+				if (typeof value !== 'string') {
+					throw new Error('not a string');
+				}
+				out.push(value);
+			} catch {
+				throw new PathListDecodeError(
+					`jsonl input is not a JSON-encoded path string at ${source} line ${i + 1}`,
+					source,
+				);
+			}
+		}
+		return out;
+	}
+	return raw
+		.split('\n')
+		.map((line) => line.replace(/\r$/, ''))
+		.filter((line) => line.length > 0);
+}
+
+function readBoundedFileSync(file: string, source: string): string {
+	let stat: import('node:fs').Stats;
+	try {
+		stat = fs.statSync(file);
+	} catch {
+		throw new PathListDecodeError(`cannot read ${source}: ${file}`, source);
+	}
+	if (!stat.isFile()) {
+		throw new PathListDecodeError(`${source} is not a regular file: ${file}`, source);
+	}
+	if (stat.size > MAX_LIST_BYTES) {
+		throw new PathListDecodeError(
+			`${source} exceeds the ${MAX_LIST_BYTES}-byte read bound (${stat.size} bytes): ${file}`,
+			source,
+		);
+	}
+	return fs.readFileSync(file, 'utf8');
+}
+
+/**
+ * Idle bound for stdin (issue #3282 AC3). Env-tunable so the subprocess CLI
+ * test can shorten it; not an enforcement switch.
+ */
+function stdinIdleMs(): number {
+	const raw = process.env.FRAGMENT_STDIN_IDLE_MS;
+	const parsed = raw === undefined ? Number.NaN : Number(raw);
+	return Number.isInteger(parsed) && parsed > 0 ? parsed : 10_000;
+}
+
+async function readStdinBounded(source: string): Promise<string> {
+	const chunks: Buffer[] = [];
+	let total = 0;
+	const iterator = (Bun.stdin.stream() as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+	const timers: Array<ReturnType<typeof setTimeout>> = [];
+	try {
+		for (;;) {
+			// A byte bound cannot stop a hang: stdin that yields no data and no
+			// EOF (issue #3282 AC3) must trip the idle bound instead of pinning
+			// the required check until the job ceiling.
+			const next = await Promise.race([
+				iterator.next(),
+				new Promise<never>((_, reject) => {
+					const timer = setTimeout(
+						() =>
+							reject(
+								new PathListDecodeError(
+									`stdin produced no data within ${stdinIdleMs()}ms (idle bound)`,
+									source,
+								),
+							),
+						stdinIdleMs(),
+					);
+					timers.push(timer);
+				}),
+			]);
+			if (next.done) break;
+			total += next.value.byteLength;
+			if (total > MAX_LIST_BYTES) {
+				throw new PathListDecodeError(
+					`${source} exceeds the ${MAX_LIST_BYTES}-byte read bound (${total}+ bytes read)`,
+					source,
+				);
+			}
+			chunks.push(Buffer.from(next.value));
+		}
+	} finally {
+		// Do NOT attempt iterator.return() here: cancelling a Bun stdin pipe
+		// read that is blocked in a native wait never completes (verified on
+		// all three CI platforms), which would hang the CLI exactly like the
+		// bug this bound exists to fix. printRequirement exits the process
+		// deterministically on this error path instead.
+		for (const timer of timers) clearTimeout(timer);
+	}
+	return Buffer.concat(chunks).toString('utf8');
+}
+
+/**
+ * Machine-readable mode for workflow consumers (issue #2955; transport modes
+ * and byte bounds from issue #3290): reads the changed-path list from stdin
+ * (newline-delimited) or `--changed-file` in the `--paths-format` framing,
+ * the added list from repeated `--added` flags or `--added-file` in the same
+ * framing, prints exactly one verdict line, and maps the exit code to gate
+ * semantics. No git, no repo-root resolution, no env enforcement (it does
+ * read the caller-supplied stdin/file inputs, bounded); the
  * FRAGMENT_CHECK_ENFORCE escape hatch does not apply (the caller owns its
  * messaging).
  */
@@ -280,18 +477,52 @@ export async function printRequirement(
 	const parsed = parsePrintRequirementArgs(args);
 	if ('error' in parsed) {
 		console.error(
-			`[check-pending-fragment] ${parsed.error} (usage: --print-requirement [--added <path>]... with changed paths on stdin)`,
+			`[check-pending-fragment] ${parsed.error} (usage: --print-requirement [--paths-format newline|nul|jsonl] [--changed-file <path> | changed paths on stdin] [--added <path>]... | [--added-file <path>])`,
 		);
 		return 2;
 	}
-	const raw = stdinText ?? (await Bun.stdin.text());
-	const changed = raw
-		.split('\n')
-		.map((line) => line.replace(/\r$/, ''))
-		.filter((line) => line.length > 0);
-	const verdict = evaluateRequirement(changed, parsed.added);
-	console.log(`required=${verdict.required} satisfied=${verdict.satisfied}`);
-	return verdict.violation ? 1 : 0;
+	const format: PathListFormat = parsed.format ?? 'newline';
+	if (
+		(parsed.changedFile !== null || parsed.addedFile !== null) &&
+		parsed.format === null
+	) {
+		// Fail closed rather than silently decoding framed bytes through the
+		// legacy newline decoder (which would read required=false on garbage).
+		console.error(
+			'[check-pending-fragment] --paths-format is required when --changed-file or --added-file is used',
+		);
+		return 2;
+	}
+	try {
+		const changedRaw =
+			parsed.changedFile !== null
+				? readBoundedFileSync(parsed.changedFile, '--changed-file input')
+				: stdinText !== undefined
+					? stdinText
+					: await readStdinBounded('stdin input');
+		const addedRaw =
+			parsed.addedFile !== null
+				? readBoundedFileSync(parsed.addedFile, '--added-file input')
+				: null;
+		const changed = decodePathList(changedRaw, format, 'changed list');
+		const added =
+			addedRaw !== null
+				? decodePathList(addedRaw, format, 'added list')
+				: parsed.added;
+		const verdict = evaluateRequirement(changed, added);
+		console.log(`required=${verdict.required} satisfied=${verdict.satisfied}`);
+		return verdict.violation ? 1 : 0;
+	} catch (error) {
+		if (error instanceof PathListDecodeError) {
+			console.error(`[check-pending-fragment] ${error.message}`);
+			// Exit deterministically: a pending stdin read from a lost idle/byte
+			// race would otherwise keep the event loop alive past exitCode.
+			// In-process callers (tests) always pass stdinText and never reach
+			// this branch.
+			process.exit(2);
+		}
+		throw error;
+	}
 }
 
 // Direct invocation entry point (mirrors check-test-file-cap.ts).
