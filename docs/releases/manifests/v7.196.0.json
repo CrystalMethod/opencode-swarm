@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.196.0",
+  "tagCommit": "48fadd278e375f81cebb67c531debe317926c3ac",
+  "targetCommitish": "48fadd278e375f81cebb67c531debe317926c3ac",
+  "releaseBodySha256": "49811f271060f61d85c3a6cc7b3f4d75e8c24a4cf5ad13831fd383abfd20f628",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3169-epic-v2-phase1-prerequisites.md",
+      "sha256": "07a3582325ca4d0b1b1beb805961c0351aa6478d14a2336cf9943ec33b12343b"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3169-epic-v2-phase2-session-client.md",
+      "sha256": "b89b6a5113c0a7a2754d0392fee4dfe0e90c0b2a148a44e87f76f4aced30d066"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/3169-epic-v2-phase3-isolated-coders.md",
+      "sha256": "1d2a2b8fdbe0e115fccef9148f5d69096f02374684b47e10fb87016ab729dca8"
+    },
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/3169-epic-v2-phase4-command-dispatch.md",
+      "sha256": "64fea2cce0298ab15ecefdb7ae894e1ba16623dbafc399426a67036b942e9a31"
+    },
+    {
+      "prNumber": null,
+      "order": 4,
+      "path": "docs/releases/pending/epic-mode-v2.md",
+      "sha256": "c0913ff352c28796022a72fe12eb8eb03d8631a5fe3cd9c344b9d2e11061f3e1"
+    },
+    {
+      "prNumber": null,
+      "order": 5,
+      "path": "docs/releases/pending/sbom-lockfile-parser-truth-matrix.md",
+      "sha256": "a1128983f165e8c11e1026ba7e5f0c9fe03addfe58ba6cb6b1a68456c7d2533d"
+    }
+  ]
+}

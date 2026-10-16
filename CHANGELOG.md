@@ -1,5 +1,24 @@
 # Changelog
 
+## [7.197.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.2...v7.197.3) (2026-10-15)
+
+
+### Bug Fixes
+
+* **ci:** close PR [#3276](https://github.com/ZaxbyHub/opencode-swarm/issues/3276) review findings on the fragment gates ([d983f3f](https://github.com/ZaxbyHub/opencode-swarm/commit/d983f3feffe5baa6f13c3d8039c65d4b1cf92a96))
+* **ci:** one shared fragment path-class table consumed by every gate ([c5553f5](https://github.com/ZaxbyHub/opencode-swarm/commit/c5553f5e7499609dd16c87498c34333db608c5a2))
+* **ci:** one shared fragment path-class table consumed by every gate ([#2955](https://github.com/ZaxbyHub/opencode-swarm/issues/2955)) ([c388294](https://github.com/ZaxbyHub/opencode-swarm/commit/c38829408a87da269c7747430e0521418ac6deda))
+* **pr-review:** census admission-sink definitions per plan-critic round 5 ([#2908](https://github.com/ZaxbyHub/opencode-swarm/issues/2908)) ([51e308e](https://github.com/ZaxbyHub/opencode-swarm/commit/51e308eb5e524ed1d30c2c3a21cc017898427b79))
+* **pr-review:** make the census ratchet actually guard (PR [#3284](https://github.com/ZaxbyHub/opencode-swarm/issues/3284) review) ([de5a1fa](https://github.com/ZaxbyHub/opencode-swarm/commit/de5a1fa41aa7912fe2e266c3775dfb85ad73b454))
+* **pr-review:** resolve implementation-review findings F1+F2 ([#2908](https://github.com/ZaxbyHub/opencode-swarm/issues/2908)) ([bfc2ead](https://github.com/ZaxbyHub/opencode-swarm/commit/bfc2ead5c61158c0c460febf99f0c82294af5378))
+* **tests:** harden settlement property tests and correct 2908 docs ([#3284](https://github.com/ZaxbyHub/opencode-swarm/issues/3284)) ([c9e59ca](https://github.com/ZaxbyHub/opencode-swarm/commit/c9e59ca94b55b553f17e0fbb38f52e705521a07f))
+* **tests:** make delegation capture scrub reproducible and self-consistent ([#3284](https://github.com/ZaxbyHub/opencode-swarm/issues/3284)) ([b4958bf](https://github.com/ZaxbyHub/opencode-swarm/commit/b4958bfcef149f6eae57338b408a8ae8d32b8969))
+
+
+### Reverts
+
+* **deps:** move the fast-check devDependency declaration to the bot channel ([#2908](https://github.com/ZaxbyHub/opencode-swarm/issues/2908)) ([303eb6f](https://github.com/ZaxbyHub/opencode-swarm/commit/303eb6f02b470526ef4756bce86a6238d4f52aaf))
+
 ## [7.197.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.1...v7.197.2) (2026-10-15)
 
 

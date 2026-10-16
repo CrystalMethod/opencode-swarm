@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "tag": "v7.194.0",
+  "tagCommit": "012c4e40db4a63dd9b771cb99d57c565949d2931",
+  "targetCommitish": "012c4e40db4a63dd9b771cb99d57c565949d2931",
+  "releaseBodySha256": "316d76a93db56df552d8c05abd8f99ebf7dad1f69f4edff580a229adeb012a9f",
+  "fragments": [
+    {
+      "prNumber": null,
+      "order": 3,
+      "path": "docs/releases/pending/3095-pr-workflow-status-projection.md",
+      "sha256": "6a93ae989c5aceb706aed0647ff6e49bd1c2ed10edee5a12eb4d3e8525492d3a"
+    },
+    {
+      "prNumber": null,
+      "order": 0,
+      "path": "docs/releases/pending/3169-epic-v2-phase1-prerequisites.md",
+      "sha256": "bce6aae0aca410723ab5ff02d27f4d435f45f7d0cd81db7a9e0c774b1fb8034d"
+    },
+    {
+      "prNumber": null,
+      "order": 1,
+      "path": "docs/releases/pending/3169-epic-v2-phase2-session-client.md",
+      "sha256": "762b06234eb748fa9b2998c85421ef63b96fecd97c26b171df4c82aa553de2c0"
+    },
+    {
+      "prNumber": null,
+      "order": 2,
+      "path": "docs/releases/pending/epic-mode-v2.md",
+      "sha256": "03a2fa02112fdfe9a1eb5cf6e995068ed4f7aaa0d4997abb4e9e95d0d96da014"
+    }
+  ]
+}
