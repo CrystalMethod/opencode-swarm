@@ -1732,7 +1732,7 @@ const LEGACY_FRAGMENT_TOKENS: readonly string[] =
 // The lookbehind keeps matched runs maximal-left (linear scan; without it a
 // long pipe-free run of class characters rescans at ~n² — measured 433 s at
 // the 512 KiB read bound, 15 ms with the lookbehind). `^` is a run character
-// so per-member caret forms (`^src/^bin/`) are captured and normalized.
+// so per-member caret forms (`^src/|^bin/`) are captured and normalized.
 const LEGACY_ALTERNATION_RUN =
 	/(?<![A-Za-z0-9_.\-/*^])[A-Za-z0-9_.\-/*^]+(?:\|[A-Za-z0-9_.\-/*^]+)+/g;
 

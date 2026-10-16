@@ -295,6 +295,9 @@ describe('issue 3291 shipped-surface census', () => {
 		// tests/ note names the two shipped fixture subtrees
 		expect(manifest.files).toContain('tests/fixtures/memory-recall');
 		expect(manifest.files).toContain('tests/fixtures/memory-recall-heldout');
+		// evaluation-fixtures/ and schema notes: both are shipped entries
+		expect(manifest.files).toContain('evaluation-fixtures');
+		expect(manifest.files).toContain('opencode-swarm.schema.json');
 		// dist/ note: "package.json#files ships it" and "never committed"
 		expect(manifest.files).toContain('dist');
 		const committed = Bun.spawnSync({
@@ -303,7 +306,11 @@ describe('issue 3291 shipped-surface census', () => {
 			stdin: 'ignore',
 			stdout: 'pipe',
 			stderr: 'pipe',
+			timeout: 10_000,
 		});
+		// A failed spawn also yields empty stdout, so assert the exit code
+		// first or the note-truth check below passes vacuously.
+		expect(committed.exitCode).toBe(0);
 		expect(committed.stdout.toString().trim()).toBe('');
 	});
 });
