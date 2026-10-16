@@ -246,7 +246,10 @@ function throwDestructiveBlock(
  *   2. a PowerShell-shaped body cannot execute under POSIX at all, so
  *      Windows is authoritative;
  *   3. otherwise the tool's own executor: `bash` runs a POSIX shell; the
- *      `shell` tool inherits base content detection.
+ *      `shell` tool inherits base content detection ON WINDOWS ONLY. OpenCode 2
+ *      dispatches terminal commands as `shell` on POSIX hosts too (#3323), where
+ *      a Linux command that merely starts with `echo ` is not `cmd.exe` syntax,
+ *      so off Windows the `shell` tool is a POSIX executor like `bash`.
  *
  * Exported so `/swarm guardrail explain` routes through the SAME decision
  * instead of a stale copy — its comment promises a mirror of
@@ -258,6 +261,7 @@ export function resolveWindowsWriteAuthority(
 	command: string,
 	detectedShellType: 'posix' | 'powershell' | 'cmd' | 'unix' | 'bash',
 	shaped: boolean,
+	platform: NodeJS.Platform = process.platform,
 ): 'powershell' | 'cmd' | null {
 	// A wrapper is an executor DECLARATION only at an invocation position: the
 	// very start of the command, or the receiving side of a pipe. A bare
@@ -273,12 +277,17 @@ export function resolveWindowsWriteAuthority(
 	// Step 3 is TOOL-AWARE: content detection inherits only to the `shell`
 	// tool (base behavior). The `bash` tool without a wrapper or a shaped
 	// body runs a POSIX shell — routing it to cmd detection on an `echo `
-	// prefix would re-interpret `src\out` under the wrong grammar.
+	// prefix would re-interpret `src\out` under the wrong grammar. The same
+	// holds for the `shell` tool off Windows (#3323): there is no cmd.exe or
+	// PowerShell to inherit, so only an explicit wrapper or a shaped body
+	// (steps 1-2) can select a Windows grammar.
 	const inheritedWindows =
 		detectedShellType === 'powershell' || detectedShellType === 'cmd';
 	if (cmdWrapper) return 'cmd';
 	if (psWrapper || shaped) return 'powershell';
-	if (inheritedWindows && tool !== 'bash') {
+	const posixShellTool =
+		tool === 'bash' || (tool === 'shell' && platform !== 'win32');
+	if (inheritedWindows && !posixShellTool) {
 		return detectedShellType as 'powershell' | 'cmd';
 	}
 	return null;
@@ -1122,7 +1131,8 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 		//   2. a PowerShell-shaped body cannot execute under POSIX at all, so
 		//      Windows is authoritative;
 		//   3. otherwise the tool's own executor: `bash` runs a POSIX shell, and
-		//      the `shell` tool keeps base content detection.
+		//      the `shell` tool keeps base content detection on Windows (off
+		//      Windows it is a POSIX executor too — #3323).
 		const windowsShell = resolveWindowsWriteAuthority(
 			normalizedTool,
 			command,
