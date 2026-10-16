@@ -20,8 +20,12 @@ The published section said two of the three workflows (`ci.yml`,
 committed LF, producing a two-match/one-mismatch hash split under
 `core.autocrlf=true`. Execution disproves that story: every revision of all
 three workflow blobs in HEAD-reachable history carries zero CR bytes,
-`.gitattributes` carries `* text=auto eol=lf` in all 22 of its revisions, and
-all three recorded `localWorkflowHashes` equal the LF blob hashes. The verified
+`.gitattributes` has carried `* text=auto eol=lf` since the rule was
+introduced — its earliest form carried a UTF-8 BOM on the first line, which
+could disable the rule for checkouts of that historical state until the
+2026-09-07 correction ("fix(git): restore LF checkout attributes"; see the
+v7.169.0 notes) — and all three recorded `localWorkflowHashes` equal the LF
+blob hashes. The verified
 mechanism is checkout-side: the pre-fix `sha256()` in
 `scripts/check-required-check-contract.ts` hashed working-tree bytes, so a
 Windows checkout carrying CRLF working copies mismatched the recorded LF-blob
