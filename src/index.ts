@@ -1997,8 +1997,22 @@ async function initializeOpenCodeSwarm(
 		// misread as a swarm prefix and collapse the fallback chain to [] in
 		// the default swarm (issue #2960). Mirrors
 		// src/hooks/curator-llm-factory.ts.
+		//
+		// The `_<role>` suffix test is required, not redundant: the role
+		// extractor is case-insensitive and also accepts `-`/` ` separators
+		// (src/config/schema.ts SEPARATORS), so `role !== trimmedAgentName`
+		// is true for a name carrying NO prefix at all — `Coder` extracts role
+		// `coder`, `code-reviewer` extracts `reviewer`. Slicing those yields a
+		// garbage id (`Code`), a guaranteed map miss and an empty chain, which
+		// reintroduces the #2960 symptom for inputs that worked before the
+		// change. Only a real `<swarmId>_<role>` prefix may be sliced;
+		// everything else stays on the default swarm exactly as before. The
+		// suffix is matched case-insensitively while the slice uses the RAW
+		// name, so a case-carrying swarm id (`Case_coder` → `Case`) survives.
+		// Shape follows src/failures/action-identity.ts `canonicalRole`.
 		const swarmID =
-			role !== trimmedAgentName
+			role !== trimmedAgentName &&
+			trimmedAgentName.toLowerCase().endsWith(`_${role}`)
 				? trimmedAgentName.slice(0, trimmedAgentName.length - role.length - 1)
 				: undefined;
 		const swarmAgents = getSwarmAgents(swarmID);

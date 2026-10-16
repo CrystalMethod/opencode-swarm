@@ -26,17 +26,15 @@ pattern the curator/skill-improver/turbo failover factories already use), so:
   advances to the seeded fallback model instead of exhausting the route.
 - The designed terminal state is unchanged: exhausting the full
   primary+fallbacks chain still throws `MODEL_FALLBACK_EXHAUSTED`.
-- Prefixed multi-swarm names (`local_test_engineer`) and legacy unprefixed
-  non-underscore names (`coder`) resolve exactly as before. As a side effect
-  of the corrected derivation, prefixed names whose swarm id itself contains
-  an underscore — e.g. a swarm named `mega_local` whose agents are addressed
-  as `mega_local_coder` — now resolve where the naive split previously
-  missed.
+- Prefixed multi-swarm names (`local_test_engineer`) and unprefixed names
+  (`coder`) resolve exactly as before, including names whose casing or
+  separator differs from the roster (`Coder`, `code-reviewer`) — those keep
+  resolving via the default swarm.
 - Documented behavior change (fail-closed direction): an UNPREFIXED canonical
   name whose first token collides with a real swarm id (e.g. `test_engineer`
   with a swarm named `test`) now resolves via the default swarm instead of
-  accidentally hitting that swarm's entry; use the prefixed name
-  (`test_test_engineer`) to address it.
+  accidentally hitting that swarm; use the prefixed name (`test_test_engineer`)
+  to address it. A case-variant spelling (`Test_Engineer`) now also resolves.
 
 ## Why
 

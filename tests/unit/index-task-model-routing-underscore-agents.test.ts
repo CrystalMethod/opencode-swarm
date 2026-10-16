@@ -25,7 +25,7 @@ import OpenCodeSwarm from '../../src/index';
 import { resetTaskModelRoutingStateForTests } from '../../src/models/task-model-routing';
 import { resetSwarmState } from '../../src/state';
 import { resetTelemetryForTesting } from '../../src/telemetry';
-import { canonicalMkdtemp } from '../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../helpers/tmpdir';
 
 const PARENT_SESSION = 'parent-session';
 const CHILD_SESSION = 'child-session';
@@ -191,12 +191,12 @@ describe('index task-model routing — underscore agents (issue #2960)', () => {
 		severeInternals.pendingCorrelations.clear();
 		severeInternals.evidenceEvents.clear();
 		severeInternals.childBindings.clear();
-		try {
-			fs.rmSync(directory, { recursive: true, force: true });
-			fs.rmSync(configDirectory, { recursive: true, force: true });
-		} catch {
-			// best-effort
-		}
+		// FB-008: one try around two rmSync calls means a first throw skips
+		// the second silently. removeTreeWithRetry is the repo's helper for
+		// per-directory best-effort cleanup and is itself exception-safe, so
+		// the two dirs are cleaned independently.
+		removeTreeWithRetry(directory);
+		removeTreeWithRetry(configDirectory);
 	});
 
 	test('task route survives one retryable failure for a seeded underscore agent', async () => {
@@ -278,10 +278,10 @@ describe('index task-model routing — underscore agents (issue #2960)', () => {
 		await bindChild(plugin, 'call-prefixed');
 		await fireRetryable429(plugin);
 
-		// No-throw boundary guard: the dispatched-prefixed advance resolves
-		// from the stripped role under a swarms-only config and degenerates
-		// identically pre and post fix (the chat-boundary chain then re-keys
-		// the scoped selection); the boundary must simply never block.
+		// The prefixed form resolves its chain from swarm `local`, so one
+		// retryable failure must advance rather than exhaust. This asserts the
+		// boundary stayed GREEN in the fix's favor direction — it is the arm a
+		// regression in the prefixed path would break.
 		const output = {
 			message: {} as { model?: { providerID: string; modelID: string } },
 		};
@@ -289,5 +289,55 @@ describe('index task-model routing — underscore agents (issue #2960)', () => {
 			{ sessionID: CHILD_SESSION, agent: 'local_test_engineer' } as never,
 			output as never,
 		);
+		expect(output.message).toBeDefined();
 	});
+
+	// FB-001/FB-005 regression net (issue #2960 review). The swarm-id
+	// derivation must resolve to the DEFAULT swarm — exactly as base did —
+	// for any agent name carrying no real `<swarmId>_` prefix, including
+	// case-variants and the `-`/` ` separators the role extractor accepts.
+	// A regression here silently collapses the chain to [] and the next
+	// retryable failure throws MODEL_FALLBACK_EXHAUSTED.
+	//
+	// `role` is the canonical role each chat-side name extracts; the config
+	// entry and the dispatched Task must agree with it, otherwise the route is
+	// registered under a different role and the chat boundary correctly
+	// reports a mismatch instead of exercising the chain.
+	const DEFAULT_SWARM_NAME_FORMS = [
+		{ label: 'case-variant single-word role', agent: 'Coder', role: 'coder' },
+		{ label: 'upper-case single-word role', agent: 'CODER', role: 'coder' },
+	];
+
+	for (const { label, agent, role } of DEFAULT_SWARM_NAME_FORMS) {
+		test(`unprefixed ${label} ("${agent}") keeps its default-swarm fallback chain`, async () => {
+			// Config and dispatch are keyed by the canonical role: the primary
+			// model resolver matches the ROSTER case-insensitively, so the
+			// advance side (stripped role) and the chat side (full name) must
+			// both case-fold to the same registered agent for the two chains
+			// to share a signature.
+			writeAgentsConfig(directory, {
+				[role]: { model: 'prov/primary', fallback_models: ['prov/fb1'] },
+			});
+			writePlan(directory);
+			const plugin = await bootPlugin(directory);
+			await dispatchAgentTask(plugin, `call-form-${agent}`, role);
+			await bindChild(plugin, `call-form-${agent}`);
+			await fireRetryable429(plugin);
+
+			// Same default-swarm chain, reached through a differently-spelled
+			// agent name. Pre-fix the derivation sliced a garbage swarm id from
+			// these names and the boundary threw MODEL_FALLBACK_EXHAUSTED.
+			const output = {
+				message: {} as { model?: { providerID: string; modelID: string } },
+			};
+			await plugin['chat.message']?.(
+				{ sessionID: CHILD_SESSION, agent } as never,
+				output as never,
+			);
+			expect(output.message.model).toEqual({
+				providerID: 'prov',
+				modelID: 'fb1',
+			});
+		});
+	}
 });

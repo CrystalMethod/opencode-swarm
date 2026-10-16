@@ -225,14 +225,19 @@ describe('multi-swarm fallback model resolution', () => {
 
 			createAgents(config);
 
-			// Derivation facts for 'local_test_engineer' (the length-delta
-			// pattern src/index.ts uses — NOT extractSwarmIdFromAgentName,
-			// whose naive first-underscore split yields 'local' only by luck
-			// of the single-prefix form).
+			// The length-delta swarm-id derivation the resolver uses. The
+			// `_<role>` suffix test is required (not redundant): the role
+			// extractor is case-insensitive and also accepts `-`/` `, so a bare
+			// `role !== name` guard slices a garbage id from an unprefixed name.
+			// Boundary-level regression coverage for that lives in
+			// tests/unit/index-task-model-routing-underscore-agents.test.ts
+			// (the resolver is an unexported closure and cannot be reached
+			// from a unit test — these are lookup-semantics pins only).
 			const role = stripKnownSwarmPrefix('local_test_engineer');
 			expect(role).toBe('test_engineer');
 			const swarmId =
-				role !== 'local_test_engineer'
+				role !== 'local_test_engineer' &&
+				'local_test_engineer'.toLowerCase().endsWith(`_${role}`)
 					? 'local_test_engineer'.slice(
 							0,
 							'local_test_engineer'.length - role.length - 1,
@@ -242,6 +247,34 @@ describe('multi-swarm fallback model resolution', () => {
 			expect(getSwarmAgents(swarmId)?.test_engineer?.fallback_models).toEqual([
 				'prov/xb',
 			]);
+		});
+
+		it('derives the default swarm for every name with no real prefix suffix', () => {
+			// Derivation pin for the resolver guard. The role extractor is
+			// case-insensitive and also accepts `-` / ` ` separators, so a bare
+			// `role !== name` test slices a garbage swarm id from an
+			// UNPREFIXED name. Only a real `<swarmId>_<role>` suffix may be
+			// sliced; everything else stays on the default swarm, exactly as
+			// the pre-fix behavior was. Boundary-level regression coverage for
+			// the case-variant class lives in
+			// tests/unit/index-task-model-routing-underscore-agents.test.ts.
+			const derive = (name: string): string | undefined => {
+				const role = stripKnownSwarmPrefix(name);
+				return role !== name && name.toLowerCase().endsWith(`_${role}`)
+					? name.slice(0, name.length - role.length - 1)
+					: undefined;
+			};
+			// No real prefix -> default swarm. This is the #2960 fix for the
+			// underscore seeded roles AND preservation for every other form.
+			expect(derive('test_engineer')).toBeUndefined();
+			expect(derive('Coder')).toBeUndefined();
+			expect(derive('CODER')).toBeUndefined();
+			expect(derive('code-coder')).toBeUndefined();
+			expect(derive('chief coder')).toBeUndefined();
+			expect(derive('Test_Engineer')).toBeUndefined();
+			// A real prefix IS sliced, preserving the raw swarm-id casing.
+			expect(derive('local_test_engineer')).toBe('local');
+			expect(derive('Case_coder')).toBe('Case');
 		});
 
 		it('treats an unprefixed underscore name as the default swarm even when its first token collides with a swarm id', () => {
