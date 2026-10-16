@@ -12,7 +12,7 @@ async function deferredV2StartupModelPreflight(
 	try {
 		const loaded = await withTimeout(
 			Promise.resolve(loadPluginConfigWithMeta(directory)),
-			2_000,
+			250,
 			new Error(
 				'[opencode-swarm] v2: startup preflight config read exceeded budget',
 			),
@@ -114,8 +114,8 @@ import {
 import { registerV2Tools } from './tools';
 import type { V1HooksSubset, V2PluginContext, V2Registration } from './types';
 
-/** Bounds setup() itself — the v1 repro-704 class of deadline for the v2 path. */
-const V2_SETUP_TIMEOUT_MS = 60_000;
+/** Bounds setup() itself — bounded within OpenCode 2 host 5-second activation gate. */
+const V2_SETUP_TIMEOUT_MS = 3_500;
 
 /** Dependencies injected from src/index.ts (avoids an index↔host cycle). */
 export interface V2SetupDependencies {
@@ -189,62 +189,55 @@ export async function openCodeSwarmV2Setup(
 		new Error('[opencode-swarm] v2 setup: initialization exceeded budget'),
 	);
 
-	// Agents + commands through the v1 config hook against a synthetic config —
-	// the single-source builder (see module header).
+	// Parallelize v2 registrations on host Context domains to prevent
+	// cumulative sequential latency from exceeding the host 5-second activation gate.
 	await withTimeout(
-		registerV2AgentsAndCommands(ctx, hooks, directory, state.registrations),
+		Promise.all([
+			registerV2AgentsAndCommands(
+				ctx,
+				hooks,
+				directory,
+				state.registrations,
+			).catch((err: unknown) => {
+				log('v2 agent/command registration failed (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}),
+			registerV2Tools(ctx, hooks, directory, state.registrations).catch(
+				(err: unknown) => {
+					log('v2 tool registration failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				},
+			),
+			registerV2ContextHook(ctx, hooks, directory, state.registrations).catch(
+				(err: unknown) => {
+					log('v2 context-hook registration failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				},
+			),
+			registerV2ToolHooks(ctx, hooks, directory, state.registrations).catch(
+				(err: unknown) => {
+					log('v2 tool-hook registration failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				},
+			),
+			registerV2SessionHooks(ctx, hooks, directory, state.registrations).catch(
+				(err: unknown) => {
+					log('v2 prompt-hook registration failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				},
+			),
+		]),
 		V2_SETUP_TIMEOUT_MS,
 		new Error(
-			'[opencode-swarm] v2 setup: agent/command registration exceeded budget',
+			'[opencode-swarm] v2 setup: parallel registration exceeded budget',
 		),
 	).catch((err: unknown) => {
-		log('v2 agent/command registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-
-	// Tools from the same map the v1 host receives.
-	await withTimeout(
-		registerV2Tools(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error('[opencode-swarm] v2 setup: tool registration exceeded budget'),
-	).catch((err: unknown) => {
-		log('v2 tool registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-
-	// Guidance (context hook), tool hooks, compaction, prompt.
-	await withTimeout(
-		registerV2ContextHook(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: guidance registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 context-hook registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-	await withTimeout(
-		registerV2ToolHooks(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: tool-hook registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 tool-hook registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-	await withTimeout(
-		registerV2SessionHooks(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: prompt-hook registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 prompt-hook registration failed (non-fatal)', {
+		log('v2 registration failed (non-fatal)', {
 			error: err instanceof Error ? err.message : String(err),
 		});
 	});
