@@ -267,6 +267,33 @@ describe('SandboxCapabilityProbe', () => {
 				'bubblewrap probe temp cleanup failed (EPERM)',
 			);
 		});
+
+		test('cleanupProbeTempRoot requests recursive removal with force', () => {
+			let passedOptions: fs.RmOptions | undefined;
+			linuxExecutorInternals.resolveBwrapBinary = () => 'bwrap';
+			_internals.spawnSync = mock(() => ({
+				status: 0,
+				stdout: '',
+				stderr: '',
+			}));
+			_internals.removeProbeTempRoot = ((
+				_target: fs.PathLike,
+				options?: fs.RmOptions,
+			) => {
+				passedOptions = options;
+			}) as typeof originalRemoveProbeTempRoot;
+
+			_internals.detectBehavioralEvidence({
+				status: 'enabled',
+				strength: 'strong',
+				mechanism: 'Bubblewrap',
+				platform: 'linux',
+			});
+
+			expect(passedOptions).toBeDefined();
+			expect(passedOptions?.recursive).toBe(true);
+			expect(passedOptions?.force).toBe(true);
+		});
 	});
 
 	// -------------------------------------------------------------------------
