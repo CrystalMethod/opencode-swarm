@@ -3169,7 +3169,7 @@ function detectCmdRedirects(command: string): WriteTarget[] {
 	let inDoubleQuote = false;
 
 	const isTokenBoundary = (character: string | undefined): boolean =>
-		character === undefined || /[\s&|()]/.test(character);
+		character === undefined || /[;\s&|()]/.test(character);
 
 	for (let index = 0; index < command.length; index++) {
 		const character = command[index];

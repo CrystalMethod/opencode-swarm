@@ -278,7 +278,7 @@ export function resolveWindowsWriteAuthority(
 		detectedShellType === 'powershell' || detectedShellType === 'cmd';
 	if (cmdWrapper) return 'cmd';
 	if (psWrapper || shaped) return 'powershell';
-	if (inheritedWindows && tool !== 'bash') {
+	if (inheritedWindows && tool !== 'bash' && tool !== 'shell') {
 		return detectedShellType as 'powershell' | 'cmd';
 	}
 	return null;
@@ -1264,6 +1264,16 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 					continue;
 				}
 				if (enforce && write.original.category === 'interpreter_eval') {
+					if (
+						isArch ||
+						noScopeLenient ||
+						!isCoder ||
+						!/[.](?:write|unlink|remove|rename|rmdir)\b|open\s*\(.*['"][wax+]/i.test(
+							detectionCommand,
+						)
+					) {
+						continue;
+					}
 					// Inline code (`python -c`, `node -e`, …) can write to arbitrary
 					// files whose targets are not statically knowable, so it cannot be
 					// verified against the declared scope. This stays fail-closed (it is
