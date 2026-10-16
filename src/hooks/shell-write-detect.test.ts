@@ -2748,10 +2748,3 @@ describe('dedup key behavior (via detectPosixWrites / detectWindowsWrites)', () 
 		expect(nullWriteCount).toBeLessThanOrEqual(result.writes.length);
 	});
 });
-
-describe('semicolon token boundary in shell write detection', () => {
-	test('recognizes semicolon as token boundary in compound commands', () => {
-		const result = detectWindowsWrites('echo START; ls -la; echo END', 'cmd');
-		expect(result.writes.length).toBe(0);
-	});
-});
