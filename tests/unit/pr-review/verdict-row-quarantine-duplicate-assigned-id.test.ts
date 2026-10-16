@@ -42,7 +42,6 @@ describe('issue #3310 AC25: quarantined short duplicate does not fail the valid 
 			['C-1'],
 			'reviewer',
 		);
-		console.log('observed ok:', analysis.ok, 'actual:', analysis.actual);
 
 		expect(analysis.ok).toBe(true);
 		const { parsed } = parsePrReviewVerdictRows(artifact, ['C-1'], 'reviewer');
@@ -62,7 +61,6 @@ describe('issue #3310 AC25: quarantined short duplicate does not fail the valid 
 			'critic',
 			REVIEWER_CLAIMS,
 		);
-		console.log('observed ok:', analysis.ok, 'actual:', analysis.actual);
 
 		expect(analysis.ok).toBe(true);
 		const { parsed } = parsePrReviewVerdictRows(

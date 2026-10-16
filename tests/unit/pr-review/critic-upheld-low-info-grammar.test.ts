@@ -30,10 +30,6 @@ const UPHELD_INFO_ROW = [
 
 describe('critic UPHELD grammar admits LOW and INFO (issue #3310 AC9)', () => {
 	test('UPHELD at LOW against a LOW reviewer severity validates end-to-end', () => {
-		console.log(
-			'observed UPHELD/LOW ->',
-			validateCriticVerdictFields(UPHELD_LOW_ROW, 'LOW'),
-		);
 		const verdict = validateCriticVerdictFields(UPHELD_LOW_ROW, 'LOW');
 		expect(verdict).not.toBeNull();
 		expect(verdict?.status).toBe('UPHELD');
@@ -41,10 +37,6 @@ describe('critic UPHELD grammar admits LOW and INFO (issue #3310 AC9)', () => {
 	});
 
 	test('UPHELD at INFO against an INFO reviewer severity validates end-to-end', () => {
-		console.log(
-			'observed UPHELD/INFO ->',
-			validateCriticVerdictFields(UPHELD_INFO_ROW, 'INFO'),
-		);
 		const verdict = validateCriticVerdictFields(UPHELD_INFO_ROW, 'INFO');
 		expect(verdict).not.toBeNull();
 		expect(verdict?.status).toBe('UPHELD');
@@ -53,7 +45,6 @@ describe('critic UPHELD grammar admits LOW and INFO (issue #3310 AC9)', () => {
 
 	test('the critic verdict schema itself accepts an UPHELD LOW row', () => {
 		const parsed = PrReviewCriticVerdictFieldsSchema.safeParse(UPHELD_LOW_ROW);
-		console.log('observed schema-valid UPHELD/LOW:', parsed.success);
 		expect(parsed.success).toBe(true);
 	});
 });

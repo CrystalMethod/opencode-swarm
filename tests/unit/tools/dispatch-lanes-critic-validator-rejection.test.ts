@@ -14,8 +14,6 @@
 // executeDispatchLanesAsync entry point over a real temp git repository with
 // stubbed head/clean/revision reads and a mocked session ops client.
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { mkdtempSync, realpathSync } from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { _test_exports as gateInternals } from '../../../src/hooks/pr-workflow-gate.js';
 import {
@@ -23,6 +21,7 @@ import {
 	executeDispatchLanesAsync,
 } from '../../../src/tools/dispatch-lanes.js';
 import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { initializeGitRepository } from '../helpers/git-repository.js';
 import {
 	installLegacyPrReviewPolicy,
@@ -50,9 +49,7 @@ const originalResolveMergeBaseAsync =
 	dispatchInternals.resolveExactMergeBaseAsync;
 
 beforeEach(async () => {
-	directory = realpathSync(
-		mkdtempSync(path.join(os.tmpdir(), 'dispatch-critic-validator-3310-')),
-	);
+	directory = canonicalMkdtemp('dispatch-critic-validator-3310-');
 	await initializeGitRepository(directory);
 	gateInternals.resetTrackedStateCache();
 	gateInternals.resolveCurrentGitHead = () => 'abc123';
@@ -121,8 +118,11 @@ describe('dispatch_lanes critic agent admission (issue #3310 AC15)', () => {
 		const message = String(result.message);
 		// The rejection names the offending agent...
 		expect(message).toContain('critic_finding_validator');
-		// ...and the agent to use instead (the base 'critic' agent).
-		expect(message).toContain('critic');
+		// ...and the clause naming the agent to use instead. Asserted by its
+		// own wording: 'critic' alone is a prefix substring of the rejected
+		// agent's name, so it would hold for any message that merely echoes
+		// the rejected agent.
+		expect(message).toContain('must use the critic agent');
 	});
 
 	test("the base 'critic' agent is not swept into the rejection", async () => {

@@ -1606,7 +1606,12 @@ export async function executeDispatchLanesAsync(
 						context.sessionID,
 					);
 					if (derivedSeverities.size > 0) {
-						prReviewReviewerSeverities = Object.fromEntries(derivedSeverities);
+						// Own-property lookup only: an assigned item id colliding with a
+						// prototype key must not render inherited members into the block.
+						prReviewReviewerSeverities = Object.assign(
+							Object.create(null),
+							Object.fromEntries(derivedSeverities),
+						);
 					}
 				}
 			}
@@ -6147,18 +6152,32 @@ function applyPrWorkflowPromptContract(
 		// shape is NOT rejected.
 		const prReviewVerdictTemplateToken =
 			normalizedMode.token === 'swarm-pr-review:reviewer'
-				? '[REVIEWED] |'
+				? '[REVIEWED]'
 				: normalizedMode.token === 'swarm-pr-review:critic'
-					? '[CRITIC] |'
+					? '[CRITIC]'
 					: null;
-		if (
-			prReviewVerdictTemplateToken &&
-			lane.prompt.includes(prReviewVerdictTemplateToken)
-		) {
-			errors.push(
-				`Lane "${lane.id}" operator prompt contains ${prReviewVerdictTemplateToken} verdict-row template text; PR-review reviewer and critic prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry.`,
+		// Whitespace-tolerant: the transport splits on the pipe and trims
+		// every field, so a marker followed by any spaces or a tab before the
+		// pipe parses as a canonical row. Checked on every operator-controlled
+		// channel that reaches the lane prompt: lane.prompt AND callerFocus,
+		// which is rendered verbatim after the authoritative card.
+		if (prReviewVerdictTemplateToken) {
+			const rowShape = new RegExp(
+				'\\[' + prReviewVerdictTemplateToken.slice(1, -1) + '\\][ \\t]*\\|',
 			);
-			return lane;
+			const operatorChannels: Array<[string, string]> = [
+				['lane prompt', lane.prompt],
+				['caller scope', options.callerFocus ?? ''],
+			];
+			const offending = operatorChannels.find(([, text]) =>
+				rowShape.test(text),
+			);
+			if (offending) {
+				errors.push(
+					`Lane "${lane.id}" operator ${offending[0]} contains ${prReviewVerdictTemplateToken} | verdict-row template text; PR-review reviewer and critic prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry.`,
+				);
+				return lane;
+			}
 		}
 		const fallbackChecklist = normalizedMode.token.endsWith(':reviewer')
 			? 're-read every assigned candidate at its exact location; prove classification, reachability, mitigation, severity, and falsification path'

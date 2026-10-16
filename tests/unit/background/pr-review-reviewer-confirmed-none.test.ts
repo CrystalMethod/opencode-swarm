@@ -30,7 +30,6 @@ describe('reviewer CONFIRMED/NONE row fails the grammar (issue #3310 AC11)', () 
 	test('the reviewer schema rejects a CONFIRMED verdict with severity NONE', () => {
 		const parsed =
 			PrReviewReviewerVerdictFieldsSchema.safeParse(CONFIRMED_NONE_ROW);
-		console.log('observed schema-valid:', parsed.success);
 		expect(parsed.success).toBe(false);
 		if (!parsed.success) {
 			const issues = parsed.error.issues;
@@ -43,10 +42,6 @@ describe('reviewer CONFIRMED/NONE row fails the grammar (issue #3310 AC11)', () 
 	});
 
 	test('validateReviewerVerdictFields returns null for the CONFIRMED/NONE row', () => {
-		console.log(
-			'observed adapter result ->',
-			validateReviewerVerdictFields(CONFIRMED_NONE_ROW),
-		);
 		expect(validateReviewerVerdictFields(CONFIRMED_NONE_ROW)).toBeNull();
 	});
 });

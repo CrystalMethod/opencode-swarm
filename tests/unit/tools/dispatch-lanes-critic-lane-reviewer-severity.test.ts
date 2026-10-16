@@ -15,8 +15,9 @@
 //   Rendering contract: for mode 'swarm-pr-review:critic', when supplied,
 //   the CONTROLLER-BOUND block renders each assigned item's reviewer
 //   severity next to/after that item id ON THE SAME LINE (e.g.
-//   `assigned_item_ids: c1 (reviewer severity HIGH), c2 (reviewer severity
-//   LOW)`). When the option is absent (or explicitly undefined), the block
+//   `assigned_item_ids: c1 (HIGH), c2 (LOW)`). The rendered annotation is
+//   the bare severity token in parentheses; the item-id token itself is the
+//   bare id. When the option is absent (or explicitly undefined), the block
 //   renders exactly as before — no severity text is added.
 //
 // RED at base, GREEN after the fix.

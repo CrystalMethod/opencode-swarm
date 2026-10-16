@@ -45,7 +45,6 @@ describe('issue #3310 AC2: critic verdict-row foreign-grammar quarantine', () =>
 			'critic',
 			REVIEWER_CLAIMS,
 		);
-		console.log('observed ok:', analysis.ok, 'actual:', analysis.actual);
 
 		expect(analysis.ok).toBe(true);
 		const { parsed } = parsePrReviewVerdictRows(

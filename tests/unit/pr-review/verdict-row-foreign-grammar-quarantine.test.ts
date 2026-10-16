@@ -47,7 +47,6 @@ describe('issue #3310 AC1: reviewer verdict-row foreign-grammar quarantine', () 
 			['c1', 'c2'],
 			'reviewer',
 		);
-		console.log('observed ok:', analysis.ok, 'actual:', analysis.actual);
 
 		expect(analysis.ok).toBe(true);
 		const { parsed } = parsePrReviewVerdictRows(
@@ -76,7 +75,6 @@ describe('issue #3310 AC1: reviewer verdict-row foreign-grammar quarantine', () 
 			'critic',
 			REVIEWER_CLAIMS_FOR_C1,
 		);
-		console.log('observed ok:', analysis.ok, 'actual:', analysis.actual);
 
 		expect(analysis.ok).toBe(true);
 		const { parsed } = parsePrReviewVerdictRows(

@@ -49,6 +49,7 @@ import {
 	parsePrReviewRiskTagsField,
 	parsePrReviewVerdictRow,
 } from '../background/pr-review-contract.js';
+import { redactSecrets } from '../memory/redaction.js';
 import { emit } from '../telemetry.js';
 import { warn } from '../utils/logger.js';
 
@@ -679,11 +680,23 @@ export function composePrReviewPhaseVerdicts(
 				reviewerClaims,
 			);
 			// #3310: illegal-arity rows are quarantined, not lane-voiding.
-			// Identifiers and arity only — never row prose.
-			for (const stray of quarantined) {
+			// ONE aggregated bounded diagnostic per lane, so a stray-row-heavy
+			// artifact cannot exhaust the shared composition-diagnostic budget
+			// ahead of the unassigned-row and abandoned-lane evidence below.
+			// Identifiers and arity only — never row prose — and the item id is
+			// model-controlled transcript text, so it is redacted and bounded
+			// exactly like the verdict-rejection journal does.
+			if (quarantined.length > 0) {
+				const arities = [
+					...new Set(quarantined.map((stray) => stray.arity)),
+				].sort((a, b) => a - b);
+				const ids = quarantined
+					.map((stray) => redactSecrets(stray.itemId).slice(0, 64))
+					.filter((value, index, all) => all.indexOf(value) === index)
+					.slice(0, 8);
 				appendCompositionDiagnostic(
 					diagnostics,
-					`${phase} lane "${qualified.expectedLane.laneId}" quarantined a ${stray.marker} row with illegal arity ${stray.arity} (item id "${stray.itemId}"); it carries no verdict`,
+					`${phase} lane "${qualified.expectedLane.laneId}" quarantined ${quarantined.length} illegal-arity ${quarantined[0]?.marker ?? 'verdict'} row(s) (arities ${arities.join(', ')}; item ids ${ids.map((id) => `"${id}"`).join(', ')}); quarantined rows carry no verdict`,
 				);
 			}
 			if (!verdictRowsContainOnlyAssignedIds(markerRows, declaredItems)) {
@@ -1124,6 +1137,7 @@ export function analyzePrReviewVerdictRowContract(
 			observedIds,
 			invalidOrMissingIds,
 			unexpectedIds,
+			quarantinedArities: quarantined.map((stray) => stray.arity),
 		}),
 		recoveries,
 		quarantined,

@@ -152,7 +152,8 @@ describe('skill dialect is structurally identical to the executable PR-review co
 		const documents = [
 			[SKILL_PATH, 1, 1],
 			[PROMPT_TEMPLATES_PATH, 1, 1],
-			[DRY_RUN_PATH, 1, 0],
+			// #3310: the dry-run's reviewer dispatch fence is content-only now.
+			[DRY_RUN_PATH, 0, 0],
 		] as const;
 		for (const [documentPath, reviewerCount, criticCount] of documents) {
 			const lines = fs.readFileSync(documentPath, 'utf8').split(/\r?\n/);

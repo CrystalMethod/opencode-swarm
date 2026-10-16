@@ -1074,7 +1074,10 @@ export function buildPrReviewContractCard(): string {
 		'Transition matrix:',
 		'- reviewer lane: assigned item -> exactly one REVIEWED row -> critic routing or terminal disposition.',
 		'- critic lane: assigned reviewer claim -> exactly one CRITIC row -> final finding disposition.',
-		'- malformed, duplicate, missing, or discarded rows -> contract failure and bounded retry; never acceptance.',
+		// #3310: illegal-arity marker rows are quarantined into diagnostics and
+		// never settle a claim; malformed rows for ASSIGNED ids still fail.
+		'- Malformed rows for an assigned item fail that item and may be retried within the controller retry bound.',
+		'- A marker row whose field count is illegal for its marker is quarantined into diagnostics: it carries no verdict and never settles a claim.',
 		'Retry and deadline semantics:',
 		'- Malformed live rows fail closed and may be retried only within the controller retry bound.',
 		'- A waited collection deadline is an OBSERVER deadline: it bounds the collect call only, never cancels or terminalizes child work (issue #2381); poll, explicitly cancel, or rely on the presumed-stale sweep.',
