@@ -1,5 +1,31 @@
 # Changelog
 
+## [7.198.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.3...v7.198.0) (2026-10-16)
+
+
+### Features
+
+* **sdd:** support declarative spec provider via SWARM_SDD_SOURCE and config ([82a46f5](https://github.com/ZaxbyHub/opencode-swarm/commit/82a46f5aca49e3d7982ac21a5a2e70336ce07d15))
+* **sdd:** support declarative spec provider via SWARM_SDD_SOURCE and config ([c099801](https://github.com/ZaxbyHub/opencode-swarm/commit/c0998018dc5f23429528fa06e1c4ca9fb9f22526))
+
+
+### Bug Fixes
+
+* **agents:** derive task-route swarm id by length delta so underscore agents keep fallback ([ffd6004](https://github.com/ZaxbyHub/opencode-swarm/commit/ffd60048843d2d70fe673c84c21ce1bb85c21482))
+* **agents:** derive task-route swarm id by length delta so underscore agents keep fallback (closes [#2960](https://github.com/ZaxbyHub/opencode-swarm/issues/2960)) ([b4d874d](https://github.com/ZaxbyHub/opencode-swarm/commit/b4d874d2b5244ea963b66b57da9512999d4da59d))
+* **agents:** fall to the default swarm when the sliced swarm id is schema-invalid ([ddf13a3](https://github.com/ZaxbyHub/opencode-swarm/commit/ddf13a328728fed0c9b8400beabf8e1bf3f48c73))
+* **agents:** guard the swarm-id derivation so only a real &lt;swarmId&gt;_&lt;role&gt; prefix is sliced ([af10024](https://github.com/ZaxbyHub/opencode-swarm/commit/af100240b298573e1d953881f00910b1bcb59b13))
+* **ci:** newline-safe fragment-gate transports, one-listing integrity, job bounds ([af48584](https://github.com/ZaxbyHub/opencode-swarm/commit/af48584b7ec44860c059b478c5b47c8acb576719))
+* **pr-review:** keep critic arity mention inside its guard window ([#3310](https://github.com/ZaxbyHub/opencode-swarm/issues/3310)) ([14e46b7](https://github.com/ZaxbyHub/opencode-swarm/commit/14e46b70cbc53f5541c06b90a9bc7fa49bd3c34a))
+* **pr-review:** re-pin the council lane contract in the council dispatch suite ([904e8b6](https://github.com/ZaxbyHub/opencode-swarm/commit/904e8b6951538d0e48b4da6eb3c30fab35dc40ea))
+* **pr-review:** resolve swarm-pr-review findings on PR [#3329](https://github.com/ZaxbyHub/opencode-swarm/issues/3329) ([6292746](https://github.com/ZaxbyHub/opencode-swarm/commit/6292746f0705fa7e599e2133cd21bda0e8cb3bc8))
+* **pr-review:** stop reviewer/critic lanes voiding themselves ([#3310](https://github.com/ZaxbyHub/opencode-swarm/issues/3310)) ([a5f36ca](https://github.com/ZaxbyHub/opencode-swarm/commit/a5f36cad6d71e18d710c1ace74de98ff4727eee6))
+* **pr-review:** stop reviewer/critic lanes voiding themselves ([#3310](https://github.com/ZaxbyHub/opencode-swarm/issues/3310)) ([20e2d16](https://github.com/ZaxbyHub/opencode-swarm/commit/20e2d1624acf6467542b823d51dc5b23e6e17d98))
+* **sandbox:** add recursive cleanup and ro-bind tempRoot to bubblewrap probe ([1977394](https://github.com/ZaxbyHub/opencode-swarm/commit/1977394f3b12efce9f6cafee0edd3edc360e931c))
+* **sandbox:** add recursive temp cleanup and ro-bind tempRoot to bubblewrap probe ([29722d2](https://github.com/ZaxbyHub/opencode-swarm/commit/29722d22b495e8a7c42d266c9524704af4a394b3))
+* **sdd:** wire declarative SDD source selection end to end ([6a02a6b](https://github.com/ZaxbyHub/opencode-swarm/commit/6a02a6b61f4ec32a91f20279e7a16aeba8e1199f))
+* **test:** repair mangled regex literal in the explorer-format council case ([#3310](https://github.com/ZaxbyHub/opencode-swarm/issues/3310)) ([ea54fb2](https://github.com/ZaxbyHub/opencode-swarm/commit/ea54fb2b6e2544b13675d219c0424f5a3bd1165e))
+
 ## [7.197.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.2...v7.197.3) (2026-10-15)
 
 
