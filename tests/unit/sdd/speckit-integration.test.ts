@@ -249,6 +249,38 @@ describe('3: FR-010 ambiguity diagnostic — warn count is exactly 1 per call (s
 
 		expect(getDeferredWarnings()).toHaveLength(2);
 	});
+
+	test('both-present repo with SWARM_SDD_SOURCE env: resolves selected provider without warning', () => {
+		buildBothPresentFixture();
+		clearDeferredWarnings();
+		const oldEnv = process.env.SWARM_SDD_SOURCE;
+		try {
+			process.env.SWARM_SDD_SOURCE = 'openspec';
+			const result = readEffectiveSpecSync(tempDir);
+			expect(result).not.toBeNull();
+			expect(result?.source).toBe('openspec_projection');
+			expect(getDeferredWarnings()).toHaveLength(0);
+		} finally {
+			if (oldEnv === undefined) {
+				delete process.env.SWARM_SDD_SOURCE;
+			} else {
+				process.env.SWARM_SDD_SOURCE = oldEnv;
+			}
+		}
+	});
+
+	test('both-present repo with opencode-swarm.json sdd.source: resolves selected provider without warning', () => {
+		buildBothPresentFixture();
+		clearDeferredWarnings();
+		fs.writeFileSync(
+			path.join(tempDir, 'opencode-swarm.json'),
+			JSON.stringify({ sdd: { source: 'speckit' } }),
+		);
+		const result = readEffectiveSpecSync(tempDir);
+		expect(result).not.toBeNull();
+		expect(result?.source).toBe('speckit_projection');
+		expect(getDeferredWarnings()).toHaveLength(0);
+	});
 });
 
 // ---------------------------------------------------------------------------

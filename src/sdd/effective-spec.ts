@@ -1207,13 +1207,39 @@ export function readEffectiveSpecSync(
 		}
 	}
 
+	let effectiveSource = opts?.source;
+	if (!effectiveSource) {
+		const envSource = process.env.SWARM_SDD_SOURCE;
+		if (
+			envSource === 'openspec' ||
+			envSource === 'speckit' ||
+			envSource === 'swarm'
+		) {
+			effectiveSource = envSource;
+		} else {
+			try {
+				const cfgPath = path.join(root, 'opencode-swarm.json');
+				if (fs.existsSync(cfgPath)) {
+					const parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+					if (
+						parsed?.sdd?.source === 'openspec' ||
+						parsed?.sdd?.source === 'speckit' ||
+						parsed?.sdd?.source === 'swarm'
+					) {
+						effectiveSource = parsed.sdd.source;
+					}
+				}
+			} catch {}
+		}
+	}
+
 	// b. Explicit source selection — use the named provider directly.
-	if (opts?.source) {
-		switch (opts.source) {
+	if (effectiveSource) {
+		switch (effectiveSource) {
 			case 'openspec':
 				return buildOpenSpecProjectionSync(root);
 			case 'speckit':
-				return buildSpeckitProjectionSync(root, { feature: opts.feature });
+				return buildSpeckitProjectionSync(root, { feature: opts?.feature });
 			case 'swarm':
 				// No .swarm/spec.md present (already checked above) → null.
 				return null;
