@@ -2,9 +2,11 @@ import { describe, expect, it } from 'bun:test';
 import {
 	createAgents,
 	extractSwarmIdFromAgentName,
+	getAgentConfigs,
 	getSwarmAgents,
 } from '../../../src/agents';
 import type { PluginConfig } from '../../../src/config';
+import { stripKnownSwarmPrefix } from '../../../src/config/schema';
 
 describe('multi-swarm fallback model resolution', () => {
 	describe('extractSwarmIdFromAgentName', () => {
@@ -171,6 +173,146 @@ describe('multi-swarm fallback model resolution', () => {
 
 			// Verify non-existent swarm returns undefined
 			expect(getSwarmAgents('nonexistent')).toBeUndefined();
+		});
+	});
+
+	// Issue #2960: the following tests are LOOKUP-SEMANTICS PINS — the Task
+	// route resolver (resolveTaskRouteModelChain in src/index.ts) is an
+	// unexported closure, so these pin the lookup facts its length-delta
+	// derivation relies on. They pass on the pre-fix tree; the discriminating
+	// regression net for the derivation itself is the boundary-level test in
+	// tests/unit/index-task-model-routing-underscore-agents.test.ts plus the
+	// frozen trace checks C1-C3.
+	describe('underscore-named agent resolution (issue #2960)', () => {
+		it('resolves default-swarm fallback_models for underscore-named agents', () => {
+			const config: PluginConfig = {
+				agents: {
+					test_engineer: {
+						model: 'prov/primary',
+						fallback_models: ['prov/fallback'],
+					},
+				},
+			};
+
+			createAgents(config);
+
+			// The length-delta derivation yields swarm id undefined for an
+			// exact roster name; getSwarmAgents(undefined) resolves 'default'.
+			expect(stripKnownSwarmPrefix('test_engineer')).toBe('test_engineer');
+			expect(getSwarmAgents(undefined)?.test_engineer?.fallback_models).toEqual(
+				['prov/fallback'],
+			);
+		});
+
+		it('resolves prefixed underscore agents in multi-swarm configs', () => {
+			const config: PluginConfig = {
+				swarms: {
+					local: {
+						name: 'Local',
+						agents: {
+							test_engineer: {
+								model: 'prov/x',
+								fallback_models: ['prov/xb'],
+							},
+						},
+					},
+					mega: {
+						name: 'Mega',
+						agents: {},
+					},
+				},
+			};
+
+			createAgents(config);
+
+			// Derivation facts for 'local_test_engineer' (the length-delta
+			// pattern src/index.ts uses — NOT extractSwarmIdFromAgentName,
+			// whose naive first-underscore split yields 'local' only by luck
+			// of the single-prefix form).
+			const role = stripKnownSwarmPrefix('local_test_engineer');
+			expect(role).toBe('test_engineer');
+			const swarmId =
+				role !== 'local_test_engineer'
+					? 'local_test_engineer'.slice(
+							0,
+							'local_test_engineer'.length - role.length - 1,
+						)
+					: undefined;
+			expect(swarmId).toBe('local');
+			expect(getSwarmAgents(swarmId)?.test_engineer?.fallback_models).toEqual([
+				'prov/xb',
+			]);
+		});
+
+		it('treats an unprefixed underscore name as the default swarm even when its first token collides with a swarm id', () => {
+			const config: PluginConfig = {
+				swarms: {
+					test: {
+						name: 'Test',
+						agents: {
+							test_engineer: {
+								model: 'prov/x',
+								fallback_models: ['prov/xb'],
+							},
+						},
+					},
+				},
+			};
+
+			createAgents(config);
+
+			// Designed semantics (issue #2960): an unprefixed canonical name
+			// resolves via the 'default' swarm. The pre-fix naive first-
+			// underscore split accidentally hit swarm 'test' here; the
+			// length-delta derivation deliberately does not. The 'test'
+			// swarm's entry stays reachable via its prefixed name form.
+			expect(getSwarmAgents(undefined)?.test_engineer).toBeUndefined();
+			expect(getSwarmAgents('test')?.test_engineer?.fallback_models).toEqual([
+				'prov/xb',
+			]);
+		});
+
+		it('keeps underscore agent names primary in both name forms (AGENTS.md invariant 11)', () => {
+			const multiSwarm: PluginConfig = {
+				swarms: {
+					local: {
+						name: 'Local Swarm',
+						agents: {
+							test_engineer: {
+								model: 'prov/x',
+								fallback_models: ['prov/xb'],
+							},
+						},
+					},
+					mega: {
+						name: 'Mega Swarm',
+						agents: {},
+					},
+				},
+			};
+			const multiSwarmConfigs = getAgentConfigs(multiSwarm);
+			const prefixedPrimaries = Object.entries(multiSwarmConfigs).filter(
+				([name, cfg]) => name.startsWith('local_') && cfg.mode === 'primary',
+			);
+			// At least one prefixed agent must be primary in a multi-swarm
+			// config (the v7.3.x regression class: strict default_agent
+			// equality demoting every *_architect to subagent).
+			expect(prefixedPrimaries.length).toBeGreaterThan(0);
+			expect(multiSwarmConfigs.local_architect?.mode).toBe('primary');
+			expect(multiSwarmConfigs.local_test_engineer?.mode).toBe('subagent');
+
+			const legacy: PluginConfig = {
+				default_agent: 'test_engineer',
+				agents: {
+					test_engineer: {
+						model: 'prov/primary',
+						fallback_models: ['prov/fallback'],
+					},
+				},
+			};
+			const legacyConfigs = getAgentConfigs(legacy);
+			// Legacy unprefixed form: an exact default_agent match stays primary.
+			expect(legacyConfigs.test_engineer?.mode).toBe('primary');
 		});
 	});
 });

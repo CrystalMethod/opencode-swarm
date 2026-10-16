@@ -8,7 +8,6 @@ import packageJson from '../package.json' with { type: 'json' };
 import {
 	type AgentDefinition,
 	createAgents,
-	extractSwarmIdFromAgentName,
 	getAgentConfigs,
 	getSwarmAgents,
 	resetArchitectPromptBudgetAdvisories,
@@ -1992,7 +1991,16 @@ async function initializeOpenCodeSwarm(
 		const trimmedAgentName = exactAgentName.trim();
 		if (!trimmedAgentName) return null;
 		const role = stripKnownSwarmPrefix(trimmedAgentName);
-		const swarmID = extractSwarmIdFromAgentName(trimmedAgentName) || undefined;
+		// Derive the swarm id by length delta from the canonical role — NOT a
+		// naive first-underscore split — because role names themselves contain
+		// an underscore (`test_engineer`, `curator_phase`), which a split would
+		// misread as a swarm prefix and collapse the fallback chain to [] in
+		// the default swarm (issue #2960). Mirrors
+		// src/hooks/curator-llm-factory.ts.
+		const swarmID =
+			role !== trimmedAgentName
+				? trimmedAgentName.slice(0, trimmedAgentName.length - role.length - 1)
+				: undefined;
 		const swarmAgents = getSwarmAgents(swarmID);
 		return {
 			exactAgentName: trimmedAgentName,
