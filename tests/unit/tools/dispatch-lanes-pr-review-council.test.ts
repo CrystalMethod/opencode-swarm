@@ -453,12 +453,19 @@ describe('PR review council mechanical dispatch', () => {
 		expect(council.pending).toBe(1);
 		expect(deliveredPrompts[0]).toContain(CANDIDATE_HEADERS.micro_lane);
 		expect(deliveredPrompts[0]).toContain(CLEAN_TEMPLATES.micro_lane);
-		expect(deliveredPrompts[0]).toContain('MICRO WORKED EXAMPLE');
 		expect(deliveredPrompts[0]).toContain(
 			'put the exact workflow_lane only in the `micro_lane` field',
 		);
 		expect(deliveredPrompts[0]).not.toContain(
 			'put the exact workflow_lane only in the lane field',
+		);
+		// #3310: council lanes get the council-specific suffix — the row family
+		// only, no Profile A structured-settlement guidance, plus the plain
+		// marker-rows response-format override.
+		expect(deliveredPrompts[0]).toContain('COUNCIL WORKED EXAMPLE');
+		expect(deliveredPrompts[0]).not.toContain('submit_pr_review_result');
+		expect(deliveredPrompts[0]).toMatch(
+			/reply[^\n]{0,120}plain[^\n]{0,60}rows/i,
 		);
 		const councilRecord = readDelegations(directory).find(
 			(record) => record.batchId === council.batch_id,
