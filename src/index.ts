@@ -2005,16 +2005,26 @@ async function initializeOpenCodeSwarm(
 		// `coder`, `code-reviewer` extracts `reviewer`. Slicing those yields a
 		// garbage id (`Code`), a guaranteed map miss and an empty chain, which
 		// reintroduces the #2960 symptom for inputs that worked before the
-		// change. Only a real `<swarmId>_<role>` prefix may be sliced;
-		// everything else stays on the default swarm exactly as before. The
+		// change. Only a real `<swarmId>_<role>` prefix may be sliced; the
 		// suffix is matched case-insensitively while the slice uses the RAW
 		// name, so a case-carrying swarm id (`Case_coder` → `Case`) survives.
 		// Shape follows src/failures/action-identity.ts `canonicalRole`.
-		const swarmID =
+		//
+		// The derived id must additionally be schema-valid: a swarm id may not
+		// contain an underscore (src/config/schema.ts `Swarm ID must not
+		// contain underscores`), so a malformed doubled-separator name
+		// (`local__coder` → `local_`) can never match a registered swarm.
+		// Such names fall through to the default swarm rather than slicing a
+		// prefix that cannot exist — the fail-closed direction. (Base's naive
+		// split happened to yield the valid `local` here; that is an accident
+		// of splitting on the FIRST underscore, not a contract.)
+		const slicedSwarmID =
 			role !== trimmedAgentName &&
 			trimmedAgentName.toLowerCase().endsWith(`_${role}`)
 				? trimmedAgentName.slice(0, trimmedAgentName.length - role.length - 1)
 				: undefined;
+		const swarmID =
+			slicedSwarmID && !slicedSwarmID.includes('_') ? slicedSwarmID : undefined;
 		const swarmAgents = getSwarmAgents(swarmID);
 		return {
 			exactAgentName: trimmedAgentName,

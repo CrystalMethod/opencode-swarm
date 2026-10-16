@@ -191,10 +191,14 @@ describe('index task-model routing — underscore agents (issue #2960)', () => {
 		severeInternals.pendingCorrelations.clear();
 		severeInternals.evidenceEvents.clear();
 		severeInternals.childBindings.clear();
-		// FB-008: one try around two rmSync calls means a first throw skips
-		// the second silently. removeTreeWithRetry is the repo's helper for
-		// per-directory best-effort cleanup and is itself exception-safe, so
-		// the two dirs are cleaned independently.
+		// FB-008: one try around two rmSync calls silently swallowed a failure,
+		// so a first throw skipped the second dir's cleanup with no signal.
+		// removeTreeWithRetry is the repo's helper: it retries a locked dir
+		// (the common Windows EBUSY case) instead of failing on the first
+		// attempt. It is NOT exception-safe by design — a persistent failure
+		// still surfaces rather than being hidden — so a first throw can
+		// still skip the second call; that is now a visible failure rather
+		// than a silent leak.
 		removeTreeWithRetry(directory);
 		removeTreeWithRetry(configDirectory);
 	});
@@ -285,11 +289,16 @@ describe('index task-model routing — underscore agents (issue #2960)', () => {
 		const output = {
 			message: {} as { model?: { providerID: string; modelID: string } },
 		};
+		// Deliberately no model assertion here: on the DISPATCHED-prefixed path
+		// the advance resolves from the stripped role under a swarms-only config
+		// and the chain re-keys at the chat boundary, so the override is not
+		// observable in either tree. The discriminating production coverage for
+		// the resolver is the case-variant tests below; this case stays a
+		// no-throw PIN (see the file header).
 		await plugin['chat.message']?.(
 			{ sessionID: CHILD_SESSION, agent: 'local_test_engineer' } as never,
 			output as never,
 		);
-		expect(output.message).toBeDefined();
 	});
 
 	// FB-001/FB-005 regression net (issue #2960 review). The swarm-id

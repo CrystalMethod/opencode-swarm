@@ -254,15 +254,18 @@ describe('multi-swarm fallback model resolution', () => {
 			// case-insensitive and also accepts `-` / ` ` separators, so a bare
 			// `role !== name` test slices a garbage swarm id from an
 			// UNPREFIXED name. Only a real `<swarmId>_<role>` suffix may be
-			// sliced; everything else stays on the default swarm, exactly as
-			// the pre-fix behavior was. Boundary-level regression coverage for
-			// the case-variant class lives in
-			// tests/unit/index-task-model-routing-underscore-agents.test.ts.
+			// sliced, and the sliced id must itself be schema-valid (a swarm id
+			// may not contain `_`), so a malformed doubled separator falls to
+			// the default swarm instead of naming a swarm that cannot exist.
+			// Boundary-level regression coverage for the case-variant class
+			// lives in tests/unit/index-task-model-routing-underscore-agents.test.ts.
 			const derive = (name: string): string | undefined => {
 				const role = stripKnownSwarmPrefix(name);
-				return role !== name && name.toLowerCase().endsWith(`_${role}`)
-					? name.slice(0, name.length - role.length - 1)
-					: undefined;
+				const sliced =
+					role !== name && name.toLowerCase().endsWith(`_${role}`)
+						? name.slice(0, name.length - role.length - 1)
+						: undefined;
+				return sliced && !sliced.includes('_') ? sliced : undefined;
 			};
 			// No real prefix -> default swarm. This is the #2960 fix for the
 			// underscore seeded roles AND preservation for every other form.
@@ -272,6 +275,8 @@ describe('multi-swarm fallback model resolution', () => {
 			expect(derive('code-coder')).toBeUndefined();
 			expect(derive('chief coder')).toBeUndefined();
 			expect(derive('Test_Engineer')).toBeUndefined();
+			// A malformed doubled separator must not yield an unregistrable id.
+			expect(derive('local__coder')).toBeUndefined();
 			// A real prefix IS sliced, preserving the raw swarm-id casing.
 			expect(derive('local_test_engineer')).toBe('local');
 			expect(derive('Case_coder')).toBe('Case');
