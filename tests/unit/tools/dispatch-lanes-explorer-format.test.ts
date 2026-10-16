@@ -246,7 +246,7 @@ describe('applyExplorerFormatSuffix', () => {
 		expect(prompt).toContain('never inside Markdown code fences');
 	});
 
-	test('uses the micro-only contract for council explorer lanes', () => {
+	test('uses the council-specific contract for council explorer lanes', () => {
 		_internals.getGeneratedAgentNames = () => ['council_generalist'];
 		const result = _test_exports.applyExplorerFormatSuffix(
 			[
@@ -266,6 +266,37 @@ describe('applyExplorerFormatSuffix', () => {
 			CANDIDATE_HEADERS.base_explorer,
 		);
 		expect(result.lanes[0].prompt).not.toContain('impact_context');
+		// #3310: no Profile A settlement guidance on council lanes; the reply
+		// format is plain marker rows overriding the fenced-JSON default.
+		expect(result.lanes[0].prompt).not.toContain('submit_pr_review_result');
+		expect(result.lanes[0].prompt).toMatch(
+			/reply[^
+]0,120plain[^
+]0,60rows/i,
+		);
+	});
+
+	test('#3310: a council lane re-prompted with its controller-built prompt stays idempotent', () => {
+		_internals.getGeneratedAgentNames = () => ['council_generalist'];
+		const lane = {
+			id: 'council',
+			agent: 'council_generalist',
+			prompt: 'challenge the candidates',
+			workflow_lane: 'council-generalist',
+		};
+		const once = _test_exports.applyExplorerFormatSuffix([lane], {
+			failClosed: true,
+			mode: 'swarm-pr-review:council',
+		});
+		expect(once.ok).toBe(true);
+		if (!once.ok) throw new Error(once.errors.join('; '));
+		const twice = _test_exports.applyExplorerFormatSuffix(once.lanes, {
+			failClosed: true,
+			mode: 'swarm-pr-review:council',
+		});
+		expect(twice.ok).toBe(true);
+		if (!twice.ok) throw new Error(twice.errors.join('; '));
+		expect(twice.lanes[0].prompt).toBe(once.lanes[0].prompt);
 	});
 
 	test('appends the controller identity exactly once for a consolidated Tier-M lane', () => {

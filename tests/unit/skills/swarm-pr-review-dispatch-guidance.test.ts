@@ -254,7 +254,8 @@ describe('swarm-pr-review deterministic async lane dispatch guidance', () => {
 		);
 		expect(phase4Section).toContain('all eleven family evaluations');
 		expect(phase6Section).toContain('join barrier');
-		expect(phase6Section).toContain('malformed `[REVIEWED]`');
+		// #3310: reworded to the rows-anywhere contract.
+		expect(phase6Section).toContain('unparseable row');
 		expect(phase0aSection).toContain(
 			'discover whether the repository defines a PR',
 		);
@@ -352,14 +353,25 @@ describe('swarm-pr-review deterministic async lane dispatch guidance', () => {
 			'Under Profile A',
 		);
 
-		expect(base).toContain(CANDIDATE_HEADERS.base_explorer);
-		expect(base).toContain(CLEAN_TEMPLATES.base_explorer);
-		expect(base).not.toContain(CANDIDATE_HEADERS.micro_lane);
-		expect(base).not.toContain(CLEAN_TEMPLATES.micro_lane);
-		expect(micro).toContain(CANDIDATE_HEADERS.micro_lane);
-		expect(micro).toContain(CLEAN_TEMPLATES.micro_lane);
-		expect(micro).not.toContain(CANDIDATE_HEADERS.base_explorer);
-		expect(micro).not.toContain(CLEAN_TEMPLATES.base_explorer);
+		// #3310 (AC16): Profile A template fences are content-only — the row
+		// formats moved to the separately headed Profile B/C section, which is
+		// where the runtime grammar stays pinned for controller-less profiles.
+		expect(base).not.toContain(CANDIDATE_HEADERS.base_explorer);
+		expect(base).not.toContain(CLEAN_TEMPLATES.base_explorer);
+		expect(micro).not.toContain(CANDIDATE_HEADERS.micro_lane);
+		expect(micro).not.toContain(CLEAN_TEMPLATES.micro_lane);
+		const profileBC = sectionBetween(
+			source,
+			'## Profile B/C row formats',
+			'## Contract addendum',
+		);
+		expect(profileBC).toContain(CANDIDATE_HEADERS.base_explorer);
+		expect(profileBC).toContain(CLEAN_TEMPLATES.base_explorer);
+		expect(profileBC).toContain(CANDIDATE_HEADERS.micro_lane);
+		expect(profileBC).toContain(CLEAN_TEMPLATES.micro_lane);
+		for (const marker of ['[REVIEWED]', '[CRITIC]', '[CANDIDATE]']) {
+			expect(profileBC).toContain(`EXAMPLE — NOT A LIVE ROW: ${marker}`);
+		}
 		for (const templateSection of [base, micro]) {
 			expect(templateSection).toContain('`submit_pr_review_result`');
 			expect(templateSection).toContain(
@@ -367,9 +379,7 @@ describe('swarm-pr-review deterministic async lane dispatch guidance', () => {
 			);
 			expect(templateSection).toContain('exactly once');
 			expect(templateSection).toContain('legacy compatibility only');
-			expect(templateSection).toContain('unfenced plain text');
-			expect(templateSection).toContain('documentation only');
-			expect(templateSection).toContain('do not emit backticks');
+			expect(templateSection).toContain('never inside a Markdown fence');
 			expect(templateSection).toContain('at or below 12,000 characters');
 			expect(templateSection).toContain('Do not narrate progress');
 		}

@@ -146,9 +146,12 @@ describe('skill dialect is structurally identical to the executable PR-review co
 				index === 0 ? PR_REVIEW_VERDICT_ROW_DESCRIPTORS.critic.marker : role,
 			)
 			.join(' | ');
+		// #3310: the Profile B/C section carries one full-grammar row per
+		// marker in each document (the shared reviewer/critic template fences
+		// are content-only now; SKILL.md's re-dispatch quote was removed).
 		const documents = [
-			[SKILL_PATH, 1, 2],
-			[PROMPT_TEMPLATES_PATH, 1, 2],
+			[SKILL_PATH, 1, 1],
+			[PROMPT_TEMPLATES_PATH, 1, 1],
 			[DRY_RUN_PATH, 1, 0],
 		] as const;
 		for (const [documentPath, reviewerCount, criticCount] of documents) {

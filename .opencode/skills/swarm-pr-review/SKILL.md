@@ -4,7 +4,7 @@ description: Run a graph-guided, tool-augmented PR review using context packing,
 disable-model-invocation: true
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "ce38f6d7bb74"
+  swarm-contract-digest: "de6a12ef31aa"
 ---
 
 # /swarm-pr-review
@@ -1211,10 +1211,7 @@ Reviewer output format:
 CLEAN-REVIEW sentinel and DISPROVED/PRE_EXISTING row details: see
 `references/parser-dry-run.md`.
 
-Every reviewer response must end with one parseable `[REVIEWED]` row per
-assigned candidate. A malformed `[REVIEWED]` row is not a verdict: re-dispatch
-with the exact contract (max 2), then mark the reviewer dimension BLOCKED if no
-valid row returns.
+Verdict rows are accepted anywhere in the response, exactly one live `[REVIEWED]` row per assigned candidate and no other line beginning with the marker. An unparseable row is not a verdict: re-dispatch with the contract (max 2), then mark the dimension BLOCKED if none returns.
 
 After reviewer lanes settle, persist the post-reviewer finding ledger before
 critic routing or synthesis. The artifact must preserve `CONFIRMED`,
@@ -1265,11 +1262,14 @@ binding, and diagnostic contract in
 Under Profile A, dispatch critic chunks with `dispatch_lanes_async`,
 `mode: "swarm-pr-review:critic"`, a unique non-empty `workflow_lane` per
 chunk, `review_item_ids` containing the exact finding IDs assigned to that
-chunk, critic-role agents only, and the same exact `pr_head_sha`. The runtime
+chunk, the `critic` agent (its prompt carries the PR-contract override suspending its default structure under the controller block), and the same exact `pr_head_sha`. The runtime
 requires one parseable `[CRITIC]` row for every structurally assigned ID and
 requires the reviewer phase to have settled — every item in the current
 inventory holding a successful reviewer verdict, composed across batches —
 before a critic wave.
+
+Never dispatch `critic_finding_validator` (or the phase verifiers) as the PR critic: they return strict-JSON dispositions, not verdict rows, and the dispatch is rejected.
+
 Under Profile B, dispatch each critic chunk to a fresh subagent that was
 neither the explorer nor the reviewer for those findings; under Profile C, run
 a separate critic pass. The one-parseable-`[CRITIC]`-row-per-assigned-ID
@@ -1298,17 +1298,16 @@ Critic output format:
 
 ## Verdict row contract
 
-The `[CRITIC]` row in the format above is **mandatory contract**, not advisory output. A critic response that does not end with that exact row format is treated as a planning preamble, not a verdict, and must be re-dispatched. Do not proceed past Phase 8 join barrier until each dispatched critic lane has produced a parseable `[CRITIC]` row.
+The `[CRITIC]` row in the format above is **mandatory contract**, not advisory output. Verdict rows are accepted anywhere in the response, exactly one live row per assigned ID and no other line beginning with the marker; an investigation-only reply settles nothing and is re-dispatched with the contract (max 2). Do not proceed past Phase 8 join barrier until each dispatched critic lane has produced a parseable `[CRITIC]` row. Only a returned verdict row becomes a finding — never synthesize one from prose.
 
-**Re-dispatch trigger:** when a critic lane response is missing the verdict row, the orchestrator must automatically re-dispatch that lane with the explicit instruction: "Your final line MUST be exactly the Phase 8 contract row: `[CRITIC] | item_id | status | severity | rationale | required_change`. Use only enum values from `references/findings-persistence-contract.md`. A response without that exact row will be treated as a planning message and re-dispatched." Do not synthesize findings from the planning preamble; only from the re-dispatched verdict.
+**Re-dispatch trigger:** when a critic lane response carries no parseable verdict row for an assigned ID, re-dispatch that lane citing the contract-card grammar and the enums in `references/findings-persistence-contract.md`; only the re-dispatched verdict becomes a finding.
 
 `NEEDS_MORE_EVIDENCE` is deliberately non-terminal and never satisfies critic
 settlement. Re-dispatch a narrower critic/probe lane or report the dimension
 BLOCKED. Terminal critic rows are cross-field checked: `DISPROVED` requires
-`NONE`, `UPHELD` requires CRITICAL/HIGH/MEDIUM, and `DOWNGRADED` cannot remain
-CRITICAL.
+`NONE`, `UPHELD` keeps the reviewer's own severity and is never `NONE`, and `DOWNGRADED` cannot remain CRITICAL.
 
-**COVERAGE GATE alignment:** Critic lane failures apply the COVERAGE GATE (Phase 3) — under Profile A via `dispatch_lanes_async` with `mode: "swarm-pr-review:critic"` and the same exact `pr_head_sha`; under Profiles B/C via a fresh critic subagent or pass. Do NOT mark findings UNVERIFIED or continue past the gap. The orchestrator NEVER fabricates a critic verdict by parsing prose, by tolerating a planning preamble, by presenting partial findings as complete beyond the truthful N-of-6 settlement, or by silently accepting reduced coverage.
+**COVERAGE GATE alignment:** Critic lane failures apply the COVERAGE GATE (Phase 3) — under Profile A via `dispatch_lanes_async` with `mode: "swarm-pr-review:critic"` and the same exact `pr_head_sha`; under Profiles B/C via a fresh critic subagent or pass. Do NOT mark findings UNVERIFIED or continue past the gap. The orchestrator NEVER fabricates a critic verdict by parsing prose, by treating an investigation-only reply as settled, by presenting partial findings as complete beyond the truthful N-of-6 settlement, or by silently accepting reduced coverage.
 
 Refuted findings become `DISPROVED` or `ADVISORY`, depending on critic rationale. Downgrades must be listed in the final validation provenance.
 

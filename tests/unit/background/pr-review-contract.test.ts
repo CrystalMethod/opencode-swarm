@@ -307,4 +307,18 @@ describe('PR-review executable contract (#2333)', () => {
 			}).success,
 		).toBe(false);
 	});
+
+	test('contract card routing rules state UPHELD and DOWNGRADED critic severity semantics (#3310)', () => {
+		const card = buildPrReviewContractCard();
+		// RED at base, GREEN after the fix (issue #3310 AC12): the card must
+		// state that UPHELD keeps the reviewer's severity and is not permitted
+		// at NONE, and that DOWNGRADED is strictly lower than the reviewer's
+		// severity and never CRITICAL.
+		expect(card).toMatch(/UPHELD[^\n]*reviewer|reviewer[^\n]*UPHELD/i);
+		expect(card).toMatch(/UPHELD[^\n]*NONE|NONE[^\n]*UPHELD/i);
+		expect(card).toMatch(
+			/DOWNGRADED[^\n]*(?:lower|reviewer)|(?:lower|reviewer)[^\n]*DOWNGRADED/i,
+		);
+		expect(card).toMatch(/DOWNGRADED[^\n]*CRITICAL|CRITICAL[^\n]*DOWNGRADED/i);
+	});
 });
