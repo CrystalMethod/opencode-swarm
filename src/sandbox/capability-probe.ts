@@ -174,7 +174,7 @@ function cleanupProbeTempRoot(
 	reasons: string[],
 ): void {
 	try {
-		_internals.removeProbeTempRoot(tempRoot);
+		_internals.removeProbeTempRoot(tempRoot, { recursive: true, force: true });
 	} catch (error) {
 		const code =
 			typeof error === 'object' &&
@@ -310,6 +310,9 @@ function probeLinuxBehavior(): BehavioralEvidence {
 			'--new-session',
 			'--cap-drop',
 			'ALL',
+			'--ro-bind',
+			tempRoot,
+			tempRoot,
 			'--bind',
 			allowedRoot,
 			allowedRoot,
@@ -568,14 +571,15 @@ export const _internals: {
 	detectBehavioralEvidence: typeof detectBehavioralEvidence;
 	resolveWindowsCommandProcessorBinary: typeof resolveWindowsCommandProcessorBinary;
 	currentProbeSourceIdentity: typeof currentProbeSourceIdentity;
-	removeProbeTempRoot: typeof fs.rmSync;
+	removeProbeTempRoot: (target: fs.PathLike, options?: fs.RmOptions) => void;
 } = {
 	withProbeTimeout,
 	spawnSync,
 	detectBehavioralEvidence,
 	resolveWindowsCommandProcessorBinary,
 	currentProbeSourceIdentity,
-	removeProbeTempRoot: fs.rmSync,
+	removeProbeTempRoot: (target: fs.PathLike, options?: fs.RmOptions) =>
+		fs.rmSync(target, { recursive: true, force: true, ...options }),
 } as const;
 
 /** Probe for Linux Bubblewrap (bwrap). */
