@@ -268,31 +268,61 @@ describe('SandboxCapabilityProbe', () => {
 			);
 		});
 
-		test('cleanupProbeTempRoot requests recursive removal with force', () => {
+		test('default removeProbeTempRoot removes a non-empty directory without caller options', () => {
+			const dir = canonicalMkdtemp('probe-rm-');
+			fs.mkdirSync(path.join(dir, 'allowed'));
+			fs.writeFileSync(path.join(dir, 'allowed', 'inside.txt'), 'ok');
+			originalRemoveProbeTempRoot(dir);
+			expect(fs.existsSync(dir)).toBe(false);
+		});
+
+		test('bubblewrap probe ro-binds tempRoot before the writable allowedRoot bind and really removes tempRoot', () => {
+			const calls: string[][] = [];
 			let passedOptions: fs.RmOptions | undefined;
 			linuxExecutorInternals.resolveBwrapBinary = () => 'bwrap';
-			_internals.spawnSync = mock(() => ({
-				status: 0,
-				stdout: '',
-				stderr: '',
-			}));
+			_internals.spawnSync = mock((_cmd: string, args: string[]) => {
+				calls.push(args);
+				return { status: 1, stdout: '', stderr: '' };
+			}) as unknown as typeof originalSpawnSync;
+			// Record the options the caller passes, then delegate to the real
+			// remover so the non-empty probe directory is genuinely removed.
 			_internals.removeProbeTempRoot = ((
-				_target: fs.PathLike,
+				target: fs.PathLike,
 				options?: fs.RmOptions,
 			) => {
 				passedOptions = options;
+				originalRemoveProbeTempRoot(target, options);
 			}) as typeof originalRemoveProbeTempRoot;
 
-			_internals.detectBehavioralEvidence({
+			const result = _internals.detectBehavioralEvidence({
 				status: 'enabled',
 				strength: 'strong',
 				mechanism: 'Bubblewrap',
 				platform: 'linux',
 			});
 
-			expect(passedOptions).toBeDefined();
+			expect(calls.length).toBeGreaterThan(0);
+			for (const args of calls) {
+				const bindIdx = args.indexOf('--bind');
+				expect(bindIdx).toBeGreaterThan(-1);
+				const tempRoot = path.dirname(args[bindIdx + 1]);
+				const roIdx = args.findIndex(
+					(a, i) =>
+						a === '--ro-bind' &&
+						args[i + 1] === tempRoot &&
+						args[i + 2] === tempRoot,
+				);
+				expect(roIdx).toBeGreaterThan(-1);
+				expect(roIdx).toBeLessThan(bindIdx);
+			}
+			const firstBind = calls[0].indexOf('--bind');
+			const tempRoot = path.dirname(calls[0][firstBind + 1]);
 			expect(passedOptions?.recursive).toBe(true);
 			expect(passedOptions?.force).toBe(true);
+			expect(fs.existsSync(tempRoot)).toBe(false);
+			expect(
+				result.reasons.some((r) => r.includes('probe temp cleanup failed')),
+			).toBe(false);
 		});
 	});
 
