@@ -296,6 +296,15 @@ jobs:
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" --jq '.[]' > "$tmp_entries" || { echo "::error::files listing failed."; exit 1; }
           listed="$(wc -l < "$tmp_entries")"
           expected="$(jq -r '.changed_files' <<< "$pr_json")"
+          # A non-integer count must fail closed: `[ x -ne y ]` with a
+          # non-numeric operand returns 2, which an `if` treats as false —
+          # the guard would be skipped exactly when it cannot prove safety.
+          case "$expected" in
+            ''|*[!0-9]*)
+              echo "::error::Files listing completeness unverifiable: the PR reports a non-integer changed_files count."
+              exit 1
+              ;;
+          esac
           if [ "$listed" -ne "$expected" ]; then
             echo "::error::Files listing incomplete: $listed entries listed but the PR reports $expected changed files — refusing to classify a truncated or partial listing."
             exit 1

@@ -402,18 +402,59 @@ function readBoundedFileSync(file: string, source: string): string {
 	return fs.readFileSync(file, 'utf8');
 }
 
+/**
+ * Idle bound for stdin (issue #3282 AC3). Env-tunable so the subprocess CLI
+ * test can shorten it; not an enforcement switch.
+ */
+function stdinIdleMs(): number {
+	const raw = process.env.FRAGMENT_STDIN_IDLE_MS;
+	const parsed = raw === undefined ? Number.NaN : Number(raw);
+	return Number.isInteger(parsed) && parsed > 0 ? parsed : 10_000;
+}
+
 async function readStdinBounded(source: string): Promise<string> {
 	const chunks: Buffer[] = [];
 	let total = 0;
-	for await (const chunk of Bun.stdin.stream() as AsyncIterable<Uint8Array>) {
-		total += chunk.byteLength;
-		if (total > MAX_LIST_BYTES) {
-			throw new PathListDecodeError(
-				`${source} exceeds the ${MAX_LIST_BYTES}-byte read bound (${total}+ bytes read)`,
-				source,
-			);
+	const iterator = (Bun.stdin.stream() as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+	const timers: Array<ReturnType<typeof setTimeout>> = [];
+	try {
+		for (;;) {
+			// A byte bound cannot stop a hang: stdin that yields no data and no
+			// EOF (issue #3282 AC3) must trip the idle bound instead of pinning
+			// the required check until the job ceiling.
+			const next = await Promise.race([
+				iterator.next(),
+				new Promise<never>((_, reject) => {
+					const timer = setTimeout(
+						() =>
+							reject(
+								new PathListDecodeError(
+									`stdin produced no data within ${stdinIdleMs()}ms (idle bound)`,
+									source,
+								),
+							),
+						stdinIdleMs(),
+					);
+					timers.push(timer);
+				}),
+			]);
+			if (next.done) break;
+			total += next.value.byteLength;
+			if (total > MAX_LIST_BYTES) {
+				throw new PathListDecodeError(
+					`${source} exceeds the ${MAX_LIST_BYTES}-byte read bound (${total}+ bytes read)`,
+					source,
+				);
+			}
+			chunks.push(Buffer.from(next.value));
 		}
-		chunks.push(Buffer.from(chunk));
+	} finally {
+		// Do NOT attempt iterator.return() here: cancelling a Bun stdin pipe
+		// read that is blocked in a native wait never completes (verified on
+		// all three CI platforms), which would hang the CLI exactly like the
+		// bug this bound exists to fix. printRequirement exits the process
+		// deterministically on this error path instead.
+		for (const timer of timers) clearTimeout(timer);
 	}
 	return Buffer.concat(chunks).toString('utf8');
 }
@@ -424,7 +465,8 @@ async function readStdinBounded(source: string): Promise<string> {
  * (newline-delimited) or `--changed-file` in the `--paths-format` framing,
  * the added list from repeated `--added` flags or `--added-file` in the same
  * framing, prints exactly one verdict line, and maps the exit code to gate
- * semantics. Pure: no git, no repo-root resolution; the
+ * semantics. No git, no repo-root resolution, no env enforcement (it does
+ * read the caller-supplied stdin/file inputs, bounded); the
  * FRAGMENT_CHECK_ENFORCE escape hatch does not apply (the caller owns its
  * messaging).
  */
@@ -440,6 +482,17 @@ export async function printRequirement(
 		return 2;
 	}
 	const format: PathListFormat = parsed.format ?? 'newline';
+	if (
+		(parsed.changedFile !== null || parsed.addedFile !== null) &&
+		parsed.format === null
+	) {
+		// Fail closed rather than silently decoding framed bytes through the
+		// legacy newline decoder (which would read required=false on garbage).
+		console.error(
+			'[check-pending-fragment] --paths-format is required when --changed-file or --added-file is used',
+		);
+		return 2;
+	}
 	try {
 		const changedRaw =
 			parsed.changedFile !== null
@@ -462,7 +515,11 @@ export async function printRequirement(
 	} catch (error) {
 		if (error instanceof PathListDecodeError) {
 			console.error(`[check-pending-fragment] ${error.message}`);
-			return 2;
+			// Exit deterministically: a pending stdin read from a lost idle/byte
+			// race would otherwise keep the event loop alive past exitCode.
+			// In-process callers (tests) always pass stdinText and never reach
+			// this branch.
+			process.exit(2);
 		}
 		throw error;
 	}

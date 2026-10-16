@@ -998,9 +998,9 @@ function readBoundedJson(file: string): unknown {
 
 function sha256(file: string): string {
 	// Normalize line endings so the recorded hash describes the committed
-	// content rather than the checkout's CRLF translation: a Windows checkout
-	// with core.autocrlf=true would otherwise mismatch the Linux runner's view
-	// of an unchanged workflow.
+	// content rather than the working copy's on-disk bytes: checkout-side CRLF
+	// (its origin not reconstructible from the repository) would otherwise
+	// mismatch the recorded LF-blob hash on an unchanged workflow.
 	return crypto.createHash('sha256').update(readBoundedText(file, MAX_WORKFLOW_BYTES).replace(/\r\n/g, '\n')).digest('hex');
 }
 

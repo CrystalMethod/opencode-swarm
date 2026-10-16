@@ -1,8 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test';
-import { readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { parse } from 'yaml';
 import { bashCommand } from '../../helpers/bash';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 /**
  * Executable coverage for the release-fragment arms' classifier exit-code
@@ -81,6 +82,14 @@ function classifierMapping(block: string): string {
 	return ['set -uo pipefail', ...lines.slice(start, end + 1)].join('\n');
 }
 
+/** Directories this process created for mapping runs (PRR-006 cleanup). */
+const createdTempDirs: string[] = [];
+
+/** Single-quote a value for a bash seed line (PRR-024: apostrophe-safe). */
+function bashSingleQuoted(value: string): string {
+	return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 /** Run an extracted mapping with a stubbed classifier (rc + verdict). */
 function runMapping(
 	mapping: string,
@@ -88,22 +97,33 @@ function runMapping(
 		rc: number;
 		verdict: string;
 		added?: string;
+		/**
+		 * Seed for the legacy `$added` variable ONLY (PRR-005): distinguishes
+		 * the new tmp_added transport from the pre-#3290 printf transport,
+		 * which read `$added`.
+		 */
+		legacyAdded?: string;
 		/** Dispatched-arm (issue #3290) stub inputs. */
 		entries?: string[];
 		changedFiles?: number;
 		headSha?: string;
+		/** Exit code the gh stub returns for the files-listing call (PRR-003). */
+		ghListingRc?: number;
 		/** When set, the stubbed bun's argv is appended to this file. */
 		captureBunArgs?: string;
 		/** When set, the stubbed gh's argv is appended to this file. */
 		captureGhArgs?: string;
 	},
 ): { exitCode: number; stdout: string; stderr: string } {
-	// Seeds for the #3290 mapping slices. The temp files carry the SAME
-	// bytes the arms write (NUL-framed for the pull_request arm's slice);
-	// the legacy changed/added/classifier_args seeds stay for shape
-	// compatibility with any residual references.
-	const tmpChanged = `${import.meta.dir}/.tmp-3290-changed-${process.pid}`;
-	const tmpAdded = `${import.meta.dir}/.tmp-3290-added-${process.pid}`;
+	// Seeds for the #3290 mapping slices. Temp files live OUTSIDE the repo
+	// tree via canonicalMkdtemp (PRR-006) and carry the SAME bytes the arms
+	// write (NUL-framed for the pull_request arm's slice); the legacy
+	// changed/added/classifier_args seeds stay for shape compatibility with
+	// any residual references.
+	const dir = canonicalMkdtemp('fgc-3290-');
+	createdTempDirs.push(dir);
+	const tmpChanged = path.join(dir, 'changed.bin');
+	const tmpAdded = path.join(dir, 'added.bin');
 	writeFileSync(
 		tmpChanged,
 		Buffer.from(`src/index.ts${'\0'}docs/other.ts${'\0'}`, 'utf8'),
@@ -123,9 +143,11 @@ function runMapping(
 	const headSha = opts.headSha ?? 'deadbeefcafe';
 	const script = [
 		'changed="src/index.ts"',
-		// Single-quoted so an adversarial fragment name containing a double
-		// quote (the #3290 display test) survives the seed line.
-		`added='${opts.added ?? 'docs/releases/pending/mine.md'}'`,
+		// Single-quoted and apostrophe-escaped (PRR-024) so adversarial
+		// fragment names survive the seed line; legacyAdded exists so tests
+		// can tell the pre-#3290 printf transport (read $added) from the new
+		// tmp_added transport.
+		`added=${bashSingleQuoted(opts.legacyAdded ?? opts.added ?? 'docs/releases/pending/mine.md')}`,
 		'classifier_args=()',
 		`tmp_changed='${tmpChanged}'`,
 		`tmp_added='${tmpAdded}'`,
@@ -135,6 +157,7 @@ function runMapping(
 		'GITHUB_REPOSITORY=example/example',
 		`TEST_ENTRIES='${entries.join('\n')}'`,
 		`TEST_HEAD_SHA='${headSha}'`,
+		`TEST_GH_LISTING_RC=${opts.ghListingRc ?? 0}`,
 		opts.captureBunArgs
 			? `CAPTURE_BUN='${opts.captureBunArgs}'`
 			: 'CAPTURE_BUN=',
@@ -144,6 +167,7 @@ function runMapping(
 		'  [ -n "$CAPTURE_GH" ] && printf \'%s\\n\' "$@" >> "$CAPTURE_GH"',
 		'  case "$line" in',
 		"    *'files?per_page=100'*)",
+		'      [ "$TEST_GH_LISTING_RC" -ne 0 ] && return "$TEST_GH_LISTING_RC"',
 		'      printf \'%s\\n\' "$TEST_ENTRIES"',
 		'      return 0',
 		'      ;;',
@@ -186,12 +210,10 @@ const VIOLATION = 'required=true satisfied=false';
 const SATISFIED = 'required=true satisfied=true';
 
 afterAll(() => {
-	// The pull_request mapping slice carries no cleanup trap (the arm's trap
-	// lives before the extraction seed), so sweep the harness temp files.
-	for (const p of readdirSync(import.meta.dir)) {
-		if (p.startsWith('.tmp-3290-')) {
-			unlinkSync(path.join(import.meta.dir, p));
-		}
+	// Remove exactly the directories this process created (PRR-006: no
+	// cross-process glob over the source tree).
+	for (const dir of createdTempDirs) {
+		rmSync(dir, { recursive: true, force: true });
 	}
 });
 const NOT_REQUIRED = 'required=false satisfied=false';
@@ -323,6 +345,30 @@ describe('fragment-gate workflow exit mapping (issue #2955)', () => {
 		expect(result.stdout).toContain('5 changed files');
 	});
 
+	test('dispatched arm 3290: a failed files listing fails closed (PRR-003)', () => {
+		const result = runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: '',
+			ghListingRc: 7,
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('files listing failed');
+	});
+
+	test('dispatched arm 3290: an empty derived changed-list fails closed (PRR-004)', () => {
+		// A blank entry line passes the wc -l completeness count (jq emits
+		// nothing for it) but derives an empty changed list — the guard must
+		// catch that shape, not only the count mismatch.
+		const result = runMapping(dispatchedMapping, {
+			rc: 0,
+			verdict: '',
+			entries: [''],
+			changedFiles: 1,
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toContain('Dispatched PR has no changed files');
+	});
+
 	test('dispatched arm 3290: a head move after the listing fails closed', () => {
 		const result = runMapping(dispatchedMapping, {
 			rc: 0,
@@ -335,8 +381,9 @@ describe('fragment-gate workflow exit mapping (issue #2955)', () => {
 	});
 
 	test('dispatched arm 3290: happy path derives both lists from the one listing', () => {
-		const capture = `${import.meta.dir}/.tmp-3290-bunargs-${process.pid}`;
-		writeFileSync(capture, '');
+		const dir = canonicalMkdtemp('fgc-3290-capture-');
+		createdTempDirs.push(dir);
+		const capture = path.join(dir, 'bunargs.txt');
 		const result = runMapping(dispatchedMapping, {
 			rc: 0,
 			verdict: 'required=true satisfied=true',
@@ -366,12 +413,12 @@ describe('fragment-gate workflow exit mapping (issue #2955)', () => {
 		expect(changedContent).toContain('"src/older.ts"');
 		expect(addedContent).toContain('"docs/releases/pending/mine.md"');
 		expect(addedContent).toContain('"src/old.ts"');
-		unlinkSync(capture);
 	});
 
 	test('dispatched arm 3290: the listing uses --jq .[] exactly', () => {
-		const capture = `${import.meta.dir}/.tmp-3290-ghargs-${process.pid}`;
-		writeFileSync(capture, '');
+		const dir = canonicalMkdtemp('fgc-3290-capture-');
+		createdTempDirs.push(dir);
+		const capture = path.join(dir, 'ghargs.txt');
 		runMapping(dispatchedMapping, {
 			rc: 0,
 			verdict: 'required=true satisfied=true',
@@ -386,17 +433,39 @@ describe('fragment-gate workflow exit mapping (issue #2955)', () => {
 		// `--jq -c '.'` (invalid gh syntax) both fail this.
 		expect(args[listingIndex + 1]).toBe('--jq');
 		expect(args[listingIndex + 2]).toBe('.[]');
-		unlinkSync(capture);
 	});
 
 	test('pull_request arm 3290: the display renders an adversarial added fragment name', () => {
+		// PRR-005: the legacy `$added` seed carries a DIFFERENT name, so the
+		// assertion can only be satisfied by the new `tr '\0' '\n' < "$tmp_added"`
+		// transport — reverting the workflow line to the pre-#3290 printf form
+		// makes this test red.
 		const result = runMapping(pullRequestMapping, {
 			rc: 0,
 			verdict: 'required=true satisfied=true',
 			added: 'docs/releases/pending/we"ird-3290.md',
+			legacyAdded: 'docs/releases/pending/legacy-display-3290.md',
 		});
 		expect(result.exitCode).toBe(0);
 		expect(result.stdout).toContain('Release fragment present:');
 		expect(result.stdout).toContain('docs/releases/pending/we"ird-3290.md');
+		expect(result.stdout).not.toContain('legacy-display-3290.md');
+	});
+
+	test('pull_request arm 3290: the NUL transport argv is pinned (PRR-011)', () => {
+		const dir = canonicalMkdtemp('fgc-3290-capture-');
+		createdTempDirs.push(dir);
+		const capture = path.join(dir, 'bunargs-pr.txt');
+		runMapping(pullRequestMapping, {
+			rc: 0,
+			verdict: 'required=true satisfied=true',
+			captureBunArgs: capture,
+		});
+		const args = readFileSync(capture, 'utf8').split('\n');
+		const formatIndex = args.indexOf('--paths-format');
+		expect(formatIndex).toBeGreaterThanOrEqual(0);
+		expect(args[formatIndex + 1]).toBe('nul');
+		expect(args).toContain('--changed-file');
+		expect(args).toContain('--added-file');
 	});
 });

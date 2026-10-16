@@ -30,8 +30,11 @@ stdin read was unbounded.
 
 `scripts/check-pending-fragment.ts --print-requirement` gains
 `--paths-format <newline|nul|jsonl>` with `--changed-file`/`--added-file`
-inputs (byte-bounded at 4 MiB, stream-bounded on stdin; exit 2 on undecodable
-or oversized input). The pull_request arm feeds `git diff -z` temp files; the
+inputs (byte-bounded at 4 MiB; stdin is bounded twice — an input over the
+bound exits 2, and one that produces no data within an idle bound exits 2
+instead of pinning the check until the job ceiling; file inputs require an
+explicit `--paths-format` so framed bytes can never silently decode through
+the legacy newline framing). The pull_request arm feeds `git diff -z` temp files; the
 dispatched arm materializes ONE `gh api --paginate ... --jq '.[]'` listing,
 fails closed when the entry count differs from the PR's `changed_files` or the
 head moved after the guard, and derives both lists as JSON-encoded paths. The
