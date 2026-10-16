@@ -5,7 +5,10 @@ import {
 	evaluateFragmentCheck,
 	evaluateRequirement,
 } from '../../../scripts/check-pending-fragment';
-import { LEGACY_FRAGMENT_REGEX_SUBSTRING } from '../../../scripts/drift-check';
+import {
+	isLegacyPredicateAlternation,
+	LEGACY_FRAGMENT_REGEX_SUBSTRING,
+} from '../../../scripts/drift-check';
 import {
 	FRAGMENT_SATISFACTION,
 	isPendingFragment,
@@ -123,6 +126,18 @@ const MATRIX: Array<{ label: string; file: string; userVisible: boolean }> = [
 		file: 'tests/fixtures/memory-recall/corpus.jsonl',
 		userVisible: false,
 	},
+	// #3291: a test/-prefix path whose file does NOT end in .test.ts. The
+	// class-3 row above is suffix-masked (its file hits the .test.ts suffix
+	// exclusion first). There is deliberately NO test/ (singular) prefix row
+	// in the table — this matrix row pins the CURRENT fallthrough verdict for
+	// test/-prefixed non-test files, so a future test/ row that flips the
+	// verdict fails here (F-10 reword: it pins today's recorded verdict, not
+	// a table row that does not exist).
+	{
+		label: '3291 test/-prefix non-test file',
+		file: 'test/helper.ts',
+		userVisible: false,
+	},
 ];
 
 describe('issue #2955 table shape', () => {
@@ -136,6 +151,8 @@ describe('issue #2955 table shape', () => {
 		{ pattern: 'scripts/' },
 		{ pattern: '.zcode/' },
 		{ pattern: 'node_modules/' },
+		{ pattern: 'evaluation-fixtures/' },
+		{ pattern: 'dist/' },
 	])('the never-prefix row for $pattern exists and is recorded as never user-visible', ({
 		pattern,
 	}) => {
@@ -169,15 +186,141 @@ describe('issue #2955 parity matrix', () => {
 		expect(
 			MATRIX.filter((row) => isUserVisiblePath(row.file) !== row.userVisible),
 		).toEqual([]);
-		expect(MATRIX.length).toBe(22);
+		expect(MATRIX.length).toBe(23);
+	});
+});
+
+describe('issue 3291 shipped-surface census', () => {
+	test('3291 census: every package.json#files entry is a recorded decision', () => {
+		// F-1 (issue #3291 round 2): the census is STRICT — an entry is covered
+		// iff a row matches under classifier semantics (with the bare-name
+		// prefix fallback for prefix/never-prefix rows), possibly via an
+		// ancestor row. There is deliberately NO text-mention fallback: a
+		// bare comment naming a path must never pass for a recorded decision.
+		const repoRoot = path.resolve(import.meta.dir, '..', '..', '..');
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+		) as { files: string[] };
+		function rowMatches(candidate: string): boolean {
+			for (const row of USER_VISIBLE_PATH_CLASSES) {
+				if (row.kind === 'exact' && candidate === row.pattern) return true;
+				if (
+					(row.kind === 'prefix' || row.kind === 'never-prefix') &&
+					(candidate.startsWith(row.pattern) ||
+						candidate === row.pattern.replace(/\/$/, ''))
+				) {
+					return true;
+				}
+			}
+			return false;
+		}
+		function covered(entry: string): boolean {
+			if (rowMatches(entry)) return true;
+			let ancestor = path.posix.dirname(entry);
+			while (ancestor !== '.' && ancestor !== '/') {
+				if (rowMatches(ancestor)) return true;
+				ancestor = path.posix.dirname(ancestor);
+			}
+			return false;
+		}
+		const uncovered = manifest.files.filter((entry) => !covered(entry));
+		expect(uncovered).toEqual([]);
+	});
+
+	test('3291 census: the recorded decisions classify not-user-visible', () => {
+		expect(isUserVisiblePath('evaluation-fixtures/case.json')).toBe(false);
+		expect(isUserVisiblePath('evaluation-fixtures/sub/dir/data.json')).toBe(
+			false,
+		);
+		expect(isUserVisiblePath('opencode-swarm.schema.json')).toBe(false);
+		expect(isUserVisiblePath('README.md')).toBe(false);
+		expect(isUserVisiblePath('LICENSE')).toBe(false);
+		expect(isUserVisiblePath('dist/index.js')).toBe(false);
+	});
+
+	test('3291 census: the recorded-decision rows are load-bearing (PRR-006/F-5)', () => {
+		// F-5: a never-prefix/exact row must be pinned by more than the
+		// classifier's fallthrough. The census's STRICT row-match arm is the
+		// pin — proved here by deletion: with the row removed from the table,
+		// its own recorded surface becomes uncovered (the census test above
+		// would go red on a real deletion).
+		function rowMatchesExcluding(pattern: string, candidate: string): boolean {
+			for (const row of USER_VISIBLE_PATH_CLASSES) {
+				if (row.pattern === pattern) continue;
+				if (row.kind === 'exact' && candidate === row.pattern) return true;
+				if (
+					(row.kind === 'prefix' || row.kind === 'never-prefix') &&
+					(candidate.startsWith(row.pattern) ||
+						candidate === row.pattern.replace(/\/$/, ''))
+				) {
+					return true;
+				}
+			}
+			return false;
+		}
+		for (const [pattern, probe] of [
+			['evaluation-fixtures/', 'evaluation-fixtures/sub/data.json'],
+			['opencode-swarm.schema.json', 'opencode-swarm.schema.json'],
+			['README.md', 'README.md'],
+			['LICENSE', 'LICENSE'],
+			['dist/', 'dist/index.js'],
+		] as const) {
+			expect(rowMatchesExcluding(pattern, probe)).toBe(false);
+		}
+	});
+
+	test('3291 census: the bin/ row note is true of the shipping configuration', () => {
+		const repoRoot = path.resolve(import.meta.dir, '..', '..', '..');
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+		) as { files: string[]; bin: Record<string, string> };
+		expect(manifest.files).not.toContain('bin');
+		expect(manifest.files).not.toContain('bin/');
+		expect(Object.values(manifest.bin)[0]).toContain('dist/cli/index.js');
+		const binRow = USER_VISIBLE_PATH_CLASSES.find(
+			(row) => row.pattern === 'bin/',
+		);
+		expect(binRow).toBeDefined();
+		expect(binRow?.note).toContain('dist/cli/index.js');
+		expect(binRow?.note).not.toContain('shipped binaries');
+	});
+
+	test('3291 census: row notes with manifest claims are true (F-8)', () => {
+		const repoRoot = path.resolve(import.meta.dir, '..', '..', '..');
+		const manifest = JSON.parse(
+			fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
+		) as { files: string[] };
+		// scripts/ note: "is NOT in package.json#files"
+		expect(manifest.files).not.toContain('scripts');
+		// tests/ note names the two shipped fixture subtrees
+		expect(manifest.files).toContain('tests/fixtures/memory-recall');
+		expect(manifest.files).toContain('tests/fixtures/memory-recall-heldout');
+		// evaluation-fixtures/ and schema notes: both are shipped entries
+		expect(manifest.files).toContain('evaluation-fixtures');
+		expect(manifest.files).toContain('opencode-swarm.schema.json');
+		// dist/ note: "package.json#files ships it" and "never committed"
+		expect(manifest.files).toContain('dist');
+		const committed = Bun.spawnSync({
+			cmd: ['git', 'ls-files', 'dist'],
+			cwd: repoRoot,
+			stdin: 'ignore',
+			stdout: 'pipe',
+			stderr: 'pipe',
+			timeout: 10_000,
+		});
+		// A failed spawn also yields empty stdout, so assert the exit code
+		// first or the note-truth check below passes vacuously.
+		expect(committed.exitCode).toBe(0);
+		expect(committed.stdout.toString().trim()).toBe('');
 	});
 });
 
 describe('issue #2955 no hand-maintained fragment regex remains', () => {
 	test('zero legacy-regex mentions under .github/workflows, including comments', () => {
-		// Matches frozen check C2's matcher and the drift detector arm: no
-		// line in any workflow file may carry the legacy hand-maintained
-		// path-classification literal — not even a comment quoting it.
+		// Mirrors the frozen check C2's matcher and the drift detector arm —
+		// BOTH disjuncts (issue #3291 NEW-1): the byte-exact constant and the
+		// purity arm. No line in any workflow file may carry the legacy
+		// hand-maintained classification predicate in either shape.
 		const workflowsDir = path.join(
 			import.meta.dir,
 			'..',
@@ -193,9 +336,12 @@ describe('issue #2955 no hand-maintained fragment regex remains', () => {
 				.readFileSync(path.join(workflowsDir, entry), 'utf8')
 				.split('\n');
 			lines.forEach((line, index) => {
-				// The production detector constant, not a copy: weakening or
-				// renaming it in scripts/drift-check.ts must fail THIS test too.
-				if (line.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING)) {
+				// The production detector arms, not copies: weakening either in
+				// scripts/drift-check.ts must fail THIS test too.
+				if (
+					line.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING) ||
+					isLegacyPredicateAlternation(line)
+				) {
 					offenders.push(`${entry}:${index + 1}`);
 				}
 			});
