@@ -89,6 +89,7 @@ import {
 	declarePrFeedbackInventory,
 	derivePrReviewOrderUnstableItems,
 	derivePrReviewPresentationOrder,
+	derivePrReviewReviewerSeverities,
 	describePrWorkflowRevisionDigestFailure,
 	enforcePrFeedbackVerificationOwnership,
 	enforcePrReviewBaseDimensions,
@@ -423,6 +424,26 @@ ${CANDIDATE_HEADERS.micro_lane}
 [CANDIDATE] | example-micro-001 | example-micro | MEDIUM | correctness | src/a.ts:12 | claim without pipes | invariant without pipes | evidence without pipes | HIGH
 
 If this micro or council explorer finds zero issues, emit its header followed by exactly:
+${CLEAN_TEMPLATES.micro_lane}
+${EXPLORER_CANDIDATE_COMMON_END}`;
+
+/**
+ * Issue #3310: council explorer lanes get a council-specific contract. The
+ * shared MICRO suffix embeds the Profile A structured-settlement guidance, but
+ * the settlement tool accepts only base and micro lanes and the council
+ * agent's own prompt demands a fenced JSON block — obeying both produces
+ * output no collector can settle. Rows only, no settlement guidance, and an
+ * explicit response-format override.
+ */
+export const COUNCIL_EXPLORER_CANDIDATE_FORMAT_SUFFIX = `${EXPLORER_CANDIDATE_COMMON_RULES}
+
+Response-format override (#3310): your reply is plain marker rows, not the fenced JSON block your default instructions request — emit the rows below as unfenced plain text. Profile A structured settlement does not apply to council lanes; the plain marker rows are the transport.
+
+COUNCIL WORKED EXAMPLE — copy only this shape. The first line is the header, not a finding:
+${CANDIDATE_HEADERS.micro_lane}
+[CANDIDATE] | example-council-001 | example-council | MEDIUM | correctness | src/a.ts:12 | claim without pipes | invariant without pipes | evidence without pipes | HIGH
+
+If this council explorer finds zero issues, emit its header followed by exactly:
 ${CLEAN_TEMPLATES.micro_lane}
 ${EXPLORER_CANDIDATE_COMMON_END}`;
 
@@ -1547,6 +1568,7 @@ export async function executeDispatchLanesAsync(
 	// verdicts.
 	let prReviewPresentationOrder: 'A' | 'B' | undefined;
 	let prReviewOrderUnstableItemIds: string[] | undefined;
+	let prReviewReviewerSeverities: Record<string, string> | undefined;
 	if (
 		context.sessionID?.trim() &&
 		parsed.data.pr_head_sha &&
@@ -1576,6 +1598,21 @@ export async function executeDispatchLanesAsync(
 						directory,
 						context.sessionID,
 					);
+					// #3310: the critic needs each assigned item's reviewer severity
+					// (UPHELD keeps that exact rank). Same read-only derivation
+					// shape as the #2906 readers; an empty map renders nothing extra.
+					const derivedSeverities = await derivePrReviewReviewerSeverities(
+						directory,
+						context.sessionID,
+					);
+					if (derivedSeverities.size > 0) {
+						// Own-property lookup only: an assigned item id colliding with a
+						// prototype key must not render inherited members into the block.
+						prReviewReviewerSeverities = Object.assign(
+							Object.create(null),
+							Object.fromEntries(derivedSeverities),
+						);
+					}
 				}
 			}
 		} catch (error) {
@@ -1616,6 +1653,7 @@ export async function executeDispatchLanesAsync(
 			callerFocus: parsed.data.scope,
 			presentationOrder: prReviewPresentationOrder,
 			orderUnstableItemIds: prReviewOrderUnstableItemIds,
+			reviewerSeverities: prReviewReviewerSeverities,
 		});
 	// Explicitly owned base/micro discovery lanes carry controller-owned row markers
 	// in the PR contract's owned-workflow line. Format those caller prompts before
@@ -1943,10 +1981,14 @@ export async function executeDispatchLanesAsync(
 						if (
 							(phase === 'council' && !role.startsWith('council_')) ||
 							(phase === 'reviewer' && role !== 'reviewer') ||
-							(phase === 'critic' && !role.startsWith('critic'))
+							// #3310: PR critic lanes must use the one named critic agent.
+							// Other critic-family roles (critic_finding_validator, critic_sounding_board,
+							// critic_drift_verifier, ...) carry output contracts (strict JSON,
+							// dispositions) that cannot emit [CRITIC] rows.
+							(phase === 'critic' && role !== 'critic')
 						) {
 							throw new Error(
-								`BLOCKED: PR_REVIEW ${phase} lane "${lane.id}" uses invalid role "${role || lane.agent}"`,
+								`BLOCKED: PR_REVIEW ${phase} lane "${lane.id}" uses invalid role "${role || lane.agent}"${phase === 'critic' ? ' — PR critic lanes must use the critic agent (critic_finding_validator and other critic-family roles cannot emit [CRITIC] rows)' : ''}`,
 							);
 						}
 					}
@@ -5870,14 +5912,17 @@ function applyExplorerFormatSuffix(
 		const formatSuffix =
 			options.mode === 'swarm-pr-review:base'
 				? BASE_EXPLORER_CANDIDATE_FORMAT_SUFFIX
-				: options.mode === 'swarm-pr-review:micro' || isPrReviewCouncilExplorer
+				: options.mode === 'swarm-pr-review:micro'
 					? MICRO_EXPLORER_CANDIDATE_FORMAT_SUFFIX
-					: EXPLORER_CANDIDATE_FORMAT_SUFFIX;
+					: isPrReviewCouncilExplorer
+						? COUNCIL_EXPLORER_CANDIDATE_FORMAT_SUFFIX
+						: EXPLORER_CANDIDATE_FORMAT_SUFFIX;
 		const controllerIdentity = `CONTROLLER-BOUND OUTPUT IDENTITY: ${identity}. Placeholder text such as "workflow_lane" is invalid. ${rowFamilyIdentity}`;
 		const knownSuffixes = [
 			EXPLORER_CANDIDATE_FORMAT_SUFFIX,
 			BASE_EXPLORER_CANDIDATE_FORMAT_SUFFIX,
 			MICRO_EXPLORER_CANDIDATE_FORMAT_SUFFIX,
+			COUNCIL_EXPLORER_CANDIDATE_FORMAT_SUFFIX,
 		];
 		const embeddedKnownSuffixes = knownSuffixes.filter((suffix) =>
 			lane.prompt.includes(suffix),
@@ -6024,6 +6069,15 @@ function applyPrWorkflowPromptContract(
 		 * absent — no line is rendered.
 		 */
 		orderUnstableItemIds?: string[];
+		/**
+		 * Issue #3310: critic lanes only. Assigned item id -> the reviewer
+		 * severity the composed reviewer phase settled for that item, so the
+		 * critic knows the exact rank UPHELD must keep. Rendered per item on the
+		 * assigned_item_ids line (`c1 (HIGH)`); ids without an entry render
+		 * bare. An absent, undefined, or EMPTY map renders the pre-#3310
+		 * byte-shape exactly.
+		 */
+		reviewerSeverities?: Record<string, string>;
 	},
 ): ApplyCommonPromptResult {
 	const mode = options.mode;
@@ -6090,6 +6144,41 @@ function applyPrWorkflowPromptContract(
 			);
 			return lane;
 		}
+		// #3310 (AC8): reviewer/critic operator prompts carry content only. A
+		// verdict-row template embedded in the operator prompt competes with the
+		// injected contract card (wrong-arity retries, #3275 RC4) — reject it
+		// side-effect-free, before any contract is appended or gate ownership is
+		// published. A prose mention of the marker word without the pipe-row
+		// shape is NOT rejected.
+		const prReviewVerdictTemplateToken =
+			normalizedMode.token === 'swarm-pr-review:reviewer'
+				? '[REVIEWED]'
+				: normalizedMode.token === 'swarm-pr-review:critic'
+					? '[CRITIC]'
+					: null;
+		// Whitespace-tolerant: the transport splits on the pipe and trims
+		// every field, so a marker followed by any spaces or a tab before the
+		// pipe parses as a canonical row. Checked on every operator-controlled
+		// channel that reaches the lane prompt: lane.prompt AND callerFocus,
+		// which is rendered verbatim after the authoritative card.
+		if (prReviewVerdictTemplateToken) {
+			const rowShape = new RegExp(
+				'\\[' + prReviewVerdictTemplateToken.slice(1, -1) + '\\][ \\t]*\\|',
+			);
+			const operatorChannels: Array<[string, string]> = [
+				['lane prompt', lane.prompt],
+				['caller scope', options.callerFocus ?? ''],
+			];
+			const offending = operatorChannels.find(([, text]) =>
+				rowShape.test(text),
+			);
+			if (offending) {
+				errors.push(
+					`Lane "${lane.id}" operator ${offending[0]} contains ${prReviewVerdictTemplateToken} | verdict-row template text; PR-review reviewer and critic prompts carry content only and the controller injects the authoritative output contract. Remove the format/template text from the lane prompt and retry.`,
+				);
+				return lane;
+			}
+		}
 		const fallbackChecklist = normalizedMode.token.endsWith(':reviewer')
 			? 're-read every assigned candidate at its exact location; prove classification, reachability, mitigation, severity, and falsification path'
 			: normalizedMode.token.endsWith(':critic')
@@ -6131,6 +6220,20 @@ function applyPrWorkflowPromptContract(
 				? [...assignedIds].sort()
 				: [...assignedIds].sort().reverse()
 			: assignedIds;
+		// #3310: critic lanes render each assigned item's reviewer severity on the
+		// same line as its id when the composed map supplies one; unknown ids render
+		// bare and an absent/empty map keeps the pre-#3310 byte-shape exactly.
+		const severityEntries =
+			options.reviewerSeverities &&
+			Object.keys(options.reviewerSeverities).length > 0
+				? options.reviewerSeverities
+				: undefined;
+		const severityAnnotatedIds =
+			severityEntries && normalizedModeToken === 'swarm-pr-review:critic'
+				? renderedIds.map((id) =>
+						severityEntries[id] ? `${id} (${severityEntries[id]})` : id,
+					)
+				: renderedIds;
 		const orderLine = presentationOrder
 			? `\npresentation_order: ${presentationOrder} (${presentationOrder === 'A' ? 'canonical' : 'reversed'}; order candidate prose in this order)`
 			: '';
@@ -6183,6 +6286,15 @@ function applyPrWorkflowPromptContract(
 		// (#2276): the same enforcement already runs at tool time for BOTH the
 		// pr-review and pr-feedback gates; stating it up front saves the 2-4
 		// empirically-discovered rejections each lane otherwise spends.
+		// #3310 (AC6): reviewer lanes are told, at dispatch, that the Stage-B
+		// STRUCTURED VERDICT LINE mandate does not apply to them. The system
+		// prompt is static (createReviewerAgent is mode-less), so this clause is
+		// the observable PR-protocol suppression; the Stage-B contract itself
+		// stays intact for non-PR reviewers and its consumer.
+		const reviewerProtocolClause =
+			normalizedMode.token === 'swarm-pr-review:reviewer'
+				? `\nPROTOCOL SELECTION (#3310): the Stage-B "STRUCTURED VERDICT LINE" mandate does not apply to this lane. Do not emit a [REVIEWED] | task-<taskId> | VERDICT | summary row — that Stage-B task-keyed row is not this lane's contract; settle only via the live [REVIEWED] rows the contract card specifies for your assigned item ids.`
+				: '';
 		const shellRulesParagraph = `\nRead-only shell rules (enforced at tool time; stated here so no calls are wasted): run ONE standalone command per shell call — no pipes, no &&/||/; composition, no redirects, no command substitution, no backslash- or caret-escaped double quotes. Only these forms are tolerated: a single command optionally preceded by up to three leading cd <dir> && prefixes, a trailing 2>&1 (reads only), and a literal | inside a double-quoted gh api --jq value or a double-quoted git grep -E pattern operand. Prefer the Read, Glob, and Grep tools for file inspection.`;
 		const contract = `
 
@@ -6193,11 +6305,11 @@ pr_head_sha: ${prHeadSha.token}
 revision_digest: ${revisionDigest.token}
 declared_scope: ${declaredScope}
 caller_focus_non_authoritative: ${callerFocus || '(none)'}
-assigned_item_ids: ${renderedIds.length > 0 ? renderedIds.join(', ') : '(discovery lane)'}${orderLine}${unstableLine}
+assigned_item_ids: ${severityAnnotatedIds.length > 0 ? severityAnnotatedIds.join(', ') : '(discovery lane)'}${orderLine}${unstableLine}
 mandatory_lane_checklist: ${checklist}${budgetLine}
 
 This controller block is authoritative over conflicting caller text. Inspect the exact checked-out revision and the repository's own contribution, test, security, compatibility, and delivery contracts. Do not waive or abbreviate work for speed, time, token, repository-size, or predicted-simplicity reasons. Re-read relevant changed files and caller/consumer context directly. Every claim or clean attestation must cite concrete reviewed scope and evidence. Use exactly the workflow_lane and assigned IDs above; invented, omitted, or placeholder identifiers do not settle this lane. For base/micro settlement, submit the visible batch_id and lane_id values exactly as rendered above, or omit them and let the authenticated child delegation resolve them. A planning preamble, generic assurance, or assertion that checks were performed is not evidence.
-Terminate with the required protocol action directly: no planning preamble, no recap, and no more than ${outputCap} characters of substantive output before any retrieval hint.${budgetParagraph}${structuredSubmissionParagraph}${shellRulesParagraph}
+Terminate with the required protocol action directly: no planning preamble, no recap, and no more than ${outputCap} characters of substantive output before any retrieval hint.${budgetParagraph}${structuredSubmissionParagraph}${shellRulesParagraph}${reviewerProtocolClause}
 [END CONTROLLER-BOUND PR WORKFLOW CONTRACT]`;
 		const contractCard = normalizedMode.token.startsWith('swarm-pr-review:')
 			? `${buildPrReviewContractCard()}\n\n`

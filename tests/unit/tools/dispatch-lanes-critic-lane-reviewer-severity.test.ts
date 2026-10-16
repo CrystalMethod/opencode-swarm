@@ -1,0 +1,91 @@
+// Issue #3310 AC13 — critic lanes must see the reviewer severity per item.
+//
+// The critic-mode CONTROLLER-BOUND PR WORKFLOW CONTRACT renders
+// assigned_item_ids but no per-item reviewer severity, so a critic lane
+// re-derives severity from scratch instead of challenging the reviewer's
+// calibrated one. The fix adds an option to applyPrWorkflowPromptContract
+// carrying per-item reviewer severities, following the orderUnstableItemIds
+// precedent: an optional option rendered only when supplied; unspecified
+// renders nothing extra (byte-shape compat).
+//
+// FROZEN INPUT SURFACE (the implementer must build exactly this):
+//   options.reviewerSeverities?: Record<string, string>
+//     — maps ASSIGNED item id -> the reviewer severity token for that item
+//       (e.g. { c1: 'HIGH', c2: 'LOW' }); single-token values.
+//   Rendering contract: for mode 'swarm-pr-review:critic', when supplied,
+//   the CONTROLLER-BOUND block renders each assigned item's reviewer
+//   severity next to/after that item id ON THE SAME LINE (e.g.
+//   `assigned_item_ids: c1 (HIGH), c2 (LOW)`). The rendered annotation is
+//   the bare severity token in parentheses; the item-id token itself is the
+//   bare id. When the option is absent (or explicitly undefined), the block
+//   renders exactly as before — no severity text is added.
+//
+// RED at base, GREEN after the fix.
+import { describe, expect, test } from 'bun:test';
+import { _test_exports } from '../../../src/tools/dispatch-lanes.js';
+
+type ContractOptions = Parameters<
+	typeof _test_exports.applyPrWorkflowPromptContract
+>[1];
+type ContractLane = Parameters<
+	typeof _test_exports.applyPrWorkflowPromptContract
+>[0][number];
+
+const criticLane: ContractLane = {
+	id: 'critic-3310-sev',
+	agent: 'critic',
+	prompt: 'Caller-authored critic prompt',
+	workflow_lane: 'critic-chunk-1',
+	review_item_ids: ['c1', 'c2'],
+};
+
+const criticOptions = (extra: Record<string, unknown> = {}) =>
+	({
+		mode: 'swarm-pr-review:critic',
+		prHeadSha: 'abc123',
+		revisionDigest: 'revision-1',
+		...extra,
+	}) as ContractOptions;
+
+function contractedPrompt(options: ContractOptions): string {
+	const result = _test_exports.applyPrWorkflowPromptContract(
+		[criticLane],
+		options,
+	);
+	if (!result.ok) {
+		throw new Error(`contract rejected: ${result.errors.join('; ')}`);
+	}
+	const prompt = result.lanes[0]?.prompt ?? '';
+	if (prompt === '') throw new Error('contract returned no prompt');
+	return prompt;
+}
+
+describe('critic-lane reviewer severity rendering (issue #3310 AC13)', () => {
+	test('renders each assigned item id together with its reviewer severity on the same line', () => {
+		const prompt = contractedPrompt(
+			criticOptions({ reviewerSeverities: { c1: 'HIGH', c2: 'LOW' } }),
+		);
+		// Same-line pairing of item id and severity (the [^\n]* window forbids
+		// a severity stranded on another line).
+		expect(prompt).toMatch(/c1[^\n]*HIGH/);
+		expect(prompt).toMatch(/c2[^\n]*LOW/);
+		// The assigned ids still render inside the controller block.
+		expect(prompt).toContain('assigned_item_ids:');
+	});
+
+	test('absent reviewerSeverities keeps the pre-fix block byte-shape (backward compat)', () => {
+		const prompt = contractedPrompt(criticOptions());
+		expect(prompt).toContain('assigned_item_ids: c1, c2');
+		expect(prompt).not.toContain('reviewer_severity');
+		expect(prompt).not.toMatch(/reviewer\s+severity/i);
+	});
+
+	test('explicit undefined reviewerSeverities is exactly absent', () => {
+		const prompt = contractedPrompt(
+			criticOptions({ reviewerSeverities: undefined }),
+		);
+		expect(prompt).toContain('assigned_item_ids: c1, c2');
+		expect(prompt).not.toContain('reviewer_severity');
+		expect(prompt).not.toMatch(/reviewer\s+severity/i);
+	});
+});

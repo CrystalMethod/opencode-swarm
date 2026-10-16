@@ -58,8 +58,10 @@ retained — the attestation contributes no coverage).
 
 ## Verdict-row pipe tolerance and its fidelity boundary
 
-`[REVIEWED]` (10-field), `[CRITIC]` (6-field), and `[FEEDBACK-VERIFIED]`
-(4-field) rows tail-merge extra pipe separators into the trailing free-text
+`[REVIEWED]` rows are canonically 12-field (legacy
+10-field rows are normalized to 12 at the parse boundary), `[CRITIC]` (6-field),
+and `[FEEDBACK-VERIFIED]` (4-field) rows tail-merge extra pipe separators into
+the trailing free-text
 field. Fidelity boundary: content-preserving when the extra pipes sit in the
 trailing field; a pipe in a mid-row prose field still authenticates (all
 machine-checked positions are untouched) but trailing prose fields may be

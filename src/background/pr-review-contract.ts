@@ -800,6 +800,15 @@ export const PrReviewReviewerVerdictFieldsSchema = z
 				message: 'DISPROVED reviewer severity must be NONE',
 			});
 		}
+		// #3310: a CONFIRMED finding with no severity is incoherent — it is
+		// the one classification for which even DOWNGRADED is impossible.
+		if (fields[2] === 'CONFIRMED' && fields[4] === 'NONE') {
+			ctx.addIssue({
+				code: 'custom',
+				path: [4],
+				message: 'CONFIRMED reviewer severity must not be NONE',
+			});
+		}
 	});
 
 export const PrReviewCriticVerdictFieldsSchema = z
@@ -828,16 +837,17 @@ export const PrReviewCriticVerdictFieldsSchema = z
 				message: 'DISPROVED critic severity must be NONE',
 			});
 		}
-		if (
-			status === 'UPHELD' &&
-			!(['CRITICAL', 'HIGH', 'MEDIUM'] as const).includes(
-				severity as 'CRITICAL' | 'HIGH' | 'MEDIUM',
-			)
-		) {
+		if (status === 'UPHELD' && severity === 'NONE') {
+			// #3310: UPHELD is a truthful agreement at the reviewer's own
+			// severity — allowed at LOW and INFO too, never at NONE (a
+			// zero-severity agreement carries no verdict to uphold). The
+			// rank-equality rule itself lives in the adapter
+			// (validateCriticVerdictFields), which also enforces that UPHELD
+			// keeps the reviewer's exact severity rank.
 			ctx.addIssue({
 				code: 'custom',
 				path: [3],
-				message: 'UPHELD critic severity must be CRITICAL, HIGH, or MEDIUM',
+				message: 'UPHELD critic severity must not be NONE',
 			});
 		}
 		if (status === 'DOWNGRADED' && severity === 'CRITICAL') {
@@ -1049,6 +1059,9 @@ export function buildPrReviewContractCard(): string {
 		'- Emit exactly one live REVIEWED row per assigned item in reviewer lanes.',
 		'- Emit exactly one live CRITIC row per assigned item in critic lanes.',
 		'- DISPROVED requires severity NONE.',
+		// #3310: state the cross-row severity rules the transport enforces.
+		"- UPHELD keeps the reviewer's severity exactly and is not permitted at NONE.",
+		"- DOWNGRADED must be strictly lower than the reviewer's severity and never CRITICAL.",
 		'- NEEDS_MORE_EVIDENCE is not a terminal critic transport row.',
 		'- risk_impact/risk_tags are REQUIRED on every CONFIRMED REVIEWED row; malformed or unknown values fail the row.',
 		'- Critic routing is typed (issue #2383): CRITICAL/HIGH always; MEDIUM only when HIGH_IMPACT or any risk tag; UNKNOWN always; ORDINARY MEDIUMs with no tags are not critic-routed.',
@@ -1061,7 +1074,10 @@ export function buildPrReviewContractCard(): string {
 		'Transition matrix:',
 		'- reviewer lane: assigned item -> exactly one REVIEWED row -> critic routing or terminal disposition.',
 		'- critic lane: assigned reviewer claim -> exactly one CRITIC row -> final finding disposition.',
-		'- malformed, duplicate, missing, or discarded rows -> contract failure and bounded retry; never acceptance.',
+		// #3310: illegal-arity marker rows are quarantined into diagnostics and
+		// never settle a claim; malformed rows for ASSIGNED ids still fail.
+		'- Malformed rows for an assigned item fail that item and may be retried within the controller retry bound.',
+		'- A marker row whose field count is illegal for its marker is quarantined into diagnostics: it carries no verdict and never settles a claim.',
 		'Retry and deadline semantics:',
 		'- Malformed live rows fail closed and may be retried only within the controller retry bound.',
 		'- A waited collection deadline is an OBSERVER deadline: it bounds the collect call only, never cancels or terminalizes child work (issue #2381); poll, explicitly cancel, or rely on the presumed-stale sweep.',

@@ -414,7 +414,14 @@ ANALYZE RULES:
 - Report the highest-severity findings first within each section.
 - If both spec.md and plan.md are present but empty, report CLEAN with a note that both files are empty.
 `;
-export const PLAN_CRITIC_PROMPT = `${PLAN_CRITIC_PROMPT_BASE}\n\n${GRAPH_FIRST_CRITIC_GUIDANCE}`;
+// #3310 (AC14): PR-review critic lanes compose this agent's prompt with the
+// controller's contract card and CONTROLLER-BOUND block; the default
+// PLAN REVIEW structure cannot produce the [CRITIC] rows that transport
+// requires, so the override suspends it for those lanes only. Non-PR use
+// of the critic agent is unchanged.
+const PR_REVIEW_LANE_OVERRIDE = `PR-REVIEW LANE OVERRIDE (#3310): when a CONTROLLER-BOUND PR WORKFLOW CONTRACT block is present in your prompt, the default output structure above is suspended for that lane: do not begin with PLAN REVIEW and do not call get_approved_plan — emit only the [CRITIC] verdict rows that contract specifies, exactly one per assigned item id, and nothing else.`;
+
+export const PLAN_CRITIC_PROMPT = `${PLAN_CRITIC_PROMPT_BASE}\n\n${GRAPH_FIRST_CRITIC_GUIDANCE}\n\n${PR_REVIEW_LANE_OVERRIDE}`;
 
 // ============================================================
 // SOUNDING_BOARD_PROMPT — Pre-escalation filter

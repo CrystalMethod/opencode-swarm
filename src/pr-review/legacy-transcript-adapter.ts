@@ -41,6 +41,7 @@ import {
 } from '../background/pending-delegations.js';
 import {
 	PR_REVIEW_DISCARDED_EXAMPLE_ITEM_ID,
+	PR_REVIEW_VERDICT_ROW_DESCRIPTORS,
 	PrReviewCriticVerdictFieldsSchema,
 	PrReviewReviewerVerdictFieldsSchema,
 	type PrReviewRiskImpact,
@@ -48,6 +49,7 @@ import {
 	parsePrReviewRiskTagsField,
 	parsePrReviewVerdictRow,
 } from '../background/pr-review-contract.js';
+import { redactSecrets } from '../memory/redaction.js';
 import { emit } from '../telemetry.js';
 import { warn } from '../utils/logger.js';
 
@@ -671,12 +673,32 @@ export function composePrReviewPhaseVerdicts(
 				continue;
 			}
 			const declaredItems = qualified.expectedLane.reviewItemIds ?? [];
-			const { markerRows, parsed } = parsePrReviewVerdictRows(
+			const { markerRows, parsed, quarantined } = parsePrReviewVerdictRows(
 				artifact.text,
 				declaredItems,
 				phase,
 				reviewerClaims,
 			);
+			// #3310: illegal-arity rows are quarantined, not lane-voiding.
+			// ONE aggregated bounded diagnostic per lane, so a stray-row-heavy
+			// artifact cannot exhaust the shared composition-diagnostic budget
+			// ahead of the unassigned-row and abandoned-lane evidence below.
+			// Identifiers and arity only — never row prose — and the item id is
+			// model-controlled transcript text, so it is redacted and bounded
+			// exactly like the verdict-rejection journal does.
+			if (quarantined.length > 0) {
+				const arities = [
+					...new Set(quarantined.map((stray) => stray.arity)),
+				].sort((a, b) => a - b);
+				const ids = quarantined
+					.map((stray) => redactSecrets(stray.itemId).slice(0, 64))
+					.filter((value, index, all) => all.indexOf(value) === index)
+					.slice(0, 8);
+				appendCompositionDiagnostic(
+					diagnostics,
+					`${phase} lane "${qualified.expectedLane.laneId}" quarantined ${quarantined.length} illegal-arity ${quarantined[0]?.marker ?? 'verdict'} row(s) (arities ${arities.join(', ')}; item ids ${ids.map((id) => `"${id}"`).join(', ')}); quarantined rows carry no verdict`,
+				);
+			}
 			if (!verdictRowsContainOnlyAssignedIds(markerRows, declaredItems)) {
 				appendCompositionDiagnostic(
 					diagnostics,
@@ -891,6 +913,22 @@ export interface IndexedVerdictRows {
 		itemId: string;
 		recovery: 'legacy-fidelity-safe' | 'legacy-lossy';
 	}>;
+	/**
+	 * Issue #3310: rows whose post-parse arity differs from their marker's
+	 * legal arity (12 for `[REVIEWED]` after legacy-10 normalization and
+	 * pipe-overflow tail-merge; 6 for `[CRITIC]` after tail-merge). These are
+	 * grammar noise (typically a Stage-B task row or an echoed format line) —
+	 * they carry no authenticable verdict, so they are quarantined out of the
+	 * exact-set count instead of voiding every valid sibling row. Identifiers
+	 * and arity only; never row prose. A legal-arity row naming an unassigned
+	 * ID is NOT quarantined — that is the spoofing class and still voids the
+	 * lane.
+	 */
+	quarantined: Array<{
+		marker: '[REVIEWED]' | '[CRITIC]';
+		itemId: string;
+		arity: number;
+	}>;
 }
 
 export function indexVerdictRows(
@@ -900,6 +938,11 @@ export function indexVerdictRows(
 	const markerRows: string[][] = [];
 	const rowsByItemId = new Map<string, string[][]>();
 	const recoveries: IndexedVerdictRows['recoveries'] = [];
+	const quarantined: IndexedVerdictRows['quarantined'] = [];
+	const legalArity =
+		PR_REVIEW_VERDICT_ROW_DESCRIPTORS[
+			marker === '[REVIEWED]' ? 'reviewer' : 'critic'
+		].fieldCount;
 	for (const line of text.split(/\r?\n/)) {
 		const row = parsePrReviewVerdictRow(
 			line,
@@ -907,6 +950,17 @@ export function indexVerdictRows(
 		);
 		if (!row) continue;
 		const fields = row.fields;
+		if (fields.length !== legalArity) {
+			// #3310: illegal post-parse arity. Quarantine into diagnostics
+			// (identifiers/arity only) and continue — the row never enters the
+			// exact-set count, so valid siblings keep their claims.
+			quarantined.push({
+				marker,
+				itemId: fields[1] ?? '(missing)',
+				arity: fields.length,
+			});
+			continue;
+		}
 		if (row.recoveredOverflow) {
 			const recovery = row.overflowClass as
 				| 'legacy-fidelity-safe'
@@ -938,7 +992,7 @@ export function indexVerdictRows(
 		if (rows) rows.push(fields);
 		else rowsByItemId.set(itemId, [fields]);
 	}
-	return { markerRows, rowsByItemId, recoveries };
+	return { markerRows, rowsByItemId, recoveries, quarantined };
 }
 
 export function validateReviewerVerdictFields(
@@ -1000,6 +1054,7 @@ export function parsePrReviewVerdictRows(
 		}
 	>;
 	recoveries: IndexedVerdictRows['recoveries'];
+	quarantined: IndexedVerdictRows['quarantined'];
 } {
 	const parsed = new Map<
 		string,
@@ -1012,10 +1067,8 @@ export function parsePrReviewVerdictRows(
 		}
 	>();
 	const marker = phase === 'reviewer' ? '[REVIEWED]' : '[CRITIC]';
-	const { markerRows, rowsByItemId, recoveries } = indexVerdictRows(
-		text,
-		marker,
-	);
+	const { markerRows, rowsByItemId, recoveries, quarantined } =
+		indexVerdictRows(text, marker);
 	for (const itemId of itemIds) {
 		if (itemId === PR_REVIEW_DISCARDED_EXAMPLE_ITEM_ID) continue;
 		if (phase === 'reviewer') {
@@ -1049,7 +1102,7 @@ export function parsePrReviewVerdictRows(
 			severity: verdict.severity,
 		});
 	}
-	return { markerRows, parsed, recoveries };
+	return { markerRows, parsed, recoveries, quarantined };
 }
 
 /** Exact assigned-row contract used by both normal and recovered collection. */
@@ -1063,15 +1116,12 @@ export function analyzePrReviewVerdictRowContract(
 	expected: string;
 	actual: string;
 	recoveries: IndexedVerdictRows['recoveries'];
+	quarantined: IndexedVerdictRows['quarantined'];
 } {
 	const marker = phase === 'reviewer' ? '[REVIEWED]' : '[CRITIC]';
 	const assigned = new Set(itemIds);
-	const { markerRows, parsed, recoveries } = parsePrReviewVerdictRows(
-		text,
-		itemIds,
-		phase,
-		reviewerClaims,
-	);
+	const { markerRows, parsed, recoveries, quarantined } =
+		parsePrReviewVerdictRows(text, itemIds, phase, reviewerClaims);
 	const observedIds = markerRows.map((fields) => fields[1] || '(missing)');
 	const unexpectedIds = [
 		...new Set(observedIds.filter((itemId) => !assigned.has(itemId))),
@@ -1087,8 +1137,10 @@ export function analyzePrReviewVerdictRowContract(
 			observedIds,
 			invalidOrMissingIds,
 			unexpectedIds,
+			quarantinedArities: quarantined.map((stray) => stray.arity),
 		}),
 		recoveries,
+		quarantined,
 	};
 }
 

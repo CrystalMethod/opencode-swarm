@@ -17275,6 +17275,33 @@ export async function derivePrReviewOrderUnstableItems(
 }
 
 /**
+ * Issue #3310: the composed reviewer-phase severities, keyed by item id, so a
+ * critic dispatch can tell each assigned item's reviewer severity up front —
+ * the critic transport requires UPHELD to keep that exact severity rank.
+ * Read-only derivation with the same shape as the #2906 readers; an unset or
+ * partially-settled reviewer phase yields an empty/partial map and the
+ * dispatch-side caller renders nothing extra for unknown ids.
+ */
+export async function derivePrReviewReviewerSeverities(
+	directory: string,
+	sessionID: string,
+): Promise<Map<string, string>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const severities = new Map<string, string>();
+	for (const [itemId, claim] of composition.claims) {
+		severities.set(itemId, claim.severity);
+	}
+	return severities;
+}
+
+/**
  * Issue #2906: the authoritative per-item order-agreement map for the findings
  * writer — the same reader shape as `readAuthoritativePrReviewCriticVerdicts`,
  * so a model-supplied `order_agreement` on a findings row can be cross-checked
