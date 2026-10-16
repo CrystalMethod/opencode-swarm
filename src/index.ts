@@ -8,7 +8,6 @@ import packageJson from '../package.json' with { type: 'json' };
 import {
 	type AgentDefinition,
 	createAgents,
-	extractSwarmIdFromAgentName,
 	getAgentConfigs,
 	getSwarmAgents,
 	resetArchitectPromptBudgetAdvisories,
@@ -1994,7 +1993,40 @@ async function initializeOpenCodeSwarm(
 		const trimmedAgentName = exactAgentName.trim();
 		if (!trimmedAgentName) return null;
 		const role = stripKnownSwarmPrefix(trimmedAgentName);
-		const swarmID = extractSwarmIdFromAgentName(trimmedAgentName) || undefined;
+		// Derive the swarm id by length delta from the canonical role — NOT a
+		// naive first-underscore split — because role names themselves contain
+		// an underscore (`test_engineer`, `curator_phase`), which a split would
+		// misread as a swarm prefix and collapse the fallback chain to [] in
+		// the default swarm (issue #2960). Mirrors
+		// src/hooks/curator-llm-factory.ts.
+		//
+		// The `_<role>` suffix test is required, not redundant: the role
+		// extractor is case-insensitive and also accepts `-`/` ` separators
+		// (src/config/schema.ts SEPARATORS), so `role !== trimmedAgentName`
+		// is true for a name carrying NO prefix at all — `Coder` extracts role
+		// `coder`, `code-reviewer` extracts `reviewer`. Slicing those yields a
+		// garbage id (`Code`), a guaranteed map miss and an empty chain, which
+		// reintroduces the #2960 symptom for inputs that worked before the
+		// change. Only a real `<swarmId>_<role>` prefix may be sliced; the
+		// suffix is matched case-insensitively while the slice uses the RAW
+		// name, so a case-carrying swarm id (`Case_coder` → `Case`) survives.
+		// Shape follows src/failures/action-identity.ts `canonicalRole`.
+		//
+		// The derived id must additionally be schema-valid: a swarm id may not
+		// contain an underscore (src/config/schema.ts `Swarm ID must not
+		// contain underscores`), so a malformed doubled-separator name
+		// (`local__coder` → `local_`) can never match a registered swarm.
+		// Such names fall through to the default swarm rather than slicing a
+		// prefix that cannot exist — the fail-closed direction. (Base's naive
+		// split happened to yield the valid `local` here; that is an accident
+		// of splitting on the FIRST underscore, not a contract.)
+		const slicedSwarmID =
+			role !== trimmedAgentName &&
+			trimmedAgentName.toLowerCase().endsWith(`_${role}`)
+				? trimmedAgentName.slice(0, trimmedAgentName.length - role.length - 1)
+				: undefined;
+		const swarmID =
+			slicedSwarmID && !slicedSwarmID.includes('_') ? slicedSwarmID : undefined;
 		const swarmAgents = getSwarmAgents(swarmID);
 		return {
 			exactAgentName: trimmedAgentName,
