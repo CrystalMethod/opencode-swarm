@@ -108,6 +108,11 @@ describe('drift-check: fragment-path-parity detection (issue #2955)', () => {
 			'^((binaries|src|scripts)/)',
 			'^(src/|bin/|scripts/|tests/|test/|runners/|examples/)',
 			'^(src|bin)/',
+			// F-2: per-member caret forms (with pipes) — `^` must be a run
+			// character so the per-member strip normalizes them, not
+			// run-truncation luck.
+			'^src/|^bin/|^scripts/',
+			'^src/|^bin/',
 		]) {
 			const root = makeTempRoot();
 			writeFile(root, '.github/workflows/pr-standards.yml', cleanPrStandards());

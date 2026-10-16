@@ -1714,22 +1714,36 @@ export const LEGACY_FRAGMENT_REGEX_SUBSTRING =
  * order/subset-tolerant purity arm: a maximal `token(|token)+` run fires
  * when it has >= 2 members and ALL members are legacy tokens after stripping
  * a leading `^` and a trailing `/` (so `src` == `src/`). A count-based
- * threshold cannot work on this repo: ci.yml's 13-member path filter embeds
- * exactly 2 exact-member legacy hits, so count-2-by-members would fire the
- * real tree.
+ * threshold cannot work on this repo: ci.yml's path filter has 14 members
+ * (its run capture holds 13 — the backslash in the final `\.github/workflows/`
+ * member falls outside the run character class) and embeds exactly 2
+ * exact-member legacy hits, so count-2-by-members would fire the real tree.
+ * Accepted trade-off (issue #3291 round 2, F-7): the arm is a heuristic and
+ * also fires on legitimate non-classification text — a `case` statement or
+ * `grep -E` trigger over two legacy dirs — which surfaces as a false-positive
+ * drift error on an --enforced gate; fail-closed direction, deliberately
+ * accepted over a count rule that cannot distinguish the real filter.
  */
-export const LEGACY_FRAGMENT_TOKENS: readonly string[] =
+const LEGACY_FRAGMENT_TOKENS: readonly string[] =
 	LEGACY_FRAGMENT_REGEX_SUBSTRING.split('|').map((token) =>
 		token.replace(/\/$/, ''),
 	);
 
+// The lookbehind keeps matched runs maximal-left (linear scan; without it a
+// long pipe-free run of class characters rescans at ~n² — measured 433 s at
+// the 512 KiB read bound, 15 ms with the lookbehind). `^` is a run character
+// so per-member caret forms (`^src/^bin/`) are captured and normalized.
 const LEGACY_ALTERNATION_RUN =
-	/[A-Za-z0-9_.\-/*]+(?:\|[A-Za-z0-9_.\-/*]+)+/g;
+	/(?<![A-Za-z0-9_.\-/*^])[A-Za-z0-9_.\-/*^]+(?:\|[A-Za-z0-9_.\-/*^]+)+/g;
 
-function isLegacyPredicateAlternation(text: string): boolean {
+/**
+ * True when `text` carries a hand-maintained fragment-classification
+ * predicate under the tolerance rules above. Exported so the parity suite's
+ * workflow scan mirrors the detector exactly (issue #3291 NEW-1).
+ */
+export function isLegacyPredicateAlternation(text: string): boolean {
 	for (const run of text.match(LEGACY_ALTERNATION_RUN) ?? []) {
 		const members = run.split('|');
-		if (members.length < 2) continue;
 		const allLegacy = members.every((member) => {
 			const normalized = member.replace(/^\^/, '').replace(/\/$/, '');
 			return LEGACY_FRAGMENT_TOKENS.includes(normalized);

@@ -84,10 +84,16 @@ export const USER_VISIBLE_PATH_CLASSES: readonly UserVisiblePathClass[] = [
 		note: 'dependencies are never user-visible.',
 	},
 	{
-		kind: 'exact',
-		pattern: 'evaluation-fixtures',
+		kind: 'never-prefix',
+		pattern: 'evaluation-fixtures/',
 		userVisible: false,
-		note: '#3291 census: shipped in package.json#files but ships evaluation fixtures, not user-facing behavior; recorded so the not-visible verdict is a reviewed decision, not a fallthrough accident.',
+		note: '#3291 census: shipped in package.json#files but ships evaluation fixtures, not user-facing behavior; recorded so every changed path under the subtree is a reviewed decision, not a fallthrough accident.',
+	},
+	{
+		kind: 'never-prefix',
+		pattern: 'dist/',
+		userVisible: false,
+		note: '#3291 census: generated build output of src/ (package.json#files ships it), never committed, so no PR diff can touch it; recorded for census completeness.',
 	},
 	{
 		kind: 'exact',
@@ -106,12 +112,6 @@ export const USER_VISIBLE_PATH_CLASSES: readonly UserVisiblePathClass[] = [
 		pattern: 'LICENSE',
 		userVisible: false,
 		note: '#3291 census: shipped license text, not behavior.',
-	},
-	{
-		kind: 'never-prefix',
-		pattern: 'dist/',
-		userVisible: false,
-		note: '#3291 census: generated build output of src/ (package.json#files ships it), never committed, so no PR diff can touch it; recorded for census completeness.',
 	},
 	{
 		kind: 'exact',
