@@ -10,9 +10,12 @@ async function deferredV2StartupModelPreflight(
 	directory: string,
 ): Promise<void> {
 	try {
+		// Async loader so the budget is a real bound (the sync variant runs to
+		// completion before withTimeout could start its timer); same budget as
+		// the v1 config load (src/index.ts LOAD_PLUGIN_CONFIG_TIMEOUT_MS).
 		const loaded = await withTimeout(
-			Promise.resolve(loadPluginConfigWithMeta(directory)),
-			2_000,
+			loadPluginConfigWithMetaAsync(directory),
+			V2_PREFLIGHT_CONFIG_TIMEOUT_MS,
 			new Error(
 				'[opencode-swarm] v2: startup preflight config read exceeded budget',
 			),
@@ -88,7 +91,7 @@ async function deferredV2StartupModelPreflight(
  */
 
 import { z } from 'zod';
-import { loadPluginConfigWithMeta } from '../../config/loader';
+import { loadPluginConfigWithMetaAsync } from '../../config/loader';
 import {
 	collectEnabledAgentModels,
 	collectModelRosterWarnings,
@@ -114,8 +117,27 @@ import {
 import { registerV2Tools } from './tools';
 import type { V1HooksSubset, V2PluginContext, V2Registration } from './types';
 
-/** Bounds setup() itself — the v1 repro-704 class of deadline for the v2 path. */
+/**
+ * Bounds setup() init, the tail preflight and cleanup (the v1 repro-704 class
+ * of deadline for the v2 path). Deliberately generous: the shared init core has
+ * its own bounded fail-open budgets (snapshot 5 s, git-exclude 3 s, config 2 s),
+ * and a setup rejection is recorded by the host as a failed plugin load, so this
+ * outer cap must not pre-empt those designed degradations.
+ */
 const V2_SETUP_TIMEOUT_MS = 60_000;
+
+/**
+ * Bounds the parallel registration stage only (the five local, in-process host
+ * domain registrations; measured ~30 ms). The host awaits plugin activation
+ * before serving requests and caps some early requests at 5 s, so a stalled
+ * registration must not hold setup() open. When this budget fires, setup()
+ * resolves with the registrations that finished and the still-pending domains
+ * are surfaced via addDeferredWarning; it is not a bound on total setup() time.
+ */
+const V2_REGISTRATION_TIMEOUT_MS = 3_500;
+
+/** Startup preflight config-read budget (parity with the v1 config load). */
+const V2_PREFLIGHT_CONFIG_TIMEOUT_MS = 2_000;
 
 /** Dependencies injected from src/index.ts (avoids an index↔host cycle). */
 export interface V2SetupDependencies {
@@ -125,8 +147,47 @@ export interface V2SetupDependencies {
 
 interface CollectedState {
 	readonly registrations: V2Registration[];
+	/** Marks cleanup as started: later registrations dispose themselves. */
+	closeRegistrations: () => void;
 	pumpStop?: () => void;
 	disposeV1?: () => Promise<void>;
+}
+
+/**
+ * Registration collector. A registration that lands after cleanup began (a
+ * stalled domain that outlived the registration budget) is disposed on arrival
+ * instead of being left live and untracked.
+ */
+function createRegistrationSink(): Pick<
+	CollectedState,
+	'registrations' | 'closeRegistrations'
+> {
+	const registrations: V2Registration[] = [];
+	const push = registrations.push.bind(registrations);
+	let closed = false;
+	registrations.push = (...items: V2Registration[]): number => {
+		if (!closed) return push(...items);
+		for (const item of items) {
+			withTimeout(
+				Promise.resolve().then(() => item.dispose()),
+				V2_SETUP_TIMEOUT_MS,
+				new Error(
+					'[opencode-swarm] v2 cleanup: late registration dispose exceeded budget',
+				),
+			).catch((err: unknown) => {
+				log('v2 late registration dispose failed (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+		}
+		return registrations.length;
+	};
+	return {
+		registrations,
+		closeRegistrations: () => {
+			closed = true;
+		},
+	};
 }
 
 /** Normalize a v2 agent reference (Agent.Info object or bare string) to a name. */
@@ -170,7 +231,7 @@ export async function openCodeSwarmV2Setup(
 			: rootDecision.kind === 'root'
 				? rootDecision.directory
 				: rawDirectory;
-	const state: CollectedState = { registrations: [] };
+	const state: CollectedState = createRegistrationSink();
 
 	// v1 PluginInput view — the init core consumes only `directory` and
 	// `client`. #3169 Phase 2: the session-client shim bridges the v2
@@ -189,64 +250,62 @@ export async function openCodeSwarmV2Setup(
 		new Error('[opencode-swarm] v2 setup: initialization exceeded budget'),
 	);
 
-	// Agents + commands through the v1 config hook against a synthetic config —
-	// the single-source builder (see module header).
+	// The five registrations touch disjoint host Context domains and read no
+	// state written by one another, so they run concurrently under ONE
+	// registration-stage budget; each keeps its own non-fatal isolation. A domain
+	// still pending when the budget fires is named in a deferred warning (the
+	// operator-reachable channel; log() is debug-gated) — setup resolves with the
+	// registrations that completed, and a late arrival is disposed by the sink
+	// once cleanup has started.
+	const pendingDomains = new Set<string>();
+	const runRegistration = (
+		domain: string,
+		register: () => Promise<unknown>,
+	): Promise<unknown> => {
+		pendingDomains.add(domain);
+		return register()
+			.catch((err: unknown) => {
+				log(`v2 ${domain} registration failed (non-fatal)`, {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			})
+			.finally(() => {
+				pendingDomains.delete(domain);
+			});
+	};
 	await withTimeout(
-		registerV2AgentsAndCommands(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
+		Promise.all([
+			runRegistration('agent/command', () =>
+				registerV2AgentsAndCommands(ctx, hooks, directory, state.registrations),
+			),
+			runRegistration('tool', () =>
+				registerV2Tools(ctx, hooks, directory, state.registrations),
+			),
+			runRegistration('context-hook', () =>
+				registerV2ContextHook(ctx, hooks, directory, state.registrations),
+			),
+			runRegistration('tool-hook', () =>
+				registerV2ToolHooks(ctx, hooks, directory, state.registrations),
+			),
+			runRegistration('prompt-hook', () =>
+				registerV2SessionHooks(ctx, hooks, directory, state.registrations),
+			),
+		]),
+		V2_REGISTRATION_TIMEOUT_MS,
 		new Error(
-			'[opencode-swarm] v2 setup: agent/command registration exceeded budget',
+			'[opencode-swarm] v2 setup: parallel registration exceeded budget',
 		),
 	).catch((err: unknown) => {
-		log('v2 agent/command registration failed (non-fatal)', {
+		const pending = [...pendingDomains];
+		log('v2 registration failed (non-fatal)', {
 			error: err instanceof Error ? err.message : String(err),
+			pending,
 		});
-	});
-
-	// Tools from the same map the v1 host receives.
-	await withTimeout(
-		registerV2Tools(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error('[opencode-swarm] v2 setup: tool registration exceeded budget'),
-	).catch((err: unknown) => {
-		log('v2 tool registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-
-	// Guidance (context hook), tool hooks, compaction, prompt.
-	await withTimeout(
-		registerV2ContextHook(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: guidance registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 context-hook registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-	await withTimeout(
-		registerV2ToolHooks(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: tool-hook registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 tool-hook registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
-	});
-	await withTimeout(
-		registerV2SessionHooks(ctx, hooks, directory, state.registrations),
-		V2_SETUP_TIMEOUT_MS,
-		new Error(
-			'[opencode-swarm] v2 setup: prompt-hook registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		log('v2 prompt-hook registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
+		if (pending.length > 0) {
+			addDeferredWarning(
+				`[opencode-swarm] v2 setup: registration still pending after ${V2_REGISTRATION_TIMEOUT_MS}ms (${pending.join(', ')}); the plugin loaded with partial registration.`,
+			);
+		}
 	});
 
 	// Deferred event pump (detached; named for the C6 convention).
@@ -282,6 +341,7 @@ export async function openCodeSwarmV2Setup(
 	});
 
 	return async function cleanupV2Plugin(): Promise<void> {
+		state.closeRegistrations();
 		if (typeof state.pumpStop === 'function') state.pumpStop();
 		// #3169 Phase 2: drop the shim's bounded registries immediately after
 		// the pump stop flag — an in-flight pump iteration can still record one
