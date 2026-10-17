@@ -1,5 +1,13 @@
 # Changelog
 
+## [7.198.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.198.0...v7.198.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **guard:** key shell-tool Windows grammar on platform; test semicolon boundary ([#3323](https://github.com/ZaxbyHub/opencode-swarm/issues/3323)) ([eae72e6](https://github.com/ZaxbyHub/opencode-swarm/commit/eae72e6958264468c315c439e421007669713196))
+* **guard:** key shell-tool Windows grammar on platform; treat ; as &gt;& descriptor boundary ([#3323](https://github.com/ZaxbyHub/opencode-swarm/issues/3323)) ([12a3839](https://github.com/ZaxbyHub/opencode-swarm/commit/12a3839b37865786faf352485732e7359385e8d3))
+
 ## [7.198.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.197.3...v7.198.0) (2026-10-16)
 
 
